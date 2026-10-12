@@ -307,6 +307,42 @@ def save_openai_accounts(accounts: list[dict]) -> bool:
         return False
 
 
+def import_openai_accounts(imported_list: list[dict]) -> int:
+    """
+    Imports and merges a list of OpenAI accounts into the local store.
+    Returns the count of successfully imported/merged accounts.
+    """
+    if not imported_list:
+        return 0
+    accounts = load_openai_accounts()
+    count = 0
+    for new_acc in imported_list:
+        if not isinstance(new_acc, dict):
+            continue
+        acc_id = new_acc.get("accountId") or new_acc.get("id")
+        email = new_acc.get("email")
+        if not acc_id and not email:
+            continue
+        idx = next(
+            (i for i, a in enumerate(accounts) if (acc_id and a.get("accountId") == acc_id) or (email and a.get("email") == email)),
+            None
+        )
+        if idx is not None:
+            accounts[idx].update(new_acc)
+        else:
+            accounts.append(new_acc)
+        count += 1
+
+    if accounts:
+        if not any(a.get("is_active") for a in accounts):
+            accounts[0]["is_active"] = True
+        save_openai_accounts(accounts)
+        active_acc = next((a for a in accounts if a.get("is_active")), accounts[0])
+        write_active_auth_openai(active_acc)
+
+    return count
+
+
 def set_active_openai_account(account_id: str) -> bool:
     accounts = load_openai_accounts()
     target_account = None

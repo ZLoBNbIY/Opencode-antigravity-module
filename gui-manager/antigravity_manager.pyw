@@ -9,9 +9,11 @@ import time
 import datetime
 import subprocess
 import threading
+import uuid
+import secrets
 from pathlib import Path
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
 
 import shutil
 import customtkinter as ctk
@@ -197,6 +199,328 @@ def set_active_google_account_index(target_index: int) -> bool:
 
     return changed
 
+
+def export_google_accounts() -> list[dict]:
+    config_dir = Path(os.path.expanduser("~/.config/opencode"))
+    gen_dirs = list(config_dir.glob("*.generation"))
+    accounts = []
+    if gen_dirs:
+        gen_dir = gen_dirs[0]
+        cfg_file = gen_dir / "config.json"
+        state_file = gen_dir / "state.json"
+        if cfg_file.exists() and state_file.exists():
+            try:
+                cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+                state = json.loads(state_file.read_text(encoding="utf-8"))
+                for acc in cfg.get("accounts", []):
+                    aid = acc.get("id")
+                    st = state.get("accounts", {}).get(aid, {})
+                    meta = st.get("commonAuthProviderState", {}).get("metadata", {})
+                    email = meta.get("email")
+                    refresh = st.get("refresh")
+                    if email and refresh:
+                        accounts.append({
+                            "id": aid,
+                            "email": email,
+                            "refreshToken": refresh,
+                            "accessToken": st.get("access", ""),
+                            "projectId": meta.get("projectId", "aicode-consumers"),
+                            "addedAt": meta.get("addedAt") or acc.get("addedAt"),
+                            "label": meta.get("label", ""),
+                        })
+            except Exception as e:
+                print(f"Error reading generation accounts for export: {e}")
+
+    legacy_file = config_dir / "antigravity-accounts.json"
+    if not accounts and legacy_file.exists():
+        try:
+            data = json.loads(legacy_file.read_text(encoding="utf-8"))
+            accounts = data.get("accounts", [])
+        except Exception:
+            pass
+
+    return accounts
+
+
+def delete_google_account(target_email_or_id: str) -> bool:
+    config_dir = Path(os.path.expanduser("~/.config/opencode"))
+    gen_dirs = list(config_dir.glob("*.generation"))
+    deleted = False
+
+    if gen_dirs:
+        gen_dir = gen_dirs[0]
+        cfg_file = gen_dir / "config.json"
+        state_file = gen_dir / "state.json"
+        if cfg_file.exists() and state_file.exists():
+            try:
+                cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+                state = json.loads(state_file.read_text(encoding="utf-8"))
+
+                # Find matching account ID
+                target_id = None
+                for acc in cfg.get("accounts", []):
+                    aid = acc.get("id")
+                    st = state.get("accounts", {}).get(aid, {})
+                    email = st.get("commonAuthProviderState", {}).get("metadata", {}).get("email")
+                    if aid == target_email_or_id or email == target_email_or_id:
+                        target_id = aid
+                        break
+
+                if target_id:
+                    cfg["accounts"] = [a for a in cfg.get("accounts", []) if a.get("id") != target_id]
+                    if "commonAuthPool" in cfg and "rows" in cfg["commonAuthPool"]:
+                        cfg["commonAuthPool"]["rows"].pop(target_id, None)
+
+                    routing = cfg.get("antigravityRouting", {})
+                    active_row_id = routing.get("activeRow", {}).get("id")
+                    remaining = cfg.get("accounts", [])
+                    if active_row_id == target_id:
+                        if remaining:
+                            new_id = remaining[0]["id"]
+                            routing["activeIndex"] = 0
+                            routing["activeIndexByFamily"] = {"claude": 0, "gemini": 0}
+                            routing["activeRow"] = {"id": new_id, "credentialEpoch": 1}
+                            routing["activeRowByFamily"] = {
+                                "claude": {"id": new_id, "credentialEpoch": 1},
+                                "gemini": {"id": new_id, "credentialEpoch": 1},
+                            }
+                        else:
+                            routing["activeIndex"] = 0
+                            routing["activeRow"] = None
+                    else:
+                        for i, a in enumerate(remaining):
+                            if a.get("id") == active_row_id:
+                                routing["activeIndex"] = i
+                                routing["activeIndexByFamily"] = {"claude": i, "gemini": i}
+                                break
+                    cfg["antigravityRouting"] = routing
+                    cfg_file.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+
+                    if "accounts" in state:
+                        state["accounts"].pop(target_id, None)
+                    state_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+                    deleted = True
+            except Exception as e:
+                print(f"Error deleting account from generation store: {e}")
+
+    legacy_file = config_dir / "antigravity-accounts.json"
+    if legacy_file.exists():
+        try:
+            legacy_data = json.loads(legacy_file.read_text(encoding="utf-8"))
+            old_accounts = legacy_data.get("accounts", [])
+            new_accounts = [
+                a for a in old_accounts
+                if a.get("email") != target_email_or_id and a.get("id") != target_email_or_id
+            ]
+            if len(new_accounts) != len(old_accounts):
+                legacy_data["accounts"] = new_accounts
+                cur_idx = legacy_data.get("activeIndex", 0)
+                if cur_idx >= len(new_accounts):
+                    legacy_data["activeIndex"] = max(0, len(new_accounts) - 1)
+                legacy_file.write_text(json.dumps(legacy_data, indent=2, ensure_ascii=False), encoding="utf-8")
+                deleted = True
+        except Exception:
+            pass
+
+    return deleted
+
+
+def get_google_account_emails() -> list[str]:
+    config_dir = Path(os.path.expanduser("~/.config/opencode"))
+    gen_dirs = list(config_dir.glob("*.generation"))
+    emails = []
+    if gen_dirs:
+        cfg_file = gen_dirs[0] / "config.json"
+        state_file = gen_dirs[0] / "state.json"
+        if cfg_file.exists() and state_file.exists():
+            try:
+                cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+                state = json.loads(state_file.read_text(encoding="utf-8"))
+                for acc in cfg.get("accounts", []):
+                    aid = acc.get("id")
+                    meta = state.get("accounts", {}).get(aid, {}).get("commonAuthProviderState", {}).get("metadata", {})
+                    email = meta.get("email")
+                    if email:
+                        emails.append(email)
+            except Exception:
+                pass
+    return emails
+
+
+def import_google_account(account_dict: dict) -> bool:
+    email = account_dict.get("email")
+    refresh_token = account_dict.get("refreshToken") or account_dict.get("refresh")
+    access_token = account_dict.get("accessToken") or account_dict.get("access") or ""
+    project_id = account_dict.get("projectId") or "aicode-consumers"
+    added_at = account_dict.get("addedAt") or int(time.time() * 1000)
+    label = account_dict.get("label") or (email.split("@")[0] if email else "Google Account")
+
+    if not email or not refresh_token:
+        return False
+
+    config_dir = Path(os.path.expanduser("~/.config/opencode"))
+    gen_dirs = list(config_dir.glob("*.generation"))
+
+    # If generation directories exist, directly update/insert into generation store
+    if gen_dirs:
+        gen_dir = gen_dirs[0]
+        cfg_file = gen_dir / "config.json"
+        state_file = gen_dir / "state.json"
+        mig_file = gen_dir / "migration.json"
+        if cfg_file.exists() and state_file.exists():
+            try:
+                cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+                state = json.loads(state_file.read_text(encoding="utf-8"))
+
+                existing_id = None
+                for acc in cfg.get("accounts", []):
+                    aid = acc.get("id")
+                    st = state.get("accounts", {}).get(aid, {})
+                    if st.get("commonAuthProviderState", {}).get("metadata", {}).get("email") == email:
+                        existing_id = aid
+                        break
+
+                target_id = existing_id or str(uuid.uuid4())
+
+                if not existing_id:
+                    cfg.setdefault("accounts", []).append({
+                        "id": target_id,
+                        "type": "oauth",
+                        "addedAt": added_at
+                    })
+                    cfg.setdefault("commonAuthPool", {}).setdefault("rows", {})[target_id] = {
+                        "credentialEpoch": 1,
+                        "needsFirstReading": True
+                    }
+                    if len(cfg["accounts"]) == 1:
+                        routing = cfg.setdefault("antigravityRouting", {})
+                        routing["activeIndex"] = 0
+                        routing["activeIndexByFamily"] = {"claude": 0, "gemini": 0}
+                        routing["activeRow"] = {"id": target_id, "credentialEpoch": 1}
+                        routing["activeRowByFamily"] = {
+                            "claude": {"id": target_id, "credentialEpoch": 1},
+                            "gemini": {"id": target_id, "credentialEpoch": 1},
+                        }
+                    cfg_file.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+
+                state_accounts = state.setdefault("accounts", {})
+                existing_state = state_accounts.get(target_id, {})
+                existing_meta = existing_state.get("commonAuthProviderState", {}).get("metadata", {})
+
+                device_id = existing_meta.get("fingerprint", {}).get("deviceId") or str(uuid.uuid4())
+                session_token = secrets.token_hex(16)
+
+                state_accounts[target_id] = {
+                    "commonAuthProviderState": {
+                        "schemaVersion": 1,
+                        "metadata": {
+                            "email": email,
+                            "label": label,
+                            "projectId": project_id,
+                            "addedAt": added_at,
+                            "lastUsed": int(time.time() * 1000),
+                            "enabled": True,
+                            "fingerprint": {
+                                "deviceId": device_id,
+                                "sessionToken": session_token,
+                                "userAgent": "antigravity/cli/1.1.24 (aidev_client; os_type=windows; arch=amd64; cl=974782877; auth_method=consumer)",
+                                "apiClient": "antigravity-cli",
+                                "clientMetadata": {
+                                    "ideType": "ANTIGRAVITY",
+                                    "platform": "WINDOWS",
+                                    "pluginType": "GEMINI"
+                                },
+                                "createdAt": int(time.time() * 1000)
+                            },
+                            "fingerprintHistory": [],
+                            "managedProjectId": project_id,
+                            "dailyRequestCounts": {
+                                "date": datetime.date.today().isoformat(),
+                                "claude": 0,
+                                "gemini": 0
+                            }
+                        }
+                    },
+                    "commonAuthPool": {},
+                    "access": access_token,
+                    "refresh": refresh_token,
+                    "expires": int(time.time() * 1000) + 3600000,
+                    "lastRefreshedAt": int(time.time() * 1000)
+                }
+                state_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+
+                # Update migration.json manifest if present
+                if mig_file.exists():
+                    try:
+                        mig_data = json.loads(mig_file.read_text(encoding="utf-8"))
+                        manifest_accs = mig_data.setdefault("manifest", {}).setdefault("accounts", [])
+                        m_found = False
+                        for ma in manifest_accs:
+                            if ma.get("metadata", {}).get("email") == email:
+                                ma["refreshToken"] = refresh_token
+                                m_found = True
+                                break
+                        if not m_found:
+                            manifest_accs.append({
+                                "ordinal": len(manifest_accs),
+                                "refreshToken": refresh_token,
+                                "metadata": {
+                                    "email": email,
+                                    "label": label,
+                                    "projectId": project_id,
+                                    "addedAt": added_at,
+                                    "lastUsed": added_at,
+                                    "enabled": True
+                                }
+                            })
+                        mig_file.write_text(json.dumps(mig_data, indent=2, ensure_ascii=False), encoding="utf-8")
+                    except Exception:
+                        pass
+
+                # Ensure legacy file is absent so cli.js does not report "legacy source recreated"
+                legacy_file = config_dir / "antigravity-accounts.json"
+                if legacy_file.exists():
+                    try:
+                        legacy_file.unlink()
+                    except Exception:
+                        pass
+
+                return True
+            except Exception as e:
+                print(f"Error importing to generation store: {e}")
+                return False
+    else:
+        # Fresh PC with no generation store yet: write legacy file and run migration
+        legacy_file = config_dir / "antigravity-accounts.json"
+        legacy_data = {"version": 4, "activeIndex": 0, "accounts": []}
+        if legacy_file.exists():
+            try:
+                legacy_data = json.loads(legacy_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        old_accs = legacy_data.get("accounts", [])
+        found = False
+        for a in old_accs:
+            if a.get("email") == email:
+                a["refreshToken"] = refresh_token
+                if access_token:
+                    a["accessToken"] = access_token
+                found = True
+                break
+        if not found:
+            old_accs.append({
+                "email": email,
+                "refreshToken": refresh_token,
+                "accessToken": access_token,
+                "projectId": project_id,
+                "addedAt": added_at
+            })
+        legacy_data["accounts"] = old_accs
+        legacy_file.write_text(json.dumps(legacy_data, indent=2, ensure_ascii=False), encoding="utf-8")
+        run_silent_cmd([NODE_EXE, CLI_JS, "migrate", "--offline", "--yes"], timeout=15)
+
+    return True
+
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
@@ -335,7 +659,7 @@ class AntigravityManagerApp(ctk.CTk):
         # Controls bar
         top_bar = ctk.CTkFrame(self.tab_accounts, fg_color="transparent")
         top_bar.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 15))
-        top_bar.grid_columnconfigure(3, weight=1)
+        top_bar.grid_columnconfigure(5, weight=1)
 
         # Provider Selector Segmented Button
         self.provider_seg = ctk.CTkSegmentedButton(
@@ -345,7 +669,7 @@ class AntigravityManagerApp(ctk.CTk):
             command=self.on_provider_view_change,
         )
         self.provider_seg.set("🌐 Google (Antigravity)")
-        self.provider_seg.grid(row=0, column=0, padx=(0, 12))
+        self.provider_seg.grid(row=0, column=0, padx=(0, 10))
 
         self.btn_add_account = ctk.CTkButton(
             top_bar,
@@ -356,18 +680,43 @@ class AntigravityManagerApp(ctk.CTk):
             height=36,
             command=self.add_account_action,
         )
-        self.btn_add_account.grid(row=0, column=1, padx=(0, 10))
+        self.btn_add_account.grid(row=0, column=1, padx=(0, 8))
 
         self.btn_refresh = ctk.CTkButton(
             top_bar,
-            text="🔄 Обновить квоты",
+            text="🔄 Обновить",
             font=ctk.CTkFont(size=13),
             fg_color="#3f3f46",
             hover_color="#52525b",
             height=36,
+            width=110,
             command=self.refresh_all_async,
         )
-        self.btn_refresh.grid(row=0, column=2, padx=(0, 10))
+        self.btn_refresh.grid(row=0, column=2, padx=(0, 8))
+
+        self.btn_export = ctk.CTkButton(
+            top_bar,
+            text="📤 Экспорт",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="#2563eb",
+            hover_color="#1d4ed8",
+            height=36,
+            width=95,
+            command=self.export_accounts_action,
+        )
+        self.btn_export.grid(row=0, column=3, padx=(0, 8))
+
+        self.btn_import = ctk.CTkButton(
+            top_bar,
+            text="📥 Импорт",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="#7c3aed",
+            hover_color="#6d28d9",
+            height=36,
+            width=95,
+            command=self.import_accounts_action,
+        )
+        self.btn_import.grid(row=0, column=4, padx=(0, 10))
 
         self.lbl_accounts_count = ctk.CTkLabel(
             top_bar,
@@ -375,7 +724,7 @@ class AntigravityManagerApp(ctk.CTk):
             font=ctk.CTkFont(size=13),
             text_color="#a1a1aa",
         )
-        self.lbl_accounts_count.grid(row=0, column=3, sticky="e")
+        self.lbl_accounts_count.grid(row=0, column=5, sticky="e")
 
         # Scrollable container for account cards
         self.accounts_scroll = ctk.CTkScrollableFrame(
@@ -755,7 +1104,7 @@ class AntigravityManagerApp(ctk.CTk):
                 padx=10,
                 pady=4,
             )
-            status_lbl.pack(side="left")
+            status_lbl.pack(side="left", padx=(0, 8))
         else:
             status_lbl = ctk.CTkLabel(
                 actions_box,
@@ -767,7 +1116,7 @@ class AntigravityManagerApp(ctk.CTk):
                 padx=10,
                 pady=4,
             )
-            status_lbl.pack(side="left", padx=(0, 10))
+            status_lbl.pack(side="left", padx=(0, 8))
 
             activate_btn = ctk.CTkButton(
                 actions_box,
@@ -779,7 +1128,19 @@ class AntigravityManagerApp(ctk.CTk):
                 width=150,
                 command=lambda aidx=zero_idx: self.activate_google_account_action(aidx),
             )
-            activate_btn.pack(side="left")
+            activate_btn.pack(side="left", padx=(0, 8))
+
+        del_btn = ctk.CTkButton(
+            actions_box,
+            text="🗑",
+            font=ctk.CTkFont(size=13),
+            fg_color="#ef4444",
+            hover_color="#dc2626",
+            height=28,
+            width=32,
+            command=lambda a=acc: self.delete_google_account_action(a),
+        )
+        del_btn.pack(side="left")
 
         # Divider
         divider = ctk.CTkFrame(card, height=1, fg_color="#2e2e38")
@@ -1403,6 +1764,16 @@ class AntigravityManagerApp(ctk.CTk):
         self.after(0, lambda: self._on_quotas_fetched(google_accounts, openai_accounts, rotate_msg))
 
     def _on_quotas_fetched(self, google_accounts, openai_accounts, rotate_msg=None):
+        # Enrich Google account emails if cli.js returned placeholder labels ("Account 1", etc.)
+        try:
+            known_emails = get_google_account_emails()
+            for idx, acc in enumerate(google_accounts):
+                curr_email = acc.get("email", "")
+                if (not curr_email or curr_email.startswith("Account ")) and idx < len(known_emails):
+                    acc["email"] = known_emails[idx]
+        except Exception as e:
+            print(f"Error enriching Google emails: {e}")
+
         self.accounts_data = google_accounts
         self.openai_accounts_data = openai_accounts
         self.render_accounts()
@@ -1473,6 +1844,22 @@ class AntigravityManagerApp(ctk.CTk):
         else:
             messagebox.showerror("Ошибка", "Не удалось сменить активный аккаунт Google.")
 
+    def delete_google_account_action(self, acc):
+        email = acc.get("email", "unknown")
+        if not messagebox.askyesno(
+            "Удаление Google аккаунта",
+            f"Вы уверены, что хотите удалить Google аккаунт:\n{email}?\n\nОн будет удален из хранилища и исключен из пула ротации в OpenCode.",
+            icon="warning"
+        ):
+            return
+        ok = delete_google_account(email)
+        if ok:
+            self.set_status(f"Google аккаунт {email} удален.")
+            self.refresh_all_async()
+            messagebox.showinfo("Удалено", f"Аккаунт {email} успешно удален из пула Antigravity.")
+        else:
+            messagebox.showerror("Ошибка", f"Не удалось удалить аккаунт {email}.")
+
     # --- OpenAI / ChatGPT Actions ---
     def add_openai_account_action(self):
         self.btn_add_account.configure(state="disabled", text="⏳ Открываем браузер...")
@@ -1526,6 +1913,108 @@ class AntigravityManagerApp(ctk.CTk):
         self.openai_accounts_data = openai_manager.load_openai_accounts()
         self.render_accounts()
         self.set_status(f"Аккаунт {email} удален.")
+
+    # --- Backup Export & Import (Cross-PC Migration) ---
+    def export_accounts_action(self):
+        file_path = filedialog.asksaveasfilename(
+            title="Экспорт аккаунтов Antigravity & ChatGPT",
+            defaultextension=".json",
+            initialfile="antigravity_accounts_backup.json",
+            filetypes=[("JSON Backup (*.json)", "*.json"), ("Все файлы (*.*)", "*.*")],
+        )
+        if not file_path:
+            return
+
+        try:
+            google_accs = export_google_accounts()
+            openai_accs = openai_manager.load_openai_accounts()
+
+            backup_data = {
+                "schemaVersion": 2,
+                "exported_at": datetime.datetime.now().isoformat(),
+                "app": "Antigravity Hub",
+                "google_accounts": google_accs,
+                "openai_accounts": openai_accs,
+                "config": self.config_data,
+            }
+
+            with open(file_path, "w", encoding="utf-8") as f:
+                json.dump(backup_data, f, indent=2, ensure_ascii=False)
+
+            self.set_status(f"Экспорт сохранен в {Path(file_path).name}")
+            messagebox.showinfo(
+                "Экспорт завершен",
+                f"Успешно экспортировано:\n"
+                f"• Google (Antigravity): {len(google_accs)} акк.\n"
+                f"• OpenAI (ChatGPT): {len(openai_accs)} акк.\n\n"
+                f"Файл сохранен:\n{file_path}\n\n"
+                "Вы можете перенести этот файл на другой компьютер и нажать «📥 Импорт» в Antigravity Hub."
+            )
+        except Exception as e:
+            messagebox.showerror("Ошибка экспорта", f"Не удалось экспортировать аккаунты:\n{e}")
+
+    def import_accounts_action(self):
+        file_path = filedialog.askopenfilename(
+            title="Импорт аккаунтов для переноса",
+            filetypes=[("JSON Backup (*.json)", "*.json"), ("Все файлы (*.*)", "*.*")],
+        )
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            imported_google = 0
+            imported_openai = 0
+
+            # 1. Google accounts
+            google_list = []
+            if isinstance(data, dict):
+                if "google_accounts" in data and isinstance(data["google_accounts"], list):
+                    google_list = data["google_accounts"]
+                elif "accounts" in data and isinstance(data["accounts"], list):
+                    google_list = data["accounts"]
+            elif isinstance(data, list):
+                google_list = data
+
+            for g_acc in google_list:
+                if isinstance(g_acc, dict) and ("refreshToken" in g_acc or "refresh" in g_acc):
+                    if import_google_account(g_acc):
+                        imported_google += 1
+
+            # 2. OpenAI accounts
+            openai_list = []
+            if isinstance(data, dict) and "openai_accounts" in data and isinstance(data["openai_accounts"], list):
+                openai_list = data["openai_accounts"]
+            elif isinstance(data, list) and any("chatgpt" in str(x).lower() or "openai" in str(x).lower() for x in data):
+                openai_list = data
+
+            if openai_list:
+                imported_openai = openai_manager.import_openai_accounts(openai_list)
+
+            # 3. Config
+            if isinstance(data, dict) and "config" in data and isinstance(data["config"], dict):
+                try:
+                    merged_cfg = {**self.config_data, **data["config"]}
+                    self.config_data = merged_cfg
+                    with open(CONFIG_FILE, "w", encoding="utf-8") as cf:
+                        json.dump(merged_cfg, cf, indent=2, ensure_ascii=False)
+                except Exception:
+                    pass
+
+            self.set_status(f"Импортировано: Google: {imported_google}, OpenAI: {imported_openai}")
+            self.refresh_all_async()
+
+            messagebox.showinfo(
+                "Импорт завершен",
+                f"Успешно импортировано:\n"
+                f"• Google (Antigravity): {imported_google} акк.\n"
+                f"• OpenAI (ChatGPT): {imported_openai} акк.\n\n"
+                "Все аккаунты активированы и готовы к работе в OpenCode!"
+            )
+        except Exception as e:
+            messagebox.showerror("Ошибка импорта", f"Не удалось импортировать аккаунты:\n{e}")
 
     def update_opencode_status(self):
         def check():
