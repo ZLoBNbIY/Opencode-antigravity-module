@@ -95,6 +95,10 @@
 * **Причина**: В последних версиях OpenCode для Windows устанавливается в каталог `@opencodedesktop` (вместо `@opencode-aidesktop`), запуск с флагом скрытого окна подавлял Electron UI, а статус процесса отслеживал только одно имя исполняемого файла, игнорируя фоновый CLI-сервер `opencode-cli.exe`.
 * **Решение**: Менеджер переведен на поиск всех актуальных каталогов, нативный запуск Windows Shell `os.startfile(exe)` и мульти-процессный мониторинг (`OpenCode.exe` + `opencode-cli.exe`).
 
+### 10. Ошибка 400 Bad Request: `Unknown name "exclusiveMinimum"` при вызове инструментов OpenCode
+* **Причина**: OpenCode генерирует схемы параметров инструментов (`glob`, `grep`, `webfetch` и др.) по современному стандарту JSON Schema с полями `exclusiveMinimum` и `exclusiveMaximum`. Внутренний Protobuf-валидатор Google Gemini API не поддерживает `exclusiveMinimum` и отклоняет вызовы с HTTP 400: `Invalid JSON payload received. Unknown name "exclusiveMinimum" at 'request.tools[0].function_declarations...': Cannot find field.`.
+* **Решение**: Функция `toGeminiSchema` и список `UNSUPPORTED_SCHEMA_FIELDS` расширены: `exclusiveMinimum` для целочисленных типов (`INTEGER`) прозрачно трансформируется в эквивалентное `minimum: value + 1`, числовые ограничения сохраняются в подсказках описания (`description`), а несовместимые с Google API мета-поля полностью фильтруются перед отправкой.
+
 ---
 
 ## ⚡ Быстрый старт
@@ -322,6 +326,10 @@ node scripts/patch_plugin.mjs
 ### Q: Ошибка 412 «Antigravity accounts require offline migration»
 * **Причина**: Начиная с версии 3.0.0, плагин Antigravity перешел на поколенческую систему хранения аккаунтов (`*.generation`), требующую миграции файла `antigravity-accounts.json` и патча Windows `fsync`.
 * **Решение**: Просто запустите `node scripts/patch_plugin.mjs`. Скрипт автоматически найдет все установленные версии плагина в `%USERPROFILE%\.cache\opencode\npm`, наложит Windows-полифилл и выполнит безопасную миграцию хранилища.
+
+### Q: Ошибка `Invalid JSON payload received. Unknown name "exclusiveMinimum"`
+* **Причина**: В вызовах встроенных инструментов OpenCode (`glob`, `grep`, `webfetch`) передаются ключевые слова `exclusiveMinimum`, которые не поддерживаются внутренним REST/Protobuf API Google Gemini (`daily-cloudcode-pa.googleapis.com` / `generativelanguage.googleapis.com`).
+* **Решение**: Запустите `node scripts/patch_plugin.mjs`. Патч автоматически нормализует схемы инструментов, преобразуя `exclusiveMinimum` в совместимый формат Google (`minimum` + подсказка в `description`).
 
 ---
 

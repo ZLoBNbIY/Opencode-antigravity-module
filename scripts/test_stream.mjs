@@ -90,6 +90,36 @@ async function main() {
         parts: [{ text: 'Привет! Ответь одним кратким предложением: ты работаешь?' }]
       }
     ],
+    tools: [
+      {
+        functionDeclarations: [
+          {
+            name: 'glob',
+            description: 'Search file paths using a glob pattern.',
+            parameters: {
+              type: 'OBJECT',
+              properties: {
+                pattern: { type: 'STRING', description: 'Glob pattern' },
+                limit: { type: 'INTEGER', exclusiveMinimum: 0, description: 'Maximum matches' }
+              },
+              required: ['pattern']
+            }
+          },
+          {
+            name: 'webfetch',
+            description: 'Fetch URL content.',
+            parameters: {
+              type: 'OBJECT',
+              properties: {
+                url: { type: 'STRING', description: 'URL to fetch' },
+                timeout: { type: 'NUMBER', exclusiveMinimum: 0, maximum: 120, description: 'Timeout in seconds' }
+              },
+              required: ['url']
+            }
+          }
+        ]
+      }
+    ],
     generationConfig: {
       thinkingConfig: {
         thinkingBudget: -1,

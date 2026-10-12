@@ -24085,6 +24085,32 @@ function toGeminiSchema(schema, options = {}) {
     }
   }
   for (const [key, value] of Object.entries(inputSchema)) {
+    if (key === "exclusiveMinimum") {
+      if (typeof value === "number") {
+        numericConstraintHints.push(`exclusiveMinimum: ${value}`);
+        const schemaType = typeof inputSchema.type === "string" ? inputSchema.type.toUpperCase() : "";
+        if (schemaType === "INTEGER") {
+          result["minimum"] = value + 1;
+        }
+      }
+      continue;
+    }
+    if (key === "exclusiveMaximum") {
+      if (typeof value === "number") {
+        numericConstraintHints.push(`exclusiveMaximum: ${value}`);
+        const schemaType = typeof inputSchema.type === "string" ? inputSchema.type.toUpperCase() : "";
+        if (schemaType === "INTEGER") {
+          result["maximum"] = value - 1;
+        }
+      }
+      continue;
+    }
+    if (key === "multipleOf" || key === "minProperties" || key === "maxProperties") {
+      if (typeof value === "number") {
+        numericConstraintHints.push(`${key}: ${value}`);
+      }
+      continue;
+    }
     if (UNSUPPORTED_SCHEMA_FIELDS.has(key)) {
       continue;
     }
