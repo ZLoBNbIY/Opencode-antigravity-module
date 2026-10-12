@@ -347,6 +347,77 @@ def get_google_account_emails() -> list[str]:
     return emails
 
 
+def enrich_google_accounts_with_generation_store(accounts: list[dict]) -> list[dict]:
+    """Enriches Google accounts with real email addresses and 5h/weekly quota windows from the generation store."""
+    config_dir = Path(os.path.expanduser("~/.config/opencode"))
+    gen_dirs = list(config_dir.glob("*.generation"))
+    if not gen_dirs:
+        return accounts
+
+    cfg_p = gen_dirs[0] / "config.json"
+    state_p = gen_dirs[0] / "state.json"
+    if not (cfg_p.exists() and state_p.exists()):
+        return accounts
+
+    try:
+        cfg = json.loads(cfg_p.read_text(encoding="utf-8"))
+        state = json.loads(state_p.read_text(encoding="utf-8"))
+    except Exception:
+        return accounts
+
+    disk_accounts = []
+    for idx, acc in enumerate(cfg.get("accounts", []), start=1):
+        aid = acc.get("id")
+        row = cfg.get("commonAuthPool", {}).get("rows", {}).get(aid, {})
+        meta = state.get("accounts", {}).get(aid, {}).get("commonAuthProviderState", {}).get("metadata", {})
+        email = meta.get("email", f"Account {idx}")
+        cached = row.get("quota", {}).get("cachedQuota", {})
+
+        groups = []
+        for g_name in ["gemini", "non-gemini"]:
+            g_data = cached.get(g_name, {})
+            rem_frac = g_data.get("remainingFraction", 1.0)
+            windows = []
+            for w in g_data.get("windows", []):
+                windows.append({
+                    "window": w.get("window"),
+                    "remainingPercent": round(w.get("remainingFraction", 1.0) * 100, 1),
+                    "resetTime": w.get("resetTime"),
+                })
+            groups.append({
+                "name": g_name,
+                "remainingPercent": round(rem_frac * 100, 1),
+                "resetTime": g_data.get("resetTime"),
+                "windows": windows,
+            })
+
+        disk_accounts.append({
+            "index": idx,
+            "email": email,
+            "status": "ok" if row.get("enabled", True) else "disabled",
+            "groups": groups,
+        })
+
+    if not accounts:
+        return disk_accounts
+
+    # If CLI returned accounts, enrich real email and missing windows
+    for idx, acc in enumerate(accounts):
+        if idx < len(disk_accounts):
+            disk_acc = disk_accounts[idx]
+            if not acc.get("email") or acc.get("email", "").startswith("Account "):
+                acc["email"] = disk_acc["email"]
+
+            for g in acc.get("groups", []):
+                g_name = g.get("name")
+                if not g.get("windows"):
+                    matching_dg = next((dg for dg in disk_acc.get("groups", []) if dg.get("name") == g_name), None)
+                    if matching_dg and matching_dg.get("windows"):
+                        g["windows"] = matching_dg["windows"]
+
+    return accounts
+
+
 def import_google_account(account_dict: dict) -> bool:
     email = account_dict.get("email")
     refresh_token = account_dict.get("refreshToken") or account_dict.get("refresh")
@@ -1080,14 +1151,29 @@ class AntigravityManagerApp(ctk.CTk):
         )
         idx_badge.grid(row=0, column=0, padx=(0, 12))
 
-        # Email and info
+        # Email and info box
+        email_box = ctk.CTkFrame(header_row, fg_color="transparent")
+        email_box.grid(row=0, column=1, sticky="w")
+
         email_label = ctk.CTkLabel(
-            header_row,
+            email_box,
             text=email,
             font=ctk.CTkFont(size=16, weight="bold"),
             text_color="#f4f4f5",
         )
-        email_label.grid(row=0, column=1, sticky="w")
+        email_label.pack(side="left")
+
+        pro_badge = ctk.CTkLabel(
+            email_box,
+            text=" PRO ",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#38bdf8",
+            fg_color="#0c4a6e",
+            corner_radius=6,
+            padx=6,
+            pady=2,
+        )
+        pro_badge.pack(side="left", padx=(8, 0))
 
         # Actions and status on right
         actions_box = ctk.CTkFrame(header_row, fg_color="transparent")
@@ -1177,7 +1263,7 @@ class AntigravityManagerApp(ctk.CTk):
 
         # Header of quota box
         header = ctk.CTkFrame(box, fg_color="transparent")
-        header.pack(fill="x", padx=12, pady=(10, 4))
+        header.pack(fill="x", padx=12, pady=(10, 6))
         header.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
@@ -1198,45 +1284,100 @@ class AntigravityManagerApp(ctk.CTk):
             pady=2,
         ).grid(row=0, column=1, sticky="e")
 
-        # Quota values
-        rem_pct = quota_info.get("remainingPercent", 100.0) if quota_info else 100.0
-        rem_pct = round(float(rem_pct), 1)
+        windows = quota_info.get("windows", []) if quota_info else []
+        win_5h = next((w for w in windows if "5" in str(w.get("window", "")).lower()), None)
+        win_weekly = next((w for w in windows if "week" in str(w.get("window", "")).lower() or "7" in str(w.get("window", "")).lower() or "d" in str(w.get("window", "")).lower()), None)
 
-        val_row = ctk.CTkFrame(box, fg_color="transparent")
-        val_row.pack(fill="x", padx=12, pady=(4, 6))
+        if win_5h or win_weekly:
+            if win_5h:
+                self._render_window_subbar(
+                    parent_box=box,
+                    title="⏱ 5 часов (5h):",
+                    pct=win_5h.get("remainingPercent", 100.0),
+                    reset_iso=win_5h.get("resetTime", ""),
+                    is_last=(win_weekly is None),
+                )
+            if win_weekly:
+                self._render_window_subbar(
+                    parent_box=box,
+                    title="📅 Недельный лимит:",
+                    pct=win_weekly.get("remainingPercent", 100.0),
+                    reset_iso=win_weekly.get("resetTime", ""),
+                    is_last=True,
+                )
+        else:
+            # Fallback to single progress bar
+            rem_pct = quota_info.get("remainingPercent", 100.0) if quota_info else 100.0
+            rem_pct = round(float(rem_pct), 1)
 
+            val_row = ctk.CTkFrame(box, fg_color="transparent")
+            val_row.pack(fill="x", padx=12, pady=(4, 6))
+
+            pct_color = "#10b981" if rem_pct > 50 else ("#f59e0b" if rem_pct > 20 else "#ef4444")
+
+            ctk.CTkLabel(
+                val_row,
+                text=f"{rem_pct}%",
+                font=ctk.CTkFont(size=20, weight="bold"),
+                text_color=pct_color,
+            ).pack(side="left")
+
+            ctk.CTkLabel(
+                val_row,
+                text="квоты доступно",
+                font=ctk.CTkFont(size=12),
+                text_color="#a1a1aa",
+            ).pack(side="left", padx=8)
+
+            bar = ctk.CTkProgressBar(box, height=10, corner_radius=5)
+            bar.pack(fill="x", padx=12, pady=(0, 8))
+            bar.set(max(0.0, min(1.0, rem_pct / 100.0)))
+            bar.configure(progress_color=pct_color, fg_color="#18181b")
+
+            reset_str = quota_info.get("resetTime", "") if quota_info else ""
+            reset_label_text = self.format_reset_time(reset_str)
+
+            ctk.CTkLabel(
+                box,
+                text=reset_label_text,
+                font=ctk.CTkFont(size=11),
+                text_color="#71717a",
+            ).pack(anchor="w", padx=12, pady=(0, 10))
+
+    def _render_window_subbar(self, parent_box, title, pct, reset_iso, is_last=False):
+        rem_pct = round(float(pct), 1)
         pct_color = "#10b981" if rem_pct > 50 else ("#f59e0b" if rem_pct > 20 else "#ef4444")
 
+        row = ctk.CTkFrame(parent_box, fg_color="transparent")
+        row.pack(fill="x", padx=12, pady=(4, 1))
+        row.grid_columnconfigure(1, weight=1)
+
         ctk.CTkLabel(
-            val_row,
+            row,
+            text=title,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#d4d4d8",
+        ).grid(row=0, column=0, sticky="w")
+
+        ctk.CTkLabel(
+            row,
             text=f"{rem_pct}%",
-            font=ctk.CTkFont(size=20, weight="bold"),
+            font=ctk.CTkFont(size=12, weight="bold"),
             text_color=pct_color,
-        ).pack(side="left")
+        ).grid(row=0, column=2, sticky="e")
 
-        ctk.CTkLabel(
-            val_row,
-            text="квоты доступно",
-            font=ctk.CTkFont(size=12),
-            text_color="#a1a1aa",
-        ).pack(side="left", padx=8)
-
-        # Progress bar
-        bar = ctk.CTkProgressBar(box, height=10, corner_radius=5)
-        bar.pack(fill="x", padx=12, pady=(0, 8))
+        bar = ctk.CTkProgressBar(parent_box, height=7, corner_radius=3)
+        bar.pack(fill="x", padx=12, pady=(2, 2))
         bar.set(max(0.0, min(1.0, rem_pct / 100.0)))
         bar.configure(progress_color=pct_color, fg_color="#18181b")
 
-        # Reset time info
-        reset_str = quota_info.get("resetTime", "") if quota_info else ""
-        reset_label_text = self.format_reset_time(reset_str)
-
+        reset_txt = self.format_reset_time(reset_iso)
         ctk.CTkLabel(
-            box,
-            text=reset_label_text,
-            font=ctk.CTkFont(size=11),
+            parent_box,
+            text=reset_txt,
+            font=ctk.CTkFont(size=10),
             text_color="#71717a",
-        ).pack(anchor="w", padx=12, pady=(0, 10))
+        ).pack(anchor="w", padx=12, pady=(0, 10 if is_last else 5))
 
     def format_reset_time(self, iso_str):
         if not iso_str:
@@ -1736,22 +1877,39 @@ class AntigravityManagerApp(ctk.CTk):
 
     def _worker_refresh_quotas(self):
         # 1. Google Antigravity quotas (silent execution)
+        google_accounts = []
         try:
             node_exe = get_node_executable()
             cli_js = get_cli_js()
             if (os.path.exists(node_exe) or shutil.which(node_exe)) and os.path.exists(cli_js):
-                cmd = [node_exe, cli_js, "quota", "--json"]
-                result = run_silent_cmd(cmd, timeout=25)
+                # Try with --refresh first for live updated quotas directly from Google API
+                cmd = [node_exe, cli_js, "quota", "--refresh", "--json"]
+                result = run_silent_cmd(cmd, timeout=20)
                 if result.returncode == 0 and result.stdout.strip():
-                    data = json.loads(result.stdout)
-                    google_accounts = data.get("accounts", [])
-                else:
-                    google_accounts = []
-            else:
-                google_accounts = []
+                    try:
+                        data = json.loads(result.stdout)
+                        google_accounts = data.get("accounts", [])
+                    except Exception:
+                        pass
+
+                if not google_accounts:
+                    # Fallback to local cached quota
+                    cmd = [node_exe, cli_js, "quota", "--json"]
+                    result = run_silent_cmd(cmd, timeout=10)
+                    if result.returncode == 0 and result.stdout.strip():
+                        try:
+                            data = json.loads(result.stdout)
+                            google_accounts = data.get("accounts", [])
+                        except Exception:
+                            pass
         except Exception as e:
-            print(f"Error fetching Google quotas: {e}")
-            google_accounts = []
+            print(f"Error fetching Google quotas via CLI: {e}")
+
+        # Always enrich with generation store for real emails and 5h/weekly windows
+        try:
+            google_accounts = enrich_google_accounts_with_generation_store(google_accounts)
+        except Exception as e:
+            print(f"Error enriching Google accounts: {e}")
 
         # 2. OpenAI / ChatGPT quotas with auto-rotation
         try:
@@ -1764,16 +1922,6 @@ class AntigravityManagerApp(ctk.CTk):
         self.after(0, lambda: self._on_quotas_fetched(google_accounts, openai_accounts, rotate_msg))
 
     def _on_quotas_fetched(self, google_accounts, openai_accounts, rotate_msg=None):
-        # Enrich Google account emails if cli.js returned placeholder labels ("Account 1", etc.)
-        try:
-            known_emails = get_google_account_emails()
-            for idx, acc in enumerate(google_accounts):
-                curr_email = acc.get("email", "")
-                if (not curr_email or curr_email.startswith("Account ")) and idx < len(known_emails):
-                    acc["email"] = known_emails[idx]
-        except Exception as e:
-            print(f"Error enriching Google emails: {e}")
-
         self.accounts_data = google_accounts
         self.openai_accounts_data = openai_accounts
         self.render_accounts()

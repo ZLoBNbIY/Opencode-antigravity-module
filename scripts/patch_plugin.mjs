@@ -173,6 +173,56 @@ for (const basePath of targetPaths) {
       cliChanged = true;
     }
 
+    // Patch quota windows preservation in cli.js
+    const quotaSummaryTarget = `      groups: Object.entries(result.quota?.groups ?? {}).map(
+        ([name, group]) => ({
+          name,
+          ...typeof group.remainingFraction === "number" ? { remainingPercent: group.remainingFraction * 100 } : {},
+          ...group.resetTime ? { resetTime: group.resetTime } : {}
+        })
+      )`;
+    const quotaSummaryRepl = `      groups: Object.entries(result.quota?.groups ?? {}).map(
+        ([name, group]) => ({
+          name,
+          ...typeof group.remainingFraction === "number" ? { remainingPercent: group.remainingFraction * 100 } : {},
+          ...group.resetTime ? { resetTime: group.resetTime } : {},
+          ...Array.isArray(group.windows) ? {
+            windows: group.windows.map((w) => ({
+              window: w.window,
+              remainingPercent: typeof w.remainingFraction === "number" ? w.remainingFraction * 100 : (w.remainingPercent ?? 100),
+              resetTime: w.resetTime
+            }))
+          } : {}
+        })
+      )`;
+
+    const cliAccountTarget = `  for (const [name, group] of Object.entries(groups ?? {})) {
+    cachedQuota[name] = {
+      modelCount: group.modelCount,
+      ...typeof group.remainingFraction === "number" ? { remainingFraction: group.remainingFraction } : {},
+      ...typeof group.resetTime === "string" ? { resetTime: group.resetTime } : {}
+    };
+  }`;
+    const cliAccountRepl = `  for (const [name, group] of Object.entries(groups ?? {})) {
+    cachedQuota[name] = {
+      modelCount: group.modelCount,
+      ...typeof group.remainingFraction === "number" ? { remainingFraction: group.remainingFraction } : {},
+      ...typeof group.resetTime === "string" ? { resetTime: group.resetTime } : {},
+      ...Array.isArray(group.windows) ? { windows: group.windows } : {}
+    };
+  }`;
+
+    if (cliContent.includes(quotaSummaryTarget)) {
+      cliContent = cliContent.replace(quotaSummaryTarget, quotaSummaryRepl);
+      cliChanged = true;
+      console.log('✓ Patched dist/cli.js (Quota windows 5h/weekly preservation)');
+    }
+    if (cliContent.includes(cliAccountTarget)) {
+      cliContent = cliContent.replace(cliAccountTarget, cliAccountRepl);
+      cliChanged = true;
+      console.log('✓ Patched dist/cli.js (cliAccountOf quota windows preservation)');
+    }
+
     if (cliChanged) {
       fs.writeFileSync(cliPath, cliContent, 'utf8');
       console.log('✓ Updated dist/cli.js');
