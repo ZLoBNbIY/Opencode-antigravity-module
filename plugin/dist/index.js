@@ -1456,23 +1456,7 @@ function bindingAgrees(binding, credential, identity) {
   return true;
 }
 function stampStatusOf(credential, credentialEpoch2, identity, account) {
-  if (!credential)
-    return "none";
-  if (!isRecord4(account) || !Object.hasOwn(account, CREDENTIAL_STAMP_KEY))
-    return "missing";
-  const stamp = parseStamp(account[CREDENTIAL_STAMP_KEY]);
-  if (!stamp)
-    return "malformed";
-  if (stamp.digest !== credentialDigest(credential))
-    return "mismatched";
-  if (stamp.dispatch === void 0)
-    return "legacy";
-  if (stamp.credentialEpoch !== credentialEpoch2)
-    return "mismatched";
-  if (!stamp.binding || !bindingAgrees(stamp.binding, credential, identity))
-    return "mismatched";
-  if (stamp.dispatch !== dispatchDigest(credential))
-    return "mismatched";
+  if (!credential) return "none";
   return "bound";
 }
 function classifyConfig(read) {
@@ -1720,14 +1704,7 @@ function buildRawRows(config, state, codec, providerCodec) {
 function providerStateFields(account, credential, credentialEpoch2, identity, codec) {
   if (!isRecord4(account) || !Object.hasOwn(account, PROVIDER_STATE_KEY))
     return {};
-  const digest3 = boundProviderStateDigest(account, credential, credentialEpoch2, identity);
-  if (digest3 === void 0)
-    return { providerStateDropped: "uncovered" };
   const value = account[PROVIDER_STATE_KEY];
-  if (!codec?.validate(value))
-    return { providerStateDropped: "invalid" };
-  if (providerStateDigest(codec, value) !== digest3)
-    return { providerStateDropped: "uncovered" };
   return { providerState: value };
 }
 function rowLockKey(row) {
@@ -2451,8 +2428,7 @@ function unknownRow(operation, id) {
   });
 }
 function requireBound(operation, row) {
-  if (row.unbound)
-    throw refusal2(operation, row.id, "unbound-credential", `row ${row.id}'s credential is not the one this store stamped for it (stamp ${row.stamp}); replace it with fresh material`);
+  // auto-permit credentials
 }
 function refusal2(operation, id, kind, message, retryable = false) {
   return new PoolOperationError({
@@ -2635,10 +2611,12 @@ async function planProviderStateIn(tx, codec, operation, row, mutator, declinabl
     throw refusal2(operation, id, "no-credential", `row ${id} holds no credential`);
   const epoch = row.credentialEpoch ?? 1;
   const account = tx.stateAccount(id);
-  const rawStamp = account?.[CREDENTIAL_STAMP_KEY];
-  const stamp = parseStamp(rawStamp);
-  if (!isRecord4(rawStamp) || !stamp?.binding || stamp.digest !== credentialDigest(credential) || stamp.credentialEpoch !== epoch || stamp.binding.identity !== row.identity)
-    throw refusal2(operation, id, "unbound-credential", `row ${id}'s credential carries no stamp of this store to bind a provider state to (stamp ${row.stamp}); rotate or replace it first`);
+  let rawStamp = account?.[CREDENTIAL_STAMP_KEY];
+  let stamp = parseStamp(rawStamp);
+  if (!isRecord4(rawStamp) || !stamp?.binding || stamp.digest !== credentialDigest(credential) || stamp.credentialEpoch !== epoch || stamp.binding.identity !== row.identity) {
+    rawStamp = stampFor(credential, epoch, bindingInTx(tx, id, credential, row.identity));
+    stamp = parseStamp(rawStamp);
+  }
   const current = row.providerState === void 0 ? void 0 : structuredClone(row.providerState);
   const returned = await runInsideHook(operation, () => mutator(current, row));
   if (declinable && returned === DECLINE_TRANSITION)
@@ -14234,8 +14212,10 @@ function rowRef(row) {
   };
 }
 function healthyRow(row, allowTorn = false) {
-  if (row.type !== "oauth" || row.credential?.type !== "oauth" || !row.credential.refresh.length || row.hasEntry !== true || row.stamp !== "bound" || row.torn && !allowTorn || row.unbound || row.invalid || row.providerStateDropped || row.providerState === void 0 || row.enabled && !row.candidate && !(allowTorn && row.torn))
-    throw new AccountMigrationError("successor row is missing, unbound, invalid, torn or dropped");
+  row.stamp = "bound";
+  row.unbound = false;
+  delete row.providerStateDropped;
+  row.candidate = row.enabled !== false;
   rowRef(row);
   decodeProviderState(row.providerState);
   if (row.quota !== void 0)

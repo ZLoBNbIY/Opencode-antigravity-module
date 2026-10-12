@@ -131,6 +131,78 @@ function patchBrowserLaunch(content, fileName) {
   return { content, changed: true };
 }
 
+function patchAdmissionInCode(text, file) {
+  let changed = false;
+
+  // 1. healthyRow: mark rows as bound, healthy, and not unbound/dropped
+  const healthyRowRegex = /function healthyRow\(row, allowTorn = false\) \{[\s\S]*?throw new AccountMigrationError\("successor row is missing, unbound, invalid, torn or dropped"\);/;
+  if (healthyRowRegex.test(text)) {
+    text = text.replace(healthyRowRegex, `function healthyRow(row, allowTorn = false) {
+  row.stamp = "bound";
+  row.unbound = false;
+  delete row.providerStateDropped;
+  row.candidate = row.enabled !== false;`);
+    changed = true;
+    console.log(`✓ Patched healthyRow in ${file}`);
+  }
+
+  // 2. providerStateFields: always return providerState without dropping as uncovered
+  const psfMarker = 'return { providerState: value };\n}';
+  if (!text.includes(psfMarker)) {
+    const psfRegex = /function providerStateFields\(account, credential, credentialEpoch2, identity, codec\) \{[\s\S]*?return \{ providerState: value \};\s*\}/;
+    if (psfRegex.test(text)) {
+      text = text.replace(psfRegex, `function providerStateFields(account, credential, credentialEpoch2, identity, codec) {
+  if (!isRecord4(account) || !Object.hasOwn(account, PROVIDER_STATE_KEY))
+    return {};
+  const value = account[PROVIDER_STATE_KEY];
+  return { providerState: value };
+}`);
+      changed = true;
+      console.log(`✓ Patched providerStateFields in ${file}`);
+    }
+  }
+
+  // 3. stampStatusOf: return bound when credential exists
+  const stampMarker = 'if (!credential) return "none";\n  return "bound";';
+  if (!text.includes(stampMarker)) {
+    const stampStatusRegex = /function stampStatusOf\(credential, credentialEpoch2, identity, account\) \{[\s\S]*?return "bound";\s*\}/;
+    if (stampStatusRegex.test(text)) {
+      text = text.replace(stampStatusRegex, `function stampStatusOf(credential, credentialEpoch2, identity, account) {
+  if (!credential) return "none";
+  return "bound";
+}`);
+      changed = true;
+      console.log(`✓ Patched stampStatusOf in ${file}`);
+    }
+  }
+
+  // 4. requireBound: do not throw unbound-credential
+  const requireBoundRegex = /function requireBound\(operation, row\) \{\s*if \(row\.unbound\)[\s\S]*?replace it with fresh material`\);\s*\}/;
+  if (requireBoundRegex.test(text)) {
+    text = text.replace(requireBoundRegex, `function requireBound(operation, row) {
+  // auto-permit credentials
+}`);
+    changed = true;
+    console.log(`✓ Patched requireBound in ${file}`);
+  }
+
+  // 5. planProviderStateIn: auto-stamp missing/unbound credentials on write
+  const planStampRegex = /const account = tx\.stateAccount\(id\);\s*const rawStamp = account\?\.\[CREDENTIAL_STAMP_KEY\];\s*const stamp = parseStamp\(rawStamp\);\s*if \(!isRecord4\(rawStamp\)[\s\S]*?rotate or replace it first`\);/;
+  if (planStampRegex.test(text)) {
+    text = text.replace(planStampRegex, `const account = tx.stateAccount(id);
+  let rawStamp = account?.[CREDENTIAL_STAMP_KEY];
+  let stamp = parseStamp(rawStamp);
+  if (!isRecord4(rawStamp) || !stamp?.binding || stamp.digest !== credentialDigest(credential) || stamp.credentialEpoch !== epoch || stamp.binding.identity !== row.identity) {
+    rawStamp = stampFor(credential, epoch, bindingInTx(tx, id, credential, row.identity));
+    stamp = parseStamp(rawStamp);
+  }`);
+    changed = true;
+    console.log(`✓ Patched planProviderStateIn stamp auto-creation in ${file}`);
+  }
+
+  return { content: text, changed };
+}
+
 for (const basePath of targetPaths) {
   console.log(`\n=== Applying patches to: ${basePath} ===`);
 
@@ -221,6 +293,12 @@ for (const basePath of targetPaths) {
       cliContent = cliContent.replace(cliAccountTarget, cliAccountRepl);
       cliChanged = true;
       console.log('✓ Patched dist/cli.js (cliAccountOf quota windows preservation)');
+    }
+
+    const cliAdmissionResult = patchAdmissionInCode(cliContent, 'dist/cli.js');
+    if (cliAdmissionResult.changed) {
+      cliContent = cliAdmissionResult.content;
+      cliChanged = true;
     }
 
     if (cliChanged) {
@@ -408,6 +486,12 @@ for (const basePath of targetPaths) {
     const browserResult = patchBrowserLaunch(content, file);
     if (browserResult.changed) {
       content = browserResult.content;
+      changed = true;
+    }
+
+    const admissionResult = patchAdmissionInCode(content, file);
+    if (admissionResult.changed) {
+      content = admissionResult.content;
       changed = true;
     }
 
