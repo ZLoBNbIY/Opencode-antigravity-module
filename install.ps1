@@ -127,7 +127,7 @@ if ($nodeCmd) {
 }
 
 if (-not $NodePath) {
-    Write-WarningMsg "Node.js не найден в системе. Выполняем автоматическую установку Node.js LTS..."
+    Write-WarningMsg "Node.js не найден в системе. Запуск автоматической установки Node.js LTS..."
     $installedOk = $false
     $wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
     if ($wingetCmd) {
@@ -317,7 +317,7 @@ if (-not $SkipPython -and $PythonPath) {
     if (Test-Path -LiteralPath $ReqFile) {
         & "$PythonPath" -m pip install -r "$ReqFile" --quiet
         if ($LASTEXITCODE -eq 0) {
-            Write-Success "Библиотеки CustomTkinter успешно установлены!"
+            Write-Success "Пакеты CustomTkinter успешно установлены!"
         } else {
             Write-WarningMsg "Предупреждение при установке pip-зависимостей."
         }

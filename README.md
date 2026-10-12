@@ -91,7 +91,7 @@
 
 Просто откройте PowerShell и выполните команду:
 ```powershell
-irm https://raw.githubusercontent.com/ZLoBNbIY/Opencode-antigravity-module/main/install.ps1 | iex
+(irm https://raw.githubusercontent.com/ZLoBNbIY/Opencode-antigravity-module/main/install.ps1).Trim([char]65279) | iex
 ```
 Скрипт автоматически:
 1. Загрузит репозиторий в папку `%USERPROFILE%\Opencode-antigravity-module`.
