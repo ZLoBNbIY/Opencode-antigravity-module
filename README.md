@@ -54,19 +54,31 @@
 
 ## ⚡ Быстрый старт
 
-### Способ 1: Автоматическая установка (Windows)
+### Способ 1: Автоматическая установка через PowerShell (Windows, Рекомендуется)
 
 1. Клонируйте репозиторий:
    ```bash
    git clone https://github.com/ZLoBNbIY/Opencode-antigravity-module.git
    cd Opencode-antigravity-module
    ```
-2. Запустите файл `install.bat` двойным кликом (или из командной строки).  
+2. Запустите инсталлер PowerShell:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\install.ps1
+   ```
+   *Или просто дважды кликните по `install.bat`.*
+   
    Скрипт автоматически:
-   * Создаст необходимые каталоги конфигурации (`~/.config/opencode`).
-   * Скопирует оптимальные шаблоны настроек.
-   * Применит патчи совместимости к кэшу плагина.
-   * Установит библиотеки для GUI-менеджера.
+   * Проверит наличие Node.js и Python.
+   * Создаст необходимые каталоги конфигурации (`~/.config/opencode` и `~/.local/share/opencode`).
+   * Настроит `opencode.json` и `antigravity.json` (порог мягкой квоты 100%, авторотация).
+   * Применит патчи совместимости потокового стриминга Gemini 3.8.
+   * Установит графические библиотеки GUI (CustomTkinter).
+   * Создаст удобный ярлык **«Antigravity Hub»** на Рабочем столе.
+
+   *Дополнительные параметры PowerShell:*
+   * `.\install.ps1 -NoShortcut` — пропустить создание ярлыка на Рабочем столе.
+   * `.\install.ps1 -SkipPython` — пропустить установку pip-библиотек GUI.
+   * `.\install.ps1 -SkipPatch` — пропустить повторное наложение патчей.
 
 ### Способ 2: Автоматическая установка (Linux / macOS)
 
