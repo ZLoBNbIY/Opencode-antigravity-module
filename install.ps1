@@ -50,7 +50,7 @@ if ($PSScriptRoot) {
 
 # --- 0. Проверка наличия локальных файлов / Автозагрузка при irm | iex ---
 $RepoUrl = "https://github.com/ZLoBNbIY/Opencode-antigravity-module.git"
-$ZipUrl  = "https://github.com/ZLoBNbIY/Opencode-antigravity-module/archive/refs/heads/main.zip"
+$ZipUrl  = "https://github.com/ZLoBNbIY/Opencode-antigravity-module/archive/refs/heads/V2.zip"
 
 $HasLocalRepo = $false
 if ($ScriptDir) {
@@ -68,15 +68,15 @@ if (-not $HasLocalRepo) {
 
     $gitCmd = Get-Command git -ErrorAction SilentlyContinue
     if ($gitCmd) {
-        Write-Info "Клонирование репозитория через git в $TargetDir..."
+        Write-Info "Клонирование репозитория через git (ветка V2) в $TargetDir..."
         if (Test-Path -LiteralPath (Join-Path $TargetDir ".git")) {
             & git -C "$TargetDir" pull --quiet
         } else {
-            & git clone --quiet "$RepoUrl" "$TargetDir"
+            & git clone --branch V2 --quiet "$RepoUrl" "$TargetDir"
         }
     } else {
-        Write-Info "Git не обнаружен. Загрузка архива репозитория с GitHub..."
-        $tempZip = Join-Path $env:TEMP "Opencode-antigravity-module-main.zip"
+        Write-Info "Git не обнаружен. Загрузка архива репозитория с GitHub (ветка V2)..."
+        $tempZip = Join-Path $env:TEMP "Opencode-antigravity-module-V2.zip"
         $tempExtract = Join-Path $env:TEMP "Opencode-antigravity-module-extract"
         
         try {
@@ -84,7 +84,7 @@ if (-not $HasLocalRepo) {
             if (Test-Path -LiteralPath $tempExtract) { Remove-Item -LiteralPath $tempExtract -Recurse -Force }
             Expand-Archive -Path $tempZip -DestinationPath $tempExtract -Force
             
-            $sourceDir = Join-Path $tempExtract "Opencode-antigravity-module-main"
+            $sourceDir = Join-Path $tempExtract "Opencode-antigravity-module-V2"
             if (Test-Path -LiteralPath $sourceDir) {
                 Copy-Item -Path "$sourceDir\*" -Destination $TargetDir -Recurse -Force
             }

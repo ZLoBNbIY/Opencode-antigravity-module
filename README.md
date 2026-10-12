@@ -1,4 +1,16 @@
-# OpenCode Antigravity Module
+# OpenCode Antigravity Module (Ветка V2)
+
+> [!IMPORTANT]
+> **Ветка `V2` разработана специально для OpenCode версии 2.0.27 и выше.**  
+> Данная ветка включает полную поддержку архитектуры OpenCode 2.x:
+> * Внутренняя база данных SQLite (`opencode.db`) и таблица `credential`.
+> * Мгновенная синхронизация учетных записей через интерфейс `opencode-cli auth import / export`.
+> * Поддержка двойного пути конфигурации `auth.json` (`%USERPROFILE%\.opencode\auth.json` и `%USERPROFILE%\.local\share\opencode\auth.json`).
+> * Мульти-аккаунт и авто-ротация Google Antigravity & OpenAI ChatGPT.
+> * Устранение несовместимости JSON Schema (`exclusiveMinimum`) с Protobuf-валидатором Gemini API.
+> * Автоматическая очистка блокировок `service.json*` для предотвращения ошибок Windows Desktop IPC.
+> 
+> *Для устаревших версий OpenCode 1.x (до 2.0.0) используйте ветку `main`.*
 
 > **Комплексный модуль интеграции Google Antigravity OAuth для OpenCode**  
 > Доступ к моделям **Gemini 3.8 Flash**, **Gemini 3.7 Flash / Pro** и **Claude** через аккаунты Google с поддержкой мульти-аккаунта, умной ротации квот, нативного GUI-менеджера и полным устранением зависаний стриминга («Размышление...»).
@@ -107,6 +119,10 @@
 * **Причина**: В функции открытия браузера `openBrowserDefault` для Windows использовалась команда `cmd /c start "" url`. В командной строке Windows символ `&` является разделителем команд. При открытии ссылки авторизации Google OAuth `cmd.exe` обрезал ссылку на первом же параметре (`&response_type=code`), из-за чего браузер получал урезанный адрес без обязательных параметров авторизации.
 * **Решение**: Вызов браузера переведен на вызов PowerShell `Start-Process` с Base64-кодированием (`-EncodedCommand`). Это гарантирует передачу URL со всеми параметрами в исходном виде в браузер по умолчанию пользователя без вмешательства командного процессора `cmd.exe`.
 
+### 13. Синхронизация аккаунтов OpenAI / ChatGPT с базой данных OpenCode 2.0 (`opencode.db`)
+* **Причина**: В версиях OpenCode 2.0.x (включая 2.0.27+) данные интеграций хранятся не только в `auth.json`, но и во внутренней SQLite базе данных (`%USERPROFILE%\.local\share\opencode\opencode.db`) в таблице `credential`. При добавлении аккаунта ChatGPT только в файл `auth.json` запущенный демон OpenCode 2.0 не отображал модели в интерфейсе.
+* **Решение**: Модуль `openai_manager.py` в ветке `V2` автоматически выполняет тройную синхронизацию: пишет в оба пути `auth.json`, напрямую обновляет SQLite таблицу `credential` и вызывает команду `opencode-cli auth import`. Модели ChatGPT становятся доступны в интерфейсе сразу без перезапуска.
+
 ---
 
 ## ⚡ Быстрый старт
@@ -115,7 +131,7 @@
 
 Просто откройте PowerShell и выполните команду:
 ```powershell
-(irm https://raw.githubusercontent.com/ZLoBNbIY/Opencode-antigravity-module/main/install.ps1).Trim([char]65279) | iex
+(irm https://raw.githubusercontent.com/ZLoBNbIY/Opencode-antigravity-module/V2/install.ps1).Trim([char]65279) | iex
 ```
 Скрипт автоматически:
 1. Загрузит репозиторий в папку `%USERPROFILE%\Opencode-antigravity-module`.
