@@ -11,6 +11,9 @@ import secrets
 import hashlib
 import webbrowser
 import threading
+import subprocess
+import tempfile
+import sqlite3
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import urllib.request
@@ -23,7 +26,133 @@ OPENAI_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 
 CONFIG_DIR = Path(os.path.expanduser("~/.config/opencode"))
 OPENAI_ACCOUNTS_FILE = CONFIG_DIR / "openai-accounts.json"
-AUTH_FILE = Path(os.path.expanduser("~/.local/share/opencode/auth.json"))
+AUTH_FILES = [
+    Path(os.path.expanduser("~/.local/share/opencode/auth.json")),
+    Path(os.path.expanduser("~/.opencode/auth.json")),
+]
+OPENCODE_DB_FILE = Path(os.path.expanduser("~/.local/share/opencode/opencode.db"))
+
+
+def find_opencode_cli() -> str | None:
+    candidates = [
+        Path(os.path.expanduser("~\\AppData\\Roaming\\ai.opencode.desktop\\cli\\2.0.27\\opencode-cli.exe")),
+        Path(r"C:\Users\DevOps\AppData\Local\Programs\@opencode-aidesktop\resources\opencode-cli.exe"),
+    ]
+    base = Path(os.path.expanduser("~\\AppData\\Roaming\\ai.opencode.desktop\\cli"))
+    if base.exists():
+        for p in base.glob("*/opencode-cli.exe"):
+            if p.exists():
+                return str(p)
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    return None
+
+
+def get_openai_cred_id() -> str:
+    if OPENCODE_DB_FILE.exists():
+        try:
+            conn = sqlite3.connect(str(OPENCODE_DB_FILE), timeout=5)
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM credential WHERE integration_id = 'openai'")
+            row = cur.fetchone()
+            conn.close()
+            if row:
+                return row[0]
+        except Exception:
+            pass
+    return "cred_openai_active"
+
+
+def sync_opencode_db_openai(account: dict | None):
+    """Sync OpenAI credential directly into opencode.db SQLite database."""
+    if not OPENCODE_DB_FILE.exists():
+        return
+    try:
+        conn = sqlite3.connect(str(OPENCODE_DB_FILE), timeout=5)
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='credential'")
+        if not cur.fetchone():
+            conn.close()
+            return
+
+        if account:
+            val_json = json.dumps({
+                "type": "oauth",
+                "methodID": "chatgpt-browser",
+                "refresh": account.get("refresh", ""),
+                "access": account.get("access", ""),
+                "expires": account.get("expires", 0),
+                "metadata": {
+                    "accountID": account.get("accountId", ""),
+                    "email": account.get("email", ""),
+                }
+            }, ensure_ascii=False)
+            label = account.get("name") or account.get("email") or "ChatGPT OAuth"
+            now_ms = int(time.time() * 1000)
+
+            cur.execute("SELECT id FROM credential WHERE integration_id = 'openai'")
+            row = cur.fetchone()
+            if row:
+                cur.execute(
+                    "UPDATE credential SET label = ?, value = ?, time_updated = ? WHERE integration_id = 'openai'",
+                    (label, val_json, now_ms)
+                )
+            else:
+                cred_id = get_openai_cred_id()
+                cur.execute(
+                    "INSERT INTO credential (id, integration_id, label, value, time_created, time_updated) VALUES (?, 'openai', ?, ?, ?, ?)",
+                    (cred_id, label, val_json, now_ms, now_ms)
+                )
+        else:
+            cur.execute("DELETE FROM credential WHERE integration_id = 'openai'")
+
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[OpenAI Manager] SQLite sync warning: {e}")
+
+
+def sync_opencode_cli_openai(account: dict | None):
+    """Trigger opencode-cli auth import / logout to notify the running OpenCode service."""
+    cli = find_opencode_cli()
+    if not cli:
+        return
+    try:
+        if account:
+            cred_id = get_openai_cred_id()
+            label = account.get("name") or account.get("email") or "ChatGPT OAuth"
+            payload = [
+                {
+                    "id": cred_id,
+                    "integrationID": "openai",
+                    "label": label,
+                    "active": True,
+                    "value": {
+                        "type": "oauth",
+                        "methodID": "chatgpt-browser",
+                        "refresh": account.get("refresh", ""),
+                        "access": account.get("access", ""),
+                        "expires": account.get("expires", 0),
+                        "metadata": {
+                            "accountID": account.get("accountId", ""),
+                            "email": account.get("email", ""),
+                        }
+                    }
+                }
+            ]
+            tmp_file = Path(tempfile.gettempdir()) / "opencode_openai_import.json"
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            subprocess.run([cli, "auth", "import", str(tmp_file)], capture_output=True, timeout=10)
+            try:
+                tmp_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+        else:
+            subprocess.run([cli, "auth", "logout", "openai"], capture_output=True, timeout=10)
+    except Exception as e:
+        print(f"[OpenAI Manager] CLI sync warning: {e}")
 
 
 def decode_jwt_payload(jwt_token: str) -> dict:
@@ -75,40 +204,52 @@ def extract_claims_info(id_token: str, access_token: str) -> dict:
 
 
 def get_active_auth_openai() -> dict | None:
-    if AUTH_FILE.exists():
-        try:
-            with open(AUTH_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return data.get("openai")
-        except Exception:
-            pass
+    for auth_path in AUTH_FILES:
+        if auth_path.exists():
+            try:
+                with open(auth_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    val = data.get("openai")
+                    if val:
+                        return val
+            except Exception:
+                pass
     return None
 
 
 def write_active_auth_openai(account: dict | None) -> bool:
     try:
-        data = {}
-        if AUTH_FILE.exists():
-            with open(AUTH_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
+        for auth_path in AUTH_FILES:
+            data = {}
+            if auth_path.exists():
+                try:
+                    with open(auth_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except Exception:
+                    data = {}
 
-        if account:
-            data["openai"] = {
-                "type": "oauth",
-                "access": account.get("access", ""),
-                "refresh": account.get("refresh", ""),
-                "expires": account.get("expires", 0),
-                "accountId": account.get("accountId", ""),
-            }
-        else:
-            data.pop("openai", None)
+            if account:
+                data["openai"] = {
+                    "type": "oauth",
+                    "access": account.get("access", ""),
+                    "refresh": account.get("refresh", ""),
+                    "expires": account.get("expires", 0),
+                    "accountId": account.get("accountId", ""),
+                }
+            else:
+                data.pop("openai", None)
 
-        AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(AUTH_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+            auth_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(auth_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+
+        # Sync into OpenCode 2.0 database & notify daemon
+        sync_opencode_db_openai(account)
+        sync_opencode_cli_openai(account)
+
         return True
     except Exception as e:
-        print(f"[OpenAI Manager] Error updating auth.json: {e}")
+        print(f"[OpenAI Manager] Error updating auth: {e}")
         return False
 
 
