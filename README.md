@@ -99,6 +99,10 @@
 * **Причина**: OpenCode генерирует схемы параметров инструментов (`glob`, `grep`, `webfetch` и др.) по современному стандарту JSON Schema с полями `exclusiveMinimum` и `exclusiveMaximum`. Внутренний Protobuf-валидатор Google Gemini API не поддерживает `exclusiveMinimum` и отклоняет вызовы с HTTP 400: `Invalid JSON payload received. Unknown name "exclusiveMinimum" at 'request.tools[0].function_declarations...': Cannot find field.`.
 * **Решение**: Функция `toGeminiSchema` и список `UNSUPPORTED_SCHEMA_FIELDS` расширены: `exclusiveMinimum` для целочисленных типов (`INTEGER`) прозрачно трансформируется в эквивалентное `minimum: value + 1`, числовые ограничения сохраняются в подсказках описания (`description`), а несовместимые с Google API мета-поля полностью фильтруются перед отправкой.
 
+### 11. Ошибка Desktop IPC / `EPERM: FileSystem.rename service.json` и конфликт версий OpenCode 1.x / 2.x
+* **Причина**: На Windows при перезапуске процессов OpenCode в `%USERPROFILE%\.local\state\opencode\` оставались заблокированные файлы `service.json` и временные `.tmp`. Фоновый сервер Bun падал с системной ошибкой: `Desktop IPC handler failed: PlatformError: FileSystem.rename ... EPERM: operation not permitted`. Кроме того, при несовместимости установленных версий (1.19.0 против 2.0.27) база данных `opencode.db` с таблицей `session_v2` приводила к сбою устаревшего клиента: `Error: Database is not empty and has no session table`.
+* **Решение**: Antigravity Hub теперь автоматически очищает остаточные файлы блокировок и `service.json*` перед запуском/перезапуском OpenCode, опрос процессов переведен на мгновенный `tasklist /fi`, а ярлыки OpenCode на Рабочем столе автоматически перенаправляются на актуальный исполняемый файл 2.0.27.
+
 ---
 
 ## ⚡ Быстрый старт
@@ -327,9 +331,19 @@ node scripts/patch_plugin.mjs
 * **Причина**: Начиная с версии 3.0.0, плагин Antigravity перешел на поколенческую систему хранения аккаунтов (`*.generation`), требующую миграции файла `antigravity-accounts.json` и патча Windows `fsync`.
 * **Решение**: Просто запустите `node scripts/patch_plugin.mjs`. Скрипт автоматически найдет все установленные версии плагина в `%USERPROFILE%\.cache\opencode\npm`, наложит Windows-полифилл и выполнит безопасную миграцию хранилища.
 
-### Q: Ошибка `Invalid JSON payload received. Unknown name "exclusiveMinimum"`
-* **Причина**: В вызовах встроенных инструментов OpenCode (`glob`, `grep`, `webfetch`) передаются ключевые слова `exclusiveMinimum`, которые не поддерживаются внутренним REST/Protobuf API Google Gemini (`daily-cloudcode-pa.googleapis.com` / `generativelanguage.googleapis.com`).
-* **Решение**: Запустите `node scripts/patch_plugin.mjs`. Патч автоматически нормализует схемы инструментов, преобразуя `exclusiveMinimum` в совместимый формат Google (`minimum` + подсказка в `description`).
+### Q: Ошибка `Desktop IPC handler failed: EPERM: operation not permitted, rename service.json.tmp`
+* **Причина**: Фоновый процесс `opencode-cli.exe` был завершен аварийно или удерживал дескриптор файла `service.json` в `%USERPROFILE%\.local\state\opencode\`.
+* **Решение**:
+  1. Нажмите «Остановить OpenCode» или «Перезапустить OpenCode» в Antigravity Hub — менеджер снимет зависшие процессы и автоматически удалит временные блокировки.
+  2. Либо вручную в PowerShell:
+     ```powershell
+     Stop-Process -Name "OpenCode","opencode-cli" -Force -ErrorAction SilentlyContinue
+     Remove-Item "$env:USERPROFILE\.local\state\opencode\service.json*" -Force -ErrorAction SilentlyContinue
+     ```
+
+### Q: Ошибка `Error: Database is not empty and has no session table` (Версия: 1.19.0)
+* **Причина**: Запущена старая версия OpenCode 1.x (например, через старый ярлык), в то время как база данных `opencode.db` уже мигрирована на схему OpenCode 2.x (`session_v2`).
+* **Решение**: Убедитесь, что ярлыки на Рабочем столе ссылаются на актуальный OpenCode 2.0.27. В последней версии репозитория ярлыки перенаправляются автоматически.
 
 ---
 

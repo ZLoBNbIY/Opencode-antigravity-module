@@ -74,6 +74,19 @@ def get_opencode_exe():
         return which_opencode_cap
     return str(candidates[0])
 
+def cleanup_opencode_locks():
+    """Removes stale OpenCode server locks and service.json files on Windows to prevent EPERM collisions."""
+    try:
+        state_dir = Path(os.path.expanduser("~/.local/state/opencode"))
+        if state_dir.exists():
+            for f in state_dir.glob("service.json*"):
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
 NODE_EXE = get_node_executable()
 CLI_JS = get_cli_js()
 CONFIG_FILE = Path(os.path.expanduser(r"~/.config/opencode/antigravity.json"))
@@ -1343,6 +1356,10 @@ class AntigravityManagerApp(ctk.CTk):
                 text_color="#38bdf8",
             )
 
+            # Check OpenCode running status periodically
+            if self.countdown_seconds % 3 == 0:
+                self.update_opencode_status()
+
         self.after(1000, self._countdown_tick)
 
     # --- Actions & Background Tasks ---
@@ -1511,8 +1528,8 @@ class AntigravityManagerApp(ctk.CTk):
         def check():
             try:
                 res = run_silent_cmd(
-                    ["tasklist", "/nh"],
-                    timeout=4
+                    ["tasklist", "/nh", "/fi", "IMAGENAME eq opencode*"],
+                    timeout=3
                 )
                 stdout_lower = (res.stdout or "").lower()
                 is_running = ("opencode.exe" in stdout_lower) or ("opencode-cli.exe" in stdout_lower)
@@ -1543,7 +1560,9 @@ class AntigravityManagerApp(ctk.CTk):
         def _do_restart():
             run_silent_cmd(["taskkill", "/f", "/im", "OpenCode.exe"], timeout=5)
             run_silent_cmd(["taskkill", "/f", "/im", "opencode-cli.exe"], timeout=5)
-            time.sleep(2)
+            time.sleep(1)
+            cleanup_opencode_locks()
+            time.sleep(1)
             exe = get_opencode_exe()
             try:
                 if sys.platform == "win32" and os.path.exists(exe):
@@ -1564,10 +1583,12 @@ class AntigravityManagerApp(ctk.CTk):
     def stop_opencode_action(self):
         run_silent_cmd(["taskkill", "/f", "/im", "OpenCode.exe"], timeout=5)
         run_silent_cmd(["taskkill", "/f", "/im", "opencode-cli.exe"], timeout=5)
+        cleanup_opencode_locks()
         self.update_opencode_status()
         self.set_status("OpenCode остановлен")
 
     def start_opencode_action(self):
+        cleanup_opencode_locks()
         exe = get_opencode_exe()
         if not os.path.exists(exe):
             self.set_status(f"OpenCode.exe не найден: {exe}")
