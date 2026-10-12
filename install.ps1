@@ -46,6 +46,55 @@ if (-not $ScriptDir) {
     $ScriptDir = (Get-Location).Path
 }
 
+# --- 0. Проверка наличия локальных файлов / Автозагрузка при irm | iex ---
+$RepoUrl = "https://github.com/ZLoBNbIY/Opencode-antigravity-module.git"
+$ZipUrl  = "https://github.com/ZLoBNbIY/Opencode-antigravity-module/archive/refs/heads/main.zip"
+
+$HasLocalRepo = (Test-Path -LiteralPath (Join-Path $ScriptDir "gui-manager\antigravity_manager.pyw")) -and 
+                (Test-Path -LiteralPath (Join-Path $ScriptDir "scripts\patch_plugin.mjs"))
+
+if (-not $HasLocalRepo) {
+    Write-Step "Запуск через онлайн-команду (irm | iex). Загрузка файлов модуля..."
+    $TargetDir = Join-Path $HOME "Opencode-antigravity-module"
+    
+    if (-not (Test-Path -LiteralPath $TargetDir)) {
+        New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
+    }
+
+    $gitCmd = Get-Command git -ErrorAction SilentlyContinue
+    if ($gitCmd) {
+        Write-Info "Клонирование репозитория через git в $TargetDir..."
+        if (Test-Path -LiteralPath (Join-Path $TargetDir ".git")) {
+            & git -C "$TargetDir" pull --quiet
+        } else {
+            & git clone --quiet "$RepoUrl" "$TargetDir"
+        }
+    } else {
+        Write-Info "Git не обнаружен. Загрузка архива репозитория с GitHub..."
+        $tempZip = Join-Path $env:TEMP "Opencode-antigravity-module-main.zip"
+        $tempExtract = Join-Path $env:TEMP "Opencode-antigravity-module-extract"
+        
+        try {
+            Invoke-RestMethod -Uri $ZipUrl -OutFile $tempZip
+            if (Test-Path -LiteralPath $tempExtract) { Remove-Item -LiteralPath $tempExtract -Recurse -Force }
+            Expand-Archive -Path $tempZip -DestinationPath $tempExtract -Force
+            
+            $sourceDir = Join-Path $tempExtract "Opencode-antigravity-module-main"
+            if (Test-Path -LiteralPath $sourceDir) {
+                Copy-Item -Path "$sourceDir\*" -Destination $TargetDir -Recurse -Force
+            }
+            Remove-Item -LiteralPath $tempZip -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
+        } catch {
+            Write-ErrorMsg "Не удалось загрузить файлы репозитория: $_"
+            return
+        }
+    }
+
+    $ScriptDir = $TargetDir
+    Write-Success "Файлы репозитория загружены в: $ScriptDir"
+}
+
 # --- 1. Поиск Node.js ---
 Write-Step "Проверка окружения Node.js..."
 

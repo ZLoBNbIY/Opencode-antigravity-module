@@ -54,33 +54,38 @@
 
 ## ⚡ Быстрый старт
 
-### Способ 1: Автоматическая установка через PowerShell (Windows, Рекомендуется)
+### Способ 1: Установка в одну команду через PowerShell (Windows, Самый простой)
 
-1. Клонируйте репозиторий:
-   ```bash
-   git clone https://github.com/ZLoBNbIY/Opencode-antigravity-module.git
-   cd Opencode-antigravity-module
-   ```
-2. Запустите инсталлер PowerShell:
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File .\install.ps1
-   ```
-   *Или просто дважды кликните по `install.bat`.*
-   
-   Скрипт автоматически:
-   * Проверит наличие Node.js и Python.
-   * Создаст необходимые каталоги конфигурации (`~/.config/opencode` и `~/.local/share/opencode`).
-   * Настроит `opencode.json` и `antigravity.json` (порог мягкой квоты 100%, авторотация).
-   * Применит патчи совместимости потокового стриминга Gemini 3.8.
-   * Установит графические библиотеки GUI (CustomTkinter).
-   * Создаст удобный ярлык **«Antigravity Hub»** на Рабочем столе.
+Просто откройте PowerShell и выполните команду:
+```powershell
+irm https://raw.githubusercontent.com/ZLoBNbIY/Opencode-antigravity-module/main/install.ps1 | iex
+```
+Скрипт автоматически:
+1. Загрузит репозиторий в папку `%USERPROFILE%\Opencode-antigravity-module`.
+2. Обнаружит Node.js и Python в системе.
+3. Создаст и настроит файлы конфигурации OpenCode (`opencode.json` и `antigravity.json`).
+4. Применит все патчи стриминга Gemini 3.8 и TTY.
+5. Установит библиотеки для нативного Desktop GUI (CustomTkinter).
+6. Создаст готовый ярлык **«Antigravity Hub»** прямо на Рабочем столе!
 
-   *Дополнительные параметры PowerShell:*
-   * `.\install.ps1 -NoShortcut` — пропустить создание ярлыка на Рабочем столе.
-   * `.\install.ps1 -SkipPython` — пропустить установку pip-библиотек GUI.
-   * `.\install.ps1 -SkipPatch` — пропустить повторное наложение патчей.
+---
 
-### Способ 2: Автоматическая установка (Linux / macOS)
+### Способ 2: Установка из локальной папки (Windows)
+
+Если вы уже клонировали репозиторий:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+*Или просто дважды кликните по `install.bat`.*
+
+*Дополнительные параметры PowerShell:*
+* `.\install.ps1 -NoShortcut` — пропустить создание ярлыка на Рабочем столе.
+* `.\install.ps1 -SkipPython` — пропустить установку pip-библиотек GUI.
+* `.\install.ps1 -SkipPatch` — пропустить повторное наложение патчей.
+
+---
+
+### Способ 3: Автоматическая установка (Linux / macOS)
 
 ```bash
 git clone https://github.com/ZLoBNbIY/Opencode-antigravity-module.git
