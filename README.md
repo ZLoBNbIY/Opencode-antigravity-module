@@ -83,6 +83,18 @@
 * **Причина**: При отсутствии глобального Node.js в `PATH` вызов внешней утилиты авторизации падал с системной ошибкой Windows `ERROR_FILE_NOT_FOUND`.
 * **Решение**: Добавлен интеллектуальный поиск `node.exe` (включая рантаймы в Cursor, DeepSeek и др.), автоустановка Node.js в `install.ps1`, а также понятные информативные уведомления в интерфейсе.
 
+### 7. Сбой миграции на Windows и блокировка запросов (`EPERM: operation not permitted, fsync` / HTTP 412)
+* **Причина**: Начиная с версии плагина 3.0.0, используется новая поколенческая архитектура хранения аккаунтов (`*.generation`). При попытке синхронизации дескрипторов каталогов файловая система Windows (NTFS) возвращает системную ошибку `EPERM`, из-за чего плагин не мог мигрировать пул аккаунтов и блокировал любые запросы кодом `412 FAILED_PRECONDITION` («Antigravity accounts require offline migration»).
+* **Решение**: Внедрён асинхронный Win32-полифилл для `FileHandle.sync`, безопасно подавляющий специфичные ошибки Windows, а скрипт `patch_plugin.mjs` теперь автоматически находит кэшированные пакеты OpenCode и выполняет миграцию хранилища.
+
+### 8. Ошибка «Недостаточно средств» из-за провайдера OpenCode Zen
+* **Причина**: OpenCode по умолчанию направлял новые запросы во встроенный платный шлюз `opencode/gemini-3.8-flash` (OpenCode Zen), требующий подписки или средств на балансе.
+* **Решение**: В шаблоны и установщик добавлена директива по умолчанию `"model": "google/antigravity-gemini-3.8-flash"`. Теперь OpenCode сразу работает через бесплатные Google OAuth токены.
+
+### 9. Сбой запуска OpenCode и неверный статус в Antigravity Hub
+* **Причина**: В последних версиях OpenCode для Windows устанавливается в каталог `@opencodedesktop` (вместо `@opencode-aidesktop`), запуск с флагом скрытого окна подавлял Electron UI, а статус процесса отслеживал только одно имя исполняемого файла, игнорируя фоновый CLI-сервер `opencode-cli.exe`.
+* **Решение**: Менеджер переведен на поиск всех актуальных каталогов, нативный запуск Windows Shell `os.startfile(exe)` и мульти-процессный мониторинг (`OpenCode.exe` + `opencode-cli.exe`).
+
 ---
 
 ## ⚡ Быстрый старт
@@ -167,6 +179,7 @@ node plugin/dist/cli.js login
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
+  "model": "google/antigravity-gemini-3.8-flash",
   "plugin": [
     "@cortexkit/opencode-antigravity-auth@latest"
   ],
@@ -179,6 +192,25 @@ node plugin/dist/cli.js login
   }
 }
 ```
+
+### 🤖 Доступные модели Google Antigravity в OpenCode
+
+При отправке сообщений убедитесь, что вы используете модель из каталога Antigravity (провайдер **Google**):
+
+| Название модели в OpenCode | Семейство / Возможности | Особенности |
+| :--- | :--- | :--- |
+| `google / antigravity-gemini-3.8-flash` | **Gemini 3.8 Flash** | 🚀 Флагманская сверхбыстрая модель с поддержкой глубоких рассуждений (установлена по умолчанию). |
+| `google / antigravity-gemini-3.7-flash` | **Gemini 3.7 Flash** | Высокая точность кодинга и анализ больших контекстов. |
+| `google / antigravity-gemini-3.6-flash` | **Gemini 3.6 Flash** | Оптимальный баланс расхода квоты и качества. |
+| `google / antigravity-gemini-3.5-flash` | **Gemini 3.5 Flash** | Экономный режим для простых скриптов и тестов. |
+| `google / antigravity-gemini-3.1-pro` | **Gemini 3.1 Pro** | Мощная модель для сложной логики и архитектурных задач. |
+| `google / antigravity-claude-sonnet-4-6-thinking` | **Claude Sonnet 4.6 Thinking** | Доступ к цепочке рассуждений Claude через Google OAuth. |
+| `google / antigravity-claude-opus-4-6-thinking` | **Claude Opus 4.6 Thinking** | Максимальные когнитивные возможности Claude через ротацию Google. |
+| `google / antigravity-gpt-oss-120b-medium` | **GPT-OSS 120B** | Открытая языковая модель через шлюз Antigravity. |
+
+> [!TIP]
+> **Как избежать ошибки «Недостаточно средств»:**  
+> Не выбирайте модели провайдера OpenCode Zen (`opencode/...`), так как они требуют платных кредитов платформы OpenCode. Всегда используйте модели из списка выше с префиксом `google / antigravity-...`.
 
 ---
 
