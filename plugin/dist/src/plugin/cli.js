@@ -1,0 +1,160 @@
+import { stdin as input, stdout as output } from 'node:process';
+import { createInterface } from 'node:readline/promises';
+import { updateOpencodeConfig } from './config/updater';
+import { isTTY, showAccountDetails, showAuthMenu, showFingerprintHistory, } from './ui/auth-menu';
+export async function promptProjectId() {
+    const rl = createInterface({ input, output });
+    try {
+        const answer = await rl.question('Project ID (leave blank to use your default project): ');
+        return answer.trim();
+    }
+    finally {
+        rl.close();
+    }
+}
+export async function promptAddAnotherAccount(currentCount) {
+    const rl = createInterface({ input, output });
+    try {
+        const answer = await rl.question(`Add another account? (${currentCount} added) (y/n): `);
+        const normalized = answer.trim().toLowerCase();
+        return normalized === 'y' || normalized === 'yes';
+    }
+    finally {
+        rl.close();
+    }
+}
+async function promptLoginModeFallback(existingAccounts) {
+    const rl = createInterface({ input, output });
+    try {
+        console.log(`\n${existingAccounts.length} account(s) saved:`);
+        for (const acc of existingAccounts) {
+            const label = acc.email || `Account ${acc.index + 1}`;
+            console.log(`  ${acc.index + 1}. ${label}`);
+        }
+        console.log('');
+        while (true) {
+            const answer = await rl.question('(a)dd new, (f)resh start, (c)heck quotas, auth (d)octor, (v)erify account, (va) verify all? [a/f/c/d/v/va]: ');
+            const normalized = answer.trim().toLowerCase();
+            if (normalized === 'a' || normalized === 'add') {
+                return { mode: 'add' };
+            }
+            if (normalized === 'f' || normalized === 'fresh') {
+                return { mode: 'fresh' };
+            }
+            if (normalized === 'c' || normalized === 'check') {
+                return { mode: 'check' };
+            }
+            if (normalized === 'd' ||
+                normalized === 'doctor' ||
+                normalized === 'auth-doctor') {
+                return { mode: 'doctor' };
+            }
+            if (normalized === 'v' || normalized === 'verify') {
+                return { mode: 'verify' };
+            }
+            if (normalized === 'va' ||
+                normalized === 'verify-all' ||
+                normalized === 'all') {
+                return { mode: 'verify-all', verifyAll: true };
+            }
+            console.log("Please enter 'a', 'f', 'c', 'd', 'v', or 'va'.");
+        }
+    }
+    finally {
+        rl.close();
+    }
+}
+export async function promptLoginMode(existingAccounts) {
+    if (!isTTY()) {
+        return promptLoginModeFallback(existingAccounts);
+    }
+    const accounts = existingAccounts.map((acc) => ({
+        email: acc.email,
+        index: acc.index,
+        addedAt: acc.addedAt,
+        lastUsed: acc.lastUsed,
+        status: acc.status,
+        isCurrentAccount: acc.isCurrentAccount,
+        enabled: acc.enabled,
+        quotaSummary: acc.quotaSummary,
+        cooldownMs: acc.cooldownMs,
+        cooldownReason: acc.cooldownReason,
+        cachedQuota: acc.cachedQuota,
+        cachedPerModelQuota: acc.cachedPerModelQuota,
+        fingerprintHistory: acc.fingerprintHistory,
+    }));
+    console.log('');
+    while (true) {
+        const action = await showAuthMenu(accounts);
+        switch (action.type) {
+            case 'add':
+                return { mode: 'add' };
+            case 'check':
+                return { mode: 'check' };
+            case 'doctor':
+                return { mode: 'doctor' };
+            case 'repair':
+                return { mode: 'repair' };
+            case 'current':
+                return { mode: 'current' };
+            case 'verify':
+                return { mode: 'verify' };
+            case 'verify-all':
+                return { mode: 'verify-all', verifyAll: true };
+            case 'select-account': {
+                const accountAction = await showAccountDetails(action.account);
+                if (accountAction === 'delete') {
+                    return { mode: 'add', deleteAccountIndex: action.account.index };
+                }
+                if (accountAction === 'refresh') {
+                    return { mode: 'add', refreshAccountIndex: action.account.index };
+                }
+                if (accountAction === 'toggle') {
+                    return { mode: 'manage', toggleAccountIndex: action.account.index };
+                }
+                if (accountAction === 'verify') {
+                    return { mode: 'verify', verifyAccountIndex: action.account.index };
+                }
+                if (accountAction === 'switch-account') {
+                    const accountLabel = action.account.email || `Account ${action.account.index + 1}`;
+                    console.log(`\n✓ Switched to ${accountLabel}. Restart OpenCode for changes to take effect.\n`);
+                    return {
+                        mode: 'switch-account',
+                        switchAccountIndex: action.account.index,
+                    };
+                }
+                if (accountAction === 'restore-fingerprint') {
+                    const history = action.account.fingerprintHistory;
+                    if (!history || history.length === 0)
+                        continue;
+                    const accountLabel = action.account.email || `Account ${action.account.index + 1}`;
+                    const historyIndex = await showFingerprintHistory(history, accountLabel);
+                    if (historyIndex === null)
+                        continue;
+                    return {
+                        mode: 'restore-fingerprint',
+                        restoreFingerprintAccountIndex: action.account.index,
+                        restoreFingerprintHistoryIndex: historyIndex,
+                    };
+                }
+                continue;
+            }
+            case 'delete-all':
+                return { mode: 'fresh', deleteAll: true };
+            case 'configure-models': {
+                const result = await updateOpencodeConfig();
+                if (result.success) {
+                    console.log(`\n✓ Models configured in ${result.configPath}\n`);
+                }
+                else {
+                    console.log(`\n✗ Failed to configure models: ${result.error}\n`);
+                }
+                continue;
+            }
+            case 'cancel':
+                return { mode: 'cancel' };
+        }
+    }
+}
+export { isTTY } from './ui/auth-menu';
+//# sourceMappingURL=cli.js.map

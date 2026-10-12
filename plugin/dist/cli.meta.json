@@ -1,0 +1,4079 @@
+{
+  "inputs": {
+    "../core/dist/abort-forwarding.js": {
+      "bytes": 619,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/account-identity.js": {
+      "bytes": 2849,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/account-repository-types.js": {
+      "bytes": 6659,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/account-repository-codecs.js": {
+      "bytes": 24865,
+      "imports": [
+        {
+          "path": "../core/dist/account-repository-types.js",
+          "kind": "import-statement",
+          "original": "./account-repository-types.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/account-migration.js": {
+      "bytes": 113231,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:util",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../core/dist/account-repository-codecs.js",
+          "kind": "import-statement",
+          "original": "./account-repository-codecs.js"
+        },
+        {
+          "path": "../core/dist/account-repository-types.js",
+          "kind": "import-statement",
+          "original": "./account-repository-types.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/account-repository.js": {
+      "bytes": 101176,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:util",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../core/dist/account-identity.js",
+          "kind": "import-statement",
+          "original": "./account-identity.js"
+        },
+        {
+          "path": "../core/dist/account-migration.js",
+          "kind": "import-statement",
+          "original": "./account-migration.js"
+        },
+        {
+          "path": "../core/dist/account-repository-codecs.js",
+          "kind": "import-statement",
+          "original": "./account-repository-codecs.js"
+        },
+        {
+          "path": "../core/dist/account-repository-types.js",
+          "kind": "import-statement",
+          "original": "./account-repository-types.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/fingerprint.js": {
+      "bytes": 5083,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/model-registry.js": {
+      "bytes": 12222,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/rotation.js": {
+      "bytes": 14901,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/account-selector.js": {
+      "bytes": 59580,
+      "imports": [
+        {
+          "path": "../core/dist/fingerprint.js",
+          "kind": "import-statement",
+          "original": "./fingerprint.js"
+        },
+        {
+          "path": "../core/dist/model-registry.js",
+          "kind": "import-statement",
+          "original": "./model-registry.js"
+        },
+        {
+          "path": "../core/dist/rotation.js",
+          "kind": "import-statement",
+          "original": "./rotation.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/atomic-write.js": {
+      "bytes": 2602,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/file-lock.js": {
+      "bytes": 17205,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/logger.js": {
+      "bytes": 2139,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/account-storage.js": {
+      "bytes": 24700,
+      "imports": [
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../core/dist/account-migration.js",
+          "kind": "import-statement",
+          "original": "./account-migration.js"
+        },
+        {
+          "path": "../core/dist/atomic-write.js",
+          "kind": "import-statement",
+          "original": "./atomic-write.js"
+        },
+        {
+          "path": "../core/dist/file-lock.js",
+          "kind": "import-statement",
+          "original": "./file-lock.js"
+        },
+        {
+          "path": "../core/dist/logger.js",
+          "kind": "import-statement",
+          "original": "./logger.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/auth.js": {
+      "bytes": 1816,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/quota-types.js": {
+      "bytes": 1669,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/account-manager.js": {
+      "bytes": 67850,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../core/dist/account-identity.js",
+          "kind": "import-statement",
+          "original": "./account-identity.js"
+        },
+        {
+          "path": "../core/dist/account-repository.js",
+          "kind": "import-statement",
+          "original": "./account-repository.js"
+        },
+        {
+          "path": "../core/dist/account-selector.js",
+          "kind": "import-statement",
+          "original": "./account-selector.js"
+        },
+        {
+          "path": "../core/dist/account-storage.js",
+          "kind": "import-statement",
+          "original": "./account-storage.js"
+        },
+        {
+          "path": "../core/dist/auth.js",
+          "kind": "import-statement",
+          "original": "./auth.js"
+        },
+        {
+          "path": "../core/dist/fingerprint.js",
+          "kind": "import-statement",
+          "original": "./fingerprint.js"
+        },
+        {
+          "path": "../core/dist/quota-types.js",
+          "kind": "import-statement",
+          "original": "./quota-types.js"
+        },
+        {
+          "path": "../core/dist/rotation.js",
+          "kind": "import-statement",
+          "original": "./rotation.js"
+        },
+        {
+          "path": "../core/dist/rotation.js",
+          "kind": "import-statement",
+          "original": "./rotation.js"
+        },
+        {
+          "path": "../core/dist/account-selector.js",
+          "kind": "import-statement",
+          "original": "./account-selector.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/account-types.js": {
+      "bytes": 317,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/agy-request-metadata.js": {
+      "bytes": 7413,
+      "imports": [
+        {
+          "path": "node:buffer",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/agy-transport.js": {
+      "bytes": 17853,
+      "imports": [
+        {
+          "path": "node:buffer",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:net",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:stream",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:tls",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:zlib",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../core/dist/fingerprint.js",
+          "kind": "import-statement",
+          "original": "./fingerprint.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/constants.js": {
+      "bytes": 9894,
+      "imports": [
+        {
+          "path": "../core/dist/fingerprint.js",
+          "kind": "import-statement",
+          "original": "./fingerprint.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/fetch-timeout.js": {
+      "bytes": 5019,
+      "imports": [
+        {
+          "path": "../core/dist/abort-forwarding.js",
+          "kind": "import-statement",
+          "original": "./abort-forwarding.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/antigravity/oauth.js": {
+      "bytes": 8316,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../core/dist/agy-transport.js",
+          "kind": "import-statement",
+          "original": "../agy-transport.js"
+        },
+        {
+          "path": "../core/dist/auth.js",
+          "kind": "import-statement",
+          "original": "../auth.js"
+        },
+        {
+          "path": "../core/dist/constants.js",
+          "kind": "import-statement",
+          "original": "../constants.js"
+        },
+        {
+          "path": "../core/dist/fetch-timeout.js",
+          "kind": "import-statement",
+          "original": "../fetch-timeout.js"
+        },
+        {
+          "path": "../core/dist/fingerprint.js",
+          "kind": "import-statement",
+          "original": "../fingerprint.js"
+        },
+        {
+          "path": "../core/dist/logger.js",
+          "kind": "import-statement",
+          "original": "../logger.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/quota/map.js": {
+      "bytes": 4271,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/quota/merge.js": {
+      "bytes": 6513,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/quota/map.js",
+          "kind": "import-statement",
+          "original": "./map.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/quota/codec.js": {
+      "bytes": 447,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/quota/map.js",
+          "kind": "import-statement",
+          "original": "./map.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/quota/merge.js",
+          "kind": "import-statement",
+          "original": "./merge.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/quota/format.js": {
+      "bytes": 5819,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/quota/map.js",
+          "kind": "import-statement",
+          "original": "./map.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/quota/projection.js": {
+      "bytes": 5509,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/quota/map.js",
+          "kind": "import-statement",
+          "original": "./map.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/quota/index.js": {
+      "bytes": 463,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/quota/codec.js",
+          "kind": "import-statement",
+          "original": "./codec.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/quota/format.js",
+          "kind": "import-statement",
+          "original": "./format.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/quota/map.js",
+          "kind": "import-statement",
+          "original": "./map.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/quota/merge.js",
+          "kind": "import-statement",
+          "original": "./merge.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/quota/projection.js",
+          "kind": "import-statement",
+          "original": "./projection.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/quota-presentation.js": {
+      "bytes": 2304,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/quota/index.js",
+          "kind": "import-statement",
+          "original": "./common-auth-embedded/quota/index.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/antigravity-command-menu.js": {
+      "bytes": 21751,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../core/dist/account-identity.js",
+          "kind": "import-statement",
+          "original": "./account-identity.js"
+        },
+        {
+          "path": "../core/dist/quota-presentation.js",
+          "kind": "import-statement",
+          "original": "./quota-presentation.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/auth-types.js": {
+      "bytes": 128,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/store/errors.js": {
+      "bytes": 1432,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/store/identity.js": {
+      "bytes": 2923,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/fs/atomic-write.js": {
+      "bytes": 2610,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/fs/refresh-file-lock.js": {
+      "bytes": 19961,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/fs/with-lock.js",
+          "kind": "import-statement",
+          "original": "./with-lock.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/fs/with-lock.js": {
+      "bytes": 1507,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/fs/refresh-file-lock.js",
+          "kind": "import-statement",
+          "original": "./refresh-file-lock.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/store/hooks.js": {
+      "bytes": 1269,
+      "imports": [
+        {
+          "path": "node:async_hooks",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/errors.js",
+          "kind": "import-statement",
+          "original": "./errors.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/store/refresh-lock.js": {
+      "bytes": 4471,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/fs/refresh-file-lock.js",
+          "kind": "import-statement",
+          "original": "../fs/refresh-file-lock.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/fs/with-lock.js",
+          "kind": "import-statement",
+          "original": "../fs/with-lock.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/store/reserved.js": {
+      "bytes": 536,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/store/errors.js",
+          "kind": "import-statement",
+          "original": "./errors.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/store/schema.js": {
+      "bytes": 31460,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/store/torn.js": {
+      "bytes": 14708,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/store/identity.js",
+          "kind": "import-statement",
+          "original": "./identity.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/schema.js",
+          "kind": "import-statement",
+          "original": "./schema.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/store/mutate.js": {
+      "bytes": 19927,
+      "imports": [
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:timers/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/fs/atomic-write.js",
+          "kind": "import-statement",
+          "original": "../fs/atomic-write.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/fs/with-lock.js",
+          "kind": "import-statement",
+          "original": "../fs/with-lock.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/errors.js",
+          "kind": "import-statement",
+          "original": "./errors.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/hooks.js",
+          "kind": "import-statement",
+          "original": "./hooks.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/refresh-lock.js",
+          "kind": "import-statement",
+          "original": "./refresh-lock.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/reserved.js",
+          "kind": "import-statement",
+          "original": "./reserved.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/schema.js",
+          "kind": "import-statement",
+          "original": "./schema.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/torn.js",
+          "kind": "import-statement",
+          "original": "./torn.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/store/runtime.js": {
+      "bytes": 2847,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/store/errors.js",
+          "kind": "import-statement",
+          "original": "./errors.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/mutate.js",
+          "kind": "import-statement",
+          "original": "./mutate.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/reserved.js",
+          "kind": "import-statement",
+          "original": "./reserved.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/schema.js",
+          "kind": "import-statement",
+          "original": "./schema.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/store/attribution.js": {
+      "bytes": 2880,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/store/errors.js",
+          "kind": "import-statement",
+          "original": "./errors.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/mutate.js",
+          "kind": "import-statement",
+          "original": "./mutate.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/refresh-lock.js",
+          "kind": "import-statement",
+          "original": "./refresh-lock.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/runtime.js",
+          "kind": "import-statement",
+          "original": "./runtime.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/schema.js",
+          "kind": "import-statement",
+          "original": "./schema.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/store/provider-state.js": {
+      "bytes": 11543,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/store/hooks.js",
+          "kind": "import-statement",
+          "original": "./hooks.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/mutate.js",
+          "kind": "import-statement",
+          "original": "./mutate.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/runtime.js",
+          "kind": "import-statement",
+          "original": "./runtime.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/schema.js",
+          "kind": "import-statement",
+          "original": "./schema.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/store/rows.js": {
+      "bytes": 61491,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/errors.js",
+          "kind": "import-statement",
+          "original": "./errors.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/hooks.js",
+          "kind": "import-statement",
+          "original": "./hooks.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/identity.js",
+          "kind": "import-statement",
+          "original": "./identity.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/mutate.js",
+          "kind": "import-statement",
+          "original": "./mutate.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/provider-state.js",
+          "kind": "import-statement",
+          "original": "./provider-state.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/runtime.js",
+          "kind": "import-statement",
+          "original": "./runtime.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/schema.js",
+          "kind": "import-statement",
+          "original": "./schema.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/torn.js",
+          "kind": "import-statement",
+          "original": "./torn.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/store/publication.js": {
+      "bytes": 15814,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/store/hooks.js",
+          "kind": "import-statement",
+          "original": "./hooks.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/mutate.js",
+          "kind": "import-statement",
+          "original": "./mutate.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/rows.js",
+          "kind": "import-statement",
+          "original": "./rows.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/runtime.js",
+          "kind": "import-statement",
+          "original": "./runtime.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/schema.js",
+          "kind": "import-statement",
+          "original": "./schema.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/store/pull.js": {
+      "bytes": 5470,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/store/attribution.js",
+          "kind": "import-statement",
+          "original": "./attribution.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/errors.js",
+          "kind": "import-statement",
+          "original": "./errors.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/mutate.js",
+          "kind": "import-statement",
+          "original": "./mutate.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/refresh-lock.js",
+          "kind": "import-statement",
+          "original": "./refresh-lock.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/runtime.js",
+          "kind": "import-statement",
+          "original": "./runtime.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/store/refresh.js": {
+      "bytes": 10645,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/errors.js",
+          "kind": "import-statement",
+          "original": "./errors.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/hooks.js",
+          "kind": "import-statement",
+          "original": "./hooks.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/identity.js",
+          "kind": "import-statement",
+          "original": "./identity.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/mutate.js",
+          "kind": "import-statement",
+          "original": "./mutate.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/provider-state.js",
+          "kind": "import-statement",
+          "original": "./provider-state.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/reserved.js",
+          "kind": "import-statement",
+          "original": "./reserved.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/rows.js",
+          "kind": "import-statement",
+          "original": "./rows.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/runtime.js",
+          "kind": "import-statement",
+          "original": "./runtime.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/schema.js",
+          "kind": "import-statement",
+          "original": "./schema.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/torn.js",
+          "kind": "import-statement",
+          "original": "./torn.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/store/settings.js": {
+      "bytes": 5176,
+      "imports": [
+        {
+          "path": "node:util",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/fs/atomic-write.js",
+          "kind": "import-statement",
+          "original": "../fs/atomic-write.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/errors.js",
+          "kind": "import-statement",
+          "original": "./errors.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/hooks.js",
+          "kind": "import-statement",
+          "original": "./hooks.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/mutate.js",
+          "kind": "import-statement",
+          "original": "./mutate.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/schema.js",
+          "kind": "import-statement",
+          "original": "./schema.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/store/pool.js": {
+      "bytes": 5590,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/store/attribution.js",
+          "kind": "import-statement",
+          "original": "./attribution.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/mutate.js",
+          "kind": "import-statement",
+          "original": "./mutate.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/provider-state.js",
+          "kind": "import-statement",
+          "original": "./provider-state.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/publication.js",
+          "kind": "import-statement",
+          "original": "./publication.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/pull.js",
+          "kind": "import-statement",
+          "original": "./pull.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/refresh.js",
+          "kind": "import-statement",
+          "original": "./refresh.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/refresh-lock.js",
+          "kind": "import-statement",
+          "original": "./refresh-lock.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/rows.js",
+          "kind": "import-statement",
+          "original": "./rows.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/schema.js",
+          "kind": "import-statement",
+          "original": "./schema.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/settings.js",
+          "kind": "import-statement",
+          "original": "./settings.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/store/index.js": {
+      "bytes": 534,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/store/errors.js",
+          "kind": "import-statement",
+          "original": "./errors.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/identity.js",
+          "kind": "import-statement",
+          "original": "./identity.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/pool.js",
+          "kind": "import-statement",
+          "original": "./pool.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/provider-state.js",
+          "kind": "import-statement",
+          "original": "./provider-state.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/refresh-lock.js",
+          "kind": "import-statement",
+          "original": "./refresh-lock.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/schema.js",
+          "kind": "import-statement",
+          "original": "./schema.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/settings.js",
+          "kind": "import-statement",
+          "original": "./settings.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/fs/lock-constants.js": {
+      "bytes": 336,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/fs/index.js": {
+      "bytes": 454,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/fs/atomic-write.js",
+          "kind": "import-statement",
+          "original": "./atomic-write.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/fs/lock-constants.js",
+          "kind": "import-statement",
+          "original": "./lock-constants.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/fs/refresh-file-lock.js",
+          "kind": "import-statement",
+          "original": "./refresh-file-lock.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/fs/with-lock.js",
+          "kind": "import-statement",
+          "original": "./with-lock.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/routing/admission.js": {
+      "bytes": 5773,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/quota/map.js",
+          "kind": "import-statement",
+          "original": "../quota/map.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/quota/projection.js",
+          "kind": "import-statement",
+          "original": "../quota/projection.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/routing/ordered.js": {
+      "bytes": 2601,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/routing/admission.js",
+          "kind": "import-statement",
+          "original": "./admission.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/routing/pins.js": {
+      "bytes": 1531,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/routing/sticky.js": {
+      "bytes": 14763,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/quota/projection.js",
+          "kind": "import-statement",
+          "original": "../quota/projection.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/routing/admission.js",
+          "kind": "import-statement",
+          "original": "./admission.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/routing/pins.js",
+          "kind": "import-statement",
+          "original": "./pins.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/routing/index.js": {
+      "bytes": 449,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/routing/admission.js",
+          "kind": "import-statement",
+          "original": "./admission.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/routing/ordered.js",
+          "kind": "import-statement",
+          "original": "./ordered.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/routing/pins.js",
+          "kind": "import-statement",
+          "original": "./pins.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/routing/sticky.js",
+          "kind": "import-statement",
+          "original": "./sticky.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/logger/capture-sink.js": {
+      "bytes": 249,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/logger/redact.js": {
+      "bytes": 3989,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/logger/engine.js": {
+      "bytes": 7925,
+      "imports": [
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/logger/redact.js",
+          "kind": "import-statement",
+          "original": "./redact.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/logger/index.js": {
+      "bytes": 261,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/logger/capture-sink.js",
+          "kind": "import-statement",
+          "original": "./capture-sink.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/logger/engine.js",
+          "kind": "import-statement",
+          "original": "./engine.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/logger/redact.js",
+          "kind": "import-statement",
+          "original": "./redact.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/commands/seam.js": {
+      "bytes": 11326,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/logger/index.js",
+          "kind": "import-statement",
+          "original": "../logger/index.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/index.js",
+          "kind": "import-statement",
+          "original": "../store/index.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/commands/builtins.js": {
+      "bytes": 21323,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/quota/index.js",
+          "kind": "import-statement",
+          "original": "../quota/index.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/routing/index.js",
+          "kind": "import-statement",
+          "original": "../routing/index.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/commands/seam.js",
+          "kind": "import-statement",
+          "original": "./seam.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/commands/menu.js": {
+      "bytes": 12322,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/logger/index.js",
+          "kind": "import-statement",
+          "original": "../logger/index.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/commands/builtins.js",
+          "kind": "import-statement",
+          "original": "./builtins.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/commands/seam.js",
+          "kind": "import-statement",
+          "original": "./seam.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/commands/model.js": {
+      "bytes": 664,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/commands/pi.js": {
+      "bytes": 8194,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/commands/index.js": {
+      "bytes": 337,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/commands/builtins.js",
+          "kind": "import-statement",
+          "original": "./builtins.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/commands/menu.js",
+          "kind": "import-statement",
+          "original": "./menu.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/commands/model.js",
+          "kind": "import-statement",
+          "original": "./model.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/commands/pi.js",
+          "kind": "import-statement",
+          "original": "./pi.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/commands/seam.js",
+          "kind": "import-statement",
+          "original": "./seam.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/auth-menu/doctor.js": {
+      "bytes": 2982,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/auth-menu/login.js": {
+      "bytes": 3698,
+      "imports": [
+        {
+          "path": "node:child_process",
+          "kind": "import-statement",
+          "external": true
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/auth-menu/ansi.js": {
+      "bytes": 3475,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/auth-menu/terminal.js": {
+      "bytes": 594,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/auth-menu/select.js": {
+      "bytes": 6431,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/auth-menu/ansi.js",
+          "kind": "import-statement",
+          "original": "./ansi.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/auth-menu/terminal.js",
+          "kind": "import-statement",
+          "original": "./terminal.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/auth-menu/confirm.js": {
+      "bytes": 746,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/auth-menu/select.js",
+          "kind": "import-statement",
+          "original": "./select.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/auth-menu/terminal.js",
+          "kind": "import-statement",
+          "original": "./terminal.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/auth-menu/menu.js": {
+      "bytes": 2948,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/auth-menu/confirm.js",
+          "kind": "import-statement",
+          "original": "./confirm.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/auth-menu/select.js",
+          "kind": "import-statement",
+          "original": "./select.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/auth-menu/terminal.js",
+          "kind": "import-statement",
+          "original": "./terminal.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/auth-menu/accounts.js": {
+      "bytes": 15204,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/quota/index.js",
+          "kind": "import-statement",
+          "original": "../quota/index.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/store/index.js",
+          "kind": "import-statement",
+          "original": "../store/index.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/auth-menu/doctor.js",
+          "kind": "import-statement",
+          "original": "./doctor.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/auth-menu/login.js",
+          "kind": "import-statement",
+          "original": "./login.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/auth-menu/menu.js",
+          "kind": "import-statement",
+          "original": "./menu.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/auth-menu/opencode-v1.js": {
+      "bytes": 2090,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/auth-menu/index.js": {
+      "bytes": 1007,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/auth-menu/accounts.js",
+          "kind": "import-statement",
+          "original": "./accounts.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/auth-menu/ansi.js",
+          "kind": "import-statement",
+          "original": "./ansi.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/auth-menu/confirm.js",
+          "kind": "import-statement",
+          "original": "./confirm.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/auth-menu/doctor.js",
+          "kind": "import-statement",
+          "original": "./doctor.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/auth-menu/login.js",
+          "kind": "import-statement",
+          "original": "./login.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/auth-menu/menu.js",
+          "kind": "import-statement",
+          "original": "./menu.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/auth-menu/opencode-v1.js",
+          "kind": "import-statement",
+          "original": "./opencode-v1.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/auth-menu/select.js",
+          "kind": "import-statement",
+          "original": "./select.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/auth-menu/terminal.js",
+          "kind": "import-statement",
+          "original": "./terminal.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/envelope.js": {
+      "bytes": 9532,
+      "imports": [],
+      "format": "esm"
+    },
+    "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/socket.js": {
+      "bytes": 11314,
+      "imports": [
+        {
+          "path": "node:net",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/envelope.js",
+          "kind": "import-statement",
+          "original": "./envelope.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/auth.js": {
+      "bytes": 4676,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/socket.js",
+          "kind": "import-statement",
+          "original": "./socket.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/connection-file.js": {
+      "bytes": 3924,
+      "imports": [
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/envelope.js",
+          "kind": "import-statement",
+          "original": "./envelope.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/route-handle.js": {
+      "bytes": 4173,
+      "imports": [],
+      "format": "esm"
+    },
+    "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/client.js": {
+      "bytes": 73019,
+      "imports": [
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:util",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/auth.js",
+          "kind": "import-statement",
+          "original": "./auth.js"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/connection-file.js",
+          "kind": "import-statement",
+          "original": "./connection-file.js"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/envelope.js",
+          "kind": "import-statement",
+          "original": "./envelope.js"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/route-handle.js",
+          "kind": "import-statement",
+          "original": "./route-handle.js"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/socket.js",
+          "kind": "import-statement",
+          "original": "./socket.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/provider.js": {
+      "bytes": 44005,
+      "imports": [
+        {
+          "path": "node:buffer",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/auth.js",
+          "kind": "import-statement",
+          "original": "./auth.js"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/client.js",
+          "kind": "import-statement",
+          "original": "./client.js"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/connection-file.js",
+          "kind": "import-statement",
+          "original": "./connection-file.js"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/envelope.js",
+          "kind": "import-statement",
+          "original": "./envelope.js"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/route-handle.js",
+          "kind": "import-statement",
+          "original": "./route-handle.js"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/socket.js",
+          "kind": "import-statement",
+          "original": "./socket.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/index.js": {
+      "bytes": 1226,
+      "imports": [
+        {
+          "path": "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/client.js",
+          "kind": "import-statement",
+          "original": "./client.js"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/route-handle.js",
+          "kind": "import-statement",
+          "original": "./route-handle.js"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/connection-file.js",
+          "kind": "import-statement",
+          "original": "./connection-file.js"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/envelope.js",
+          "kind": "import-statement",
+          "original": "./envelope.js"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/auth.js",
+          "kind": "import-statement",
+          "original": "./auth.js"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/socket.js",
+          "kind": "import-statement",
+          "original": "./socket.js"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/provider.js",
+          "kind": "import-statement",
+          "original": "./provider.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/detect.js": {
+      "bytes": 5082,
+      "imports": [
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:os",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/index.js",
+          "kind": "import-statement",
+          "original": "@cortexkit/subc-client"
+        }
+      ],
+      "format": "esm"
+    },
+    "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/identity.js": {
+      "bytes": 1008,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        }
+      ],
+      "format": "esm"
+    },
+    "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/ancestor-permissions.js": {
+      "bytes": 2844,
+      "imports": [
+        {
+          "path": "node:async_hooks",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        }
+      ],
+      "format": "esm"
+    },
+    "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/enrollment.js": {
+      "bytes": 2721,
+      "imports": [
+        {
+          "path": "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/ancestor-permissions.js",
+          "kind": "import-statement",
+          "original": "./ancestor-permissions.js"
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        }
+      ],
+      "format": "esm"
+    },
+    "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/handles.js": {
+      "bytes": 14593,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:os",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/ancestor-permissions.js",
+          "kind": "import-statement",
+          "original": "./ancestor-permissions.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/manifest-lock.js": {
+      "bytes": 16734,
+      "imports": [
+        {
+          "path": "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/ancestor-permissions.js",
+          "kind": "import-statement",
+          "original": "./ancestor-permissions.js"
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/handles.js",
+          "kind": "import-statement",
+          "original": "./handles.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/errors.js": {
+      "bytes": 2618,
+      "imports": [],
+      "format": "esm"
+    },
+    "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/wire.js": {
+      "bytes": 21879,
+      "imports": [
+        {
+          "path": "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/index.js",
+          "kind": "import-statement",
+          "original": "@cortexkit/subc-client"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/detect.js",
+          "kind": "import-statement",
+          "original": "./detect.js"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/errors.js",
+          "kind": "import-statement",
+          "original": "./errors.js"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/identity.js",
+          "kind": "import-statement",
+          "original": "./identity.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/index.js": {
+      "bytes": 730,
+      "imports": [
+        {
+          "path": "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/detect.js",
+          "kind": "import-statement",
+          "original": "./detect.js"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/identity.js",
+          "kind": "import-statement",
+          "original": "./identity.js"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/enrollment.js",
+          "kind": "import-statement",
+          "original": "./enrollment.js"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/manifest-lock.js",
+          "kind": "import-statement",
+          "original": "./manifest-lock.js"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/errors.js",
+          "kind": "import-statement",
+          "original": "./errors.js"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/wire.js",
+          "kind": "import-statement",
+          "original": "./wire.js"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/handles.js",
+          "kind": "import-statement",
+          "original": "./handles.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/util/any-signal.js": {
+      "bytes": 1508,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/claustrum/errors.js": {
+      "bytes": 199,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/claustrum/enrollment.js": {
+      "bytes": 31343,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/index.js",
+          "kind": "import-statement",
+          "original": "@cortexkit/claustrum-client"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/fs/index.js",
+          "kind": "import-statement",
+          "original": "../fs/index.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/claustrum/errors.js",
+          "kind": "import-statement",
+          "original": "./errors.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/claustrum/host-slot.js": {
+      "bytes": 3252,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/claustrum/errors.js",
+          "kind": "import-statement",
+          "original": "./errors.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/claustrum/custody.js": {
+      "bytes": 15071,
+      "imports": [
+        {
+          "path": "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/index.js",
+          "kind": "import-statement",
+          "original": "@cortexkit/claustrum-client"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/logger/index.js",
+          "kind": "import-statement",
+          "original": "../logger/index.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/claustrum/enrollment.js",
+          "kind": "import-statement",
+          "original": "./enrollment.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/claustrum/errors.js",
+          "kind": "import-statement",
+          "original": "./errors.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/claustrum/host-slot.js",
+          "kind": "import-statement",
+          "original": "./host-slot.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/claustrum/interlock.js": {
+      "bytes": 1267,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/claustrum/roster.js": {
+      "bytes": 23786,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/fs/index.js",
+          "kind": "import-statement",
+          "original": "../fs/index.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/quota/index.js",
+          "kind": "import-statement",
+          "original": "../quota/index.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/claustrum/errors.js",
+          "kind": "import-statement",
+          "original": "./errors.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/claustrum/interlock.js",
+          "kind": "import-statement",
+          "original": "./interlock.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/claustrum/consumer.js": {
+      "bytes": 12321,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/logger/index.js",
+          "kind": "import-statement",
+          "original": "../logger/index.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/util/any-signal.js",
+          "kind": "import-statement",
+          "original": "../util/any-signal.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/claustrum/custody.js",
+          "kind": "import-statement",
+          "original": "./custody.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/claustrum/errors.js",
+          "kind": "import-statement",
+          "original": "./errors.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/claustrum/roster.js",
+          "kind": "import-statement",
+          "original": "./roster.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/claustrum/index.js": {
+      "bytes": 1967,
+      "imports": [
+        {
+          "path": "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/index.js",
+          "kind": "import-statement",
+          "original": "@cortexkit/claustrum-client"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/index.js",
+          "kind": "import-statement",
+          "original": "@cortexkit/claustrum-client"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/claustrum/consumer.js",
+          "kind": "import-statement",
+          "original": "./consumer.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/claustrum/custody.js",
+          "kind": "import-statement",
+          "original": "./custody.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/claustrum/enrollment.js",
+          "kind": "import-statement",
+          "original": "./enrollment.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/claustrum/errors.js",
+          "kind": "import-statement",
+          "original": "./errors.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/claustrum/host-slot.js",
+          "kind": "import-statement",
+          "original": "./host-slot.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/claustrum/interlock.js",
+          "kind": "import-statement",
+          "original": "./interlock.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/claustrum/roster.js",
+          "kind": "import-statement",
+          "original": "./roster.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/pi-slot/lock.js": {
+      "bytes": 7109,
+      "imports": [
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/pi-slot/slot.js": {
+      "bytes": 13872,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:timers/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/fs/atomic-write.js",
+          "kind": "import-statement",
+          "original": "../fs/atomic-write.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/pi-slot/lock.js",
+          "kind": "import-statement",
+          "original": "./lock.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-embedded/pi-slot/index.js": {
+      "bytes": 138,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/pi-slot/slot.js",
+          "kind": "import-statement",
+          "original": "./slot.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/common-auth-runtime.js": {
+      "bytes": 3338,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-embedded/store/index.js",
+          "kind": "dynamic-import",
+          "original": "./common-auth-embedded/store/index.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/fs/index.js",
+          "kind": "dynamic-import",
+          "original": "./common-auth-embedded/fs/index.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/routing/index.js",
+          "kind": "dynamic-import",
+          "original": "./common-auth-embedded/routing/index.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/quota/index.js",
+          "kind": "dynamic-import",
+          "original": "./common-auth-embedded/quota/index.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/commands/index.js",
+          "kind": "dynamic-import",
+          "original": "./common-auth-embedded/commands/index.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/auth-menu/index.js",
+          "kind": "dynamic-import",
+          "original": "./common-auth-embedded/auth-menu/index.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/claustrum/index.js",
+          "kind": "dynamic-import",
+          "original": "./common-auth-embedded/claustrum/index.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/logger/index.js",
+          "kind": "dynamic-import",
+          "original": "./common-auth-embedded/logger/index.js"
+        },
+        {
+          "path": "../core/dist/common-auth-embedded/pi-slot/index.js",
+          "kind": "dynamic-import",
+          "original": "./common-auth-embedded/pi-slot/index.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/credential-redaction.js": {
+      "bytes": 9255,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/model-types.js": {
+      "bytes": 130,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/project.js": {
+      "bytes": 10817,
+      "imports": [
+        {
+          "path": "../core/dist/agy-transport.js",
+          "kind": "import-statement",
+          "original": "./agy-transport.js"
+        },
+        {
+          "path": "../core/dist/auth.js",
+          "kind": "import-statement",
+          "original": "./auth.js"
+        },
+        {
+          "path": "../core/dist/constants.js",
+          "kind": "import-statement",
+          "original": "./constants.js"
+        },
+        {
+          "path": "../core/dist/fingerprint.js",
+          "kind": "import-statement",
+          "original": "./fingerprint.js"
+        },
+        {
+          "path": "../core/dist/logger.js",
+          "kind": "import-statement",
+          "original": "./logger.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/quota-manager.js": {
+      "bytes": 31121,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../core/dist/fetch-timeout.js",
+          "kind": "import-statement",
+          "original": "./fetch-timeout.js"
+        },
+        {
+          "path": "../core/dist/fingerprint.js",
+          "kind": "import-statement",
+          "original": "./fingerprint.js"
+        },
+        {
+          "path": "../core/dist/logger.js",
+          "kind": "import-statement",
+          "original": "./logger.js"
+        },
+        {
+          "path": "../core/dist/model-registry.js",
+          "kind": "import-statement",
+          "original": "./model-registry.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/transform/claude.js": {
+      "bytes": 12202,
+      "imports": [
+        {
+          "path": "../core/dist/constants.js",
+          "kind": "import-statement",
+          "original": "../constants.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/transform/gemini.js": {
+      "bytes": 19036,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/transform/cross-model-sanitizer.js": {
+      "bytes": 8440,
+      "imports": [
+        {
+          "path": "../core/dist/transform/claude.js",
+          "kind": "import-statement",
+          "original": "./claude.js"
+        },
+        {
+          "path": "../core/dist/transform/gemini.js",
+          "kind": "import-statement",
+          "original": "./gemini.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/transform/model-resolver.js": {
+      "bytes": 17983,
+      "imports": [
+        {
+          "path": "../core/dist/model-registry.js",
+          "kind": "import-statement",
+          "original": "../model-registry.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/transform/index.js": {
+      "bytes": 1199,
+      "imports": [
+        {
+          "path": "../core/dist/transform/claude.js",
+          "kind": "import-statement",
+          "original": "./claude.js"
+        },
+        {
+          "path": "../core/dist/transform/cross-model-sanitizer.js",
+          "kind": "import-statement",
+          "original": "./cross-model-sanitizer.js"
+        },
+        {
+          "path": "../core/dist/transform/gemini.js",
+          "kind": "import-statement",
+          "original": "./gemini.js"
+        },
+        {
+          "path": "../core/dist/transform/model-resolver.js",
+          "kind": "import-statement",
+          "original": "./model-resolver.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/vault-family.js": {
+      "bytes": 818,
+      "imports": [],
+      "format": "esm"
+    },
+    "../core/dist/vault-provider-state.js": {
+      "bytes": 17157,
+      "imports": [
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../core/dist/account-repository-codecs.js",
+          "kind": "import-statement",
+          "original": "./account-repository-codecs.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/vault-account-source.js": {
+      "bytes": 13371,
+      "imports": [
+        {
+          "path": "../core/dist/vault-family.js",
+          "kind": "import-statement",
+          "original": "./vault-family.js"
+        },
+        {
+          "path": "../core/dist/vault-provider-state.js",
+          "kind": "import-statement",
+          "original": "./vault-provider-state.js"
+        },
+        {
+          "path": "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/index.js",
+          "kind": "dynamic-import",
+          "original": "@cortexkit/claustrum-client"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/vault-enrollment-authority.js": {
+      "bytes": 933,
+      "imports": [
+        {
+          "path": "../core/dist/common-auth-runtime.js",
+          "kind": "import-statement",
+          "original": "./common-auth-runtime.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/version.js": {
+      "bytes": 2920,
+      "imports": [
+        {
+          "path": "../core/dist/constants.js",
+          "kind": "import-statement",
+          "original": "./constants.js"
+        },
+        {
+          "path": "../core/dist/fetch-timeout.js",
+          "kind": "import-statement",
+          "original": "./fetch-timeout.js"
+        },
+        {
+          "path": "../core/dist/logger.js",
+          "kind": "import-statement",
+          "original": "./logger.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../core/dist/index.js": {
+      "bytes": 1771,
+      "imports": [
+        {
+          "path": "../core/dist/abort-forwarding.js",
+          "kind": "import-statement",
+          "original": "./abort-forwarding.js"
+        },
+        {
+          "path": "../core/dist/account-identity.js",
+          "kind": "import-statement",
+          "original": "./account-identity.js"
+        },
+        {
+          "path": "../core/dist/account-manager.js",
+          "kind": "import-statement",
+          "original": "./account-manager.js"
+        },
+        {
+          "path": "../core/dist/account-migration.js",
+          "kind": "import-statement",
+          "original": "./account-migration.js"
+        },
+        {
+          "path": "../core/dist/account-repository.js",
+          "kind": "import-statement",
+          "original": "./account-repository.js"
+        },
+        {
+          "path": "../core/dist/account-repository-codecs.js",
+          "kind": "import-statement",
+          "original": "./account-repository-codecs.js"
+        },
+        {
+          "path": "../core/dist/account-repository-types.js",
+          "kind": "import-statement",
+          "original": "./account-repository-types.js"
+        },
+        {
+          "path": "../core/dist/account-selector.js",
+          "kind": "import-statement",
+          "original": "./account-selector.js"
+        },
+        {
+          "path": "../core/dist/account-storage.js",
+          "kind": "import-statement",
+          "original": "./account-storage.js"
+        },
+        {
+          "path": "../core/dist/account-types.js",
+          "kind": "import-statement",
+          "original": "./account-types.js"
+        },
+        {
+          "path": "../core/dist/agy-request-metadata.js",
+          "kind": "import-statement",
+          "original": "./agy-request-metadata.js"
+        },
+        {
+          "path": "../core/dist/agy-transport.js",
+          "kind": "import-statement",
+          "original": "./agy-transport.js"
+        },
+        {
+          "path": "../core/dist/antigravity/oauth.js",
+          "kind": "import-statement",
+          "original": "./antigravity/oauth.js"
+        },
+        {
+          "path": "../core/dist/antigravity-command-menu.js",
+          "kind": "import-statement",
+          "original": "./antigravity-command-menu.js"
+        },
+        {
+          "path": "../core/dist/atomic-write.js",
+          "kind": "import-statement",
+          "original": "./atomic-write.js"
+        },
+        {
+          "path": "../core/dist/auth.js",
+          "kind": "import-statement",
+          "original": "./auth.js"
+        },
+        {
+          "path": "../core/dist/auth-types.js",
+          "kind": "import-statement",
+          "original": "./auth-types.js"
+        },
+        {
+          "path": "../core/dist/common-auth-runtime.js",
+          "kind": "import-statement",
+          "original": "./common-auth-runtime.js"
+        },
+        {
+          "path": "../core/dist/constants.js",
+          "kind": "import-statement",
+          "original": "./constants.js"
+        },
+        {
+          "path": "../core/dist/credential-redaction.js",
+          "kind": "import-statement",
+          "original": "./credential-redaction.js"
+        },
+        {
+          "path": "../core/dist/fetch-timeout.js",
+          "kind": "import-statement",
+          "original": "./fetch-timeout.js"
+        },
+        {
+          "path": "../core/dist/file-lock.js",
+          "kind": "import-statement",
+          "original": "./file-lock.js"
+        },
+        {
+          "path": "../core/dist/fingerprint.js",
+          "kind": "import-statement",
+          "original": "./fingerprint.js"
+        },
+        {
+          "path": "../core/dist/logger.js",
+          "kind": "import-statement",
+          "original": "./logger.js"
+        },
+        {
+          "path": "../core/dist/model-registry.js",
+          "kind": "import-statement",
+          "original": "./model-registry.js"
+        },
+        {
+          "path": "../core/dist/model-types.js",
+          "kind": "import-statement",
+          "original": "./model-types.js"
+        },
+        {
+          "path": "../core/dist/project.js",
+          "kind": "import-statement",
+          "original": "./project.js"
+        },
+        {
+          "path": "../core/dist/quota-manager.js",
+          "kind": "import-statement",
+          "original": "./quota-manager.js"
+        },
+        {
+          "path": "../core/dist/quota-presentation.js",
+          "kind": "import-statement",
+          "original": "./quota-presentation.js"
+        },
+        {
+          "path": "../core/dist/quota-types.js",
+          "kind": "import-statement",
+          "original": "./quota-types.js"
+        },
+        {
+          "path": "../core/dist/rotation.js",
+          "kind": "import-statement",
+          "original": "./rotation.js"
+        },
+        {
+          "path": "../core/dist/transform/index.js",
+          "kind": "import-statement",
+          "original": "./transform/index.js"
+        },
+        {
+          "path": "../core/dist/vault-account-source.js",
+          "kind": "import-statement",
+          "original": "./vault-account-source.js"
+        },
+        {
+          "path": "../core/dist/vault-enrollment-authority.js",
+          "kind": "import-statement",
+          "original": "./vault-enrollment-authority.js"
+        },
+        {
+          "path": "../core/dist/vault-family.js",
+          "kind": "import-statement",
+          "original": "./vault-family.js"
+        },
+        {
+          "path": "../core/dist/vault-provider-state.js",
+          "kind": "import-statement",
+          "original": "./vault-provider-state.js"
+        },
+        {
+          "path": "../core/dist/version.js",
+          "kind": "import-statement",
+          "original": "./version.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/antigravity/oauth.ts": {
+      "bytes": 129,
+      "imports": [
+        {
+          "path": "../core/dist/index.js",
+          "kind": "import-statement",
+          "original": "@cortexkit/antigravity-auth-core"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/plugin/oauth-login.ts": {
+      "bytes": 2125,
+      "imports": [],
+      "format": "esm"
+    },
+    "src/plugin/auth.ts": {
+      "bytes": 124,
+      "imports": [
+        {
+          "path": "../core/dist/index.js",
+          "kind": "import-statement",
+          "original": "@cortexkit/antigravity-auth-core"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/common-auth-embedded/logger/capture-sink.js": {
+      "bytes": 249,
+      "imports": [],
+      "format": "esm"
+    },
+    "src/common-auth-embedded/logger/redact.js": {
+      "bytes": 3989,
+      "imports": [],
+      "format": "esm"
+    },
+    "src/common-auth-embedded/logger/engine.js": {
+      "bytes": 7925,
+      "imports": [
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "src/common-auth-embedded/logger/redact.js",
+          "kind": "import-statement",
+          "original": "./redact.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/common-auth-embedded/logger/index.js": {
+      "bytes": 261,
+      "imports": [
+        {
+          "path": "src/common-auth-embedded/logger/capture-sink.js",
+          "kind": "import-statement",
+          "original": "./capture-sink.js"
+        },
+        {
+          "path": "src/common-auth-embedded/logger/engine.js",
+          "kind": "import-statement",
+          "original": "./engine.js"
+        },
+        {
+          "path": "src/common-auth-embedded/logger/redact.js",
+          "kind": "import-statement",
+          "original": "./redact.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/logging/provider-key-policy.ts": {
+      "bytes": 604,
+      "imports": [],
+      "format": "esm"
+    },
+    "src/plugin/logging-utils.ts": {
+      "bytes": 6188,
+      "imports": [],
+      "format": "esm"
+    },
+    "src/plugin/debug.ts": {
+      "bytes": 26702,
+      "imports": [
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:os",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:process",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "src/plugin/logging-utils.ts",
+          "kind": "import-statement",
+          "original": "./logging-utils"
+        },
+        {
+          "path": "src/plugin/storage.ts",
+          "kind": "import-statement",
+          "original": "./storage"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/plugin/logger.ts": {
+      "bytes": 8622,
+      "imports": [
+        {
+          "path": "../core/dist/index.js",
+          "kind": "import-statement",
+          "original": "@cortexkit/antigravity-auth-core"
+        },
+        {
+          "path": "src/common-auth-embedded/logger/index.js",
+          "kind": "import-statement",
+          "original": "../common-auth-embedded/logger/index.js"
+        },
+        {
+          "path": "src/logging/provider-key-policy.ts",
+          "kind": "import-statement",
+          "original": "../logging/provider-key-policy"
+        },
+        {
+          "path": "src/plugin/debug.ts",
+          "kind": "import-statement",
+          "original": "./debug"
+        },
+        {
+          "path": "src/plugin/logging-utils.ts",
+          "kind": "import-statement",
+          "original": "./logging-utils"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/plugin/storage.ts": {
+      "bytes": 23165,
+      "imports": [
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:os",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../core/dist/index.js",
+          "kind": "import-statement",
+          "original": "@cortexkit/antigravity-auth-core"
+        },
+        {
+          "path": "src/plugin/logger.ts",
+          "kind": "import-statement",
+          "original": "./logger"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/plugin/persist-account-pool.ts": {
+      "bytes": 11313,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../core/dist/index.js",
+          "kind": "import-statement",
+          "original": "@cortexkit/antigravity-auth-core"
+        },
+        {
+          "path": "src/plugin/auth.ts",
+          "kind": "import-statement",
+          "original": "./auth"
+        },
+        {
+          "path": "src/plugin/storage.ts",
+          "kind": "import-statement",
+          "original": "./storage"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/tui/host-api.ts": {
+      "bytes": 18776,
+      "imports": [],
+      "format": "esm"
+    },
+    "src/constants.ts": {
+      "bytes": 451,
+      "imports": [
+        {
+          "path": "../core/dist/index.js",
+          "kind": "import-statement",
+          "original": "@cortexkit/antigravity-auth-core"
+        },
+        {
+          "path": "src/tui/host-api.ts",
+          "kind": "import-statement",
+          "original": "./tui/host-api"
+        }
+      ],
+      "format": "esm"
+    },
+    "../../node_modules/.bun/xdg-basedir@5.1.0/node_modules/xdg-basedir/index.js": {
+      "bytes": 946,
+      "imports": [
+        {
+          "path": "os",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "path",
+          "kind": "import-statement",
+          "external": true
+        }
+      ],
+      "format": "esm"
+    },
+    "src/sidebar-state.ts": {
+      "bytes": 35984,
+      "imports": [
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:os",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../core/dist/atomic-write.js",
+          "kind": "import-statement",
+          "original": "@cortexkit/antigravity-auth-core/atomic-write"
+        },
+        {
+          "path": "../core/dist/file-lock.js",
+          "kind": "import-statement",
+          "original": "@cortexkit/antigravity-auth-core/file-lock"
+        },
+        {
+          "path": "../../node_modules/.bun/xdg-basedir@5.1.0/node_modules/xdg-basedir/index.js",
+          "kind": "import-statement",
+          "original": "xdg-basedir"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/plugin/project.ts": {
+      "bytes": 127,
+      "imports": [
+        {
+          "path": "../core/dist/index.js",
+          "kind": "import-statement",
+          "original": "@cortexkit/antigravity-auth-core"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/plugin/shared/local-grant.ts": {
+      "bytes": 1404,
+      "imports": [],
+      "format": "esm"
+    },
+    "src/plugin/token.ts": {
+      "bytes": 8181,
+      "imports": [
+        {
+          "path": "../core/dist/index.js",
+          "kind": "import-statement",
+          "original": "@cortexkit/antigravity-auth-core"
+        },
+        {
+          "path": "src/constants.ts",
+          "kind": "import-statement",
+          "original": "../constants"
+        },
+        {
+          "path": "src/plugin/auth.ts",
+          "kind": "import-statement",
+          "original": "./auth"
+        },
+        {
+          "path": "src/plugin/logger.ts",
+          "kind": "import-statement",
+          "original": "./logger"
+        },
+        {
+          "path": "src/plugin/project.ts",
+          "kind": "import-statement",
+          "original": "./project"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/plugin/accounts.ts": {
+      "bytes": 10283,
+      "imports": [
+        {
+          "path": "../core/dist/index.js",
+          "kind": "import-statement",
+          "original": "@cortexkit/antigravity-auth-core"
+        },
+        {
+          "path": "src/plugin/debug.ts",
+          "kind": "import-statement",
+          "original": "./debug"
+        },
+        {
+          "path": "src/plugin/project.ts",
+          "kind": "import-statement",
+          "original": "./project"
+        },
+        {
+          "path": "src/plugin/shared/local-grant.ts",
+          "kind": "import-statement",
+          "original": "./shared/local-grant"
+        },
+        {
+          "path": "src/plugin/storage.ts",
+          "kind": "import-statement",
+          "original": "./storage"
+        },
+        {
+          "path": "src/plugin/token.ts",
+          "kind": "import-statement",
+          "original": "./token"
+        },
+        {
+          "path": "../core/dist/index.js",
+          "kind": "import-statement",
+          "original": "@cortexkit/antigravity-auth-core"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/plugin/fingerprint.ts": {
+      "bytes": 123,
+      "imports": [
+        {
+          "path": "../core/dist/index.js",
+          "kind": "import-statement",
+          "original": "@cortexkit/antigravity-auth-core"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/plugin/quota.ts": {
+      "bytes": 66528,
+      "imports": [
+        {
+          "path": "../core/dist/index.js",
+          "kind": "import-statement",
+          "original": "@cortexkit/antigravity-auth-core"
+        },
+        {
+          "path": "src/constants.ts",
+          "kind": "import-statement",
+          "original": "../constants"
+        },
+        {
+          "path": "src/sidebar-state.ts",
+          "kind": "import-statement",
+          "original": "../sidebar-state"
+        },
+        {
+          "path": "src/plugin/accounts.ts",
+          "kind": "import-statement",
+          "original": "./accounts"
+        },
+        {
+          "path": "src/plugin/auth.ts",
+          "kind": "import-statement",
+          "original": "./auth"
+        },
+        {
+          "path": "src/plugin/debug.ts",
+          "kind": "import-statement",
+          "original": "./debug"
+        },
+        {
+          "path": "src/plugin/fingerprint.ts",
+          "kind": "import-statement",
+          "original": "./fingerprint"
+        },
+        {
+          "path": "src/plugin/logger.ts",
+          "kind": "import-statement",
+          "original": "./logger"
+        },
+        {
+          "path": "src/plugin/project.ts",
+          "kind": "import-statement",
+          "original": "./project"
+        },
+        {
+          "path": "src/plugin/token.ts",
+          "kind": "import-statement",
+          "original": "./token"
+        },
+        {
+          "path": "../core/dist/index.js",
+          "kind": "import-statement",
+          "original": "@cortexkit/antigravity-auth-core"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/plugin/server.ts": {
+      "bytes": 10869,
+      "imports": [
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:http",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "src/constants.ts",
+          "kind": "import-statement",
+          "original": "../constants"
+        }
+      ],
+      "format": "esm"
+    },
+    "src/cli.ts": {
+      "bytes": 18800,
+      "imports": [
+        {
+          "path": "node:child_process",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:readline/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:util",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../core/dist/index.js",
+          "kind": "import-statement",
+          "original": "@cortexkit/antigravity-auth-core"
+        },
+        {
+          "path": "src/antigravity/oauth.ts",
+          "kind": "import-statement",
+          "original": "./antigravity/oauth"
+        },
+        {
+          "path": "src/plugin/oauth-login.ts",
+          "kind": "import-statement",
+          "original": "./plugin/oauth-login"
+        },
+        {
+          "path": "src/plugin/persist-account-pool.ts",
+          "kind": "import-statement",
+          "original": "./plugin/persist-account-pool"
+        },
+        {
+          "path": "src/plugin/quota.ts",
+          "kind": "import-statement",
+          "original": "./plugin/quota"
+        },
+        {
+          "path": "src/plugin/server.ts",
+          "kind": "import-statement",
+          "original": "./plugin/server"
+        },
+        {
+          "path": "src/plugin/storage.ts",
+          "kind": "import-statement",
+          "original": "./plugin/storage"
+        }
+      ],
+      "format": "esm"
+    }
+  },
+  "outputs": {
+    "dist/cli.js.map": {
+      "imports": [],
+      "exports": [],
+      "inputs": {},
+      "bytes": 2119772
+    },
+    "dist/cli.js": {
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:async_hooks",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:timers/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:util",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:child_process",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:net",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:util",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:os",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:async_hooks",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:timers/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:child_process",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:readline/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:util",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:util",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:util",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:buffer",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:net",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:stream",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:tls",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:zlib",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:os",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:os",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:process",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "os",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:http",
+          "kind": "import-statement",
+          "external": true
+        }
+      ],
+      "exports": [
+        "cliAccountOf",
+        "createDefaultAccountStoreOperations",
+        "createDefaultCliDependencies",
+        "performOAuthLogin",
+        "runCli"
+      ],
+      "entryPoint": "src/cli.ts",
+      "inputs": {
+        "../core/dist/common-auth-embedded/quota/map.js": {
+          "bytesInOutput": 2506
+        },
+        "../core/dist/common-auth-embedded/quota/merge.js": {
+          "bytesInOutput": 4803
+        },
+        "../core/dist/common-auth-embedded/quota/codec.js": {
+          "bytesInOutput": 264
+        },
+        "../core/dist/common-auth-embedded/quota/format.js": {
+          "bytesInOutput": 3042
+        },
+        "../core/dist/common-auth-embedded/quota/projection.js": {
+          "bytesInOutput": 3413
+        },
+        "../core/dist/common-auth-embedded/quota/index.js": {
+          "bytesInOutput": 1020
+        },
+        "../core/dist/common-auth-embedded/store/errors.js": {
+          "bytesInOutput": 1072
+        },
+        "../core/dist/common-auth-embedded/store/identity.js": {
+          "bytesInOutput": 1793
+        },
+        "../core/dist/common-auth-embedded/fs/atomic-write.js": {
+          "bytesInOutput": 2121
+        },
+        "../core/dist/common-auth-embedded/fs/refresh-file-lock.js": {
+          "bytesInOutput": 13782
+        },
+        "../core/dist/common-auth-embedded/fs/with-lock.js": {
+          "bytesInOutput": 1492
+        },
+        "../core/dist/common-auth-embedded/store/hooks.js": {
+          "bytesInOutput": 869
+        },
+        "../core/dist/common-auth-embedded/store/refresh-lock.js": {
+          "bytesInOutput": 3411
+        },
+        "../core/dist/common-auth-embedded/store/reserved.js": {
+          "bytesInOutput": 478
+        },
+        "../core/dist/common-auth-embedded/store/schema.js": {
+          "bytesInOutput": 19709
+        },
+        "../core/dist/common-auth-embedded/store/torn.js": {
+          "bytesInOutput": 5914
+        },
+        "../core/dist/common-auth-embedded/store/mutate.js": {
+          "bytesInOutput": 16367
+        },
+        "../core/dist/common-auth-embedded/store/runtime.js": {
+          "bytesInOutput": 1937
+        },
+        "../core/dist/common-auth-embedded/store/attribution.js": {
+          "bytesInOutput": 2184
+        },
+        "../core/dist/common-auth-embedded/store/provider-state.js": {
+          "bytesInOutput": 6820
+        },
+        "../core/dist/common-auth-embedded/store/rows.js": {
+          "bytesInOutput": 40355
+        },
+        "../core/dist/common-auth-embedded/store/publication.js": {
+          "bytesInOutput": 12554
+        },
+        "../core/dist/common-auth-embedded/store/pull.js": {
+          "bytesInOutput": 3973
+        },
+        "../core/dist/common-auth-embedded/store/refresh.js": {
+          "bytesInOutput": 7768
+        },
+        "../core/dist/common-auth-embedded/store/settings.js": {
+          "bytesInOutput": 3428
+        },
+        "../core/dist/common-auth-embedded/store/pool.js": {
+          "bytesInOutput": 4446
+        },
+        "../core/dist/common-auth-embedded/store/index.js": {
+          "bytesInOutput": 1050
+        },
+        "../core/dist/common-auth-embedded/fs/lock-constants.js": {
+          "bytesInOutput": 476
+        },
+        "../core/dist/common-auth-embedded/fs/index.js": {
+          "bytesInOutput": 620
+        },
+        "../core/dist/common-auth-embedded/routing/admission.js": {
+          "bytesInOutput": 3586
+        },
+        "../core/dist/common-auth-embedded/routing/ordered.js": {
+          "bytesInOutput": 1598
+        },
+        "../core/dist/common-auth-embedded/routing/pins.js": {
+          "bytesInOutput": 771
+        },
+        "../core/dist/common-auth-embedded/routing/sticky.js": {
+          "bytesInOutput": 9749
+        },
+        "../core/dist/common-auth-embedded/routing/index.js": {
+          "bytesInOutput": 1041
+        },
+        "../core/dist/common-auth-embedded/logger/capture-sink.js": {
+          "bytesInOutput": 343
+        },
+        "../core/dist/common-auth-embedded/logger/redact.js": {
+          "bytesInOutput": 2903
+        },
+        "../core/dist/common-auth-embedded/logger/engine.js": {
+          "bytesInOutput": 5216
+        },
+        "../core/dist/common-auth-embedded/logger/index.js": {
+          "bytesInOutput": 645
+        },
+        "../core/dist/common-auth-embedded/commands/seam.js": {
+          "bytesInOutput": 7552
+        },
+        "../core/dist/common-auth-embedded/commands/builtins.js": {
+          "bytesInOutput": 15421
+        },
+        "../core/dist/common-auth-embedded/commands/menu.js": {
+          "bytesInOutput": 9322
+        },
+        "../core/dist/common-auth-embedded/commands/model.js": {
+          "bytesInOutput": 275
+        },
+        "../core/dist/common-auth-embedded/commands/pi.js": {
+          "bytesInOutput": 5710
+        },
+        "../core/dist/common-auth-embedded/commands/index.js": {
+          "bytesInOutput": 727
+        },
+        "../core/dist/common-auth-embedded/auth-menu/doctor.js": {
+          "bytesInOutput": 2328
+        },
+        "../core/dist/common-auth-embedded/auth-menu/login.js": {
+          "bytesInOutput": 1938
+        },
+        "../core/dist/common-auth-embedded/auth-menu/ansi.js": {
+          "bytesInOutput": 2655
+        },
+        "../core/dist/common-auth-embedded/auth-menu/terminal.js": {
+          "bytesInOutput": 398
+        },
+        "../core/dist/common-auth-embedded/auth-menu/select.js": {
+          "bytesInOutput": 5123
+        },
+        "../core/dist/common-auth-embedded/auth-menu/confirm.js": {
+          "bytesInOutput": 516
+        },
+        "../core/dist/common-auth-embedded/auth-menu/menu.js": {
+          "bytesInOutput": 2370
+        },
+        "../core/dist/common-auth-embedded/auth-menu/accounts.js": {
+          "bytesInOutput": 11233
+        },
+        "../core/dist/common-auth-embedded/auth-menu/opencode-v1.js": {
+          "bytesInOutput": 620
+        },
+        "../core/dist/common-auth-embedded/auth-menu/index.js": {
+          "bytesInOutput": 1702
+        },
+        "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/envelope.js": {
+          "bytesInOutput": 8081
+        },
+        "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/socket.js": {
+          "bytesInOutput": 10276
+        },
+        "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/auth.js": {
+          "bytesInOutput": 3527
+        },
+        "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/connection-file.js": {
+          "bytesInOutput": 3146
+        },
+        "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/route-handle.js": {
+          "bytesInOutput": 3775
+        },
+        "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/client.js": {
+          "bytesInOutput": 53001
+        },
+        "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/provider.js": {
+          "bytesInOutput": 280
+        },
+        "../../node_modules/.bun/@cortexkit+subc-client@0.16.1/node_modules/@cortexkit/subc-client/dist/index.js": {
+          "bytesInOutput": 294
+        },
+        "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/detect.js": {
+          "bytesInOutput": 2854
+        },
+        "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/identity.js": {
+          "bytesInOutput": 1124
+        },
+        "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/ancestor-permissions.js": {
+          "bytesInOutput": 2382
+        },
+        "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/enrollment.js": {
+          "bytesInOutput": 2171
+        },
+        "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/handles.js": {
+          "bytesInOutput": 558
+        },
+        "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/manifest-lock.js": {
+          "bytesInOutput": 223
+        },
+        "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/errors.js": {
+          "bytesInOutput": 2108
+        },
+        "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/wire.js": {
+          "bytesInOutput": 18983
+        },
+        "../../node_modules/.bun/@cortexkit+claustrum-client@0.6.2/node_modules/@cortexkit/claustrum-client/dist/index.js": {
+          "bytesInOutput": 301
+        },
+        "../core/dist/common-auth-embedded/util/any-signal.js": {
+          "bytesInOutput": 1146
+        },
+        "../core/dist/common-auth-embedded/claustrum/errors.js": {
+          "bytesInOutput": 352
+        },
+        "../core/dist/common-auth-embedded/claustrum/enrollment.js": {
+          "bytesInOutput": 23060
+        },
+        "../core/dist/common-auth-embedded/claustrum/host-slot.js": {
+          "bytesInOutput": 2152
+        },
+        "../core/dist/common-auth-embedded/claustrum/custody.js": {
+          "bytesInOutput": 12704
+        },
+        "../core/dist/common-auth-embedded/claustrum/interlock.js": {
+          "bytesInOutput": 981
+        },
+        "../core/dist/common-auth-embedded/claustrum/roster.js": {
+          "bytesInOutput": 16057
+        },
+        "../core/dist/common-auth-embedded/claustrum/consumer.js": {
+          "bytesInOutput": 10485
+        },
+        "../core/dist/common-auth-embedded/claustrum/index.js": {
+          "bytesInOutput": 2747
+        },
+        "../core/dist/common-auth-embedded/pi-slot/lock.js": {
+          "bytesInOutput": 4737
+        },
+        "../core/dist/common-auth-embedded/pi-slot/slot.js": {
+          "bytesInOutput": 11179
+        },
+        "../core/dist/common-auth-embedded/pi-slot/index.js": {
+          "bytesInOutput": 252
+        },
+        "src/cli.ts": {
+          "bytesInOutput": 13914
+        },
+        "../core/dist/abort-forwarding.js": {
+          "bytesInOutput": 440
+        },
+        "../core/dist/index.js": {
+          "bytesInOutput": 0
+        },
+        "../core/dist/account-identity.js": {
+          "bytesInOutput": 1031
+        },
+        "../core/dist/account-repository.js": {
+          "bytesInOutput": 72982
+        },
+        "../core/dist/account-migration.js": {
+          "bytesInOutput": 93887
+        },
+        "../core/dist/account-repository-types.js": {
+          "bytesInOutput": 1238
+        },
+        "../core/dist/account-repository-codecs.js": {
+          "bytesInOutput": 17043
+        },
+        "../core/dist/fingerprint.js": {
+          "bytesInOutput": 1374
+        },
+        "../core/dist/model-registry.js": {
+          "bytesInOutput": 9194
+        },
+        "../core/dist/account-selector.js": {
+          "bytesInOutput": 55
+        },
+        "../core/dist/account-storage.js": {
+          "bytesInOutput": 13717
+        },
+        "../core/dist/atomic-write.js": {
+          "bytesInOutput": 798
+        },
+        "../core/dist/file-lock.js": {
+          "bytesInOutput": 10224
+        },
+        "../core/dist/logger.js": {
+          "bytesInOutput": 1240
+        },
+        "../core/dist/auth.js": {
+          "bytesInOutput": 977
+        },
+        "../core/dist/account-manager.js": {
+          "bytesInOutput": 0
+        },
+        "../core/dist/agy-request-metadata.js": {
+          "bytesInOutput": 55
+        },
+        "../core/dist/agy-transport.js": {
+          "bytesInOutput": 15019
+        },
+        "../core/dist/antigravity/oauth.js": {
+          "bytesInOutput": 6419
+        },
+        "../core/dist/constants.js": {
+          "bytesInOutput": 2087
+        },
+        "../core/dist/fetch-timeout.js": {
+          "bytesInOutput": 3144
+        },
+        "../core/dist/quota-presentation.js": {
+          "bytesInOutput": 14
+        },
+        "../core/dist/common-auth-runtime.js": {
+          "bytesInOutput": 1340
+        },
+        "../core/dist/project.js": {
+          "bytesInOutput": 7709
+        },
+        "../core/dist/quota-manager.js": {
+          "bytesInOutput": 19079
+        },
+        "../core/dist/transform/index.js": {
+          "bytesInOutput": 0
+        },
+        "../core/dist/transform/model-resolver.js": {
+          "bytesInOutput": 43
+        },
+        "../core/dist/vault-family.js": {
+          "bytesInOutput": 265
+        },
+        "../core/dist/vault-provider-state.js": {
+          "bytesInOutput": 299
+        },
+        "src/antigravity/oauth.ts": {
+          "bytesInOutput": 0
+        },
+        "src/plugin/oauth-login.ts": {
+          "bytesInOutput": 1201
+        },
+        "src/plugin/auth.ts": {
+          "bytesInOutput": 0
+        },
+        "src/plugin/storage.ts": {
+          "bytesInOutput": 6115
+        },
+        "src/common-auth-embedded/logger/index.js": {
+          "bytesInOutput": 0
+        },
+        "src/common-auth-embedded/logger/engine.js": {
+          "bytesInOutput": 4513
+        },
+        "src/common-auth-embedded/logger/redact.js": {
+          "bytesInOutput": 2712
+        },
+        "src/logging/provider-key-policy.ts": {
+          "bytesInOutput": 197
+        },
+        "src/plugin/debug.ts": {
+          "bytesInOutput": 14089
+        },
+        "src/plugin/logging-utils.ts": {
+          "bytesInOutput": 3596
+        },
+        "src/plugin/logger.ts": {
+          "bytesInOutput": 3121
+        },
+        "src/plugin/persist-account-pool.ts": {
+          "bytesInOutput": 3053
+        },
+        "src/constants.ts": {
+          "bytesInOutput": 0
+        },
+        "../../node_modules/.bun/xdg-basedir@5.1.0/node_modules/xdg-basedir/index.js": {
+          "bytesInOutput": 868
+        },
+        "src/sidebar-state.ts": {
+          "bytesInOutput": 95
+        },
+        "src/plugin/project.ts": {
+          "bytesInOutput": 0
+        },
+        "src/plugin/token.ts": {
+          "bytesInOutput": 3970
+        },
+        "src/plugin/accounts.ts": {
+          "bytesInOutput": 0
+        },
+        "src/plugin/fingerprint.ts": {
+          "bytesInOutput": 0
+        },
+        "src/plugin/quota.ts": {
+          "bytesInOutput": 8396
+        },
+        "src/plugin/server.ts": {
+          "bytesInOutput": 8214
+        }
+      },
+      "bytes": 821980
+    }
+  }
+}

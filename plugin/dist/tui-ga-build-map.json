@@ -1,0 +1,187 @@
+{
+  "schema": 1,
+  "compiler": "@cortexkit/common-auth/tui-build@0.14.2",
+  "bun": "1.4.2",
+  "raw": {
+    "selector": "selector.js",
+    "externals": [
+      "solid-js"
+    ],
+    "files": [
+      {
+        "source": "src/common-auth-embedded/quota/map.js",
+        "output": "src/tui-ga-raw/shared/77138df80c7ae006-map.js",
+        "bytes": 4271,
+        "sha256": "61fb25c789389e57ff8cceb450f6872c2b6e4961cec3c4650f6af699ab5a27f2",
+        "transform": "public-raw"
+      },
+      {
+        "source": "src/common-auth-embedded/quota/merge.js",
+        "output": "src/tui-ga-raw/shared/ecc214300932dfb6-merge.js",
+        "bytes": 6530,
+        "sha256": "f3188832c0cd87c6aa9e95643562403af0a9cbada3146c23fb6aa5bf1d6213c1",
+        "transform": "public-raw"
+      },
+      {
+        "source": "src/common-auth-embedded/quota/codec.js",
+        "output": "src/tui-ga-raw/shared/ca21dc417b36dc5d-codec.js",
+        "bytes": 481,
+        "sha256": "cee2b513848c321a0a1f1e63f541c780e4e9dfb3707a6d13ad16512a69b30e87",
+        "transform": "public-raw"
+      },
+      {
+        "source": "src/common-auth-embedded/quota/format.js",
+        "output": "src/tui-ga-raw/shared/aef2402f8fc342f0-format.js",
+        "bytes": 5836,
+        "sha256": "b271d2ca390d705ce12f299e5c57e26d4c9a9fecc0d036eacc075713653a88c1",
+        "transform": "public-raw"
+      },
+      {
+        "source": "src/common-auth-embedded/quota/projection.js",
+        "output": "src/tui-ga-raw/shared/1ff34afa7c42d196-projection.js",
+        "bytes": 5526,
+        "sha256": "3a9714f112d5960dd7a9b9f703533e788bf6c204c9d42584a48072a989d70317",
+        "transform": "public-raw"
+      },
+      {
+        "source": "src/common-auth-embedded/quota/index.js",
+        "output": "src/tui-ga-raw/shared/bf17cbee28e58197-index.js",
+        "bytes": 548,
+        "sha256": "72d2e78a0d7c7155720db25b45605a621d5fc109d9ee51fa34b14f53790b3270",
+        "transform": "public-raw"
+      },
+      {
+        "source": "src/quota-presentation.ts",
+        "output": "src/tui-ga-raw/shared/98cc0c186c46c42d-quota-presentation.js",
+        "bytes": 1744,
+        "sha256": "d7654d82635dc30ddf267656981a1d3830300334166a1dd714e3d093b929ebb5",
+        "transform": "public-raw"
+      },
+      {
+        "source": "src/sidebar-projection.ts",
+        "output": "src/tui-ga-raw/shared/8ae1927e5910ea81-sidebar-projection.js",
+        "bytes": 3655,
+        "sha256": "7b5cd300da61536f7bf1ad3a05b7a121758a587d99582681f4fd5171eb462956",
+        "transform": "public-raw"
+      },
+      {
+        "source": "src/tui/host-api.ts",
+        "output": "src/tui-ga-raw/shared/07365a7d2ccade4c-host-api.js",
+        "bytes": 10284,
+        "sha256": "18b63effb779ae5e911060910b1a3c4b810d2b90275acd1ac327417c3d3231af",
+        "transform": "public-raw"
+      },
+      {
+        "source": "src/tui/command-dialogs.tsx",
+        "output": "src/tui-ga-raw/shared/0e19a88ff3535906-command-dialogs.tsx",
+        "bytes": 14698,
+        "sha256": "c97d7b942476301768f4c74e3ba277ed56ab450b3b179dea08d5f561b42ee622",
+        "transform": "public-raw"
+      },
+      {
+        "source": "src/ga/tui/host-ga.tsx",
+        "output": "src/tui-ga-raw/host-ga.tsx",
+        "bytes": 56181,
+        "sha256": "b8ba5ddc6727e5251bbc1f8f0e7ffb259a9c7732dbbc7e9bc567282d412c3de7",
+        "transform": "public-raw"
+      },
+      {
+        "source": "../../tools/common-auth-build/node_modules/@cortexkit/common-auth/dist/tui/index.js",
+        "output": "src/tui-ga-raw/selector.js",
+        "bytes": 950,
+        "sha256": "c9a1e381382128b64eea0b3b049beb1b210cb68e768ea04683662b8b1a73bbb1",
+        "transform": "verbatim-selector"
+      }
+    ]
+  },
+  "runtime": {
+    "selector": "selector.js",
+    "externals": [],
+    "files": [
+      {
+        "source": "src/common-auth-embedded/quota/map.js",
+        "output": "src/tui-ga-compiled/shared/77138df80c7ae006-map.js",
+        "bytes": 4271,
+        "sha256": "61fb25c789389e57ff8cceb450f6872c2b6e4961cec3c4650f6af699ab5a27f2",
+        "transform": "public-solid-runtime"
+      },
+      {
+        "source": "src/common-auth-embedded/quota/merge.js",
+        "output": "src/tui-ga-compiled/shared/ecc214300932dfb6-merge.js",
+        "bytes": 6530,
+        "sha256": "f3188832c0cd87c6aa9e95643562403af0a9cbada3146c23fb6aa5bf1d6213c1",
+        "transform": "public-solid-runtime"
+      },
+      {
+        "source": "src/common-auth-embedded/quota/codec.js",
+        "output": "src/tui-ga-compiled/shared/ca21dc417b36dc5d-codec.js",
+        "bytes": 481,
+        "sha256": "cee2b513848c321a0a1f1e63f541c780e4e9dfb3707a6d13ad16512a69b30e87",
+        "transform": "public-solid-runtime"
+      },
+      {
+        "source": "src/common-auth-embedded/quota/format.js",
+        "output": "src/tui-ga-compiled/shared/aef2402f8fc342f0-format.js",
+        "bytes": 5836,
+        "sha256": "b271d2ca390d705ce12f299e5c57e26d4c9a9fecc0d036eacc075713653a88c1",
+        "transform": "public-solid-runtime"
+      },
+      {
+        "source": "src/common-auth-embedded/quota/projection.js",
+        "output": "src/tui-ga-compiled/shared/1ff34afa7c42d196-projection.js",
+        "bytes": 5526,
+        "sha256": "3a9714f112d5960dd7a9b9f703533e788bf6c204c9d42584a48072a989d70317",
+        "transform": "public-solid-runtime"
+      },
+      {
+        "source": "src/common-auth-embedded/quota/index.js",
+        "output": "src/tui-ga-compiled/shared/bf17cbee28e58197-index.js",
+        "bytes": 548,
+        "sha256": "72d2e78a0d7c7155720db25b45605a621d5fc109d9ee51fa34b14f53790b3270",
+        "transform": "public-solid-runtime"
+      },
+      {
+        "source": "src/quota-presentation.ts",
+        "output": "src/tui-ga-compiled/shared/98cc0c186c46c42d-quota-presentation.js",
+        "bytes": 1744,
+        "sha256": "d7654d82635dc30ddf267656981a1d3830300334166a1dd714e3d093b929ebb5",
+        "transform": "public-solid-runtime"
+      },
+      {
+        "source": "src/sidebar-projection.ts",
+        "output": "src/tui-ga-compiled/shared/8ae1927e5910ea81-sidebar-projection.js",
+        "bytes": 3655,
+        "sha256": "7b5cd300da61536f7bf1ad3a05b7a121758a587d99582681f4fd5171eb462956",
+        "transform": "public-solid-runtime"
+      },
+      {
+        "source": "src/tui/host-api.ts",
+        "output": "src/tui-ga-compiled/shared/07365a7d2ccade4c-host-api.js",
+        "bytes": 10284,
+        "sha256": "18b63effb779ae5e911060910b1a3c4b810d2b90275acd1ac327417c3d3231af",
+        "transform": "public-solid-runtime"
+      },
+      {
+        "source": "src/tui/command-dialogs.tsx",
+        "output": "src/tui-ga-compiled/shared/0e19a88ff3535906-command-dialogs.js",
+        "bytes": 13027,
+        "sha256": "0f03fad2e1c68cf827b44b749807c1760222a577775a37bb500df0f721e6f26a",
+        "transform": "public-solid-runtime"
+      },
+      {
+        "source": "src/ga/tui/host-ga.tsx",
+        "output": "src/tui-ga-compiled/host-ga.js",
+        "bytes": 47782,
+        "sha256": "4335896b2c25c9d7600d2fe31f3e5f21d357c01b6f835bd2e7db2b76f844282e",
+        "transform": "public-solid-runtime"
+      },
+      {
+        "source": "../../tools/common-auth-build/node_modules/@cortexkit/common-auth/dist/tui/index.js",
+        "output": "src/tui-ga-compiled/selector.js",
+        "bytes": 950,
+        "sha256": "c9a1e381382128b64eea0b3b049beb1b210cb68e768ea04683662b8b1a73bbb1",
+        "transform": "verbatim-selector"
+      }
+    ]
+  }
+}

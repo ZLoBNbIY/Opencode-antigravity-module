@@ -1,0 +1,23 @@
+{
+  "name": "opencode-antigravity-module",
+  "version": "1.0.0",
+  "description": "Google Antigravity OAuth integration module and multi-account manager for OpenCode with Gemini 3.8 fixes",
+  "main": "plugin/dist/index.js",
+  "type": "module",
+  "scripts": {
+    "patch": "node scripts/patch_plugin.mjs",
+    "test:stream": "node scripts/test_stream.mjs",
+    "login": "node plugin/dist/cli.js login",
+    "accounts": "node plugin/dist/cli.js accounts list"
+  },
+  "keywords": [
+    "opencode",
+    "gemini",
+    "antigravity",
+    "google-auth",
+    "gemini-3.8",
+    "multi-account"
+  ],
+  "author": "ZLoBNbIY",
+  "license": "MIT"
+}

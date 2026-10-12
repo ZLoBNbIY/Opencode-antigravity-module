@@ -1,0 +1,13 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "@cortexkit/opencode-antigravity-auth@latest"
+  ],
+  "provider": {
+    "google": {
+      "options": {
+        "apiKey": "antigravity"
+      }
+    }
+  }
+}
