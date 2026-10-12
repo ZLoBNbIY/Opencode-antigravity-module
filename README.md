@@ -274,8 +274,22 @@ node scripts/patch_plugin.mjs
 ### Q: Ошибка `412 FAILED_PRECONDITION`
 Эта ошибка означает, что все аккаунты исчерпали квоту защиты. Убедитесь, что в `antigravity.json` установлено `"soft_quota_threshold_percent": 100`, либо добавьте ещё один аккаунт Google через `node plugin/dist/cli.js login`.
 
-### Q: Ошибка `429 Too Many Requests`
-Google временно ограничил частоту запросов на аккаунте (RPM/TPM). При включенном `"switch_on_first_rate_limit": true` плагин автоматически переключится на другой аккаунт. Если аккаунт один — подождите 30-60 секунд до сброса лимита.
+### Q: Ошибка «Недостаточно средств» (Insufficient account funds / QuotaExceeded)
+* **Причина**: В выпадающем списке моделей OpenCode по умолчанию выбран встроенный облачный провайдер **OpenCode Zen** (`opencode/gemini-3.8-flash`), расходующий платный баланс подписки OpenCode, а не бесплатные OAuth-аккаунты Antigravity.
+* **Решение**:
+  1. В левом нижнем углу диалога OpenCode выберите провайдера **Google** и модель:
+     * `google / antigravity-gemini-3.8-flash`
+     * `google / antigravity-claude-sonnet-4-6-thinking`
+  2. В файле `%USERPROFILE%\.config\opencode\opencode.json` установлена настройка по умолчанию:
+     `"model": "google/antigravity-gemini-3.8-flash"` — теперь все новые диалоги сразу используют Antigravity.
+
+### Q: Antigravity Hub не видит статус OpenCode или не может его запустить
+* **Причина**: На некоторых версиях Windows приложение OpenCode Desktop устанавливается в каталог `@opencodedesktop`, а системные процессы регистрируются как `opencode-cli.exe` и `OpenCode.exe`.
+* **Решение**: В последнем обновлении менеджера пути поиска расширены (поддерживаются `@opencodedesktop`, `@opencode-desktop`, `@opencode-aidesktop`), запуск выполняется через нативную системную оболочку `os.startfile`, а статус отслеживает как UI, так и фоновый CLI-сервис.
+
+### Q: Ошибка 412 «Antigravity accounts require offline migration»
+* **Причина**: Начиная с версии 3.0.0, плагин Antigravity перешел на поколенческую систему хранения аккаунтов (`*.generation`), требующую миграции файла `antigravity-accounts.json` и патча Windows `fsync`.
+* **Решение**: Просто запустите `node scripts/patch_plugin.mjs`. Скрипт автоматически найдет все установленные версии плагина в `%USERPROFILE%\.cache\opencode\npm`, наложит Windows-полифилл и выполнит безопасную миграцию хранилища.
 
 ---
 

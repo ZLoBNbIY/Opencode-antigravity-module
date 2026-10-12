@@ -1,4 +1,4 @@
-﻿# OpenCode Antigravity Module Installer
+# OpenCode Antigravity Module Installer
 param(
     [switch]$NoShortcut,
     [switch]$SkipPython,
@@ -221,6 +221,11 @@ if (Test-Path -LiteralPath $OpencodeConfigFile) {
         $raw = Get-Content -LiteralPath $OpencodeConfigFile -Raw -Encoding UTF8
         $cfg = $raw | ConvertFrom-Json
         $modified = $false
+
+        if (-not $cfg.model -or $cfg.model -like "opencode/*") {
+            $cfg | Add-Member -MemberType NoteProperty -Name "model" -Value "google/antigravity-gemini-3.8-flash" -Force
+            $modified = $true
+        }
 
         if (-not $cfg.plugin) {
             $cfg | Add-Member -MemberType NoteProperty -Name "plugin" -Value @($PluginPackageName)

@@ -38,22 +38,41 @@ def get_node_executable():
     return "node"
 
 def get_cli_js():
+    npm_dir = Path.home() / ".cache" / "opencode" / "npm"
+    if npm_dir.exists():
+        matches = list(npm_dir.glob("**/@cortexkit/opencode-antigravity-auth/dist/cli.js"))
+        if matches and matches[0].exists():
+            return str(matches[0])
+        matches_multi = list(npm_dir.glob("**/opencode-antigravity-multi-auth/dist/cli.js"))
+        if matches_multi and matches_multi[0].exists():
+            return str(matches_multi[0])
+
     local_cli = Path(__file__).resolve().parent.parent / "plugin" / "dist" / "cli.js"
     if local_cli.exists():
         return str(local_cli)
+
     cache_cli = Path.home() / ".cache" / "opencode" / "packages" / "@cortexkit" / "opencode-antigravity-auth@latest" / "node_modules" / "@cortexkit" / "opencode-antigravity-auth" / "dist" / "cli.js"
     if cache_cli.exists():
         return str(cache_cli)
     return str(local_cli)
 
 def get_opencode_exe():
-    appdata_exe = Path.home() / "AppData" / "Local" / "Programs" / "@opencode-aidesktop" / "OpenCode.exe"
-    if appdata_exe.exists():
-        return str(appdata_exe)
+    candidates = [
+        Path.home() / "AppData" / "Local" / "Programs" / "@opencodedesktop" / "OpenCode.exe",
+        Path.home() / "AppData" / "Local" / "Programs" / "@opencode-desktop" / "OpenCode.exe",
+        Path.home() / "AppData" / "Local" / "Programs" / "@opencode-aidesktop" / "OpenCode.exe",
+        Path.home() / "AppData" / "Local" / "Programs" / "opencode" / "OpenCode.exe",
+    ]
+    for c in candidates:
+        if c.exists():
+            return str(c)
     which_opencode = shutil.which("opencode")
     if which_opencode:
         return which_opencode
-    return str(appdata_exe)
+    which_opencode_cap = shutil.which("OpenCode")
+    if which_opencode_cap:
+        return which_opencode_cap
+    return str(candidates[0])
 
 NODE_EXE = get_node_executable()
 CLI_JS = get_cli_js()
@@ -1492,10 +1511,11 @@ class AntigravityManagerApp(ctk.CTk):
         def check():
             try:
                 res = run_silent_cmd(
-                    ["tasklist", "/fi", "IMAGENAME eq OpenCode.exe", "/nh"],
+                    ["tasklist", "/nh"],
                     timeout=4
                 )
-                is_running = "opencode.exe" in (res.stdout or "").lower()
+                stdout_lower = (res.stdout or "").lower()
+                is_running = ("opencode.exe" in stdout_lower) or ("opencode-cli.exe" in stdout_lower)
             except Exception:
                 is_running = False
 
@@ -1522,10 +1542,17 @@ class AntigravityManagerApp(ctk.CTk):
 
         def _do_restart():
             run_silent_cmd(["taskkill", "/f", "/im", "OpenCode.exe"], timeout=5)
+            run_silent_cmd(["taskkill", "/f", "/im", "opencode-cli.exe"], timeout=5)
             time.sleep(2)
+            exe = get_opencode_exe()
             try:
-                flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-                subprocess.Popen([OPENCODE_EXE], creationflags=flags)
+                if sys.platform == "win32" and os.path.exists(exe):
+                    os.startfile(exe)
+                elif os.path.exists(exe):
+                    subprocess.Popen([exe], cwd=os.path.dirname(exe))
+                else:
+                    self.after(0, lambda: self.set_status(f"OpenCode.exe не найден: {exe}"))
+                    return
             except Exception as e:
                 print(f"Error starting OpenCode: {e}")
             time.sleep(3)
@@ -1536,17 +1563,24 @@ class AntigravityManagerApp(ctk.CTk):
 
     def stop_opencode_action(self):
         run_silent_cmd(["taskkill", "/f", "/im", "OpenCode.exe"], timeout=5)
+        run_silent_cmd(["taskkill", "/f", "/im", "opencode-cli.exe"], timeout=5)
         self.update_opencode_status()
         self.set_status("OpenCode остановлен")
 
     def start_opencode_action(self):
+        exe = get_opencode_exe()
+        if not os.path.exists(exe):
+            self.set_status(f"OpenCode.exe не найден: {exe}")
+            return
         try:
-            flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-            subprocess.Popen([OPENCODE_EXE], creationflags=flags)
+            if sys.platform == "win32":
+                os.startfile(exe)
+            else:
+                subprocess.Popen([exe], cwd=os.path.dirname(exe))
+            self.set_status("OpenCode запущен")
         except Exception as e:
-            print(f"Error starting OpenCode: {e}")
+            self.set_status(f"Ошибка запуска OpenCode: {e}")
         self.after(3000, self.update_opencode_status)
-        self.set_status("OpenCode запущен")
 
 
 if __name__ == "__main__":

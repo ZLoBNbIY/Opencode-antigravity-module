@@ -10,21 +10,33 @@ function getPluginCandidates() {
   if (process.env.OPENCODE_ANTIGRAVITY_PLUGIN) {
     return [path.resolve(process.env.OPENCODE_ANTIGRAVITY_PLUGIN)];
   }
+  const candidates = [];
   const localPlugin = path.resolve(import.meta.dirname, '..', 'plugin', 'dist', 'index.js');
-  const cachePlugin = path.join(
-    homeDir,
-    '.cache',
-    'opencode',
-    'packages',
-    '@cortexkit',
-    'opencode-antigravity-auth@latest',
-    'node_modules',
-    '@cortexkit',
-    'opencode-antigravity-auth',
-    'dist',
-    'index.js'
-  );
-  return [localPlugin, cachePlugin].filter((candidate) => fs.existsSync(candidate));
+  if (fs.existsSync(localPlugin)) candidates.push(localPlugin);
+
+  // Search npm cache
+  const npmCacheDir = path.join(homeDir, '.cache', 'opencode', 'npm');
+  if (fs.existsSync(npmCacheDir)) {
+    const searchDir = (dir, depth = 0) => {
+      if (depth > 8) return;
+      try {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            const indexFile = path.join(full, 'dist', 'index.js');
+            if (fs.existsSync(indexFile)) {
+              candidates.push(indexFile);
+            } else if (entry.name !== '.bin' && entry.name !== '.git') {
+              searchDir(full, depth + 1);
+            }
+          }
+        }
+      } catch {}
+    };
+    searchDir(npmCacheDir);
+  }
+
+  return [...new Set(candidates)];
 }
 
 async function main() {

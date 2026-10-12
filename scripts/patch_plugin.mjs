@@ -2,34 +2,88 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-// Target search locations
 const homeDir = os.homedir();
-const defaultCachePath = path.join(
-  homeDir,
-  '.cache',
-  'opencode',
-  'packages',
-  '@cortexkit',
-  'opencode-antigravity-auth@latest',
-  'node_modules',
-  '@cortexkit',
-  'opencode-antigravity-auth'
-);
-
 const localPluginPath = path.resolve(import.meta.dirname, '..', 'plugin');
 
-const targetPaths = [];
-if (process.argv[2]) {
-  targetPaths.push(path.resolve(process.argv[2]));
-} else {
-  if (fs.existsSync(localPluginPath)) targetPaths.push(localPluginPath);
-  if (fs.existsSync(defaultCachePath)) targetPaths.push(defaultCachePath);
+function findTargetPaths() {
+  const targets = [];
+  if (process.argv[2]) {
+    targets.push(path.resolve(process.argv[2]));
+    return targets;
+  }
+  if (fs.existsSync(localPluginPath)) {
+    targets.push(localPluginPath);
+  }
+
+  // 1. Search .cache/opencode/npm
+  const npmCacheDir = path.join(homeDir, '.cache', 'opencode', 'npm');
+  if (fs.existsSync(npmCacheDir)) {
+    const searchDir = (dir, depth = 0) => {
+      if (depth > 8) return;
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            if (fs.existsSync(path.join(full, 'dist', 'server.js')) || fs.existsSync(path.join(full, 'dist', 'cli.js'))) {
+              targets.push(full);
+            } else if (entry.name !== '.bin' && entry.name !== '.git') {
+              searchDir(full, depth + 1);
+            }
+          }
+        }
+      } catch {}
+    };
+    searchDir(npmCacheDir);
+  }
+
+  // 2. Search .cache/opencode/packages
+  const packagesCacheDir = path.join(homeDir, '.cache', 'opencode', 'packages');
+  if (fs.existsSync(packagesCacheDir)) {
+    const searchDir = (dir, depth = 0) => {
+      if (depth > 8) return;
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            if (fs.existsSync(path.join(full, 'dist', 'server.js')) || fs.existsSync(path.join(full, 'dist', 'cli.js'))) {
+              targets.push(full);
+            } else if (entry.name !== '.bin' && entry.name !== '.git') {
+              searchDir(full, depth + 1);
+            }
+          }
+        }
+      } catch {}
+    };
+    searchDir(packagesCacheDir);
+  }
+
+  return [...new Set(targets)];
 }
+
+const targetPaths = findTargetPaths();
 
 if (targetPaths.length === 0) {
   console.log('[Patch] No target plugin directory found. Pass path as argument if installed elsewhere.');
   process.exit(0);
 }
+
+const WIN32_FSYNC_POLYFILL = `if (process.platform === "win32") {
+  const __probe = await (await import("node:fs/promises")).open((await import("node:url")).fileURLToPath(import.meta.url), "r");
+  const __proto = Object.getPrototypeOf(__probe);
+  const __origSync = __proto.sync;
+  __proto.sync = async function () {
+    try {
+      return await __origSync.call(this);
+    } catch (__e) {
+      if (__e && (__e.code === "EPERM" || __e.code === "EBADF" || __e.code === "EINVAL")) return;
+      throw __e;
+    }
+  };
+  await __probe.close();
+}
+`;
 
 for (const basePath of targetPaths) {
   console.log(`\n=== Applying patches to: ${basePath} ===`);
@@ -39,6 +93,19 @@ for (const basePath of targetPaths) {
   if (fs.existsSync(cliPath)) {
     let cliContent = fs.readFileSync(cliPath, 'utf8');
     let cliChanged = false;
+
+    // Windows fsync polyfill
+    if (process.platform === 'win32' && !cliContent.includes('__origSync')) {
+      if (cliContent.startsWith('#!/usr/bin/env node')) {
+        const firstLineEnd = cliContent.indexOf('\n') + 1;
+        cliContent = cliContent.slice(0, firstLineEnd) + WIN32_FSYNC_POLYFILL + cliContent.slice(firstLineEnd);
+      } else {
+        cliContent = WIN32_FSYNC_POLYFILL + cliContent;
+      }
+      cliChanged = true;
+      console.log('✓ Patched dist/cli.js (Windows fsync polyfill)');
+    }
+
     const cliTarget = 'if (import.meta.main) {';
     const cliReplacement = 'if (import.meta.main || (typeof process !== "undefined" && process.argv && process.argv[1])) {';
     if (cliContent.includes(cliTarget)) {
@@ -56,6 +123,7 @@ for (const basePath of targetPaths) {
 
     if (cliChanged) {
       fs.writeFileSync(cliPath, cliContent, 'utf8');
+      console.log('✓ Updated dist/cli.js');
     } else {
       console.log('• dist/cli.js is already up to date');
     }
@@ -68,6 +136,13 @@ for (const basePath of targetPaths) {
 
     let content = fs.readFileSync(filePath, 'utf8');
     let changed = false;
+
+    // Windows fsync polyfill
+    if (process.platform === 'win32' && !content.includes('__origSync')) {
+      content = WIN32_FSYNC_POLYFILL + content;
+      changed = true;
+      console.log(`✓ Patched ${file} (Windows fsync polyfill)`);
+    }
 
     // Patch multi-account pool preservation
     const poolTarget = 'request.startFresh && request.accounts.length === 0';
@@ -114,10 +189,6 @@ for (const basePath of targetPaths) {
       content = content.replace(
         'let response = deduplicateThinkingText(\n        parsed.response,',
         'let response = deduplicateThinkingText(\n        respObj,'
-      );
-      content = content.replace(
-        'return {\n        line: `data: ${JSON.stringify(transformed)}`,\n        hasToolCall,\n        hasFinishReason\n      };',
-        'return {\n        line: `data: ${JSON.stringify(transformed)}`,\n        hasToolCall,\n        hasFinishReason\n      };'
       );
       changed = true;
       console.log(`✓ Patched transformSseLineWithMetadata in ${file} (Gemini 3.8 top-level stream compatibility)`);
@@ -188,4 +259,46 @@ for (const basePath of targetPaths) {
     }
   }
 }
+
+// 3. Check and run offline migration if needed
+async function checkAndRunMigration() {
+  const configDir = path.join(homeDir, '.config', 'opencode');
+  const legacyFile = path.join(configDir, 'antigravity-accounts.json');
+  if (!fs.existsSync(legacyFile)) return;
+
+  try {
+    const entries = fs.readdirSync(configDir);
+    const hasGen = entries.some((e) => e.includes('.generation'));
+    if (hasGen) {
+      console.log('\n✓ Antigravity account store generation is active.');
+      return;
+    }
+  } catch {}
+
+  console.log('\n=== Checking Account Store Migration ===');
+  for (const basePath of targetPaths) {
+    const cliPath = path.join(basePath, 'dist', 'cli.js');
+    if (fs.existsSync(cliPath)) {
+      try {
+        console.log(`Running offline migration via: ${cliPath}`);
+        const { execFileSync } = await import('node:child_process');
+        const nodeModulesDir = path.resolve(basePath, '..', '..');
+        const env = { ...process.env };
+        if (fs.existsSync(nodeModulesDir)) {
+          env.NODE_PATH = nodeModulesDir;
+        }
+        execFileSync(process.execPath, [cliPath, 'migrate', '--offline', '--yes'], {
+          stdio: 'inherit',
+          env
+        });
+        console.log('✓ Offline migration completed successfully!');
+        break;
+      } catch (err) {
+        console.warn(`! Migration attempt notice: ${err.message}`);
+      }
+    }
+  }
+}
+
+await checkAndRunMigration();
 console.log('\n[Patch] All patches completed successfully!');
