@@ -44520,7 +44520,7 @@ function createDefaultCliDependencies() {
       upsert: async (result) => {
         await persistAccountPool(
           [result],
-          request.startFresh && request.accounts.length === 0
+          false
         );
       }
     }),

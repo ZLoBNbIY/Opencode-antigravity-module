@@ -25,10 +25,12 @@ def get_node_executable():
     if node and os.path.exists(node):
         return node
     candidates = [
-        Path.home() / "AppData/Local/Programs/Python/Python312/Lib/site-packages/playwright/driver/node.exe",
-        Path.home() / "AppData/Local/Programs/Python/Python311/Lib/site-packages/playwright/driver/node.exe",
         Path("C:/Program Files/nodejs/node.exe"),
         Path("C:/Program Files (x86)/nodejs/node.exe"),
+        Path.home() / "AppData/Local/Programs/cursor/resources/app/resources/helpers/node.exe",
+        Path.home() / "AppData/Local/Programs/DeepSeek Harness/resources/runtime/primary-runtime/dependencies/node/bin/node.exe",
+        Path.home() / "AppData/Local/Programs/Python/Python312/Lib/site-packages/playwright/driver/node.exe",
+        Path.home() / "AppData/Local/Programs/Python/Python311/Lib/site-packages/playwright/driver/node.exe",
     ]
     for c in candidates:
         if c.exists():
@@ -174,6 +176,13 @@ class AntigravityManagerApp(ctk.CTk):
         self.title("Antigravity Hub — Google & ChatGPT Менеджер аккаунтов")
         self.geometry("980x740")
         self.minsize(860, 640)
+
+        icon_file = Path(__file__).resolve().parent / "icon.ico"
+        if icon_file.exists():
+            try:
+                self.iconbitmap(str(icon_file))
+            except Exception:
+                pass
 
         # State
         self.accounts_data = []
@@ -1331,11 +1340,16 @@ class AntigravityManagerApp(ctk.CTk):
     def _worker_refresh_quotas(self):
         # 1. Google Antigravity quotas (silent execution)
         try:
-            cmd = [NODE_EXE, CLI_JS, "quota", "--json"]
-            result = run_silent_cmd(cmd, timeout=25)
-            if result.returncode == 0 and result.stdout.strip():
-                data = json.loads(result.stdout)
-                google_accounts = data.get("accounts", [])
+            node_exe = get_node_executable()
+            cli_js = get_cli_js()
+            if (os.path.exists(node_exe) or shutil.which(node_exe)) and os.path.exists(cli_js):
+                cmd = [node_exe, cli_js, "quota", "--json"]
+                result = run_silent_cmd(cmd, timeout=25)
+                if result.returncode == 0 and result.stdout.strip():
+                    data = json.loads(result.stdout)
+                    google_accounts = data.get("accounts", [])
+                else:
+                    google_accounts = []
             else:
                 google_accounts = []
         except Exception as e:
@@ -1374,7 +1388,15 @@ class AntigravityManagerApp(ctk.CTk):
 
     def _worker_add_account(self):
         try:
-            cmd = [NODE_EXE, CLI_JS, "login"]
+            node_exe = get_node_executable()
+            cli_js = get_cli_js()
+            if not os.path.exists(node_exe) and not shutil.which(node_exe):
+                raise FileNotFoundError(
+                    "Node.js не найден в системе. Установите Node.js (https://nodejs.org) или перезапустите Antigravity Hub."
+                )
+            if not os.path.exists(cli_js):
+                raise FileNotFoundError(f"Файл cli.js не найден по пути: {cli_js}")
+            cmd = [node_exe, cli_js, "login"]
             proc = run_silent_cmd(cmd, timeout=300)
             success = proc.returncode == 0
             output = proc.stdout + proc.stderr

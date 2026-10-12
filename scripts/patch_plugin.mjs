@@ -38,14 +38,26 @@ for (const basePath of targetPaths) {
   const cliPath = path.join(basePath, 'dist', 'cli.js');
   if (fs.existsSync(cliPath)) {
     let cliContent = fs.readFileSync(cliPath, 'utf8');
+    let cliChanged = false;
     const cliTarget = 'if (import.meta.main) {';
     const cliReplacement = 'if (import.meta.main || (typeof process !== "undefined" && process.argv && process.argv[1])) {';
     if (cliContent.includes(cliTarget)) {
       cliContent = cliContent.replace(cliTarget, cliReplacement);
-      fs.writeFileSync(cliPath, cliContent, 'utf8');
+      cliChanged = true;
       console.log('✓ Patched dist/cli.js (CLI execution under Node.js)');
+    }
+
+    const poolTarget = 'request.startFresh && request.accounts.length === 0';
+    if (cliContent.includes(poolTarget)) {
+      cliContent = cliContent.replaceAll(poolTarget, 'false');
+      cliChanged = true;
+      console.log('✓ Patched dist/cli.js (Multi-account pool preservation)');
+    }
+
+    if (cliChanged) {
+      fs.writeFileSync(cliPath, cliContent, 'utf8');
     } else {
-      console.log('• dist/cli.js already patched or target not found');
+      console.log('• dist/cli.js is already up to date');
     }
   }
 
@@ -56,6 +68,14 @@ for (const basePath of targetPaths) {
 
     let content = fs.readFileSync(filePath, 'utf8');
     let changed = false;
+
+    // Patch multi-account pool preservation
+    const poolTarget = 'request.startFresh && request.accounts.length === 0';
+    if (content.includes(poolTarget)) {
+      content = content.replaceAll(poolTarget, 'false');
+      changed = true;
+      console.log(`✓ Patched ${file} (Multi-account pool preservation)`);
+    }
 
     // Patch isCliAuthorize to require isTTY
     const isCliTarget = 'function isCliAuthorize(inputs) {\n  return inputs !== void 0;\n}';

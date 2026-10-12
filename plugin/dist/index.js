@@ -29277,7 +29277,7 @@ function createDefaultCliDependencies() {
         }
         await persistAccountPool(
           [result],
-          request.startFresh && request.accounts.length === 0
+          false
         );
       }
     }),

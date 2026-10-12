@@ -104,12 +104,14 @@ if ($nodeCmd) {
     $NodePath = $nodeCmd.Source
 } else {
     $Candidates = @(
+        "C:\Program Files\nodejs\node.exe",
+        "C:\Program Files (x86)\nodejs\node.exe",
+        "$env:LOCALAPPDATA\Programs\cursor\resources\app\resources\helpers\node.exe",
+        "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\primary-runtime\dependencies\node\bin\node.exe",
         "$env:LOCALAPPDATA\Programs\Python\Python312\Lib\site-packages\playwright\driver\node.exe",
         "$env:LOCALAPPDATA\Programs\Python\Python311\Lib\site-packages\playwright\driver\node.exe",
         "$env:LOCALAPPDATA\OpenAI\Codex\bin\node.exe",
-        "$env:LOCALAPPDATA\ms-playwright-go\1.57.0\node.exe",
-        "C:\Program Files\nodejs\node.exe",
-        "C:\Program Files (x86)\nodejs\node.exe"
+        "$env:LOCALAPPDATA\ms-playwright-go\1.57.0\node.exe"
     )
     foreach ($cand in $Candidates) {
         if (Test-Path -LiteralPath $cand) {
@@ -119,11 +121,53 @@ if ($nodeCmd) {
     }
 }
 
+if (-not $NodePath) {
+    Write-WarningMsg "Node.js не найден в системе. Выполняем автоматическую установку Node.js LTS..."
+    $installedOk = $false
+    $wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
+    if ($wingetCmd) {
+        Write-Info "Попытка тихой установки Node.js LTS через winget..."
+        try {
+            & winget install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements --silent
+            if (Test-Path "C:\Program Files\nodejs\node.exe") {
+                $NodePath = "C:\Program Files\nodejs\node.exe"
+                $installedOk = $true
+            }
+        } catch {
+            Write-Info "Winget завершился с ошибкой, переходим к установщику MSI..."
+        }
+    }
+
+    if (-not $installedOk) {
+        Write-Info "Загрузка официального MSI-установщика Node.js LTS с nodejs.org..."
+        $msiUrl = "https://nodejs.org/dist/v24.20.0/node-v24.20.0-x64.msi"
+        $tempMsi = Join-Path $env:TEMP "node-v24.20.0-x64.msi"
+        try {
+            Invoke-WebRequest -Uri $msiUrl -OutFile $tempMsi -UseBasicParsing
+            Write-Info "Установка Node.js в тихом режиме..."
+            $msiProc = Start-Process msiexec.exe -ArgumentList "/i `"$tempMsi`" /qn /norestart" -Wait -PassThru
+            Remove-Item -LiteralPath $tempMsi -Force -ErrorAction SilentlyContinue
+            if (Test-Path "C:\Program Files\nodejs\node.exe") {
+                $NodePath = "C:\Program Files\nodejs\node.exe"
+                $installedOk = $true
+            }
+        } catch {
+            Write-WarningMsg "Ошибка при установке Node.js через MSI: $_"
+        }
+    }
+
+    # Обновление PATH в текущей сессии
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+    if (-not $NodePath -and (Test-Path "C:\Program Files\nodejs\node.exe")) {
+        $NodePath = "C:\Program Files\nodejs\node.exe"
+    }
+}
+
 if ($NodePath) {
     $nodeVer = & "$NodePath" -v 2>$null
-    Write-Success "Node.js обнаружен: $NodePath ($nodeVer)"
+    Write-Success "Node.js готов к работе: $NodePath ($nodeVer)"
 } else {
-    Write-WarningMsg "Node.js не найден в системе. Рекомендуется установить Node.js (>= 18) с https://nodejs.org"
+    Write-ErrorMsg "Node.js не найден и не удалось установить автоматически. Установите Node.js с https://nodejs.org"
 }
 
 # --- 2. Поиск Python ---
@@ -283,14 +327,22 @@ if ($CreateShortcut) {
         $DesktopPath = [System.Environment]::GetFolderPath('Desktop')
         $ShortcutPath = Join-Path $DesktopPath "Antigravity Hub.lnk"
         $TargetBat = Join-Path $ScriptDir "Запуск_Менеджера.bat"
+        $IconPath = Join-Path $ScriptDir "gui-manager\icon.ico"
+
+        if (-not (Test-Path -LiteralPath $TargetBat)) {
+            $TargetBat = Join-Path $ScriptDir "gui-manager\start_manager.bat"
+        }
 
         if (Test-Path -LiteralPath $TargetBat) {
             $Shortcut = $WshShell.CreateShortcut($ShortcutPath)
             $Shortcut.TargetPath = $TargetBat
             $Shortcut.WorkingDirectory = $ScriptDir
             $Shortcut.Description = "Менеджер аккаунтов и квот Google Antigravity & OpenAI ChatGPT для OpenCode"
+            if (Test-Path -LiteralPath $IconPath) {
+                $Shortcut.IconLocation = "$IconPath,0"
+            }
             $Shortcut.Save()
-            Write-Success "Ярлык 'Antigravity Hub' создан на Рабочем столе!"
+            Write-Success "Ярлык 'Antigravity Hub' создан на Рабочем столе с фирменной иконкой!"
         }
     } catch {
         Write-Info "Не удалось автоматически создать ярлык (некритично)."
