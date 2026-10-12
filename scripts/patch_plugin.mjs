@@ -97,7 +97,7 @@ for (const basePath of targetPaths) {
       );
       content = content.replace(
         'return {\n        line: `data: ${JSON.stringify(transformed)}`,\n        hasToolCall,\n        hasFinishReason\n      };',
-        'const finalPayload = hasResponseWrapper ? { ...parsed, response: transformed } : transformed;\n      return {\n        line: `data: ${JSON.stringify(finalPayload)}`,\n        hasToolCall,\n        hasFinishReason\n      };'
+        'return {\n        line: `data: ${JSON.stringify(transformed)}`,\n        hasToolCall,\n        hasFinishReason\n      };'
       );
       changed = true;
       console.log(`✓ Patched transformSseLineWithMetadata in ${file} (Gemini 3.8 top-level stream compatibility)`);

@@ -16,6 +16,9 @@ from tkinter import messagebox
 import shutil
 import customtkinter as ctk
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import openai_manager
+
 # --- Paths & Dynamic Resolution ---
 def get_node_executable():
     node = shutil.which("node")
@@ -67,6 +70,31 @@ DEFAULT_CONFIG = {
     "debug": False,
 }
 
+def run_silent_cmd(cmd, timeout=30):
+    """Executes external commands completely silently without spawning console windows."""
+    flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+    startupinfo = None
+    if sys.platform == "win32":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            timeout=timeout,
+            creationflags=flags,
+            startupinfo=startupinfo,
+        )
+        stdout_str = proc.stdout.decode("utf-8", errors="replace") if proc.stdout else ""
+        stderr_str = proc.stderr.decode("utf-8", errors="replace") if proc.stderr else ""
+    except Exception as e:
+        stdout_str = ""
+        stderr_str = str(e)
+        return type("SilentResult", (), {"returncode": 1, "stdout": "", "stderr": stderr_str})()
+
+    return type("SilentResult", (), {"returncode": proc.returncode, "stdout": stdout_str, "stderr": stderr_str})()
+
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
@@ -75,12 +103,14 @@ class AntigravityManagerApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("Google Antigravity — Менеджер аккаунтов и квот")
+        self.title("Antigravity Hub — Google & ChatGPT Менеджер аккаунтов")
         self.geometry("980x740")
         self.minsize(860, 640)
 
         # State
         self.accounts_data = []
+        self.openai_accounts_data = []
+        self.current_provider_view = "google"
         self.is_loading = False
         self.config_data = self.load_config()
 
@@ -142,7 +172,7 @@ class AntigravityManagerApp(ctk.CTk):
 
         subtitle_label = ctk.CTkLabel(
             title_box,
-            text="Мульти-аккаунты Google, живые квоты и автопереключение для OpenCode",
+            text="Мульти-аккаунты Google и OpenAI / ChatGPT, живые квоты и управление для OpenCode",
             font=ctk.CTkFont(size=12),
             text_color="#a1a1aa",
         )
@@ -196,7 +226,17 @@ class AntigravityManagerApp(ctk.CTk):
         # Controls bar
         top_bar = ctk.CTkFrame(self.tab_accounts, fg_color="transparent")
         top_bar.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 15))
-        top_bar.grid_columnconfigure(2, weight=1)
+        top_bar.grid_columnconfigure(3, weight=1)
+
+        # Provider Selector Segmented Button
+        self.provider_seg = ctk.CTkSegmentedButton(
+            top_bar,
+            values=["🌐 Google (Antigravity)", "🟢 OpenAI (ChatGPT)"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self.on_provider_view_change,
+        )
+        self.provider_seg.set("🌐 Google (Antigravity)")
+        self.provider_seg.grid(row=0, column=0, padx=(0, 12))
 
         self.btn_add_account = ctk.CTkButton(
             top_bar,
@@ -207,7 +247,7 @@ class AntigravityManagerApp(ctk.CTk):
             height=36,
             command=self.add_account_action,
         )
-        self.btn_add_account.grid(row=0, column=0, padx=(0, 10))
+        self.btn_add_account.grid(row=0, column=1, padx=(0, 10))
 
         self.btn_refresh = ctk.CTkButton(
             top_bar,
@@ -218,7 +258,7 @@ class AntigravityManagerApp(ctk.CTk):
             height=36,
             command=self.refresh_all_async,
         )
-        self.btn_refresh.grid(row=0, column=1, padx=(0, 10))
+        self.btn_refresh.grid(row=0, column=2, padx=(0, 10))
 
         self.lbl_accounts_count = ctk.CTkLabel(
             top_bar,
@@ -226,7 +266,7 @@ class AntigravityManagerApp(ctk.CTk):
             font=ctk.CTkFont(size=13),
             text_color="#a1a1aa",
         )
-        self.lbl_accounts_count.grid(row=0, column=2, sticky="e")
+        self.lbl_accounts_count.grid(row=0, column=3, sticky="e")
 
         # Scrollable container for account cards
         self.accounts_scroll = ctk.CTkScrollableFrame(
@@ -237,11 +277,50 @@ class AntigravityManagerApp(ctk.CTk):
         self.accounts_scroll.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
         self.accounts_scroll.grid_columnconfigure(0, weight=1)
 
+    def on_provider_view_change(self, val):
+        if "Google" in val:
+            self.current_provider_view = "google"
+            self.btn_add_account.configure(
+                text="➕ Добавить аккаунт Google",
+                command=self.add_account_action,
+                fg_color="#10b981",
+                hover_color="#059669",
+            )
+        else:
+            self.current_provider_view = "openai"
+            self.btn_add_account.configure(
+                text="➕ Добавить аккаунт OpenAI",
+                command=self.add_openai_account_action,
+                fg_color="#10a37f",
+                hover_color="#0e8a6c",
+            )
+        self.render_accounts()
+
     def render_accounts(self):
+        # Save scroll position if canvas exists so UI doesn't jump
+        scroll_pos = 0.0
+        try:
+            scroll_pos = self.accounts_scroll._parent_canvas.yview()[0]
+        except Exception:
+            pass
+
         # Clear existing widgets
         for widget in self.accounts_scroll.winfo_children():
             widget.destroy()
 
+        if self.current_provider_view == "google":
+            self.render_google_accounts()
+        else:
+            self.render_openai_accounts()
+
+        # Restore scroll position smoothly
+        try:
+            if scroll_pos > 0.0:
+                self.after(30, lambda: self.accounts_scroll._parent_canvas.yview_moveto(scroll_pos))
+        except Exception:
+            pass
+
+    def render_google_accounts(self):
         if not self.accounts_data:
             empty_box = ctk.CTkFrame(self.accounts_scroll, fg_color="transparent")
             empty_box.pack(pady=80)
@@ -262,14 +341,235 @@ class AntigravityManagerApp(ctk.CTk):
                 font=ctk.CTkFont(size=13),
                 text_color="#71717a",
             ).pack()
-            self.lbl_accounts_count.configure(text="0 аккаунтов")
+            self.lbl_accounts_count.configure(text="Google: 0 аккаунтов")
             return
 
         total = len(self.accounts_data)
-        self.lbl_accounts_count.configure(text=f"Всего аккаунтов: {total}")
+        self.lbl_accounts_count.configure(text=f"Google аккаунтов: {total}")
 
         for acc in self.accounts_data:
             self.create_account_card(acc)
+
+    def render_openai_accounts(self):
+        if not self.openai_accounts_data:
+            empty_box = ctk.CTkFrame(self.accounts_scroll, fg_color="transparent")
+            empty_box.pack(pady=80)
+            ctk.CTkLabel(
+                empty_box,
+                text="🤖",
+                font=ctk.CTkFont(size=48),
+            ).pack()
+            ctk.CTkLabel(
+                empty_box,
+                text="Нет подключенных аккаунтов OpenAI (ChatGPT)",
+                font=ctk.CTkFont(size=16, weight="bold"),
+                text_color="#f4f4f5",
+            ).pack(pady=(10, 4))
+            ctk.CTkLabel(
+                empty_box,
+                text="Нажмите кнопку '+ Добавить аккаунт OpenAI' вверху, чтобы войти через браузер (OAuth).",
+                font=ctk.CTkFont(size=13),
+                text_color="#71717a",
+            ).pack()
+            self.lbl_accounts_count.configure(text="OpenAI: 0 аккаунтов")
+            return
+
+        total = len(self.openai_accounts_data)
+        self.lbl_accounts_count.configure(text=f"OpenAI аккаунтов: {total}")
+
+        for idx, acc in enumerate(self.openai_accounts_data, start=1):
+            self.create_openai_card(acc, idx)
+
+    def create_openai_card(self, acc, index):
+        email = acc.get("email", "unknown@chatgpt.com")
+        is_active = acc.get("is_active", False)
+        plan_type = (acc.get("plan_type") or "plus").upper()
+        account_id = acc.get("accountId") or acc.get("id") or ""
+        quota = acc.get("quota") or {}
+
+        primary_quota = quota.get("primary") or {}
+        secondary_quota = quota.get("secondary") or {}
+
+        card = ctk.CTkFrame(self.accounts_scroll, fg_color="#1e1e24", corner_radius=12)
+        card.pack(fill="x", pady=8, padx=4)
+
+        # Card Header
+        header_row = ctk.CTkFrame(card, fg_color="transparent")
+        header_row.pack(fill="x", padx=16, pady=(14, 10))
+        header_row.grid_columnconfigure(1, weight=1)
+
+        # Avatar / Index circle
+        idx_badge = ctk.CTkLabel(
+            header_row,
+            text=f"#{index}",
+            width=32,
+            height=32,
+            corner_radius=16,
+            fg_color="#10a37f",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color="#ffffff",
+        )
+        idx_badge.grid(row=0, column=0, padx=(0, 12))
+
+        # Email + Plan box
+        info_col = ctk.CTkFrame(header_row, fg_color="transparent")
+        info_col.grid(row=0, column=1, sticky="w")
+
+        title_row = ctk.CTkFrame(info_col, fg_color="transparent")
+        title_row.pack(anchor="w")
+
+        email_label = ctk.CTkLabel(
+            title_row,
+            text=email,
+            font=ctk.CTkFont(size=16, weight="bold"),
+            text_color="#f4f4f5",
+        )
+        email_label.pack(side="left")
+
+        # Plan badge
+        plan_lbl = ctk.CTkLabel(
+            title_row,
+            text=f" {plan_type} ",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#38bdf8",
+            fg_color="#0c4a6e",
+            corner_radius=6,
+            padx=6,
+            pady=2,
+        )
+        plan_lbl.pack(side="left", padx=(8, 0))
+
+        # Actions on right
+        actions_box = ctk.CTkFrame(header_row, fg_color="transparent")
+        actions_box.grid(row=0, column=2, sticky="e")
+
+        if is_active:
+            status_lbl = ctk.CTkLabel(
+                actions_box,
+                text="● Активен в OpenCode",
+                font=ctk.CTkFont(size=12, weight="bold"),
+                text_color="#10b981",
+                fg_color="#064e3b",
+                corner_radius=8,
+                padx=10,
+                pady=4,
+            )
+            status_lbl.pack(side="left", padx=(0, 10))
+        else:
+            activate_btn = ctk.CTkButton(
+                actions_box,
+                text="⭐ Использовать в OpenCode",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                fg_color="#3b82f6",
+                hover_color="#2563eb",
+                height=28,
+                width=165,
+                command=lambda aid=account_id: self.activate_openai_account_action(aid),
+            )
+            activate_btn.pack(side="left", padx=(0, 10))
+
+        del_btn = ctk.CTkButton(
+            actions_box,
+            text="🗑",
+            font=ctk.CTkFont(size=13),
+            fg_color="#ef4444",
+            hover_color="#dc2626",
+            height=28,
+            width=32,
+            command=lambda a=acc: self.delete_openai_account_action(a),
+        )
+        del_btn.pack(side="left")
+
+        # Divider
+        divider = ctk.CTkFrame(card, height=1, fg_color="#2e2e38")
+        divider.pack(fill="x", padx=16, pady=4)
+
+        # Quotas Section
+        quotas_container = ctk.CTkFrame(card, fg_color="transparent")
+        quotas_container.pack(fill="x", padx=16, pady=(10, 16))
+        quotas_container.grid_columnconfigure(0, weight=1)
+        quotas_container.grid_columnconfigure(1, weight=1)
+
+        # 1. Primary Window Box
+        self.create_openai_quota_box(
+            quotas_container,
+            col=0,
+            title="Основное окно (3-5 часов)",
+            badge_text="GPT-5.5 / GPT-6 / Codex",
+            window_info=primary_quota,
+        )
+
+        # 2. Secondary Window Box
+        self.create_openai_quota_box(
+            quotas_container,
+            col=1,
+            title="Недельный лимит (7 дней)",
+            badge_text="Rolling 7-day Window",
+            window_info=secondary_quota,
+        )
+
+    def create_openai_quota_box(self, parent, col, title, badge_text, window_info):
+        box = ctk.CTkFrame(parent, fg_color="#26262e", corner_radius=10)
+        box.grid(row=0, column=col, sticky="nsew", padx=6 if col == 1 else 0, pady=2)
+        box.grid_columnconfigure(0, weight=1)
+
+        header = ctk.CTkFrame(box, fg_color="transparent")
+        header.pack(fill="x", padx=12, pady=(10, 4))
+        header.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            header,
+            text=title,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color="#e4e4e7",
+        ).grid(row=0, column=0, sticky="w")
+
+        ctk.CTkLabel(
+            header,
+            text=badge_text,
+            font=ctk.CTkFont(size=10),
+            text_color="#a1a1aa",
+            fg_color="#1e1e24",
+            corner_radius=6,
+            padx=6,
+            pady=2,
+        ).grid(row=0, column=1, sticky="e")
+
+        rem_pct = float(window_info.get("remaining_percent", 100.0))
+        used_pct = float(window_info.get("used_percent", 0.0))
+        rem_pct = round(rem_pct, 1)
+
+        val_row = ctk.CTkFrame(box, fg_color="transparent")
+        val_row.pack(fill="x", padx=12, pady=(4, 6))
+
+        pct_color = "#10b981" if rem_pct > 50 else ("#f59e0b" if rem_pct > 20 else "#ef4444")
+
+        ctk.CTkLabel(
+            val_row,
+            text=f"{rem_pct}%",
+            font=ctk.CTkFont(size=20, weight="bold"),
+            text_color=pct_color,
+        ).pack(side="left")
+
+        ctk.CTkLabel(
+            val_row,
+            text=f"доступно (расход: {used_pct}%)",
+            font=ctk.CTkFont(size=12),
+            text_color="#a1a1aa",
+        ).pack(side="left", padx=8)
+
+        bar = ctk.CTkProgressBar(box, height=10, corner_radius=5)
+        bar.pack(fill="x", padx=12, pady=(0, 8))
+        bar.set(max(0.0, min(1.0, rem_pct / 100.0)))
+        bar.configure(progress_color=pct_color, fg_color="#18181b")
+
+        reset_label = window_info.get("reset_label", "неизвестно")
+        ctk.CTkLabel(
+            box,
+            text=f"Сброс квоты: {reset_label}",
+            font=ctk.CTkFont(size=11),
+            text_color="#71717a",
+        ).pack(anchor="w", padx=12, pady=(0, 10))
 
     def create_account_card(self, acc):
         email = acc.get("email", "unknown@gmail.com")
@@ -782,7 +1082,7 @@ class AntigravityManagerApp(ctk.CTk):
 
         ctk.CTkLabel(
             c1,
-            text="При изменении аккаунтов или стратегии перезапустите приложение для применения настроек:",
+            text="OpenCode считывает auth.json и квоты на лету при каждом запросе. Перезапуск приложения НЕ требуется при смене аккаунтов или стратегий (перезапуск нужен только при полном сбое процессов):",
             font=ctk.CTkFont(size=12),
             text_color="#a1a1aa",
         ).pack(anchor="w", padx=16, pady=(0, 12))
@@ -918,31 +1218,41 @@ class AntigravityManagerApp(ctk.CTk):
         threading.Thread(target=self._worker_refresh_quotas, daemon=True).start()
 
     def _worker_refresh_quotas(self):
+        # 1. Google Antigravity quotas (silent execution)
         try:
             cmd = [NODE_EXE, CLI_JS, "quota", "--json"]
-            flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, encoding="utf-8", timeout=25, creationflags=flags
-            )
+            result = run_silent_cmd(cmd, timeout=25)
             if result.returncode == 0 and result.stdout.strip():
                 data = json.loads(result.stdout)
-                accounts = data.get("accounts", [])
+                google_accounts = data.get("accounts", [])
             else:
-                accounts = []
+                google_accounts = []
         except Exception as e:
-            print(f"Error fetching quotas: {e}")
-            accounts = []
+            print(f"Error fetching Google quotas: {e}")
+            google_accounts = []
 
-        self.after(0, lambda: self._on_quotas_fetched(accounts))
+        # 2. OpenAI / ChatGPT quotas with auto-rotation
+        try:
+            openai_accounts, rotate_msg = openai_manager.refresh_all_openai_accounts()
+        except Exception as e:
+            print(f"Error fetching OpenAI quotas: {e}")
+            openai_accounts = openai_manager.load_openai_accounts()
+            rotate_msg = None
 
-    def _on_quotas_fetched(self, accounts):
-        self.accounts_data = accounts
+        self.after(0, lambda: self._on_quotas_fetched(google_accounts, openai_accounts, rotate_msg))
+
+    def _on_quotas_fetched(self, google_accounts, openai_accounts, rotate_msg=None):
+        self.accounts_data = google_accounts
+        self.openai_accounts_data = openai_accounts
         self.render_accounts()
         self.is_loading = False
         self.btn_refresh.configure(state="normal", text="🔄 Обновить квоты")
         now_str = datetime.datetime.now().strftime("%H:%M:%S")
         self.countdown_seconds = self.auto_refresh_interval_min * 60
-        self.set_status(f"Квоты обновлены в {now_str} (следующее автообновление через {self.auto_refresh_interval_min} мин)")
+        if rotate_msg:
+            self.set_status(f"🔄 {rotate_msg}")
+        else:
+            self.set_status(f"Квоты обновлены в {now_str} (без перезапуска OpenCode)")
         self.update_opencode_status()
 
     def add_account_action(self):
@@ -954,10 +1264,7 @@ class AntigravityManagerApp(ctk.CTk):
     def _worker_add_account(self):
         try:
             cmd = [NODE_EXE, CLI_JS, "login"]
-            flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True, encoding="utf-8", timeout=300, creationflags=flags
-            )
+            proc = run_silent_cmd(cmd, timeout=300)
             success = proc.returncode == 0
             output = proc.stdout + proc.stderr
         except Exception as e:
@@ -981,17 +1288,68 @@ class AntigravityManagerApp(ctk.CTk):
             )
             self.set_status("Ошибка авторизации")
 
+    # --- OpenAI / ChatGPT Actions ---
+    def add_openai_account_action(self):
+        self.btn_add_account.configure(state="disabled", text="⏳ Открываем браузер...")
+        self.set_status("Ожидание входа в ChatGPT / OpenAI через браузер...")
+
+        threading.Thread(target=self._worker_add_openai_account, daemon=True).start()
+
+    def _worker_add_openai_account(self):
+        try:
+            success, message, new_acc = openai_manager.login_openai_browser(timeout=300)
+        except Exception as e:
+            success = False
+            message = str(e)
+            new_acc = None
+
+        self.after(0, lambda: self._on_openai_account_added(success, message, new_acc))
+
+    def _on_openai_account_added(self, success, message, new_acc):
+        self.btn_add_account.configure(state="normal", text="➕ Добавить аккаунт OpenAI")
+        if success and new_acc:
+            messagebox.showinfo(
+                "Успешно!",
+                f"Аккаунт OpenAI ({new_acc.get('email', '')}) успешно добавлен и подключен к OpenCode!",
+            )
+            self.refresh_all_async()
+        else:
+            messagebox.showerror(
+                "Ошибка входа",
+                f"Не удалось завершить вход в OpenAI:\n{message}",
+            )
+            self.set_status("Ошибка авторизации OpenAI")
+
+    def activate_openai_account_action(self, account_id):
+        ok = openai_manager.set_active_openai_account(account_id)
+        if ok:
+            self.set_status("Активный аккаунт OpenAI переключен на лету")
+            self.openai_accounts_data = openai_manager.load_openai_accounts()
+            self.render_accounts()
+            messagebox.showinfo(
+                "Аккаунт активирован на лету!",
+                "Выбранный аккаунт OpenAI теперь используется в OpenCode.\n\n⚡ Перезапуск OpenCode НЕ ТРЕБУЕТСЯ:\nOpenCode перечитывает auth.json на лету при каждом новом запросе.",
+            )
+        else:
+            messagebox.showerror("Ошибка", "Не удалось активировать аккаунт.")
+
+    def delete_openai_account_action(self, acc):
+        email = acc.get("email", "unknown")
+        if not messagebox.askyesno("Удаление аккаунта", f"Вы уверены, что хотите удалить аккаунт OpenAI:\n{email}?"):
+            return
+        openai_manager.remove_openai_account(acc.get("accountId") or acc.get("id"))
+        self.openai_accounts_data = openai_manager.load_openai_accounts()
+        self.render_accounts()
+        self.set_status(f"Аккаунт {email} удален.")
+
     def update_opencode_status(self):
         def check():
             try:
-                res = subprocess.run(
-                    ["powershell", "-NoProfile", "-Command", "Get-Process -Name '*OpenCode*' -ErrorAction SilentlyContinue | Measure-Object | Select-Object -ExpandProperty Count"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
+                res = run_silent_cmd(
+                    ["tasklist", "/fi", "IMAGENAME eq OpenCode.exe", "/nh"],
+                    timeout=4
                 )
-                count = int(res.stdout.strip()) if res.stdout.strip().isdigit() else 0
-                is_running = count > 0
+                is_running = "opencode.exe" in (res.stdout or "").lower()
             except Exception:
                 is_running = False
 
@@ -1017,15 +1375,13 @@ class AntigravityManagerApp(ctk.CTk):
         self.set_status("Перезапуск OpenCode...")
 
         def _do_restart():
-            subprocess.run(
-                ["powershell", "-NoProfile", "-Command", "Stop-Process -Name OpenCode -Force -ErrorAction SilentlyContinue"],
-                capture_output=True,
-            )
+            run_silent_cmd(["taskkill", "/f", "/im", "OpenCode.exe"], timeout=5)
             time.sleep(2)
-            subprocess.run(
-                ["powershell", "-NoProfile", "-Command", f'Start-Process -FilePath "{OPENCODE_EXE}"'],
-                capture_output=True,
-            )
+            try:
+                flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+                subprocess.Popen([OPENCODE_EXE], creationflags=flags)
+            except Exception as e:
+                print(f"Error starting OpenCode: {e}")
             time.sleep(3)
             self.after(0, self.update_opencode_status)
             self.after(0, lambda: self.set_status("OpenCode перезапущен!"))
@@ -1033,18 +1389,16 @@ class AntigravityManagerApp(ctk.CTk):
         threading.Thread(target=_do_restart, daemon=True).start()
 
     def stop_opencode_action(self):
-        subprocess.run(
-            ["powershell", "-NoProfile", "-Command", "Stop-Process -Name OpenCode -Force -ErrorAction SilentlyContinue"],
-            capture_output=True,
-        )
+        run_silent_cmd(["taskkill", "/f", "/im", "OpenCode.exe"], timeout=5)
         self.update_opencode_status()
         self.set_status("OpenCode остановлен")
 
     def start_opencode_action(self):
-        subprocess.run(
-            ["powershell", "-NoProfile", "-Command", f'Start-Process -FilePath "{OPENCODE_EXE}"'],
-            capture_output=True,
-        )
+        try:
+            flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+            subprocess.Popen([OPENCODE_EXE], creationflags=flags)
+        except Exception as e:
+            print(f"Error starting OpenCode: {e}")
         self.after(3000, self.update_opencode_status)
         self.set_status("OpenCode запущен")
 
