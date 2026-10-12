@@ -84,6 +84,11 @@ class AntigravityManagerApp(ctk.CTk):
         self.is_loading = False
         self.config_data = self.load_config()
 
+        # Periodic auto-refresh (every 10 minutes)
+        self.auto_refresh_enabled = True
+        self.auto_refresh_interval_min = 10
+        self.countdown_seconds = self.auto_refresh_interval_min * 60
+
         # Grid setup
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
@@ -95,6 +100,7 @@ class AntigravityManagerApp(ctk.CTk):
         # Initial background load
         self.refresh_all_async()
         self.update_opencode_status()
+        self.start_countdown_timer()
 
     # --- Configuration Management ---
     def load_config(self):
@@ -665,6 +671,42 @@ class AntigravityManagerApp(ctk.CTk):
         )
         self.fallback_switch.grid(row=0, column=1, sticky="e")
 
+        # 6. Periodic Auto-Refresh
+        c6 = ctk.CTkFrame(scroll, fg_color="#1e1e24", corner_radius=12)
+        c6.pack(fill="x", pady=6)
+
+        ar_row = ctk.CTkFrame(c6, fg_color="transparent")
+        ar_row.pack(fill="x", padx=16, pady=14)
+        ar_row.grid_columnconfigure(0, weight=1)
+
+        ar_info = ctk.CTkFrame(ar_row, fg_color="transparent")
+        ar_info.grid(row=0, column=0, sticky="w")
+
+        ctk.CTkLabel(
+            ar_info,
+            text="6. Периодическое автообновление квот (раз в 10 минут)",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            text_color="#f4f4f5",
+        ).pack(anchor="w")
+
+        ctk.CTkLabel(
+            ar_info,
+            text="Автоматически опрашивает Google API и обновляет остаток квот в фоновом режиме каждые 10 минут.",
+            font=ctk.CTkFont(size=12),
+            text_color="#a1a1aa",
+        ).pack(anchor="w", pady=(2, 0))
+
+        self.ar_switch_var = tk.BooleanVar(value=self.auto_refresh_enabled)
+        self.ar_switch = ctk.CTkSwitch(
+            ar_row,
+            text="",
+            variable=self.ar_switch_var,
+            onvalue=True,
+            offvalue=False,
+            command=self.on_auto_refresh_toggle,
+        )
+        self.ar_switch.grid(row=0, column=1, sticky="e")
+
         # Save Button
         save_box = ctk.CTkFrame(scroll, fg_color="transparent")
         save_box.pack(fill="x", pady=(15, 20))
@@ -814,8 +856,55 @@ class AntigravityManagerApp(ctk.CTk):
         )
         self.lbl_status.pack(side="left", padx=16)
 
+        self.lbl_auto_refresh = ctk.CTkLabel(
+            status_frame,
+            text="⏱ Автообновление квот: через 10:00",
+            font=ctk.CTkFont(size=11),
+            text_color="#38bdf8",
+        )
+        self.lbl_auto_refresh.pack(side="right", padx=16)
+
     def set_status(self, text):
         self.lbl_status.configure(text=text)
+
+    # --- Periodic Auto-Refresh Methods ---
+    def on_auto_refresh_toggle(self):
+        self.auto_refresh_enabled = self.ar_switch_var.get()
+        if self.auto_refresh_enabled:
+            self.countdown_seconds = self.auto_refresh_interval_min * 60
+            self.lbl_auto_refresh.configure(
+                text=f"⏱ Автообновление квот: через {self.auto_refresh_interval_min}:00",
+                text_color="#38bdf8",
+            )
+            self.set_status(f"Автообновление квот включено (раз в {self.auto_refresh_interval_min} минут)")
+        else:
+            self.lbl_auto_refresh.configure(
+                text="⏱ Автообновление: выключено",
+                text_color="#71717a",
+            )
+            self.set_status("Автообновление квот приостановлено")
+
+    def start_countdown_timer(self):
+        self._countdown_tick()
+
+    def _countdown_tick(self):
+        if self.auto_refresh_enabled:
+            if self.countdown_seconds <= 0:
+                self.countdown_seconds = self.auto_refresh_interval_min * 60
+                if not self.is_loading:
+                    self.set_status(f"Запуск автообновления квот (раз в {self.auto_refresh_interval_min} мин)...")
+                    self.refresh_all_async()
+            else:
+                self.countdown_seconds -= 1
+
+            mins = self.countdown_seconds // 60
+            secs = self.countdown_seconds % 60
+            self.lbl_auto_refresh.configure(
+                text=f"⏱ Автообновление квот: через {mins:02d}:{secs:02d}",
+                text_color="#38bdf8",
+            )
+
+        self.after(1000, self._countdown_tick)
 
     # --- Actions & Background Tasks ---
     def refresh_all_async(self):
@@ -824,6 +913,7 @@ class AntigravityManagerApp(ctk.CTk):
         self.is_loading = True
         self.btn_refresh.configure(state="disabled", text="⏳ Загрузка...")
         self.set_status("Получение актуальных данных о квотах...")
+        self.countdown_seconds = self.auto_refresh_interval_min * 60
 
         threading.Thread(target=self._worker_refresh_quotas, daemon=True).start()
 
@@ -851,7 +941,8 @@ class AntigravityManagerApp(ctk.CTk):
         self.is_loading = False
         self.btn_refresh.configure(state="normal", text="🔄 Обновить квоты")
         now_str = datetime.datetime.now().strftime("%H:%M:%S")
-        self.set_status(f"Квоты обновлены в {now_str}")
+        self.countdown_seconds = self.auto_refresh_interval_min * 60
+        self.set_status(f"Квоты обновлены в {now_str} (следующее автообновление через {self.auto_refresh_interval_min} мин)")
         self.update_opencode_status()
 
     def add_account_action(self):
