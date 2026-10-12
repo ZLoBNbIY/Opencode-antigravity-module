@@ -41,17 +41,22 @@ Write-Host "   ⚡ OpenCode Antigravity Module — Установщик (PowerSh
 Write-Host "================================================================" -ForegroundColor DarkCyan
 Write-Host "  Интеграция Google Antigravity & OpenAI / ChatGPT для OpenCode" -ForegroundColor Gray
 
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-if (-not $ScriptDir) {
-    $ScriptDir = (Get-Location).Path
+$ScriptDir = $null
+if ($PSScriptRoot) {
+    $ScriptDir = $PSScriptRoot
+} elseif ($MyInvocation.MyCommand.Path) {
+    $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 }
 
 # --- 0. Проверка наличия локальных файлов / Автозагрузка при irm | iex ---
 $RepoUrl = "https://github.com/ZLoBNbIY/Opencode-antigravity-module.git"
 $ZipUrl  = "https://github.com/ZLoBNbIY/Opencode-antigravity-module/archive/refs/heads/main.zip"
 
-$HasLocalRepo = (Test-Path -LiteralPath (Join-Path $ScriptDir "gui-manager\antigravity_manager.pyw")) -and 
-                (Test-Path -LiteralPath (Join-Path $ScriptDir "scripts\patch_plugin.mjs"))
+$HasLocalRepo = $false
+if ($ScriptDir) {
+    $HasLocalRepo = (Test-Path -LiteralPath (Join-Path $ScriptDir "gui-manager\antigravity_manager.pyw")) -and 
+                    (Test-Path -LiteralPath (Join-Path $ScriptDir "scripts\patch_plugin.mjs"))
+}
 
 if (-not $HasLocalRepo) {
     Write-Step "Запуск через онлайн-команду (irm | iex). Загрузка файлов модуля..."
