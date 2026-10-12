@@ -1436,6 +1436,9 @@ class AntigravityManagerApp(ctk.CTk):
             proc = run_silent_cmd(cmd, timeout=300)
             success = proc.returncode == 0
             output = proc.stdout + proc.stderr
+            if success:
+                # Automatically complete offline migration into store generation
+                run_silent_cmd([node_exe, cli_js, "migrate", "--offline", "--yes"], timeout=30)
         except Exception as e:
             success = False
             output = str(e)
@@ -1447,7 +1450,7 @@ class AntigravityManagerApp(ctk.CTk):
         if success:
             messagebox.showinfo(
                 "Успешно!",
-                "Google аккаунт успешно авторизован и добавлен в пул ротации Antigravity!",
+                "Google аккаунт успешно авторизован, мигрирован в пул Antigravity и готов к работе!\n\n💡 Если OpenCode был открыт, нажмите «🔄 Перезапустить OpenCode» вверху окна, чтобы применить новый аккаунт.",
             )
             self.refresh_all_async()
         else:
