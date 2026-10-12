@@ -95,6 +95,74 @@ def run_silent_cmd(cmd, timeout=30):
 
     return type("SilentResult", (), {"returncode": proc.returncode, "stdout": stdout_str, "stderr": stderr_str})()
 
+def get_active_google_account_index() -> int:
+    config_dir = Path(os.path.expanduser("~/.config/opencode"))
+    gen_dirs = list(config_dir.glob("*.generation"))
+    if gen_dirs:
+        cfg_file = gen_dirs[0] / "config.json"
+        if cfg_file.exists():
+            try:
+                cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+                routing = cfg.get("antigravityRouting", {})
+                active_row_id = routing.get("activeRow", {}).get("id")
+                accounts = cfg.get("accounts", [])
+                if active_row_id:
+                    for i, acc in enumerate(accounts):
+                        if acc.get("id") == active_row_id:
+                            return i
+                return int(routing.get("activeIndex", 0))
+            except Exception:
+                pass
+    legacy_file = config_dir / "antigravity-accounts.json"
+    if legacy_file.exists():
+        try:
+            data = json.loads(legacy_file.read_text(encoding="utf-8"))
+            return int(data.get("activeIndex", 0))
+        except Exception:
+            pass
+    return 0
+
+def set_active_google_account_index(target_index: int) -> bool:
+    config_dir = Path(os.path.expanduser("~/.config/opencode"))
+    gen_dirs = list(config_dir.glob("*.generation"))
+    changed = False
+    if gen_dirs:
+        cfg_file = gen_dirs[0] / "config.json"
+        if cfg_file.exists():
+            try:
+                cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+                accounts = cfg.get("accounts", [])
+                if 0 <= target_index < len(accounts):
+                    target_id = accounts[target_index].get("id")
+                    routing = cfg.get("antigravityRouting", {})
+                    routing["activeIndex"] = target_index
+                    routing["activeIndexByFamily"] = {"claude": target_index, "gemini": target_index}
+                    if target_id:
+                        routing["activeRow"] = {"id": target_id, "credentialEpoch": 1}
+                        routing["activeRowByFamily"] = {
+                            "claude": {"id": target_id, "credentialEpoch": 1},
+                            "gemini": {"id": target_id, "credentialEpoch": 1},
+                        }
+                    cfg["antigravityRouting"] = routing
+                    cfg_file.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+                    changed = True
+            except Exception as e:
+                print(f"Error updating generation config: {e}")
+
+    legacy_file = config_dir / "antigravity-accounts.json"
+    if legacy_file.exists():
+        try:
+            legacy_data = json.loads(legacy_file.read_text(encoding="utf-8"))
+            legacy_data["activeIndex"] = target_index
+            if "activeIndexByFamily" in legacy_data:
+                legacy_data["activeIndexByFamily"] = {"claude": target_index, "gemini": target_index}
+            legacy_file.write_text(json.dumps(legacy_data, indent=2, ensure_ascii=False), encoding="utf-8")
+            changed = True
+        except Exception:
+            pass
+
+    return changed
+
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
@@ -345,10 +413,20 @@ class AntigravityManagerApp(ctk.CTk):
             return
 
         total = len(self.accounts_data)
-        self.lbl_accounts_count.configure(text=f"Google аккаунтов: {total}")
+        active_idx = get_active_google_account_index()
+        active_email = ""
+        if 0 <= active_idx < len(self.accounts_data):
+            active_email = self.accounts_data[active_idx].get("email", "")
+
+        if active_email:
+            self.lbl_accounts_count.configure(
+                text=f"Google: {total} акк. • 🟢 Текущий: #{active_idx + 1}"
+            )
+        else:
+            self.lbl_accounts_count.configure(text=f"Google аккаунтов: {total}")
 
         for acc in self.accounts_data:
-            self.create_account_card(acc)
+            self.create_account_card(acc, active_idx)
 
     def render_openai_accounts(self):
         if not self.openai_accounts_data:
@@ -571,17 +649,26 @@ class AntigravityManagerApp(ctk.CTk):
             text_color="#71717a",
         ).pack(anchor="w", padx=12, pady=(0, 10))
 
-    def create_account_card(self, acc):
+    def create_account_card(self, acc, active_idx=0):
         email = acc.get("email", "unknown@gmail.com")
         index = acc.get("index", 1)
         status = acc.get("status", "ok")
         groups = acc.get("groups", [])
 
+        zero_idx = int(index) - 1
+        is_current = (zero_idx == active_idx)
+
         # Parse quotas
         gemini_group = next((g for g in groups if g.get("name") == "gemini"), None)
         nongemini_group = next((g for g in groups if g.get("name") == "non-gemini"), None)
 
-        card = ctk.CTkFrame(self.accounts_scroll, fg_color="#1e1e24", corner_radius=12)
+        card = ctk.CTkFrame(
+            self.accounts_scroll,
+            fg_color="#1e1e24",
+            corner_radius=12,
+            border_width=2 if is_current else 1,
+            border_color="#10b981" if is_current else "#27272a",
+        )
         card.pack(fill="x", pady=8, padx=4)
         card.grid_columnconfigure(1, weight=1)
 
@@ -593,11 +680,11 @@ class AntigravityManagerApp(ctk.CTk):
         # Avatar / Index circle
         idx_badge = ctk.CTkLabel(
             header_row,
-            text=f"#{index}",
-            width=32,
+            text=f"⚡ #{index}" if is_current else f"#{index}",
+            width=38 if is_current else 32,
             height=32,
             corner_radius=16,
-            fg_color="#3b82f6",
+            fg_color="#10b981" if is_current else "#3b82f6",
             font=ctk.CTkFont(size=13, weight="bold"),
             text_color="#ffffff",
         )
@@ -612,22 +699,46 @@ class AntigravityManagerApp(ctk.CTk):
         )
         email_label.grid(row=0, column=1, sticky="w")
 
-        # Status badge
-        is_ok = status.lower() in ("ok", "active")
-        status_color = "#10b981" if is_ok else "#ef4444"
-        status_text = "● Активен" if is_ok else f"● {status}"
+        # Actions and status on right
+        actions_box = ctk.CTkFrame(header_row, fg_color="transparent")
+        actions_box.grid(row=0, column=2, sticky="e")
 
-        status_lbl = ctk.CTkLabel(
-            header_row,
-            text=status_text,
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=status_color,
-            fg_color="#27272a",
-            corner_radius=8,
-            padx=10,
-            pady=3,
-        )
-        status_lbl.grid(row=0, column=2, sticky="e")
+        if is_current:
+            status_lbl = ctk.CTkLabel(
+                actions_box,
+                text="🟢 Используется сейчас",
+                font=ctk.CTkFont(size=12, weight="bold"),
+                text_color="#10b981",
+                fg_color="#064e3b",
+                corner_radius=8,
+                padx=10,
+                pady=4,
+            )
+            status_lbl.pack(side="left")
+        else:
+            status_lbl = ctk.CTkLabel(
+                actions_box,
+                text="🔄 В пуле ротации (Резерв)",
+                font=ctk.CTkFont(size=12, weight="bold"),
+                text_color="#38bdf8",
+                fg_color="#0c4a6e",
+                corner_radius=8,
+                padx=10,
+                pady=4,
+            )
+            status_lbl.pack(side="left", padx=(0, 10))
+
+            activate_btn = ctk.CTkButton(
+                actions_box,
+                text="⭐ Сделать текущим",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                fg_color="#3b82f6",
+                hover_color="#2563eb",
+                height=28,
+                width=150,
+                command=lambda aidx=zero_idx: self.activate_google_account_action(aidx),
+            )
+            activate_btn.pack(side="left")
 
         # Divider
         divider = ctk.CTkFrame(card, height=1, fg_color="#2e2e38")
@@ -1287,6 +1398,19 @@ class AntigravityManagerApp(ctk.CTk):
                 f"Не удалось завершить вход:\n{output[:300]}",
             )
             self.set_status("Ошибка авторизации")
+
+    def activate_google_account_action(self, target_idx: int):
+        ok = set_active_google_account_index(target_idx)
+        if ok:
+            now_str = datetime.datetime.now().strftime("%H:%M:%S")
+            self.set_status(f"Активный Google аккаунт переключен на #{target_idx + 1} в {now_str} (на лету)")
+            self.render_accounts()
+            messagebox.showinfo(
+                "Аккаунт активирован на лету!",
+                f"Google аккаунт #{target_idx + 1} выбран как основной для запросов.\n\n⚡ Перезапуск OpenCode НЕ ТРЕБУЕТСЯ:\nПлагин Antigravity автоматически направляет следующий запрос через этот аккаунт.",
+            )
+        else:
+            messagebox.showerror("Ошибка", "Не удалось сменить активный аккаунт Google.")
 
     # --- OpenAI / ChatGPT Actions ---
     def add_openai_account_action(self):
