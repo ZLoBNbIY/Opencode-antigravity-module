@@ -85,6 +85,52 @@ const WIN32_FSYNC_POLYFILL = `if (process.platform === "win32") {
 }
 `;
 
+function patchBrowserLaunch(content, fileName) {
+  const OLD_BROWSER_START = 'async function openBrowserDefault(url) {';
+  const NEXT_FUNC = 'function createDefaultCliDependencies() {';
+
+  const startIdx = content.indexOf(OLD_BROWSER_START);
+  if (startIdx === -1) return { content, changed: false };
+  const nextIdx = content.indexOf(NEXT_FUNC, startIdx);
+  if (nextIdx === -1) return { content, changed: false };
+
+  const oldSlice = content.slice(startIdx, nextIdx);
+
+  const cleanBlock = `async function openBrowserDefault(url) {
+  if (process.platform === "win32") {
+    const overrideBrowser = process.env.ANTIGRAVITY_BROWSER;
+    if (overrideBrowser) {
+      try {
+        await execFileAsync(overrideBrowser, [url]);
+        return;
+      } catch {}
+    }
+    const command = \`Start-Process '\${url.replaceAll("'", "''")}'\`;
+    await execFileAsync("powershell.exe", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-WindowStyle",
+      "Hidden",
+      "-EncodedCommand",
+      Buffer.from(command, "utf16le").toString("base64")
+    ]);
+    return;
+  }
+  await execFileAsync(process.platform === "darwin" ? "open" : "xdg-open", [
+    url
+  ]);
+}
+`;
+
+  if (oldSlice.replace(/\r\n/g, '\n').trim() === cleanBlock.replace(/\r\n/g, '\n').trim()) {
+    return { content, changed: false };
+  }
+
+  content = content.slice(0, startIdx) + cleanBlock + content.slice(nextIdx);
+  console.log(`✓ Patched openBrowserDefault in ${fileName} (Windows OAuth URL query params preservation)`);
+  return { content, changed: true };
+}
+
 for (const basePath of targetPaths) {
   console.log(`\n=== Applying patches to: ${basePath} ===`);
 
@@ -119,6 +165,12 @@ for (const basePath of targetPaths) {
       cliContent = cliContent.replaceAll(poolTarget, 'false');
       cliChanged = true;
       console.log('✓ Patched dist/cli.js (Multi-account pool preservation)');
+    }
+
+    const browserResult = patchBrowserLaunch(cliContent, 'dist/cli.js');
+    if (browserResult.changed) {
+      cliContent = browserResult.content;
+      cliChanged = true;
     }
 
     if (cliChanged) {
@@ -301,6 +353,12 @@ for (const basePath of targetPaths) {
         changed = true;
         console.log(`✓ Patched UNSUPPORTED_SCHEMA_FIELDS in ${file}`);
       }
+    }
+
+    const browserResult = patchBrowserLaunch(content, file);
+    if (browserResult.changed) {
+      content = browserResult.content;
+      changed = true;
     }
 
     if (changed) {

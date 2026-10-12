@@ -44512,7 +44512,22 @@ async function runCli(argv, deps) {
 var execFileAsync = promisify(execFile);
 async function openBrowserDefault(url) {
   if (process.platform === "win32") {
-    await execFileAsync("cmd", ["/c", "start", "", url]);
+    const overrideBrowser = process.env.ANTIGRAVITY_BROWSER;
+    if (overrideBrowser) {
+      try {
+        await execFileAsync(overrideBrowser, [url]);
+        return;
+      } catch {}
+    }
+    const command = `Start-Process '${url.replaceAll("'", "''")}'`;
+    await execFileAsync("powershell.exe", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-WindowStyle",
+      "Hidden",
+      "-EncodedCommand",
+      Buffer.from(command, "utf16le").toString("base64")
+    ]);
     return;
   }
   await execFileAsync(process.platform === "darwin" ? "open" : "xdg-open", [

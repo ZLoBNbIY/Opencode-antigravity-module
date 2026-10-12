@@ -21583,17 +21583,21 @@ var execFileAsync = promisify(execFile);
 async function openBrowserDefault(url) {
   if (process.platform === "win32") {
     const overrideBrowser = process.env.ANTIGRAVITY_BROWSER;
-    const yandexBrowser = "C:\\Program Files\\Yandex\\YandexBrowser\\Application\\browser.exe";
-    let launchPath = overrideBrowser;
-    if (!launchPath) {
+    if (overrideBrowser) {
       try {
-        await (await import("node:fs")).promises.access(yandexBrowser);
-        launchPath = yandexBrowser;
-      } catch {
-      }
+        await execFileAsync(overrideBrowser, [url]);
+        return;
+      } catch {}
     }
-    if (launchPath) await execFileAsync(launchPath, [url]);
-    else await execFileAsync("cmd", ["/c", "start", "", url]);
+    const command = `Start-Process '${url.replaceAll("'", "''")}'`;
+    await execFileAsync("powershell.exe", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-WindowStyle",
+      "Hidden",
+      "-EncodedCommand",
+      Buffer.from(command, "utf16le").toString("base64")
+    ]);
     return;
   }
   await execFileAsync(process.platform === "darwin" ? "open" : "xdg-open", [
