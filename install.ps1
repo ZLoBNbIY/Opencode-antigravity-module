@@ -68,9 +68,11 @@ if (-not $HasLocalRepo) {
 
     $gitCmd = Get-Command git -ErrorAction SilentlyContinue
     if ($gitCmd) {
-        Write-Info "Клонирование репозитория через git (ветка V2) в $TargetDir..."
+        Write-Info "Клонирование/обновление репозитория через git (ветка V2) в $TargetDir..."
         if (Test-Path -LiteralPath (Join-Path $TargetDir ".git")) {
-            & git -C "$TargetDir" pull --quiet
+            & git -C "$TargetDir" fetch origin V2 --quiet
+            & git -C "$TargetDir" reset --hard origin/V2 --quiet
+            & git -C "$TargetDir" clean -fd --quiet
         } else {
             & git clone --branch V2 --quiet "$RepoUrl" "$TargetDir"
         }
