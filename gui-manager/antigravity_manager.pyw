@@ -756,6 +756,49 @@ class AntigravityManagerApp(ctk.CTk):
         self.destroy()
 
     # --- Auto-Updater ---
+    def manual_check_updates_action(self):
+        self.btn_check_update.configure(state="disabled", text="⏳ Проверка...")
+        self.set_status("Проверка обновлений на GitHub (ветка V2)...")
+
+        def _do_manual_check():
+            repo_dir = Path(__file__).resolve().parent.parent
+            info = auto_updater.check_for_updates(repo_dir)
+            self.after(0, lambda: self._on_manual_updates_checked(info))
+
+        threading.Thread(target=_do_manual_check, daemon=True).start()
+
+    def _on_manual_updates_checked(self, info):
+        self.btn_check_update.configure(state="normal", text="🚀 Обновления")
+        has_update = info.get("has_update", False)
+        local_sha = info.get("local_sha", "HEAD")
+        remote_sha = info.get("remote_sha", "")
+        err = info.get("error")
+
+        if err:
+            messagebox.showwarning("Проверка обновлений", f"Не удалось проверить обновления:\n{err}")
+            self.set_status(f"Ошибка проверки: {err}")
+        elif has_update:
+            msg = info.get("message", "Новые улучшения")
+            self.show_update_banner(info)
+            messagebox.showinfo(
+                "Доступно обновление!",
+                f"Найдена новая версия на GitHub (ветка V2)!\n\n"
+                f"• Локальный коммит: {local_sha}\n"
+                f"• Свежий коммит: {remote_sha}\n"
+                f"• Что нового: {msg}\n\n"
+                "Нажмите «⚡ Обновить в 1 клик» на баннере для применения изменений.",
+            )
+            self.set_status(f"Доступно обновление ({remote_sha}): {msg}")
+        else:
+            messagebox.showinfo(
+                "Обновления не требуются",
+                f"У вас установлена самая актуальная версия Antigravity Hub!\n\n"
+                f"• Ветка: V2\n"
+                f"• Коммит: {local_sha}\n"
+                f"• Статус: Синхронизировано с GitHub",
+            )
+            self.set_status("Установлена актуальная версия")
+
     def check_updates_async(self):
         repo_dir = Path(__file__).resolve().parent.parent
         threading.Thread(target=self._worker_check_updates, args=(repo_dir,), daemon=True).start()
@@ -1091,7 +1134,24 @@ class AntigravityManagerApp(ctk.CTk):
             corner_radius=8,
             command=self.import_accounts_action,
         )
-        self.btn_import.pack(side="right")
+        self.btn_import.pack(side="right", padx=(8, 0))
+
+        # Check Updates button
+        self.btn_check_update = ctk.CTkButton(
+            self.top_action_bar,
+            text="🚀 Обновления",
+            font=self.font(size=12, weight="bold"),
+            fg_color=COLOR["card_bg"],
+            hover_color=COLOR["subbox_bg"],
+            text_color=COLOR["text_primary"],
+            border_width=1,
+            border_color=COLOR["border"],
+            height=36,
+            width=110,
+            corner_radius=8,
+            command=self.manual_check_updates_action,
+        )
+        self.btn_check_update.pack(side="right")
 
     def update_action_bar_for_provider(self):
         if self.current_provider_view == "google":
