@@ -21710,6 +21710,7 @@ function buildAgyAgentRequestMetadata(session, payload, model, timestamp = Date.
 // ../core/dist/agy-transport.js
 import { Buffer as Buffer3 } from "node:buffer";
 import * as dns from "node:dns";
+import { createRequire as createRequireDns } from "node:module";
 import * as net from "node:net";
 import { PassThrough, Readable, Transform } from "node:stream";
 import * as tls from "node:tls";
@@ -22077,6 +22078,61 @@ async function resolveHostWithCustomDns(hostname, onDebug, callerSignal, timeout
   }
   return hostname;
 }
+
+// --- Global DNS Interceptor for OpenCode Runtime (OpenAI, Gemini, Anthropic, etc.) ---
+const gDnsCache = new Map();
+function initGlobalDnsHook() {
+  try {
+    let cjsDns;
+    try {
+      const req = createRequireDns(import.meta.url);
+      cjsDns = req("node:dns");
+    } catch {
+      cjsDns = dns;
+    }
+    if (cjsDns && typeof cjsDns.lookup === "function" && !cjsDns.__agDnsHooked) {
+      const origLookup = cjsDns.lookup;
+      cjsDns.lookup = function(hostname, options, callback) {
+        let cb = callback;
+        let opts = options;
+        if (typeof opts === "function") {
+          cb = opts;
+          opts = {};
+        }
+        if (!hostname || typeof hostname !== "string" || hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || /^\d+\.\d+\.\d+\.\d+$/.test(hostname)) {
+          return origLookup.call(cjsDns, hostname, options, callback);
+        }
+        const now = Date.now();
+        const cached = gDnsCache.get(hostname);
+        if (cached && cached.expires > now) {
+          if (cached.ip && cached.ip !== hostname) {
+            if (opts && opts.all) {
+              return cb(null, [{ address: cached.ip, family: 4 }]);
+            }
+            return cb(null, cached.ip, 4);
+          }
+          return origLookup.call(cjsDns, hostname, options, callback);
+        }
+        resolveHostWithCustomDns(hostname).then((ip) => {
+          if (ip && ip !== hostname) {
+            gDnsCache.set(hostname, { ip, expires: now + 60000 });
+            if (opts && opts.all) {
+              return cb(null, [{ address: ip, family: 4 }]);
+            }
+            return cb(null, ip, 4);
+          }
+          gDnsCache.set(hostname, { ip: null, expires: now + 15000 });
+          return origLookup.call(cjsDns, hostname, options, callback);
+        }).catch(() => {
+          return origLookup.call(cjsDns, hostname, options, callback);
+        });
+      };
+      cjsDns.__agDnsHooked = true;
+    }
+  } catch {}
+}
+initGlobalDnsHook();
+
 async function connectDirect(targetUrl, timeoutMs, signal, onDebug) {
   const targetHost = await resolveHostWithCustomDns(targetUrl.hostname, onDebug, signal, timeoutMs);
   return await new Promise((resolve12, reject) => {
