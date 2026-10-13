@@ -17346,6 +17346,12 @@ var ALL_MODEL_DEFINITIONS = {
       high: { thinkingLevel: "high" }
     }
   }),
+  "antigravity-claude-sonnet-4-6": defineModel("antigravity-claude-sonnet-4-6", {
+    name: "Claude Sonnet 4.6 (Antigravity)",
+    reasoning: true,
+    limit: { context: 25e4, output: 64e3 },
+    modalities: DEFAULT_MODALITIES
+  }),
   "antigravity-claude-sonnet-4-6-thinking": defineModel("antigravity-claude-sonnet-4-6-thinking", {
     name: "Claude Sonnet 4.6 Thinking (Antigravity)",
     reasoning: true,
@@ -17355,6 +17361,12 @@ var ALL_MODEL_DEFINITIONS = {
       low: { disabled: true },
       high: { disabled: true }
     }
+  }),
+  "antigravity-claude-opus-4-6": defineModel("antigravity-claude-opus-4-6", {
+    name: "Claude Opus 4.6 (Antigravity)",
+    reasoning: true,
+    limit: { context: 25e4, output: 64e3 },
+    modalities: DEFAULT_MODALITIES
   }),
   "antigravity-claude-opus-4-6-thinking": defineModel("antigravity-claude-opus-4-6-thinking", {
     name: "Claude Opus 4.6 Thinking (Antigravity)",
@@ -17457,6 +17469,8 @@ var RESOLVER_ALIASES = {
   "gemini-claude-opus-4-6-thinking-low": "claude-opus-4-6-thinking",
   "gemini-claude-opus-4-6-thinking-medium": "claude-opus-4-6-thinking",
   "gemini-claude-opus-4-6-thinking-high": "claude-opus-4-6-thinking",
+  "claude-opus-4-6": "claude-opus-4-6-thinking",
+  "gemini-claude-opus-4-6": "claude-opus-4-6-thinking",
   "gemini-claude-sonnet-4-6-thinking-low": "claude-sonnet-4-6",
   "gemini-claude-sonnet-4-6-thinking-medium": "claude-sonnet-4-6",
   "gemini-claude-sonnet-4-6-thinking-high": "claude-sonnet-4-6",
@@ -17536,8 +17550,10 @@ var ANTIGRAVITY_OPENCODE_MODEL_IDS = [
   "antigravity-gemini-3.6-flash",
   "antigravity-gemini-3.5-flash",
   "antigravity-gemini-3.1-pro",
-  "antigravity-claude-sonnet-4-6-thinking",
+  "antigravity-claude-opus-4-6",
   "antigravity-claude-opus-4-6-thinking",
+  "antigravity-claude-sonnet-4-6",
+  "antigravity-claude-sonnet-4-6-thinking",
   "antigravity-gemini-3.1-flash-image",
   "antigravity-gpt-oss-120b-medium"
 ];
