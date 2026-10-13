@@ -255,7 +255,7 @@ node plugin/dist/cli.js login
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/cortexkit/opencode-antigravity-auth/main/schema.json",
-  "account_selection_strategy": "hybrid",
+  "account_selection_strategy": "sticky",
   "soft_quota_threshold_percent": 100,
   "switch_on_first_rate_limit": true,
   "quota_style_fallback": true,
