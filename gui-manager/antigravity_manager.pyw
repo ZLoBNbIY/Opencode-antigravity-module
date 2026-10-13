@@ -1358,57 +1358,73 @@ class AntigravityManagerApp(ctk.CTk):
         )
         date_pill.grid(row=0, column=0, sticky="w")
 
-        # High-contrast action icon buttons (30x30px)
-        actions_pill = ctk.CTkFrame(footer, fg_color=c["subbox_bg"], corner_radius=12, border_width=1, border_color=c["border"])
+        # High-contrast action icon buttons (large, clear, distinct)
+        actions_pill = ctk.CTkFrame(footer, fg_color="transparent")
         actions_pill.grid(row=0, column=1, sticky="e")
 
+        # 1. Health check button
         ctk.CTkButton(
             actions_pill,
-            text="🩺",
-            font=self.font(size=12),
-            fg_color="transparent",
+            text="🩺 Тест",
+            font=self.font(size=11, weight="bold"),
+            fg_color=c["subbox_bg"],
             hover_color=c["border"],
             text_color=c["text_primary"],
-            width=30,
+            border_width=1,
+            border_color=c["border"],
+            width=58,
             height=28,
+            corner_radius=6,
             command=lambda a=acc: self.test_google_account_action(a),
-        ).pack(side="left", padx=1)
+        ).pack(side="left", padx=2)
 
+        # 2. Set current button
         ctk.CTkButton(
             actions_pill,
-            text="⭐",
-            font=self.font(size=12),
-            fg_color="transparent",
-            hover_color=c["border"],
-            text_color="#0284c7" if is_active else c["text_muted"],
-            width=30,
+            text="⭐ Выбрать",
+            font=self.font(size=11, weight="bold"),
+            fg_color="#0284c7" if is_active else c["subbox_bg"],
+            hover_color="#0369a1" if is_active else c["border"],
+            text_color="#ffffff" if is_active else c["text_primary"],
+            border_width=1 if not is_active else 0,
+            border_color=c["border"],
+            width=76,
             height=28,
+            corner_radius=6,
             command=lambda idx=index - 1: self.activate_google_account_action(idx),
-        ).pack(side="left", padx=1)
+        ).pack(side="left", padx=2)
 
+        # 3. Refresh quota button
         ctk.CTkButton(
             actions_pill,
             text="🔄",
-            font=self.font(size=12),
-            fg_color="transparent",
+            font=self.font(size=14, weight="bold"),
+            fg_color=c["subbox_bg"],
             hover_color=c["border"],
             text_color=c["text_primary"],
-            width=30,
+            border_width=1,
+            border_color=c["border"],
+            width=32,
             height=28,
+            corner_radius=6,
             command=self.refresh_all_async,
-        ).pack(side="left", padx=1)
+        ).pack(side="left", padx=2)
 
+        # 4. Delete button
         ctk.CTkButton(
             actions_pill,
             text="🗑",
-            font=self.font(size=12),
-            fg_color="transparent",
-            hover_color="#ef4444",
+            font=self.font(size=14, weight="bold"),
+            fg_color=c["subbox_bg"],
+            hover_color="#fee2e2" if self.current_theme == "light" else "#7f1d1d",
             text_color="#ef4444",
-            width=30,
+            border_width=1,
+            border_color=c["border"],
+            width=32,
             height=28,
+            corner_radius=6,
             command=lambda a=acc: self.delete_google_account_action(a),
-        ).pack(side="left", padx=1)
+        ).pack(side="left", padx=2)
 
         return card
 
@@ -1609,44 +1625,54 @@ class AntigravityManagerApp(ctk.CTk):
             pady=2,
         ).grid(row=0, column=0, sticky="w")
 
-        actions_pill = ctk.CTkFrame(footer, fg_color=c["subbox_bg"], corner_radius=12, border_width=1, border_color=c["border"])
+        # High-contrast action icon buttons (large, clear, distinct)
+        actions_pill = ctk.CTkFrame(footer, fg_color="transparent")
         actions_pill.grid(row=0, column=1, sticky="e")
 
         ctk.CTkButton(
             actions_pill,
-            text="🩺",
-            font=self.font(size=12),
-            fg_color="transparent",
+            text="🩺 Тест",
+            font=self.font(size=11, weight="bold"),
+            fg_color=c["subbox_bg"],
             hover_color=c["border"],
             text_color=c["text_primary"],
-            width=30,
+            border_width=1,
+            border_color=c["border"],
+            width=58,
             height=28,
+            corner_radius=6,
             command=lambda a=acc: self.test_openai_account_action(a),
-        ).pack(side="left", padx=1)
+        ).pack(side="left", padx=2)
 
         ctk.CTkButton(
             actions_pill,
-            text="⭐",
-            font=self.font(size=12),
-            fg_color="transparent",
-            hover_color=c["border"],
-            text_color="#10a37f" if is_active else c["text_muted"],
-            width=30,
+            text="⭐ Выбрать",
+            font=self.font(size=11, weight="bold"),
+            fg_color="#10a37f" if is_active else c["subbox_bg"],
+            hover_color="#0e8a6c" if is_active else c["border"],
+            text_color="#ffffff" if is_active else c["text_primary"],
+            border_width=1 if not is_active else 0,
+            border_color=c["border"],
+            width=76,
             height=28,
+            corner_radius=6,
             command=lambda aid=account_id: self.activate_openai_account_action(aid),
-        ).pack(side="left", padx=1)
+        ).pack(side="left", padx=2)
 
         ctk.CTkButton(
             actions_pill,
             text="🗑",
-            font=self.font(size=12),
-            fg_color="transparent",
-            hover_color="#ef4444",
+            font=self.font(size=14, weight="bold"),
+            fg_color=c["subbox_bg"],
+            hover_color="#fee2e2" if self.current_theme == "light" else "#7f1d1d",
             text_color="#ef4444",
-            width=30,
+            border_width=1,
+            border_color=c["border"],
+            width=32,
             height=28,
+            corner_radius=6,
             command=lambda a=acc: self.delete_openai_account_action(a),
-        ).pack(side="left", padx=1)
+        ).pack(side="left", padx=2)
 
         return card
 
