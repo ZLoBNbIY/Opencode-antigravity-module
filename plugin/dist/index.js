@@ -21751,6 +21751,10 @@ function buildAgyCliHeaderPairs(url, init = {}) {
   }
   pairs.push(["Content-Type", contentType]);
   pairs.push(["Accept-Encoding", acceptEncoding]);
+  const googApiClient = getHeader(headers, "X-Goog-Api-Client") ?? "google-cloud-sdk vscode_cloudshelleditor/0.1";
+  pairs.push(["X-Goog-Api-Client", googApiClient]);
+  const clientMetadata = getHeader(headers, "Client-Metadata") ?? `{"ideType":"ANTIGRAVITY","platform":"${process.platform === "win32" ? "WINDOWS" : "MACOS"}","pluginType":"GEMINI"}`;
+  pairs.push(["Client-Metadata", clientMetadata]);
   return pairs;
 }
 function noProxyIncludes(hostname) {

@@ -32,7 +32,8 @@ def test_google_account_health(account: dict, timeout=10) -> dict:
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
         "User-Agent": "antigravity/cli/1.1.24 (aidev_client; os_type=windows; arch=amd64; cl=974782877; auth_method=consumer)",
-        "X-Goog-Api-Client": "google-cloud-code",
+        "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
+        "Client-Metadata": '{"ideType":"ANTIGRAVITY","platform":"WINDOWS","pluginType":"GEMINI"}',
     }
     body = json.dumps({"project": project_id}).encode("utf-8")
 
