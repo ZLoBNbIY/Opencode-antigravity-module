@@ -4,5 +4,9 @@
   "soft_quota_threshold_percent": 100,
   "switch_on_first_rate_limit": true,
   "quota_style_fallback": true,
-  "debug": false
+  "debug": false,
+  "custom_dns": [
+    "143.20.64.55",
+    "31.58.216.201"
+  ]
 }

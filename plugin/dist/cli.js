@@ -17805,6 +17805,7 @@ var DEFAULT_SESSION_STATE_TTL_MS = 24 * 60 * 60 * 1e3;
 
 // ../core/dist/agy-transport.js
 import { Buffer as Buffer2 } from "node:buffer";
+import * as dns from "node:dns";
 import * as net from "node:net";
 import { PassThrough, Readable, Transform } from "node:stream";
 import * as tls from "node:tls";
@@ -17992,10 +17993,37 @@ Host: ${targetHost}:${targetPort}\r
     });
   });
 }
+async function resolveHostWithCustomDns(hostname, onDebug) {
+  try {
+    const configPath = getUserConfigPath();
+    if (existsSync2(configPath)) {
+      const parsed = JSON.parse(readFileSync(configPath, "utf-8"));
+      const dnsServers = parsed.custom_dns;
+      if (Array.isArray(dnsServers) && dnsServers.length > 0) {
+        const resolver = new dns.Resolver();
+        resolver.setServers(dnsServers);
+        const addresses = await new Promise((resolveDns, rejectDns) => {
+          resolver.resolve4(hostname, (err, addrs) => {
+            if (err || !addrs || addrs.length === 0) rejectDns(err || new Error("No addresses"));
+            else resolveDns(addrs);
+          });
+        });
+        if (addresses && addresses.length > 0) {
+          onDebug?.(`[DNS] Resolved ${hostname} to ${addresses[0]} via custom DNS [${dnsServers.join(", ")}]`);
+          return addresses[0];
+        }
+      }
+    }
+  } catch (dnsErr) {
+    onDebug?.(`[DNS] Custom DNS resolution failed for ${hostname}: ${dnsErr?.message || dnsErr}`);
+  }
+  return hostname;
+}
 async function connectDirect(targetUrl, timeoutMs, signal, onDebug) {
+  const targetHost = await resolveHostWithCustomDns(targetUrl.hostname, onDebug);
   return await new Promise((resolve7, reject) => {
     const tlsOptions = {
-      host: targetUrl.hostname,
+      host: targetHost,
       port: Number(targetUrl.port || DEFAULT_HTTPS_PORT),
       servername: targetUrl.hostname,
       signal: signal ?? void 0
@@ -18271,12 +18299,12 @@ var ANTIGRAVITY_REDIRECT_URI = "http://localhost:51121/oauth-callback";
 var ANTIGRAVITY_ENDPOINT_DAILY = "https://daily-cloudcode-pa.googleapis.com";
 var ANTIGRAVITY_ENDPOINT_PROD = "https://cloudcode-pa.googleapis.com";
 var ANTIGRAVITY_ENDPOINT_FALLBACKS = [
-  ANTIGRAVITY_ENDPOINT_DAILY,
-  ANTIGRAVITY_ENDPOINT_PROD
+  ANTIGRAVITY_ENDPOINT_PROD,
+  ANTIGRAVITY_ENDPOINT_DAILY
 ];
 var ANTIGRAVITY_LOAD_ENDPOINTS = [
-  ANTIGRAVITY_ENDPOINT_DAILY,
-  ANTIGRAVITY_ENDPOINT_PROD
+  ANTIGRAVITY_ENDPOINT_PROD,
+  ANTIGRAVITY_ENDPOINT_DAILY
 ];
 var ANTIGRAVITY_DEFAULT_PROJECT_ID = "rising-fact-p41fc";
 var ANTIGRAVITY_VERSION_FALLBACK = "1.18.3";

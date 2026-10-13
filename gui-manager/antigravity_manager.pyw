@@ -1729,6 +1729,55 @@ class AntigravityManagerApp(ctk.CTk):
         self.rate_limit_var = tk.BooleanVar(value=self.config_data.get("switch_on_first_rate_limit", True))
         ctk.CTkSwitch(c2, text="Включено", variable=self.rate_limit_var).pack(anchor="w", padx=16, pady=(0, 12))
 
+        # 3. Custom DNS & Proxy (Isolated Geo-Bypass for OpenCode only)
+        c3 = ctk.CTkFrame(self.settings_frame, fg_color=COLOR["card_bg"], corner_radius=12, border_width=1, border_color=COLOR["border"])
+        c3.pack(fill="x", pady=6)
+        ctk.CTkLabel(c3, text="🌐 Изолированный DNS и Прокси (Только для OpenCode)", font=self.font(size=14, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w", padx=16, pady=(12, 4))
+        ctk.CTkLabel(
+            c3,
+            text="Позволяет обходить геоблокировки Google (User location not supported) ТОЛЬКО для OpenCode, не меняя сетевые настройки всей Windows:",
+            font=self.font(size=11),
+            text_color=COLOR["text_secondary"]
+        ).pack(anchor="w", padx=16, pady=(0, 10))
+
+        # DNS Entry
+        dns_row = ctk.CTkFrame(c3, fg_color="transparent")
+        dns_row.pack(fill="x", padx=16, pady=(0, 6))
+        ctk.CTkLabel(dns_row, text="Кастомный DNS (через запятую):", font=self.font(size=12, weight="bold"), text_color=COLOR["text_primary"], width=230, anchor="w").pack(side="left")
+        current_dns = self.config_data.get("custom_dns", ["143.20.64.55", "31.58.216.201"])
+        if isinstance(current_dns, list):
+            current_dns_str = ", ".join(current_dns)
+        else:
+            current_dns_str = str(current_dns)
+        self.dns_entry = ctk.CTkEntry(
+            dns_row,
+            placeholder_text="143.20.64.55, 31.58.216.201",
+            font=self.font(size=12),
+            height=32,
+            fg_color=COLOR["subbox_bg"],
+            border_color=COLOR["border"],
+            text_color=COLOR["text_primary"]
+        )
+        self.dns_entry.pack(side="left", fill="x", expand=True)
+        self.dns_entry.insert(0, current_dns_str)
+
+        # Proxy Entry
+        proxy_row = ctk.CTkFrame(c3, fg_color="transparent")
+        proxy_row.pack(fill="x", padx=16, pady=(0, 12))
+        ctk.CTkLabel(proxy_row, text="Прокси (опционально HTTP/SOCKS):", font=self.font(size=12, weight="bold"), text_color=COLOR["text_primary"], width=230, anchor="w").pack(side="left")
+        current_proxy = self.config_data.get("proxy", "")
+        self.proxy_entry = ctk.CTkEntry(
+            proxy_row,
+            placeholder_text="http://127.0.0.1:10809 или socks5://127.0.0.1:10808",
+            font=self.font(size=12),
+            height=32,
+            fg_color=COLOR["subbox_bg"],
+            border_color=COLOR["border"],
+            text_color=COLOR["text_primary"]
+        )
+        self.proxy_entry.pack(side="left", fill="x", expand=True)
+        self.proxy_entry.insert(0, current_proxy or "")
+
         ctk.CTkButton(
             self.settings_frame,
             text="💾 Сохранить настройки",
@@ -1753,9 +1802,25 @@ class AntigravityManagerApp(ctk.CTk):
     def save_settings_action(self):
         self.config_data["account_selection_strategy"] = self.strategy_var.get()
         self.config_data["switch_on_first_rate_limit"] = self.rate_limit_var.get()
+
+        # Parse and save custom DNS
+        dns_val = self.dns_entry.get().strip()
+        if dns_val:
+            dns_list = [d.strip() for d in dns_val.split(",") if d.strip()]
+            self.config_data["custom_dns"] = dns_list
+        else:
+            self.config_data.pop("custom_dns", None)
+
+        # Parse and save proxy
+        proxy_val = self.proxy_entry.get().strip()
+        if proxy_val:
+            self.config_data["proxy"] = proxy_val
+        else:
+            self.config_data.pop("proxy", None)
+
         ok, msg = self.save_config()
         if ok:
-            messagebox.showinfo("Успешно", msg)
+            messagebox.showinfo("Успешно", "Настройки сохранены!\n\nИзолированный DNS и параметры маршрутизации будут применяться только к OpenCode.")
         else:
             messagebox.showerror("Ошибка", msg)
 

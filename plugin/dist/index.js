@@ -21709,6 +21709,7 @@ function buildAgyAgentRequestMetadata(session, payload, model, timestamp = Date.
 
 // ../core/dist/agy-transport.js
 import { Buffer as Buffer3 } from "node:buffer";
+import * as dns from "node:dns";
 import * as net from "node:net";
 import { PassThrough, Readable, Transform } from "node:stream";
 import * as tls from "node:tls";
@@ -21790,6 +21791,15 @@ function noProxyIncludes(hostname) {
   });
 }
 function getHttpsProxy(url) {
+  try {
+    const configPath = getUserConfigPath();
+    if (existsSync5(configPath)) {
+      const parsed = JSON.parse(readFileSync2(configPath, "utf-8"));
+      if (parsed.proxy && typeof parsed.proxy === "string" && parsed.proxy.trim()) {
+        return new URL(parsed.proxy.trim());
+      }
+    }
+  } catch {}
   if (url.protocol !== "https:" || noProxyIncludes(url.hostname))
     return void 0;
   const rawProxy = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.ALL_PROXY || process.env.all_proxy;
@@ -21896,10 +21906,37 @@ Host: ${targetHost}:${targetPort}\r
     });
   });
 }
+async function resolveHostWithCustomDns(hostname, onDebug) {
+  try {
+    const configPath = getUserConfigPath();
+    if (existsSync5(configPath)) {
+      const parsed = JSON.parse(readFileSync2(configPath, "utf-8"));
+      const dnsServers = parsed.custom_dns;
+      if (Array.isArray(dnsServers) && dnsServers.length > 0) {
+        const resolver = new dns.Resolver();
+        resolver.setServers(dnsServers);
+        const addresses = await new Promise((resolveDns, rejectDns) => {
+          resolver.resolve4(hostname, (err, addrs) => {
+            if (err || !addrs || addrs.length === 0) rejectDns(err || new Error("No addresses"));
+            else resolveDns(addrs);
+          });
+        });
+        if (addresses && addresses.length > 0) {
+          onDebug?.(`[DNS] Resolved ${hostname} to ${addresses[0]} via custom DNS [${dnsServers.join(", ")}]`);
+          return addresses[0];
+        }
+      }
+    }
+  } catch (dnsErr) {
+    onDebug?.(`[DNS] Custom DNS resolution failed for ${hostname}: ${dnsErr?.message || dnsErr}`);
+  }
+  return hostname;
+}
 async function connectDirect(targetUrl, timeoutMs, signal, onDebug) {
+  const targetHost = await resolveHostWithCustomDns(targetUrl.hostname, onDebug);
   return await new Promise((resolve12, reject) => {
     const tlsOptions = {
-      host: targetUrl.hostname,
+      host: targetHost,
       port: Number(targetUrl.port || DEFAULT_HTTPS_PORT),
       servername: targetUrl.hostname,
       signal: signal ?? void 0
@@ -22175,14 +22212,14 @@ var ANTIGRAVITY_REDIRECT_URI = "http://localhost:51121/oauth-callback";
 var ANTIGRAVITY_ENDPOINT_DAILY = "https://daily-cloudcode-pa.googleapis.com";
 var ANTIGRAVITY_ENDPOINT_PROD = "https://cloudcode-pa.googleapis.com";
 var ANTIGRAVITY_ENDPOINT_FALLBACKS = [
-  ANTIGRAVITY_ENDPOINT_DAILY,
-  ANTIGRAVITY_ENDPOINT_PROD
+  ANTIGRAVITY_ENDPOINT_PROD,
+  ANTIGRAVITY_ENDPOINT_DAILY
 ];
 var ANTIGRAVITY_LOAD_ENDPOINTS = [
-  ANTIGRAVITY_ENDPOINT_DAILY,
-  ANTIGRAVITY_ENDPOINT_PROD
+  ANTIGRAVITY_ENDPOINT_PROD,
+  ANTIGRAVITY_ENDPOINT_DAILY
 ];
-var ANTIGRAVITY_ENDPOINT = ANTIGRAVITY_ENDPOINT_DAILY;
+var ANTIGRAVITY_ENDPOINT = ANTIGRAVITY_ENDPOINT_PROD;
 var GEMINI_CLI_ENDPOINT = ANTIGRAVITY_ENDPOINT_PROD;
 var ANTIGRAVITY_DEFAULT_PROJECT_ID = "rising-fact-p41fc";
 var ANTIGRAVITY_VERSION_FALLBACK = "1.18.3";
@@ -35336,6 +35373,8 @@ var AntigravityConfigSchema = z.object({
    * Routing overrides the static `cli_first` / `quota_style_fallback` flags
    * when the operator toggles them through `/antigravity-routing`.
    */
+  custom_dns: z.array(z.string()).optional(),
+  proxy: z.string().optional(),
   operator: z.object({
     routing: z.object({
       cli_first: z.boolean().default(false),
