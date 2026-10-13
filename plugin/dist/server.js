@@ -18351,7 +18351,7 @@ var AccountSelector = class {
     }
     const state = {
       parentId: identity.parentId ?? null,
-      currentAccountIndexByFamily: { claude: -1, gemini: -1 },
+      currentAccountIndexByFamily: { claude: this.currentAccountIndexByFamily.claude, gemini: this.currentAccountIndexByFamily.gemini },
       cursorByFamily: { ...this.cursorByFamily },
       offsetAppliedByFamily: { claude: false, gemini: false },
       usedAccounts: /* @__PURE__ */ new Set(),
@@ -18483,6 +18483,23 @@ var AccountSelector = class {
   getCurrentOrNextForFamily(family, model, strategy = "sticky", headerStyle = "antigravity", pidOffsetEnabled = false, softQuotaThresholdPercent = 100, softQuotaCacheTtlMs = 10 * 60 * 1e3, identity, excludeIndexes) {
     const quotaKey = getQuotaKey(family, headerStyle, model);
     const effectiveSoftQuotaThreshold = this.getEffectiveSoftQuotaThreshold(softQuotaThresholdPercent);
+    // If strategy is sticky, prioritize the current active account regardless of session pin
+    if (strategy === "sticky") {
+      const current = this.getCurrentAccountForFamily(family, null);
+      if (current && !excludeIndexes?.has(current.index)) {
+        clearExpiredRateLimits(current, this.now);
+        const isLimited = isRateLimitedForHeaderStyle(current, family, headerStyle, this.now, model);
+        const isOverThresh = isOverSoftQuotaThreshold(current, family, effectiveSoftQuotaThreshold, softQuotaCacheTtlMs, this.now, model);
+        if (!isLimited && !isOverThresh && !this.isAccountCoolingDown(current)) {
+          this.markTouchedForQuota(current, quotaKey);
+          if (identity) {
+            this.setActiveIndex(family, current.index, identity);
+          }
+          return current;
+        }
+      }
+    }
+
     if (identity) {
       const pinned = this.getCurrentAccountForFamily(family, identity);
       if (pinned) {
@@ -41023,22 +41040,29 @@ function createGaRouteBook(limit = 256) {
     }
   };
 }
-function createGaJobExecutor(executor) {
-  return (job, context) => executor.execute(
-    job.url,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: job.body,
-      signal: context.signal
-    },
-    {
-      session: {
-        sessionId: job.sessionID,
-        parentSessionId: job.parentSessionID
-      }
+function createGaJobExecutor(executor, manager) {
+  return async (job, context) => {
+    if (manager?.refreshFromRepository) {
+      try {
+        await manager.refreshFromRepository();
+      } catch {}
     }
-  );
+    return executor.execute(
+      job.url,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: job.body,
+        signal: context.signal
+      },
+      {
+        session: {
+          sessionId: job.sessionID,
+          parentSessionId: job.parentSessionID
+        }
+      }
+    );
+  };
 }
 function gaEngineCollaborators(input2) {
   const runtime = input2.runtime;
@@ -41122,7 +41146,7 @@ async function createGaLocalRequestPipeline(input2) {
     ...quotaFetch ? { transport: () => quotaFetch } : {}
   });
   return {
-    execute: createGaJobExecutor(executor),
+    execute: createGaJobExecutor(executor, manager),
     refreshQuota: (refs) => storeQuota.checkStoreQuota(refs),
     refreshAccounts: () => manager.refreshFromRepository(),
     async dispose() {

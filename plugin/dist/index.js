@@ -18466,6 +18466,23 @@ var AccountSelector = class {
   getCurrentOrNextForFamily(family, model, strategy = "sticky", headerStyle = "antigravity", pidOffsetEnabled = false, softQuotaThresholdPercent = 100, softQuotaCacheTtlMs = 10 * 60 * 1e3, identity, excludeIndexes) {
     const quotaKey = getQuotaKey(family, headerStyle, model);
     const effectiveSoftQuotaThreshold = this.getEffectiveSoftQuotaThreshold(softQuotaThresholdPercent);
+    // If strategy is sticky, prioritize the current active account regardless of session pin
+    if (strategy === "sticky") {
+      const current = this.getCurrentAccountForFamily(family, null);
+      if (current && !excludeIndexes?.has(current.index)) {
+        clearExpiredRateLimits(current, this.now);
+        const isLimited = isRateLimitedForHeaderStyle(current, family, headerStyle, this.now, model);
+        const isOverThresh = isOverSoftQuotaThreshold(current, family, effectiveSoftQuotaThreshold, softQuotaCacheTtlMs, this.now, model);
+        if (!isLimited && !isOverThresh && !this.isAccountCoolingDown(current)) {
+          this.markTouchedForQuota(current, quotaKey);
+          if (identity) {
+            this.setActiveIndex(family, current.index, identity);
+          }
+          return current;
+        }
+      }
+    }
+
     if (identity) {
       const pinned = this.getCurrentAccountForFamily(family, identity);
       if (pinned) {
