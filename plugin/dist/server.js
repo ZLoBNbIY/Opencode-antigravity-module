@@ -43925,7 +43925,7 @@ function registerGaModels(editor, catalog) {
   const record2 = editor.get(GA_PROVIDER_ID);
   if (!record2) return;
   const kept = [...record2.models.values()].filter(
-    (model) => !catalog.has(model.id)
+    (model) => !model.id.startsWith("antigravity-") && !model.id.includes("3.7") && !catalog.has(model.id)
   );
   editor.models.set(GA_PROVIDER_ID, [...kept, ...catalog.values()]);
 }
@@ -44024,11 +44024,8 @@ async function runDynamicModelCatalogSync(context, catalog, runtime) {
   for (const verType of sortedVersions) {
     const [ver, type] = verType.split("-");
     if (parseFloat(ver) < 3.1) continue;
-    // Exclude discontinued models (like 3.7) if only fallback tiered exists
-    if (ver === "3.7") {
-      const hasStandard = modelEntries.some(([k]) => k.startsWith("gemini-3.7-flash-medium") || k.startsWith("gemini-3.7-flash-high") || k === "gemini-3.7-flash");
-      if (!hasStandard) continue;
-    }
+    // Discontinued models: 3.7 is deprecated and shut down by Google
+    if (ver === "3.7") continue;
 
     const id = `antigravity-gemini-${ver}-${type}`;
     ensureDynamicModelDefinition(id);
