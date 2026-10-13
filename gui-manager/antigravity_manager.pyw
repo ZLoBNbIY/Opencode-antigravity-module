@@ -20,6 +20,10 @@ import customtkinter as ctk
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import openai_manager
+import win_tray
+import health_checker
+import auto_updater
+import crypto_backup
 
 # --- Paths & Dynamic Resolution ---
 def get_node_executable():
@@ -623,6 +627,17 @@ class AntigravityManagerApp(ctk.CTk):
         self.auto_refresh_interval_min = 10
         self.countdown_seconds = self.auto_refresh_interval_min * 60
 
+        # Background token refresh (every 30 minutes)
+        self.token_refresh_interval_min = 30
+        self.token_refresh_countdown = self.token_refresh_interval_min * 60
+
+        # Auto-updater state
+        self.update_info = None
+
+        # System tray setup
+        self.tray = None
+        self.protocol("WM_DELETE_WINDOW", self.on_close_to_tray)
+
         # Grid setup
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
@@ -631,10 +646,12 @@ class AntigravityManagerApp(ctk.CTk):
         self.create_tabs()
         self.create_statusbar()
 
-        # Initial background load
+        # Initial background tasks
+        self.init_system_tray()
         self.refresh_all_async()
         self.update_opencode_status()
         self.start_countdown_timer()
+        self.check_updates_async()
 
     # --- Configuration Management ---
     def load_config(self):
@@ -655,6 +672,131 @@ class AntigravityManagerApp(ctk.CTk):
             return True, "Настройки сохранены!"
         except Exception as e:
             return False, f"Ошибка сохранения: {e}"
+
+    # --- System Tray Integration ---
+    def init_system_tray(self):
+        try:
+            hwnd = self.winfo_id()
+            icon_file = Path(__file__).resolve().parent / "icon.ico"
+            icon_str = str(icon_file) if icon_file.exists() else None
+            self.tray = win_tray.WindowsTrayIcon(
+                hwnd=hwnd,
+                title="Antigravity Hub — Google & ChatGPT",
+                icon_path=icon_str,
+            )
+            self.tray.add()
+        except Exception as e:
+            print(f"Error initializing system tray: {e}")
+
+    def on_close_to_tray(self):
+        try:
+            self.withdraw()
+            if self.tray and self.tray.is_visible:
+                self.tray.show_balloon(
+                    "Antigravity Hub свёрнут",
+                    "Приложение продолжает работать в фоне и мониторить квоты. Кликните по иконке для открытия.",
+                )
+        except Exception:
+            self.destroy()
+
+    def show_from_tray(self):
+        try:
+            self.deiconify()
+            self.lift()
+            self.focus_force()
+        except Exception:
+            pass
+
+    def exit_app_fully(self):
+        try:
+            if self.tray:
+                self.tray.remove()
+        except Exception:
+            pass
+        self.destroy()
+
+    # --- Auto-Updater ---
+    def check_updates_async(self):
+        repo_dir = Path(__file__).resolve().parent.parent
+        threading.Thread(target=self._worker_check_updates, args=(repo_dir,), daemon=True).start()
+
+    def _worker_check_updates(self, repo_dir):
+        try:
+            info = auto_updater.check_for_updates(repo_dir)
+            self.after(0, lambda: self._on_updates_checked(info))
+        except Exception as e:
+            print(f"Error checking updates: {e}")
+
+    def _on_updates_checked(self, info):
+        self.update_info = info
+        if info.get("has_update"):
+            self.show_update_banner(info)
+
+    def show_update_banner(self, info):
+        if hasattr(self, "update_banner") and self.update_banner:
+            return
+        # Display update notification banner below header
+        self.update_banner = ctk.CTkFrame(self, fg_color="#1e3a8a", corner_radius=8, height=38)
+        self.update_banner.grid(row=0, column=0, sticky="ew", padx=20, pady=(64, 0))
+        self.update_banner.grid_columnconfigure(0, weight=1)
+
+        msg = info.get("message", "Новые улучшения")
+        sha = info.get("remote_sha", "")
+        txt = f"🚀 Доступно обновление модуля ({sha}): {msg}"
+
+        ctk.CTkLabel(
+            self.update_banner,
+            text=txt,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#93c5fd",
+        ).grid(row=0, column=0, sticky="w", padx=16, pady=6)
+
+        btn_box = ctk.CTkFrame(self.update_banner, fg_color="transparent")
+        btn_box.grid(row=0, column=1, sticky="e", padx=12, pady=4)
+
+        ctk.CTkButton(
+            btn_box,
+            text="⚡ Обновить в 1 клик",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#3b82f6",
+            hover_color="#2563eb",
+            height=26,
+            width=140,
+            command=self.apply_update_action,
+        ).pack(side="left", padx=(0, 8))
+
+        ctk.CTkButton(
+            btn_box,
+            text="✕",
+            font=ctk.CTkFont(size=12),
+            fg_color="#1e293b",
+            hover_color="#334155",
+            height=26,
+            width=26,
+            command=lambda: self.update_banner.destroy(),
+        ).pack(side="left")
+
+    def apply_update_action(self):
+        repo_dir = Path(__file__).resolve().parent.parent
+        self.set_status("Применение обновления с GitHub (ветка V2)...")
+
+        def _do_update():
+            ok, msg = auto_updater.apply_update_git(repo_dir)
+            self.after(0, lambda: self._on_update_applied(ok, msg))
+
+        threading.Thread(target=_do_update, daemon=True).start()
+
+    def _on_update_applied(self, ok, msg):
+        if ok:
+            messagebox.showinfo(
+                "Обновление завершено!",
+                f"{msg}\n\nРекомендуется перезапустить OpenCode и Hub для применения всех изменений.",
+            )
+            if hasattr(self, "update_banner") and self.update_banner:
+                self.update_banner.destroy()
+            self.refresh_all_async()
+        else:
+            messagebox.showerror("Ошибка обновления", msg)
 
     # --- UI Components ---
     def create_header(self):
@@ -1007,6 +1149,18 @@ class AntigravityManagerApp(ctk.CTk):
             )
             activate_btn.pack(side="left", padx=(0, 10))
 
+        test_btn = ctk.CTkButton(
+            actions_box,
+            text="🩺 Тест",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#475569",
+            hover_color="#64748b",
+            height=28,
+            width=65,
+            command=lambda a=acc: self.test_openai_account_action(a),
+        )
+        test_btn.pack(side="left", padx=(0, 10))
+
         del_btn = ctk.CTkButton(
             actions_box,
             text="🗑",
@@ -1237,6 +1391,18 @@ class AntigravityManagerApp(ctk.CTk):
                 command=lambda aidx=zero_idx: self.activate_google_account_action(aidx),
             )
             activate_btn.pack(side="left", padx=(0, 8))
+
+        test_btn = ctk.CTkButton(
+            actions_box,
+            text="🩺 Тест",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#475569",
+            hover_color="#64748b",
+            height=28,
+            width=65,
+            command=lambda a=acc: self.test_google_account_action(a),
+        )
+        test_btn.pack(side="left", padx=(0, 8))
 
         del_btn = ctk.CTkButton(
             actions_box,
@@ -1884,7 +2050,34 @@ class AntigravityManagerApp(ctk.CTk):
             if self.countdown_seconds % 3 == 0:
                 self.update_opencode_status()
 
+            # Background Token Refresh Daemon (every 30 minutes)
+            if hasattr(self, "token_refresh_countdown"):
+                if self.token_refresh_countdown <= 0:
+                    self.token_refresh_countdown = self.token_refresh_interval_min * 60
+                    self.run_background_token_refresh_silent()
+                else:
+                    self.token_refresh_countdown -= 1
+
         self.after(1000, self._countdown_tick)
+
+    def run_background_token_refresh_silent(self):
+        """Silently refreshes Google and OpenAI OAuth tokens ahead of time."""
+        def _bg_refresher():
+            try:
+                # 1. Google token refresh via CLI
+                node_exe = get_node_executable()
+                cli_js = get_cli_js()
+                if os.path.exists(node_exe) and os.path.exists(cli_js):
+                    run_silent_cmd([node_exe, cli_js, "quota", "--refresh", "--json"], timeout=25)
+                # 2. OpenAI token refresh
+                try:
+                    openai_manager.refresh_all_openai_accounts()
+                except Exception:
+                    pass
+            except Exception as e:
+                print(f"Background token refresh warning: {e}")
+
+        threading.Thread(target=_bg_refresher, daemon=True).start()
 
     # --- Actions & Background Tasks ---
     def refresh_all_async(self):
@@ -2084,13 +2277,126 @@ class AntigravityManagerApp(ctk.CTk):
         self.render_accounts()
         self.set_status(f"Аккаунт {email} удален.")
 
-    # --- Backup Export & Import (Cross-PC Migration) ---
+    # --- Health Check Actions ---
+    def test_google_account_action(self, acc):
+        email = acc.get("email", "unknown")
+        self.set_status(f"🩺 Проверка соединения для {email}...")
+
+        # Find matching account with tokens from generation store
+        exported_accs = export_google_accounts()
+        matched = next((a for a in exported_accs if a.get("email") == email or a.get("id") == acc.get("id")), None)
+        target_dict = matched or acc
+
+        def _do_test():
+            res = health_checker.test_google_account_health(target_dict)
+            self.after(0, lambda: self._on_google_health_tested(email, res))
+
+        threading.Thread(target=_do_test, daemon=True).start()
+
+    def _on_google_health_tested(self, email, res):
+        ok = res.get("ok", False)
+        status = res.get("status", "")
+        latency = res.get("latency_ms", 0)
+        msg = res.get("message", "")
+        has_claude = res.get("has_claude", False)
+        has_gemini = res.get("has_gemini", False)
+        models_count = res.get("models_count", 0)
+
+        if ok:
+            claude_status = "✅ Доступен (Opus 4.6 / Sonnet 4.6)" if has_claude else "⚠️ Не обнаружен"
+            gemini_status = "✅ Доступен (Gemini 3.8 / Pro)" if has_gemini else "⚠️ Не обнаружен"
+            info_text = (
+                f"Аккаунт: {email}\n\n"
+                f"• Статус соединения: 🟢 Отлично (Пинг {latency} мс)\n"
+                f"• Авторизация Google OAuth: Валидна\n"
+                f"• Доступ к Claude в Antigravity: {claude_status}\n"
+                f"• Доступ к Gemini в Antigravity: {gemini_status}\n"
+                f"• Всего моделей в каталоге Google: {models_count}\n\n"
+                f"⚡ Аккаунт полностью готов к работе в OpenCode!"
+            )
+            messagebox.showinfo("🩺 Результат проверки соединения", info_text)
+            self.set_status(f"Тест для {email} пройден успешно ({latency} мс)")
+        else:
+            err_text = (
+                f"Аккаунт: {email}\n\n"
+                f"• Статус: 🔴 Ошибка проверки ({status})\n"
+                f"• Задержка ответа: {latency} мс\n"
+                f"• Подробности: {msg}\n\n"
+                f"💡 Рекомендация:\n"
+                f"Если токен истёк, выполните рефреш или добавьте аккаунт заново."
+            )
+            messagebox.showwarning("🩺 Ошибка соединения", err_text)
+            self.set_status(f"Тест для {email} выявил ошибку: {status}")
+
+    def test_openai_account_action(self, acc):
+        email = acc.get("email", "unknown")
+        self.set_status(f"🩺 Проверка соединения для {email} (OpenAI)...")
+
+        def _do_test():
+            res = health_checker.test_openai_account_health(acc)
+            self.after(0, lambda: self._on_openai_health_tested(email, res))
+
+        threading.Thread(target=_do_test, daemon=True).start()
+
+    def _on_openai_health_tested(self, email, res):
+        ok = res.get("ok", False)
+        status = res.get("status", "")
+        latency = res.get("latency_ms", 0)
+        msg = res.get("message", "")
+
+        if ok:
+            info_text = (
+                f"OpenAI / ChatGPT Аккаунт: {email}\n\n"
+                f"• Статус сессии: 🟢 Активна (Пинг {latency} мс)\n"
+                f"• Сессионный токен: Валиден\n"
+                f"• Доступ к моделям GPT-5 / GPT-6: ✅ Доступен\n\n"
+                f"⚡ Аккаунт готов к работе в OpenCode!"
+            )
+            messagebox.showinfo("🩺 Результат проверки OpenAI", info_text)
+            self.set_status(f"Тест OpenAI для {email} пройден ({latency} мс)")
+        else:
+            err_text = (
+                f"OpenAI / ChatGPT Аккаунт: {email}\n\n"
+                f"• Статус: 🔴 Ошибка ({status})\n"
+                f"• Задержка: {latency} мс\n"
+                f"• Подробности: {msg}\n\n"
+                f"💡 Если сессия истекла, нажмите '+ Добавить аккаунт OpenAI' для повторного входа через браузер."
+            )
+            messagebox.showwarning("🩺 Ошибка OpenAI", err_text)
+            self.set_status(f"Тест OpenAI для {email}: {status}")
+
+    # --- Backup Export & Import (Cross-PC Migration with Optional Encryption) ---
     def export_accounts_action(self):
+        # Ask user if they want password protection
+        want_pwd = messagebox.askyesno(
+            "Шифрование резервной копии",
+            "Хотите защитить экспортируемый файл паролем?\n\n"
+            "• Да — файл будет надёжно зашифрован (формат .agb, PBKDF2 + HMAC).\n"
+            "• Нет — файл сохранится в открытом формате JSON (.json).",
+            icon="question"
+        )
+
+        password = None
+        if want_pwd:
+            # Simple Tkinter password dialog
+            pwd_dialog = ctk.CTkInputDialog(
+                title="Пароль для шифрования",
+                text="Введите пароль для защиты аккаунтов (запомните его):"
+            )
+            password = pwd_dialog.get_input()
+            if not password:
+                messagebox.showwarning("Отмена", "Пароль не введён. Экспорт отменён.")
+                return
+
+        ext = ".agb" if password else ".json"
+        ftypes = [("Зашифрованный бэкап (*.agb)", "*.agb")] if password else [("JSON Backup (*.json)", "*.json")]
+        ftypes.append(("Все файлы (*.*)", "*.*"))
+
         file_path = filedialog.asksaveasfilename(
             title="Экспорт аккаунтов Antigravity & ChatGPT",
-            defaultextension=".json",
-            initialfile="antigravity_accounts_backup.json",
-            filetypes=[("JSON Backup (*.json)", "*.json"), ("Все файлы (*.*)", "*.*")],
+            defaultextension=ext,
+            initialfile=f"antigravity_accounts_backup{ext}",
+            filetypes=ftypes,
         )
         if not file_path:
             return
@@ -2108,8 +2414,15 @@ class AntigravityManagerApp(ctk.CTk):
                 "config": self.config_data,
             }
 
-            with open(file_path, "w", encoding="utf-8") as f:
-                json.dump(backup_data, f, indent=2, ensure_ascii=False)
+            if password:
+                encrypted_bytes = crypto_backup.encrypt_backup(backup_data, password)
+                with open(file_path, "wb") as f:
+                    f.write(encrypted_bytes)
+                enc_msg = "🔒 Файл надёжно зашифрован паролем."
+            else:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    json.dump(backup_data, f, indent=2, ensure_ascii=False)
+                enc_msg = "📄 Файл сохранён в формате JSON."
 
             self.set_status(f"Экспорт сохранен в {Path(file_path).name}")
             messagebox.showinfo(
@@ -2117,8 +2430,9 @@ class AntigravityManagerApp(ctk.CTk):
                 f"Успешно экспортировано:\n"
                 f"• Google (Antigravity): {len(google_accs)} акк.\n"
                 f"• OpenAI (ChatGPT): {len(openai_accs)} акк.\n\n"
-                f"Файл сохранен:\n{file_path}\n\n"
-                "Вы можете перенести этот файл на другой компьютер и нажать «📥 Импорт» в Antigravity Hub."
+                f"{enc_msg}\n"
+                f"Путь: {file_path}\n\n"
+                "Вы можете перенести этот файл на любой ПК и нажать «📥 Импорт» в Antigravity Hub."
             )
         except Exception as e:
             messagebox.showerror("Ошибка экспорта", f"Не удалось экспортировать аккаунты:\n{e}")
@@ -2126,14 +2440,40 @@ class AntigravityManagerApp(ctk.CTk):
     def import_accounts_action(self):
         file_path = filedialog.askopenfilename(
             title="Импорт аккаунтов для переноса",
-            filetypes=[("JSON Backup (*.json)", "*.json"), ("Все файлы (*.*)", "*.*")],
+            filetypes=[
+                ("Все бэкапы (*.agb, *.json)", "*.agb;*.json"),
+                ("Зашифрованный бэкап (*.agb)", "*.agb"),
+                ("JSON Backup (*.json)", "*.json"),
+                ("Все файлы (*.*)", "*.*")
+            ],
         )
         if not file_path:
             return
 
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            with open(file_path, "rb") as f:
+                raw_bytes = f.read()
+
+            if crypto_backup.is_encrypted_backup(raw_bytes):
+                pwd_dialog = ctk.CTkInputDialog(
+                    title="Ввод пароля",
+                    text="Этот файл защищён паролем. Введите пароль для расшифровки:"
+                )
+                pwd = pwd_dialog.get_input()
+                if not pwd:
+                    messagebox.showwarning("Отмена", "Пароль не введён. Импорт отменён.")
+                    return
+                try:
+                    data = crypto_backup.decrypt_backup(raw_bytes, pwd)
+                except Exception as de:
+                    messagebox.showerror("Ошибка расшифровки", str(de))
+                    return
+            else:
+                try:
+                    data = json.loads(raw_bytes.decode("utf-8"))
+                except Exception as je:
+                    messagebox.showerror("Ошибка чтения", f"Не удалось разобрать JSON файл:\n{je}")
+                    return
 
             imported_google = 0
             imported_openai = 0
