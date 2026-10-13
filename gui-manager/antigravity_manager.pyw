@@ -574,41 +574,24 @@ def import_google_account(account_dict: dict) -> bool:
 
 
 # =========================================================================
-# COLOR PALETTE THEMES (Cockpit Modern)
+# DUAL-THEME COLOR PALETTE (Tuple format: (Light, Dark))
+# CustomTkinter automatically applies the correct element on appearance change
 # =========================================================================
-THEMES = {
-    "dark": {
-        "bg": "#0f172a",          # Deep slate background
-        "sidebar_bg": "#1e293b",  # Dark slate sidebar
-        "card_bg": "#1e293b",     # Dark card background
-        "subbox_bg": "#0f172a",   # Dark nested quota box
-        "text_primary": "#f8fafc",# Bright white text
-        "text_secondary": "#94a3b8",# Soft slate muted text
-        "text_muted": "#64748b",
-        "border": "#334155",      # Subtle borders
-        "border_active": "#38bdf8",# Cyan / Sky blue highlight
-        "nav_active_bg": "#0284c7",
-        "nav_active_text": "#ffffff",
-        "nav_idle_text": "#cbd5e1",
-        "bar_bg": "#334155",
-        "statusbar_bg": "#1e293b",
-    },
-    "light": {
-        "bg": "#f8fafc",          # Slate 50 background
-        "sidebar_bg": "#ffffff",  # Crisp white sidebar
-        "card_bg": "#ffffff",     # White card
-        "subbox_bg": "#f1f5f9",   # Soft slate subbox
-        "text_primary": "#0f172a",# Deep slate primary text
-        "text_secondary": "#475569",# Readable slate secondary text
-        "text_muted": "#64748b",
-        "border": "#e2e8f0",      # Light border
-        "border_active": "#0284c7",# Blue border
-        "nav_active_bg": "#e0f2fe",
-        "nav_active_text": "#0369a1",
-        "nav_idle_text": "#475569",
-        "bar_bg": "#e2e8f0",
-        "statusbar_bg": "#ffffff",
-    }
+COLOR = {
+    "bg": ("#f1f5f9", "#0f172a"),
+    "sidebar_bg": ("#ffffff", "#1e293b"),
+    "card_bg": ("#ffffff", "#1e293b"),
+    "subbox_bg": ("#f8fafc", "#0f172a"),
+    "border": ("#e2e8f0", "#334155"),
+    "border_active": ("#0284c7", "#38bdf8"),
+    "text_primary": ("#0f172a", "#f8fafc"),
+    "text_secondary": ("#475569", "#94a3b8"),
+    "text_muted": ("#64748b", "#64748b"),
+    "bar_bg": ("#e2e8f0", "#334155"),
+    "statusbar_bg": ("#ffffff", "#1e293b"),
+    "nav_active_bg": ("#e0f2fe", "#0284c7"),
+    "nav_active_text": ("#0369a1", "#ffffff"),
+    "nav_idle_text": ("#475569", "#cbd5e1"),
 }
 
 
@@ -620,15 +603,11 @@ class AntigravityManagerApp(ctk.CTk):
         self.geometry("1180x760")
         self.minsize(980, 680)
 
-        # Load config first to read theme
-        self.config_data = self.load_config()
-        self.current_theme = self.config_data.get("theme_mode", "dark")
-        self.colors = THEMES[self.current_theme]
-
-        # Apply CustomTkinter theme
-        ctk.set_appearance_mode("Dark" if self.current_theme == "dark" else "Light")
+        # Apply CustomTkinter appearance mode directly
+        self.appearance_mode = "Dark" if self.current_theme == "dark" else "Light"
+        ctk.set_appearance_mode(self.appearance_mode)
         ctk.set_default_color_theme("blue")
-        self.configure(fg_color=self.colors["bg"])
+        self.configure(fg_color=COLOR["bg"])
 
         icon_file = Path(__file__).resolve().parent / "icon.ico"
         if icon_file.exists():
@@ -704,51 +683,28 @@ class AntigravityManagerApp(ctk.CTk):
         self.current_theme = new_theme
         self.config_data["theme_mode"] = new_theme
         self.save_config()
-        self.colors = THEMES[new_theme]
 
         ctk.set_appearance_mode("Dark" if new_theme == "dark" else "Light")
-        self.configure(fg_color=self.colors["bg"])
 
         # Update button text in sidebar
         if hasattr(self, "btn_theme_toggle"):
             self.btn_theme_toggle.configure(
                 text="☀️  Светлая тема" if new_theme == "dark" else "🌙  Тёмная тема",
-                fg_color=self.colors["card_bg"],
-                text_color=self.colors["text_primary"],
-                border_color=self.colors["border"],
             )
 
-        # Full re-render of layouts
-        self.sidebar.configure(fg_color=self.colors["sidebar_bg"], border_color=self.colors["border"])
-        self.statusbar.configure(fg_color=self.colors["statusbar_bg"], border_color=self.colors["border"])
-        self.lbl_status.configure(text_color=self.colors["text_muted"])
+        # Force dynamic background color update on main frames
+        self.configure(fg_color=COLOR["bg"])
+        self.main_frame.configure(fg_color=COLOR["bg"])
+        self.content_area.configure(fg_color=COLOR["bg"])
+        self.accounts_container.configure(fg_color=COLOR["bg"])
 
+        # Update nav buttons active/idle state
         for k, btn in self.nav_btns.items():
             if k == self.current_nav:
-                btn.configure(fg_color=self.colors["nav_active_bg"], text_color=self.colors["nav_active_text"])
+                btn.configure(fg_color=COLOR["nav_active_bg"], text_color=COLOR["nav_active_text"])
             else:
-                btn.configure(fg_color="transparent", text_color=self.colors["nav_idle_text"])
+                btn.configure(fg_color="transparent", text_color=COLOR["nav_idle_text"])
 
-        self.search_entry.configure(
-            fg_color=self.colors["card_bg"],
-            border_color=self.colors["border"],
-            text_color=self.colors["text_primary"],
-        )
-        self.btn_refresh.configure(
-            fg_color=self.colors["card_bg"],
-            border_color=self.colors["border"],
-            text_color=self.colors["text_primary"],
-        )
-        self.btn_export.configure(
-            fg_color=self.colors["card_bg"],
-            border_color=self.colors["border"],
-            text_color=self.colors["text_primary"],
-        )
-        self.btn_import.configure(
-            fg_color=self.colors["card_bg"],
-            border_color=self.colors["border"],
-            text_color=self.colors["text_primary"],
-        )
         self.render_accounts()
 
     # --- System Tray Integration ---
@@ -873,14 +829,13 @@ class AntigravityManagerApp(ctk.CTk):
     # SIDEBAR COMPONENT (Cockpit Tools Style)
     # =========================================================================
     def create_sidebar(self):
-        c = self.colors
         self.sidebar = ctk.CTkFrame(
             self,
             width=230,
             corner_radius=0,
-            fg_color=c["sidebar_bg"],
+            fg_color=COLOR["sidebar_bg"],
             border_width=1,
-            border_color=c["border"],
+            border_color=COLOR["border"],
         )
         self.sidebar.grid(row=0, column=0, sticky="nsew")
         self.sidebar.grid_propagate(False)
@@ -906,7 +861,7 @@ class AntigravityManagerApp(ctk.CTk):
             logo_box,
             text="Antigravity Hub",
             font=self.font(size=16, weight="bold"),
-            text_color=c["text_primary"],
+            text_color=COLOR["text_primary"],
         )
         title_lbl.pack(side="left")
 
@@ -927,9 +882,9 @@ class AntigravityManagerApp(ctk.CTk):
                 anchor="w",
                 height=42,
                 corner_radius=8,
-                fg_color=c["nav_active_bg"] if key == self.current_nav else "transparent",
-                text_color=c["nav_active_text"] if key == self.current_nav else c["nav_idle_text"],
-                hover_color="#0369a1" if self.current_theme == "dark" else "#f1f5f9",
+                fg_color=COLOR["nav_active_bg"] if key == self.current_nav else "transparent",
+                text_color=COLOR["nav_active_text"] if key == self.current_nav else COLOR["nav_idle_text"],
+                hover_color=("#e2e8f0", "#334155"),
                 command=lambda k=key: self.switch_nav(k),
             )
             btn.grid(row=idx, column=0, padx=12, pady=3, sticky="ew")
@@ -945,11 +900,11 @@ class AntigravityManagerApp(ctk.CTk):
             footer_box,
             text=theme_txt,
             font=self.font(size=12, weight="bold"),
-            fg_color=c["card_bg"],
-            hover_color="#334155" if self.current_theme == "dark" else "#e2e8f0",
-            text_color=c["text_primary"],
+            fg_color=COLOR["card_bg"],
+            hover_color=("#e2e8f0", "#334155"),
+            text_color=COLOR["text_primary"],
             border_width=1,
-            border_color=c["border"],
+            border_color=COLOR["border"],
             height=32,
             command=self.toggle_theme,
         )
@@ -959,8 +914,8 @@ class AntigravityManagerApp(ctk.CTk):
             footer_box,
             text="● OpenCode: Проверка...",
             font=self.font(size=11, weight="bold"),
-            fg_color=c["subbox_bg"],
-            text_color=c["text_secondary"],
+            fg_color=COLOR["subbox_bg"],
+            text_color=COLOR["text_secondary"],
             corner_radius=6,
             height=26,
         )
@@ -979,12 +934,11 @@ class AntigravityManagerApp(ctk.CTk):
 
     def switch_nav(self, target_nav):
         self.current_nav = target_nav
-        c = self.colors
         for key, btn in self.nav_btns.items():
             if key == target_nav:
-                btn.configure(fg_color=c["nav_active_bg"], text_color=c["nav_active_text"])
+                btn.configure(fg_color=COLOR["nav_active_bg"], text_color=COLOR["nav_active_text"])
             else:
-                btn.configure(fg_color="transparent", text_color=c["nav_idle_text"])
+                btn.configure(fg_color="transparent", text_color=COLOR["nav_idle_text"])
 
         # Toggle views
         if target_nav in ("antigravity", "openai"):
@@ -1010,12 +964,12 @@ class AntigravityManagerApp(ctk.CTk):
     # MAIN CONTENT AREA
     # =========================================================================
     def create_main_content(self):
-        self.main_frame = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
+        self.main_frame = ctk.CTkFrame(self, fg_color=COLOR["bg"], corner_radius=0)
         self.main_frame.grid(row=0, column=1, sticky="nsew")
         self.main_frame.grid_rowconfigure(0, weight=1)
         self.main_frame.grid_columnconfigure(0, weight=1)
 
-        self.content_area = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        self.content_area = ctk.CTkFrame(self.main_frame, fg_color=COLOR["bg"])
         self.content_area.pack(fill="both", expand=True)
 
         self.create_action_bar()
@@ -1023,7 +977,7 @@ class AntigravityManagerApp(ctk.CTk):
 
         self.accounts_container = ctk.CTkScrollableFrame(
             self.content_area,
-            fg_color="transparent",
+            fg_color=COLOR["bg"],
             corner_radius=0,
         )
         self.accounts_container.pack(fill="both", expand=True, padx=24, pady=(12, 16))
@@ -1033,7 +987,6 @@ class AntigravityManagerApp(ctk.CTk):
         self.create_statusbar()
 
     def create_action_bar(self):
-        c = self.colors
         self.top_action_bar = ctk.CTkFrame(self.content_area, fg_color="transparent")
         self.top_action_bar.pack(fill="x", padx=24, pady=(16, 0))
 
@@ -1045,9 +998,9 @@ class AntigravityManagerApp(ctk.CTk):
             width=240,
             height=36,
             corner_radius=8,
-            fg_color=c["card_bg"],
-            border_color=c["border"],
-            text_color=c["text_primary"],
+            fg_color=COLOR["card_bg"],
+            border_color=COLOR["border"],
+            text_color=COLOR["text_primary"],
         )
         self.search_entry.pack(side="left", padx=(0, 10))
         self.search_entry.bind("<KeyRelease>", self.on_search_key)
@@ -1057,8 +1010,8 @@ class AntigravityManagerApp(ctk.CTk):
             self.top_action_bar,
             text="Все (0)",
             font=self.font(size=12, weight="bold"),
-            fg_color=c["subbox_bg"],
-            text_color=c["text_secondary"],
+            fg_color=COLOR["subbox_bg"],
+            text_color=COLOR["text_secondary"],
             corner_radius=12,
             padx=12,
             height=34,
@@ -1082,11 +1035,11 @@ class AntigravityManagerApp(ctk.CTk):
             self.top_action_bar,
             text="🔄 Обновить",
             font=self.font(size=12, weight="bold"),
-            fg_color=c["card_bg"],
-            hover_color=c["subbox_bg"],
-            text_color=c["text_primary"],
+            fg_color=COLOR["card_bg"],
+            hover_color=COLOR["subbox_bg"],
+            text_color=COLOR["text_primary"],
             border_width=1,
-            border_color=c["border"],
+            border_color=COLOR["border"],
             height=36,
             width=95,
             corner_radius=8,
@@ -1098,11 +1051,11 @@ class AntigravityManagerApp(ctk.CTk):
             self.top_action_bar,
             text="📤 Экспорт",
             font=self.font(size=12, weight="bold"),
-            fg_color=c["card_bg"],
-            hover_color=c["subbox_bg"],
-            text_color=c["text_primary"],
+            fg_color=COLOR["card_bg"],
+            hover_color=COLOR["subbox_bg"],
+            text_color=COLOR["text_primary"],
             border_width=1,
-            border_color=c["border"],
+            border_color=COLOR["border"],
             height=36,
             width=90,
             corner_radius=8,
@@ -1114,11 +1067,11 @@ class AntigravityManagerApp(ctk.CTk):
             self.top_action_bar,
             text="📥 Импорт",
             font=self.font(size=12, weight="bold"),
-            fg_color=c["card_bg"],
-            hover_color=c["subbox_bg"],
-            text_color=c["text_primary"],
+            fg_color=COLOR["card_bg"],
+            hover_color=COLOR["subbox_bg"],
+            text_color=COLOR["text_primary"],
             border_width=1,
-            border_color=c["border"],
+            border_color=COLOR["border"],
             height=36,
             width=90,
             corner_radius=8,
@@ -1254,10 +1207,9 @@ class AntigravityManagerApp(ctk.CTk):
         ctk.CTkLabel(box, text="Нажмите кнопку '+ Добавить аккаунт' вверху для входа через браузер.", font=self.font(size=12), text_color=c["text_secondary"]).pack(pady=(4, 24))
 
     # =========================================================================
-    # COMPACT CARD (High-contrast Segoe UI)
+    # COMPACT CARD (High-contrast Segoe UI, Dual Theme)
     # =========================================================================
     def create_compact_card(self, parent, acc, is_active=False):
-        c = self.colors
         email = acc.get("email", "unknown@gmail.com")
         index = acc.get("index", 1)
         added_at = acc.get("addedAt")
@@ -1268,10 +1220,10 @@ class AntigravityManagerApp(ctk.CTk):
 
         card = ctk.CTkFrame(
             parent,
-            fg_color=c["card_bg"],
+            fg_color=COLOR["card_bg"],
             corner_radius=16,
             border_width=2 if is_active else 1,
-            border_color=c["border_active"] if is_active else c["border"],
+            border_color=COLOR["border_active"] if is_active else COLOR["border"],
         )
 
         # 1. Top Header Row
@@ -1283,8 +1235,8 @@ class AntigravityManagerApp(ctk.CTk):
             header,
             text="✓" if is_active else " ",
             font=self.font(size=12, weight="bold"),
-            fg_color="#0284c7" if is_active else c["subbox_bg"],
-            text_color="#ffffff" if is_active else c["border"],
+            fg_color="#0284c7" if is_active else COLOR["subbox_bg"],
+            text_color="#ffffff" if is_active else COLOR["border"],
             corner_radius=4,
             width=22,
             height=22,
@@ -1296,7 +1248,7 @@ class AntigravityManagerApp(ctk.CTk):
             header,
             text=short_email,
             font=self.font(size=14, weight="bold"),
-            text_color=c["text_primary"],
+            text_color=COLOR["text_primary"],
         )
         email_lbl.grid(row=0, column=1, sticky="w")
 
@@ -1329,7 +1281,7 @@ class AntigravityManagerApp(ctk.CTk):
         pro_badge.pack(side="left")
 
         # 2. Dual-Column Quota Box (Claude | Gemini)
-        quota_box = ctk.CTkFrame(card, fg_color=c["subbox_bg"], corner_radius=12, border_width=1, border_color=c["border"])
+        quota_box = ctk.CTkFrame(card, fg_color=COLOR["subbox_bg"], corner_radius=12, border_width=1, border_color=COLOR["border"])
         quota_box.pack(fill="x", padx=14, pady=(4, 10))
         quota_box.grid_columnconfigure(0, weight=1)
         quota_box.grid_columnconfigure(1, weight=1)
@@ -1338,7 +1290,7 @@ class AntigravityManagerApp(ctk.CTk):
         self._render_compact_quota_column(quota_box, col=1, title="Gemini", group_info=gemini_group)
 
         # 3. Bottom Footer Action Row
-        divider = ctk.CTkFrame(card, height=1, fg_color=c["border"])
+        divider = ctk.CTkFrame(card, height=1, fg_color=COLOR["border"])
         divider.pack(fill="x", padx=14, pady=(0, 6))
 
         footer = ctk.CTkFrame(card, fg_color="transparent")
@@ -1350,8 +1302,8 @@ class AntigravityManagerApp(ctk.CTk):
             footer,
             text=date_str,
             font=self.font(size=11),
-            text_color=c["text_secondary"],
-            fg_color=c["subbox_bg"],
+            text_color=COLOR["text_secondary"],
+            fg_color=COLOR["subbox_bg"],
             corner_radius=10,
             padx=8,
             pady=2,
@@ -1367,11 +1319,11 @@ class AntigravityManagerApp(ctk.CTk):
             actions_pill,
             text="🩺 Тест",
             font=self.font(size=11, weight="bold"),
-            fg_color=c["subbox_bg"],
-            hover_color=c["border"],
-            text_color=c["text_primary"],
+            fg_color=COLOR["subbox_bg"],
+            hover_color=COLOR["border"],
+            text_color=COLOR["text_primary"],
             border_width=1,
-            border_color=c["border"],
+            border_color=COLOR["border"],
             width=58,
             height=28,
             corner_radius=6,
@@ -1383,11 +1335,11 @@ class AntigravityManagerApp(ctk.CTk):
             actions_pill,
             text="⭐ Выбрать",
             font=self.font(size=11, weight="bold"),
-            fg_color="#0284c7" if is_active else c["subbox_bg"],
-            hover_color="#0369a1" if is_active else c["border"],
-            text_color="#ffffff" if is_active else c["text_primary"],
+            fg_color="#0284c7" if is_active else COLOR["subbox_bg"],
+            hover_color="#0369a1" if is_active else COLOR["border"],
+            text_color="#ffffff" if is_active else COLOR["text_primary"],
             border_width=1 if not is_active else 0,
-            border_color=c["border"],
+            border_color=COLOR["border"],
             width=76,
             height=28,
             corner_radius=6,
@@ -1399,11 +1351,11 @@ class AntigravityManagerApp(ctk.CTk):
             actions_pill,
             text="🔄",
             font=self.font(size=14, weight="bold"),
-            fg_color=c["subbox_bg"],
-            hover_color=c["border"],
-            text_color=c["text_primary"],
+            fg_color=COLOR["subbox_bg"],
+            hover_color=COLOR["border"],
+            text_color=COLOR["text_primary"],
             border_width=1,
-            border_color=c["border"],
+            border_color=COLOR["border"],
             width=32,
             height=28,
             corner_radius=6,
@@ -1415,11 +1367,11 @@ class AntigravityManagerApp(ctk.CTk):
             actions_pill,
             text="🗑",
             font=self.font(size=14, weight="bold"),
-            fg_color=c["subbox_bg"],
-            hover_color="#fee2e2" if self.current_theme == "light" else "#7f1d1d",
+            fg_color=COLOR["subbox_bg"],
+            hover_color=("#fee2e2", "#7f1d1d"),
             text_color="#ef4444",
             border_width=1,
-            border_color=c["border"],
+            border_color=COLOR["border"],
             width=32,
             height=28,
             corner_radius=6,
@@ -1429,7 +1381,6 @@ class AntigravityManagerApp(ctk.CTk):
         return card
 
     def _render_compact_quota_column(self, parent, col, title, group_info):
-        c = self.colors
         frame = ctk.CTkFrame(parent, fg_color="transparent")
         frame.grid(row=0, column=col, sticky="nsew", padx=10, pady=10)
 
@@ -1437,7 +1388,7 @@ class AntigravityManagerApp(ctk.CTk):
             frame,
             text=title,
             font=self.font(size=13, weight="bold"),
-            text_color=c["text_primary"],
+            text_color=COLOR["text_primary"],
         ).pack(anchor="w", pady=(0, 4))
 
         windows = group_info.get("windows", []) if group_info else []
@@ -1454,7 +1405,6 @@ class AntigravityManagerApp(ctk.CTk):
         self._render_compact_subrow(frame, label="Weekly", pct=pct_wk, reset_iso=reset_wk)
 
     def _render_compact_subrow(self, parent, label, pct, reset_iso):
-        c = self.colors
         rem = round(float(pct), 1)
         color = "#16a34a" if rem > 50 else ("#f59e0b" if rem > 20 else "#ef4444")
 
@@ -1465,7 +1415,7 @@ class AntigravityManagerApp(ctk.CTk):
             row,
             text=label,
             font=self.font(size=11, weight="bold"),
-            text_color=c["text_secondary"],
+            text_color=COLOR["text_secondary"],
         ).pack(side="left")
 
         ctk.CTkLabel(
@@ -1478,14 +1428,14 @@ class AntigravityManagerApp(ctk.CTk):
         bar = ctk.CTkProgressBar(parent, height=6, corner_radius=3)
         bar.pack(fill="x", pady=(2, 2))
         bar.set(max(0.0, min(1.0, rem / 100.0)))
-        bar.configure(progress_color=color, fg_color=c["bar_bg"])
+        bar.configure(progress_color=color, fg_color=COLOR["bar_bg"])
 
         timer_text = self.format_compact_reset(reset_iso)
         ctk.CTkLabel(
             parent,
             text=timer_text,
             font=self.font(size=10),
-            text_color=c["text_muted"],
+            text_color=COLOR["text_muted"],
         ).pack(anchor="w", pady=(0, 4))
 
     def format_compact_reset(self, iso_str):
@@ -1523,10 +1473,9 @@ class AntigravityManagerApp(ctk.CTk):
             return "12.04.2026"
 
     # =========================================================================
-    # COMPACT OPENAI CARD
+    # COMPACT OPENAI CARD (High-contrast Segoe UI, Dual Theme)
     # =========================================================================
     def create_compact_openai_card(self, parent, acc, is_active=False):
-        c = self.colors
         email = acc.get("email", "unknown@chatgpt.com")
         account_id = acc.get("accountId") or acc.get("id") or ""
         plan_type = (acc.get("plan_type") or "plus").upper()
@@ -1537,10 +1486,10 @@ class AntigravityManagerApp(ctk.CTk):
 
         card = ctk.CTkFrame(
             parent,
-            fg_color=c["card_bg"],
+            fg_color=COLOR["card_bg"],
             corner_radius=16,
             border_width=2 if is_active else 1,
-            border_color="#10a37f" if is_active else c["border"],
+            border_color="#10a37f" if is_active else COLOR["border"],
         )
 
         header = ctk.CTkFrame(card, fg_color="transparent")
@@ -1551,8 +1500,8 @@ class AntigravityManagerApp(ctk.CTk):
             header,
             text="✓" if is_active else " ",
             font=self.font(size=12, weight="bold"),
-            fg_color="#10a37f" if is_active else c["subbox_bg"],
-            text_color="#ffffff" if is_active else c["border"],
+            fg_color="#10a37f" if is_active else COLOR["subbox_bg"],
+            text_color="#ffffff" if is_active else COLOR["border"],
             corner_radius=4,
             width=22,
             height=22,
@@ -1564,7 +1513,7 @@ class AntigravityManagerApp(ctk.CTk):
             header,
             text=short_email,
             font=self.font(size=14, weight="bold"),
-            text_color=c["text_primary"],
+            text_color=COLOR["text_primary"],
         ).grid(row=0, column=1, sticky="w")
 
         badges_box = ctk.CTkFrame(header, fg_color="transparent")
@@ -1593,20 +1542,20 @@ class AntigravityManagerApp(ctk.CTk):
             pady=2,
         ).pack(side="left")
 
-        quota_box = ctk.CTkFrame(card, fg_color=c["subbox_bg"], corner_radius=12, border_width=1, border_color=c["border"])
+        quota_box = ctk.CTkFrame(card, fg_color=COLOR["subbox_bg"], corner_radius=12, border_width=1, border_color=COLOR["border"])
         quota_box.pack(fill="x", padx=14, pady=(4, 10))
         quota_box.grid_columnconfigure(0, weight=1)
         quota_box.grid_columnconfigure(1, weight=1)
 
         f1 = ctk.CTkFrame(quota_box, fg_color="transparent")
         f1.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
-        ctk.CTkLabel(f1, text="GPT-5 / 6", font=self.font(size=13, weight="bold"), text_color=c["text_primary"]).pack(anchor="w")
+        ctk.CTkLabel(f1, text="GPT-5 / 6", font=self.font(size=13, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w")
         rem_p = round(float(primary_quota.get("remaining_percent", 100.0)), 1)
         self._render_compact_subrow(f1, "3-5h", rem_p, "")
 
         f2 = ctk.CTkFrame(quota_box, fg_color="transparent")
         f2.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
-        ctk.CTkLabel(f2, text="Codex / 7d", font=self.font(size=13, weight="bold"), text_color=c["text_primary"]).pack(anchor="w")
+        ctk.CTkLabel(f2, text="Codex / 7d", font=self.font(size=13, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w")
         rem_s = round(float(secondary_quota.get("remaining_percent", 100.0)), 1)
         self._render_compact_subrow(f2, "Weekly", rem_s, "")
 
@@ -1618,8 +1567,8 @@ class AntigravityManagerApp(ctk.CTk):
             footer,
             text="OpenAI OAuth",
             font=self.font(size=11),
-            text_color=c["text_secondary"],
-            fg_color=c["subbox_bg"],
+            text_color=COLOR["text_secondary"],
+            fg_color=COLOR["subbox_bg"],
             corner_radius=10,
             padx=8,
             pady=2,
@@ -1633,11 +1582,11 @@ class AntigravityManagerApp(ctk.CTk):
             actions_pill,
             text="🩺 Тест",
             font=self.font(size=11, weight="bold"),
-            fg_color=c["subbox_bg"],
-            hover_color=c["border"],
-            text_color=c["text_primary"],
+            fg_color=COLOR["subbox_bg"],
+            hover_color=COLOR["border"],
+            text_color=COLOR["text_primary"],
             border_width=1,
-            border_color=c["border"],
+            border_color=COLOR["border"],
             width=58,
             height=28,
             corner_radius=6,
@@ -1648,11 +1597,11 @@ class AntigravityManagerApp(ctk.CTk):
             actions_pill,
             text="⭐ Выбрать",
             font=self.font(size=11, weight="bold"),
-            fg_color="#10a37f" if is_active else c["subbox_bg"],
-            hover_color="#0e8a6c" if is_active else c["border"],
-            text_color="#ffffff" if is_active else c["text_primary"],
+            fg_color="#10a37f" if is_active else COLOR["subbox_bg"],
+            hover_color="#0e8a6c" if is_active else COLOR["border"],
+            text_color="#ffffff" if is_active else COLOR["text_primary"],
             border_width=1 if not is_active else 0,
-            border_color=c["border"],
+            border_color=COLOR["border"],
             width=76,
             height=28,
             corner_radius=6,
@@ -1663,11 +1612,11 @@ class AntigravityManagerApp(ctk.CTk):
             actions_pill,
             text="🗑",
             font=self.font(size=14, weight="bold"),
-            fg_color=c["subbox_bg"],
-            hover_color="#fee2e2" if self.current_theme == "light" else "#7f1d1d",
+            fg_color=COLOR["subbox_bg"],
+            hover_color=("#fee2e2", "#7f1d1d"),
             text_color="#ef4444",
             border_width=1,
-            border_color=c["border"],
+            border_color=COLOR["border"],
             width=32,
             height=28,
             corner_radius=6,
