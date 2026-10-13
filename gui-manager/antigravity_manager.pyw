@@ -714,15 +714,16 @@ class AntigravityManagerApp(ctk.CTk):
     # --- System Tray Integration ---
     def init_system_tray(self):
         try:
-            hwnd = self.winfo_id()
             icon_file = Path(__file__).resolve().parent / "icon.ico"
             icon_str = str(icon_file) if icon_file.exists() else None
             self.tray = win_tray.WindowsTrayIcon(
-                hwnd=hwnd,
                 title="Antigravity Hub — Google & ChatGPT",
                 icon_path=icon_str,
+                on_show=lambda: self.after(0, self.show_from_tray),
+                on_refresh=lambda: self.after(0, self.refresh_all_async),
+                on_exit=lambda: self.after(0, self.exit_app_fully),
             )
-            self.tray.add()
+            self.tray.start()
         except Exception as e:
             print(f"Error initializing system tray: {e}")
 
@@ -732,7 +733,7 @@ class AntigravityManagerApp(ctk.CTk):
             if self.tray and self.tray.is_visible:
                 self.tray.show_balloon(
                     "Antigravity Hub свёрнут",
-                    "Приложение работает в фоне и мониторит квоты. Кликните по иконке для открытия.",
+                    "Приложение работает в фоне. Кликните левой кнопкой для открытия или правой для меню.",
                 )
         except Exception:
             self.destroy()
@@ -744,6 +745,14 @@ class AntigravityManagerApp(ctk.CTk):
             self.focus_force()
         except Exception:
             pass
+
+    def exit_app_fully(self):
+        try:
+            if self.tray:
+                self.tray.remove()
+        except Exception:
+            pass
+        self.destroy()
 
     # --- Auto-Updater ---
     def check_updates_async(self):
@@ -1443,7 +1452,7 @@ class AntigravityManagerApp(ctk.CTk):
 
     def format_compact_reset(self, iso_str):
         if not iso_str:
-            return "сброс: неизвестно"
+            return "квота доступна"
         try:
             dt = datetime.datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
             local_dt = dt.astimezone()
@@ -1451,14 +1460,14 @@ class AntigravityManagerApp(ctk.CTk):
             diff = local_dt - now
 
             if diff.total_seconds() <= 0:
-                return "сброс: сейчас"
+                return f"сброшено ({local_dt.strftime('%H:%M')})"
 
             d = diff.days
             h = int(diff.seconds // 3600)
             m = int((diff.seconds % 3600) // 60)
 
             dur = f"{d}d {h}h" if d > 0 else (f"{h}h {m}m" if h > 0 else f"{m}m")
-            return f"{dur} ({local_dt.strftime('%m/%d %H:%M')})"
+            return f"через {dur} ({local_dt.strftime('%H:%M')})"
         except Exception:
             return iso_str[:16]
 
@@ -1832,14 +1841,21 @@ class AntigravityManagerApp(ctk.CTk):
         except Exception as e:
             print(f"Error enriching Google accounts: {e}")
 
+        openai_accounts = []
+        rotate_msg = None
         try:
             openai_accounts, rotate_msg = openai_manager.refresh_all_openai_accounts()
         except Exception as e:
             print(f"Error fetching OpenAI quotas: {e}")
-            openai_accounts = openai_manager.load_openai_accounts()
-            rotate_msg = None
+            try:
+                openai_accounts = openai_manager.load_openai_accounts()
+            except Exception:
+                openai_accounts = []
 
-        self.after(0, lambda: self._on_quotas_fetched(google_accounts, openai_accounts, rotate_msg))
+        try:
+            self.after(0, lambda: self._on_quotas_fetched(google_accounts, openai_accounts, rotate_msg))
+        except Exception as e:
+            print(f"Callback error: {e}")
 
     def _on_quotas_fetched(self, google_accounts, openai_accounts, rotate_msg=None):
         self.accounts_data = google_accounts
