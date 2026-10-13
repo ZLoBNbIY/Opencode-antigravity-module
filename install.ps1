@@ -263,6 +263,20 @@ if (Test-Path -LiteralPath $OpencodeConfigFile) {
     Write-Success "Создан файл opencode.json"
 }
 
+# OpenCode 2's native Google SDK validates that an API-key value exists before
+# the Antigravity GA http.request hook can rewrite the request to the OAuth
+# bridge. This is a sentinel only; the Antigravity plugin supplies the actual
+# Google OAuth credentials and the sentinel is never used as a Google API key.
+$GoogleKeySentinel = "antigravity"
+$ExistingGoogleKey = [Environment]::GetEnvironmentVariable("GOOGLE_GENERATIVE_AI_API_KEY", "User")
+if ([string]::IsNullOrWhiteSpace($ExistingGoogleKey)) {
+    [Environment]::SetEnvironmentVariable("GOOGLE_GENERATIVE_AI_API_KEY", $GoogleKeySentinel, "User")
+    Write-Success "Настроен служебный маркер Google для OAuth-маршрутизации Antigravity (не API-ключ)"
+} else {
+    Write-Info "GOOGLE_GENERATIVE_AI_API_KEY уже задан; значение не изменено"
+}
+$env:GOOGLE_GENERATIVE_AI_API_KEY = [Environment]::GetEnvironmentVariable("GOOGLE_GENERATIVE_AI_API_KEY", "User")
+
 # --- 5. Конфигурация antigravity.json ---
 Write-Step "Настройка antigravity.json..."
 $AntigravityConfigFile = Join-Path $ConfigDir "antigravity.json"
