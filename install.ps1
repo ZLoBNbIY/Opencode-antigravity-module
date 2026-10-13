@@ -1,4 +1,4 @@
-# OpenCode Antigravity Module Installer
+﻿# OpenCode Antigravity Module Installer
 param(
     [switch]$NoShortcut,
     [switch]$SkipPython,
@@ -263,7 +263,7 @@ if (Test-Path -LiteralPath $OpencodeConfigFile) {
     Write-Success "Создан файл opencode.json"
 }
 
-# OpenCode 2's native Google SDK validates that an API-key value exists before
+# OpenCode 2 native Google SDK validates that an API-key value exists before
 # the Antigravity GA http.request hook can rewrite the request to the OAuth
 # bridge. This is a sentinel only; the Antigravity plugin supplies the actual
 # Google OAuth credentials and the sentinel is never used as a Google API key.
