@@ -1,5 +1,6 @@
 """
-Antigravity Hub - Native Desktop Manager for Google Antigravity Accounts & Quotas
+Antigravity Hub - Modern Compact Desktop Manager (Cockpit Tools Style)
+Sidebar navigation, compact grid cards, live Google & OpenAI quota monitoring for OpenCode.
 """
 
 import os
@@ -11,6 +12,7 @@ import subprocess
 import threading
 import uuid
 import secrets
+import re
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, filedialog
@@ -81,7 +83,6 @@ def get_opencode_exe():
     return str(candidates[0])
 
 def cleanup_opencode_locks():
-    """Removes stale OpenCode server locks and service.json files on Windows to prevent EPERM collisions."""
     try:
         state_dir = Path(os.path.expanduser("~/.local/state/opencode"))
         if state_dir.exists():
@@ -111,7 +112,6 @@ DEFAULT_CONFIG = {
 }
 
 def run_silent_cmd(cmd, timeout=30):
-    """Executes external commands completely silently without spawning console windows."""
     flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
     startupinfo = None
     if sys.platform == "win32":
@@ -129,9 +129,7 @@ def run_silent_cmd(cmd, timeout=30):
         stdout_str = proc.stdout.decode("utf-8", errors="replace") if proc.stdout else ""
         stderr_str = proc.stderr.decode("utf-8", errors="replace") if proc.stderr else ""
     except Exception as e:
-        stdout_str = ""
-        stderr_str = str(e)
-        return type("SilentResult", (), {"returncode": 1, "stdout": "", "stderr": stderr_str})()
+        return type("SilentResult", (), {"returncode": 1, "stdout": "", "stderr": str(e)})()
 
     return type("SilentResult", (), {"returncode": proc.returncode, "stdout": stdout_str, "stderr": stderr_str})()
 
@@ -203,7 +201,6 @@ def set_active_google_account_index(target_index: int) -> bool:
 
     return changed
 
-
 def export_google_accounts() -> list[dict]:
     config_dir = Path(os.path.expanduser("~/.config/opencode"))
     gen_dirs = list(config_dir.glob("*.generation"))
@@ -233,7 +230,7 @@ def export_google_accounts() -> list[dict]:
                             "label": meta.get("label", ""),
                         })
             except Exception as e:
-                print(f"Error reading generation accounts for export: {e}")
+                print(f"Error reading generation accounts: {e}")
 
     legacy_file = config_dir / "antigravity-accounts.json"
     if not accounts and legacy_file.exists():
@@ -244,7 +241,6 @@ def export_google_accounts() -> list[dict]:
             pass
 
     return accounts
-
 
 def delete_google_account(target_email_or_id: str) -> bool:
     config_dir = Path(os.path.expanduser("~/.config/opencode"))
@@ -259,8 +255,6 @@ def delete_google_account(target_email_or_id: str) -> bool:
             try:
                 cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
                 state = json.loads(state_file.read_text(encoding="utf-8"))
-
-                # Find matching account ID
                 target_id = None
                 for acc in cfg.get("accounts", []):
                     aid = acc.get("id")
@@ -305,7 +299,7 @@ def delete_google_account(target_email_or_id: str) -> bool:
                     state_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
                     deleted = True
             except Exception as e:
-                print(f"Error deleting account from generation store: {e}")
+                print(f"Error deleting account: {e}")
 
     legacy_file = config_dir / "antigravity-accounts.json"
     if legacy_file.exists():
@@ -328,31 +322,7 @@ def delete_google_account(target_email_or_id: str) -> bool:
 
     return deleted
 
-
-def get_google_account_emails() -> list[str]:
-    config_dir = Path(os.path.expanduser("~/.config/opencode"))
-    gen_dirs = list(config_dir.glob("*.generation"))
-    emails = []
-    if gen_dirs:
-        cfg_file = gen_dirs[0] / "config.json"
-        state_file = gen_dirs[0] / "state.json"
-        if cfg_file.exists() and state_file.exists():
-            try:
-                cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
-                state = json.loads(state_file.read_text(encoding="utf-8"))
-                for acc in cfg.get("accounts", []):
-                    aid = acc.get("id")
-                    meta = state.get("accounts", {}).get(aid, {}).get("commonAuthProviderState", {}).get("metadata", {})
-                    email = meta.get("email")
-                    if email:
-                        emails.append(email)
-            except Exception:
-                pass
-    return emails
-
-
 def enrich_google_accounts_with_generation_store(accounts: list[dict]) -> list[dict]:
-    """Enriches Google accounts with real email addresses and 5h/weekly quota windows from the generation store."""
     config_dir = Path(os.path.expanduser("~/.config/opencode"))
     gen_dirs = list(config_dir.glob("*.generation"))
     if not gen_dirs:
@@ -375,6 +345,7 @@ def enrich_google_accounts_with_generation_store(accounts: list[dict]) -> list[d
         row = cfg.get("commonAuthPool", {}).get("rows", {}).get(aid, {})
         meta = state.get("accounts", {}).get(aid, {}).get("commonAuthProviderState", {}).get("metadata", {})
         email = meta.get("email", f"Account {idx}")
+        added_at = meta.get("addedAt") or acc.get("addedAt")
         cached = row.get("quota", {}).get("cachedQuota", {})
 
         groups = []
@@ -397,7 +368,9 @@ def enrich_google_accounts_with_generation_store(accounts: list[dict]) -> list[d
 
         disk_accounts.append({
             "index": idx,
+            "id": aid,
             "email": email,
+            "addedAt": added_at,
             "status": "ok" if row.get("enabled", True) else "disabled",
             "groups": groups,
         })
@@ -405,12 +378,15 @@ def enrich_google_accounts_with_generation_store(accounts: list[dict]) -> list[d
     if not accounts:
         return disk_accounts
 
-    # If CLI returned accounts, enrich real email and missing windows
     for idx, acc in enumerate(accounts):
         if idx < len(disk_accounts):
             disk_acc = disk_accounts[idx]
             if not acc.get("email") or acc.get("email", "").startswith("Account "):
                 acc["email"] = disk_acc["email"]
+            if not acc.get("addedAt"):
+                acc["addedAt"] = disk_acc.get("addedAt")
+            if not acc.get("id"):
+                acc["id"] = disk_acc.get("id")
 
             for g in acc.get("groups", []):
                 g_name = g.get("name")
@@ -420,7 +396,6 @@ def enrich_google_accounts_with_generation_store(accounts: list[dict]) -> list[d
                         g["windows"] = matching_dg["windows"]
 
     return accounts
-
 
 def import_google_account(account_dict: dict) -> bool:
     email = account_dict.get("email")
@@ -436,7 +411,6 @@ def import_google_account(account_dict: dict) -> bool:
     config_dir = Path(os.path.expanduser("~/.config/opencode"))
     gen_dirs = list(config_dir.glob("*.generation"))
 
-    # If generation directories exist, directly update/insert into generation store
     if gen_dirs:
         gen_dir = gen_dirs[0]
         cfg_file = gen_dir / "config.json"
@@ -524,7 +498,6 @@ def import_google_account(account_dict: dict) -> bool:
                 }
                 state_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
 
-                # Update migration.json manifest if present
                 if mig_file.exists():
                     try:
                         mig_data = json.loads(mig_file.read_text(encoding="utf-8"))
@@ -552,7 +525,6 @@ def import_google_account(account_dict: dict) -> bool:
                     except Exception:
                         pass
 
-                # Ensure legacy file is absent so cli.js does not report "legacy source recreated"
                 legacy_file = config_dir / "antigravity-accounts.json"
                 if legacy_file.exists():
                     try:
@@ -565,7 +537,6 @@ def import_google_account(account_dict: dict) -> bool:
                 print(f"Error importing to generation store: {e}")
                 return False
     else:
-        # Fresh PC with no generation store yet: write legacy file and run migration
         legacy_file = config_dir / "antigravity-accounts.json"
         legacy_data = {"version": 4, "activeIndex": 0, "accounts": []}
         if legacy_file.exists():
@@ -596,7 +567,8 @@ def import_google_account(account_dict: dict) -> bool:
 
     return True
 
-ctk.set_appearance_mode("Dark")
+# --- App Settings: Modern Light Theme (Cockpit Style) ---
+ctk.set_appearance_mode("Light")
 ctk.set_default_color_theme("blue")
 
 
@@ -604,9 +576,12 @@ class AntigravityManagerApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("Antigravity Hub — Google & ChatGPT Менеджер аккаунтов")
-        self.geometry("980x740")
-        self.minsize(860, 640)
+        self.title("Antigravity Hub — Google & ChatGPT")
+        self.geometry("1180x760")
+        self.minsize(980, 680)
+
+        # Cockpit clean light palette
+        self.configure(fg_color="#f1f5f9")  # Slate-100 background
 
         icon_file = Path(__file__).resolve().parent / "icon.ico"
         if icon_file.exists():
@@ -618,16 +593,17 @@ class AntigravityManagerApp(ctk.CTk):
         # State
         self.accounts_data = []
         self.openai_accounts_data = []
-        self.current_provider_view = "google"
+        self.current_nav = "antigravity"  # 'antigravity', 'openai', 'settings', 'system'
         self.is_loading = False
         self.config_data = self.load_config()
+        self.search_query = ""
 
         # Periodic auto-refresh (every 10 minutes)
         self.auto_refresh_enabled = True
         self.auto_refresh_interval_min = 10
         self.countdown_seconds = self.auto_refresh_interval_min * 60
 
-        # Background token refresh (every 30 minutes)
+        # Background token refresh daemon (every 30 minutes)
         self.token_refresh_interval_min = 30
         self.token_refresh_countdown = self.token_refresh_interval_min * 60
 
@@ -638,15 +614,14 @@ class AntigravityManagerApp(ctk.CTk):
         self.tray = None
         self.protocol("WM_DELETE_WINDOW", self.on_close_to_tray)
 
-        # Grid setup
-        self.grid_rowconfigure(1, weight=1)
-        self.grid_columnconfigure(0, weight=1)
+        # Root Layout: Sidebar (col 0) + Main Content (col 1)
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=1)
 
-        self.create_header()
-        self.create_tabs()
-        self.create_statusbar()
+        self.create_sidebar()
+        self.create_main_content()
 
-        # Initial background tasks
+        # Background initialization
         self.init_system_tray()
         self.refresh_all_async()
         self.update_opencode_status()
@@ -694,7 +669,7 @@ class AntigravityManagerApp(ctk.CTk):
             if self.tray and self.tray.is_visible:
                 self.tray.show_balloon(
                     "Antigravity Hub свёрнут",
-                    "Приложение продолжает работать в фоне и мониторить квоты. Кликните по иконке для открытия.",
+                    "Приложение работает в фоне и мониторит квоты. Кликните по иконке для открытия.",
                 )
         except Exception:
             self.destroy()
@@ -706,14 +681,6 @@ class AntigravityManagerApp(ctk.CTk):
             self.focus_force()
         except Exception:
             pass
-
-    def exit_app_fully(self):
-        try:
-            if self.tray:
-                self.tray.remove()
-        except Exception:
-            pass
-        self.destroy()
 
     # --- Auto-Updater ---
     def check_updates_async(self):
@@ -735,44 +702,42 @@ class AntigravityManagerApp(ctk.CTk):
     def show_update_banner(self, info):
         if hasattr(self, "update_banner") and self.update_banner:
             return
-        # Display update notification banner below header
-        self.update_banner = ctk.CTkFrame(self, fg_color="#1e3a8a", corner_radius=8, height=38)
-        self.update_banner.grid(row=0, column=0, sticky="ew", padx=20, pady=(64, 0))
-        self.update_banner.grid_columnconfigure(0, weight=1)
-
         msg = info.get("message", "Новые улучшения")
         sha = info.get("remote_sha", "")
-        txt = f"🚀 Доступно обновление модуля ({sha}): {msg}"
+
+        self.update_banner = ctk.CTkFrame(self.content_area, fg_color="#eff6ff", corner_radius=10, border_width=1, border_color="#bfdbfe")
+        self.update_banner.pack(fill="x", padx=24, pady=(12, 0))
+        self.update_banner.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
             self.update_banner,
-            text=txt,
+            text=f"🚀 Доступно обновление ({sha}): {msg}",
             font=ctk.CTkFont(size=12, weight="bold"),
-            text_color="#93c5fd",
-        ).grid(row=0, column=0, sticky="w", padx=16, pady=6)
+            text_color="#1d4ed8",
+        ).pack(side="left", padx=16, pady=8)
 
         btn_box = ctk.CTkFrame(self.update_banner, fg_color="transparent")
-        btn_box.grid(row=0, column=1, sticky="e", padx=12, pady=4)
+        btn_box.pack(side="right", padx=12, pady=6)
 
         ctk.CTkButton(
             btn_box,
             text="⚡ Обновить в 1 клик",
             font=ctk.CTkFont(size=11, weight="bold"),
-            fg_color="#3b82f6",
-            hover_color="#2563eb",
-            height=26,
-            width=140,
+            fg_color="#2563eb",
+            hover_color="#1d4ed8",
+            height=28,
             command=self.apply_update_action,
-        ).pack(side="left", padx=(0, 8))
+        ).pack(side="left", padx=(0, 6))
 
         ctk.CTkButton(
             btn_box,
             text="✕",
             font=ctk.CTkFont(size=12),
-            fg_color="#1e293b",
-            hover_color="#334155",
-            height=26,
-            width=26,
+            fg_color="#e2e8f0",
+            hover_color="#cbd5e1",
+            text_color="#475569",
+            height=28,
+            width=28,
             command=lambda: self.update_banner.destroy(),
         ).pack(side="left")
 
@@ -790,7 +755,7 @@ class AntigravityManagerApp(ctk.CTk):
         if ok:
             messagebox.showinfo(
                 "Обновление завершено!",
-                f"{msg}\n\nРекомендуется перезапустить OpenCode и Hub для применения всех изменений.",
+                f"{msg}\n\nРекомендуется перезапустить OpenCode и Hub.",
             )
             if hasattr(self, "update_banner") and self.update_banner:
                 self.update_banner.destroy()
@@ -798,1234 +763,943 @@ class AntigravityManagerApp(ctk.CTk):
         else:
             messagebox.showerror("Ошибка обновления", msg)
 
-    # --- UI Components ---
-    def create_header(self):
-        header_frame = ctk.CTkFrame(self, corner_radius=0, fg_color="#18181b")
-        header_frame.grid(row=0, column=0, sticky="ew", padx=0, pady=0)
-        header_frame.grid_columnconfigure(1, weight=1)
-
-        # Title & Logo
-        title_box = ctk.CTkFrame(header_frame, fg_color="transparent")
-        title_box.grid(row=0, column=0, padx=20, pady=14, sticky="w")
-
-        title_label = ctk.CTkLabel(
-            title_box,
-            text="⚡ Antigravity Hub",
-            font=ctk.CTkFont(size=22, weight="bold"),
-            text_color="#f4f4f5",
+    # =========================================================================
+    # SIDEBAR COMPONENT (Cockpit Tools Style)
+    # =========================================================================
+    def create_sidebar(self):
+        self.sidebar = ctk.CTkFrame(
+            self,
+            width=230,
+            corner_radius=0,
+            fg_color="#ffffff",  # Crisp white sidebar
+            border_width=1,
+            border_color="#e2e8f0",
         )
-        title_label.pack(anchor="w")
+        self.sidebar.grid(row=0, column=0, sticky="nsew")
+        self.sidebar.grid_propagate(False)
+        self.sidebar.grid_rowconfigure(5, weight=1)
 
-        subtitle_label = ctk.CTkLabel(
-            title_box,
-            text="Мульти-аккаунты Google и OpenAI / ChatGPT, живые квоты и управление для OpenCode",
-            font=ctk.CTkFont(size=12),
-            text_color="#a1a1aa",
+        # Brand / Logo Header
+        logo_box = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        logo_box.grid(row=0, column=0, padx=18, pady=(20, 24), sticky="w")
+
+        # Blue icon square
+        icon_badge = ctk.CTkLabel(
+            logo_box,
+            text="⚡",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            fg_color="#0284c7",
+            text_color="#ffffff",
+            width=32,
+            height=32,
+            corner_radius=8,
         )
-        subtitle_label.pack(anchor="w")
+        icon_badge.pack(side="left", padx=(0, 10))
 
-        # OpenCode status and actions
-        status_box = ctk.CTkFrame(header_frame, fg_color="transparent")
-        status_box.grid(row=0, column=2, padx=20, pady=14, sticky="e")
+        title_lbl = ctk.CTkLabel(
+            logo_box,
+            text="Antigravity Hub",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            text_color="#0f172a",
+        )
+        title_lbl.pack(side="left")
+
+        # Nav Buttons Container
+        self.nav_btns = {}
+        nav_items = [
+            ("antigravity", "🚀  Antigravity (Google)", "google"),
+            ("openai", "🟢  ChatGPT (OpenAI)", "openai"),
+            ("settings", "⚙️  Настройки ротации", "settings"),
+            ("system", "🛠  OpenCode & Диагностика", "system"),
+        ]
+
+        for idx, (key, label, _) in enumerate(nav_items, start=1):
+            btn = ctk.CTkButton(
+                self.sidebar,
+                text=label,
+                font=ctk.CTkFont(size=13, weight="bold"),
+                anchor="w",
+                height=40,
+                corner_radius=8,
+                fg_color="#e0f2fe" if key == self.current_nav else "transparent",
+                text_color="#0369a1" if key == self.current_nav else "#475569",
+                hover_color="#f1f5f9",
+                command=lambda k=key: self.switch_nav(k),
+            )
+            btn.grid(row=idx, column=0, padx=12, pady=4, sticky="ew")
+            self.nav_btns[key] = btn
+
+        # Sidebar Footer: OpenCode status & bottom tools
+        footer_box = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        footer_box.grid(row=6, column=0, padx=16, pady=16, sticky="ew")
 
         self.opencode_badge = ctk.CTkLabel(
-            status_box,
-            text="Проверка OpenCode...",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color="#27272a",
-            text_color="#d4d4d8",
-            corner_radius=8,
-            padx=12,
-            pady=4,
+            footer_box,
+            text="● OpenCode: Проверка...",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#f1f5f9",
+            text_color="#64748b",
+            corner_radius=6,
+            height=26,
         )
-        self.opencode_badge.pack(side="left", padx=8)
+        self.opencode_badge.pack(fill="x", pady=(0, 8))
 
-        restart_btn = ctk.CTkButton(
-            status_box,
+        ctk.CTkButton(
+            footer_box,
             text="🔄 Перезапустить OpenCode",
-            width=160,
-            height=32,
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color="#3b82f6",
-            hover_color="#2563eb",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#e2e8f0",
+            hover_color="#cbd5e1",
+            text_color="#334155",
+            height=30,
             command=self.restart_opencode_action,
+        ).pack(fill="x")
+
+    def switch_nav(self, target_nav):
+        self.current_nav = target_nav
+        for key, btn in self.nav_btns.items():
+            if key == target_nav:
+                btn.configure(fg_color="#e0f2fe", text_color="#0369a1")
+            else:
+                btn.configure(fg_color="transparent", text_color="#475569")
+
+        # Toggle views
+        if target_nav in ("antigravity", "openai"):
+            self.current_provider_view = "google" if target_nav == "antigravity" else "openai"
+            self.top_action_bar.pack(fill="x", padx=24, pady=(16, 0))
+            self.accounts_container.pack(fill="both", expand=True, padx=24, pady=(12, 16))
+            self.settings_frame.pack_forget()
+            self.system_frame.pack_forget()
+            self.update_action_bar_for_provider()
+            self.render_accounts()
+        elif target_nav == "settings":
+            self.top_action_bar.pack_forget()
+            self.accounts_container.pack_forget()
+            self.system_frame.pack_forget()
+            self.settings_frame.pack(fill="both", expand=True, padx=24, pady=16)
+        elif target_nav == "system":
+            self.top_action_bar.pack_forget()
+            self.accounts_container.pack_forget()
+            self.settings_frame.pack_forget()
+            self.system_frame.pack(fill="both", expand=True, padx=24, pady=16)
+
+    # =========================================================================
+    # MAIN CONTENT AREA
+    # =========================================================================
+    def create_main_content(self):
+        self.main_frame = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
+        self.main_frame.grid(row=0, column=1, sticky="nsew")
+        self.main_frame.grid_rowconfigure(0, weight=1)
+        self.main_frame.grid_columnconfigure(0, weight=1)
+
+        self.content_area = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        self.content_area.pack(fill="both", expand=True)
+
+        # 1. Top Action Bar (Cockpit style: Search + Action Buttons)
+        self.create_action_bar()
+
+        # 2. Blue notification flash bar (like Cockpit "Переключено на ...")
+        self.create_flash_banner()
+
+        # 3. Accounts Grid Area
+        self.accounts_container = ctk.CTkScrollableFrame(
+            self.content_area,
+            fg_color="transparent",
+            corner_radius=0,
         )
-        restart_btn.pack(side="left")
+        self.accounts_container.pack(fill="both", expand=True, padx=24, pady=(12, 16))
 
-    def create_tabs(self):
-        self.tabview = ctk.CTkTabview(self, corner_radius=12, fg_color="#18181b")
-        self.tabview.grid(row=1, column=0, sticky="nsew", padx=20, pady=(10, 10))
+        # 4. Settings view (hidden by default)
+        self.create_settings_view()
 
-        self.tab_accounts = self.tabview.add("👤 Аккаунты и Квоты")
-        self.tab_settings = self.tabview.add("⚙️ Настройки автопереключения")
-        self.tab_system = self.tabview.add("🛠 OpenCode & Диагностика")
+        # 5. System view (hidden by default)
+        self.create_system_view()
 
-        self.setup_tab_accounts()
-        self.setup_tab_settings()
-        self.setup_tab_system()
+        # Statusbar at bottom of main frame
+        self.create_statusbar()
 
-    # --- Tab 1: Accounts & Quotas ---
-    def setup_tab_accounts(self):
-        self.tab_accounts.grid_columnconfigure(0, weight=1)
-        self.tab_accounts.grid_rowconfigure(1, weight=1)
+    def create_action_bar(self):
+        self.top_action_bar = ctk.CTkFrame(self.content_area, fg_color="transparent")
+        self.top_action_bar.pack(fill="x", padx=24, pady=(16, 0))
 
-        # Controls bar
-        top_bar = ctk.CTkFrame(self.tab_accounts, fg_color="transparent")
-        top_bar.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 15))
-        top_bar.grid_columnconfigure(5, weight=1)
+        # Left: Search input
+        self.search_entry = ctk.CTkEntry(
+            self.top_action_bar,
+            placeholder_text="🔍 Поиск аккаунта...",
+            font=ctk.CTkFont(size=12),
+            width=220,
+            height=34,
+            corner_radius=8,
+            fg_color="#ffffff",
+            border_color="#cbd5e1",
+            text_color="#0f172a",
+        )
+        self.search_entry.pack(side="left", padx=(0, 10))
+        self.search_entry.bind("<KeyRelease>", self.on_search_key)
 
-        # Provider Selector Segmented Button
-        self.provider_seg = ctk.CTkSegmentedButton(
-            top_bar,
-            values=["🌐 Google (Antigravity)", "🟢 OpenAI (ChatGPT)"],
+        # Total count badge
+        self.lbl_count_pill = ctk.CTkLabel(
+            self.top_action_bar,
+            text="Все (0)",
             font=ctk.CTkFont(size=12, weight="bold"),
-            command=self.on_provider_view_change,
+            fg_color="#e2e8f0",
+            text_color="#334155",
+            corner_radius=12,
+            padx=12,
+            height=32,
         )
-        self.provider_seg.set("🌐 Google (Antigravity)")
-        self.provider_seg.grid(row=0, column=0, padx=(0, 10))
+        self.lbl_count_pill.pack(side="left", padx=(0, 10))
 
+        # Right: Action buttons
         self.btn_add_account = ctk.CTkButton(
-            top_bar,
-            text="➕ Добавить аккаунт Google",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            fg_color="#10b981",
-            hover_color="#059669",
-            height=36,
+            self.top_action_bar,
+            text="➕ Добавить аккаунт",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="#0284c7",
+            hover_color="#0369a1",
+            height=34,
+            corner_radius=8,
             command=self.add_account_action,
         )
-        self.btn_add_account.grid(row=0, column=1, padx=(0, 8))
+        self.btn_add_account.pack(side="right", padx=(8, 0))
 
         self.btn_refresh = ctk.CTkButton(
-            top_bar,
+            self.top_action_bar,
             text="🔄 Обновить",
-            font=ctk.CTkFont(size=13),
-            fg_color="#3f3f46",
-            hover_color="#52525b",
-            height=36,
-            width=110,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="#ffffff",
+            hover_color="#f8fafc",
+            text_color="#334155",
+            border_width=1,
+            border_color="#cbd5e1",
+            height=34,
+            width=90,
+            corner_radius=8,
             command=self.refresh_all_async,
         )
-        self.btn_refresh.grid(row=0, column=2, padx=(0, 8))
+        self.btn_refresh.pack(side="right", padx=(8, 0))
 
         self.btn_export = ctk.CTkButton(
-            top_bar,
+            self.top_action_bar,
             text="📤 Экспорт",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color="#2563eb",
-            hover_color="#1d4ed8",
-            height=36,
-            width=95,
+            font=ctk.CTkFont(size=12),
+            fg_color="#ffffff",
+            hover_color="#f8fafc",
+            text_color="#334155",
+            border_width=1,
+            border_color="#cbd5e1",
+            height=34,
+            width=85,
+            corner_radius=8,
             command=self.export_accounts_action,
         )
-        self.btn_export.grid(row=0, column=3, padx=(0, 8))
+        self.btn_export.pack(side="right", padx=(8, 0))
 
         self.btn_import = ctk.CTkButton(
-            top_bar,
+            self.top_action_bar,
             text="📥 Импорт",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color="#7c3aed",
-            hover_color="#6d28d9",
-            height=36,
-            width=95,
+            font=ctk.CTkFont(size=12),
+            fg_color="#ffffff",
+            hover_color="#f8fafc",
+            text_color="#334155",
+            border_width=1,
+            border_color="#cbd5e1",
+            height=34,
+            width=85,
+            corner_radius=8,
             command=self.import_accounts_action,
         )
-        self.btn_import.grid(row=0, column=4, padx=(0, 10))
+        self.btn_import.pack(side="right")
 
-        self.lbl_accounts_count = ctk.CTkLabel(
-            top_bar,
-            text="Загрузка...",
-            font=ctk.CTkFont(size=13),
-            text_color="#a1a1aa",
-        )
-        self.lbl_accounts_count.grid(row=0, column=5, sticky="e")
-
-        # Scrollable container for account cards
-        self.accounts_scroll = ctk.CTkScrollableFrame(
-            self.tab_accounts,
-            fg_color="#121214",
-            corner_radius=10,
-        )
-        self.accounts_scroll.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
-        self.accounts_scroll.grid_columnconfigure(0, weight=1)
-
-    def on_provider_view_change(self, val):
-        if "Google" in val:
-            self.current_provider_view = "google"
+    def update_action_bar_for_provider(self):
+        if self.current_provider_view == "google":
             self.btn_add_account.configure(
-                text="➕ Добавить аккаунт Google",
+                text="➕ Добавить Google",
                 command=self.add_account_action,
-                fg_color="#10b981",
-                hover_color="#059669",
+                fg_color="#0284c7",
+                hover_color="#0369a1",
             )
         else:
-            self.current_provider_view = "openai"
             self.btn_add_account.configure(
-                text="➕ Добавить аккаунт OpenAI",
+                text="➕ Добавить OpenAI",
                 command=self.add_openai_account_action,
                 fg_color="#10a37f",
                 hover_color="#0e8a6c",
             )
+
+    def create_flash_banner(self):
+        self.flash_banner = ctk.CTkFrame(
+            self.content_area,
+            fg_color="#eff6ff",
+            corner_radius=8,
+            border_width=1,
+            border_color="#bfdbfe",
+            height=36,
+        )
+        self.flash_banner.grid_columnconfigure(0, weight=1)
+
+        self.lbl_flash = ctk.CTkLabel(
+            self.flash_banner,
+            text="",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#1d4ed8",
+        )
+        self.lbl_flash.grid(row=0, column=0, sticky="w", padx=16, pady=6)
+
+        ctk.CTkButton(
+            self.flash_banner,
+            text="✕",
+            font=ctk.CTkFont(size=11),
+            fg_color="transparent",
+            hover_color="#dbeafe",
+            text_color="#60a5fa",
+            width=24,
+            height=24,
+            command=lambda: self.flash_banner.pack_forget(),
+        ).grid(row=0, column=1, sticky="e", padx=8)
+
+    def show_flash(self, message):
+        self.lbl_flash.configure(text=message)
+        self.flash_banner.pack(fill="x", padx=24, pady=(10, 0), before=self.accounts_container)
+        self.after(6000, lambda: self.flash_banner.pack_forget())
+
+    def on_search_key(self, event):
+        self.search_query = self.search_entry.get().strip().lower()
         self.render_accounts()
 
+    # =========================================================================
+    # RENDER ACCOUNTS (Cockpit Tools Compact Cards Grid)
+    # =========================================================================
     def render_accounts(self):
-        # Save scroll position if canvas exists so UI doesn't jump
-        scroll_pos = 0.0
-        try:
-            scroll_pos = self.accounts_scroll._parent_canvas.yview()[0]
-        except Exception:
-            pass
-
-        # Clear existing widgets
-        for widget in self.accounts_scroll.winfo_children():
+        # Clear container
+        for widget in self.accounts_container.winfo_children():
             widget.destroy()
 
         if self.current_provider_view == "google":
-            self.render_google_accounts()
+            self.render_google_grid()
         else:
-            self.render_openai_accounts()
+            self.render_openai_grid()
 
-        # Restore scroll position smoothly
-        try:
-            if scroll_pos > 0.0:
-                self.after(30, lambda: self.accounts_scroll._parent_canvas.yview_moveto(scroll_pos))
-        except Exception:
-            pass
-
-    def render_google_accounts(self):
-        if not self.accounts_data:
-            empty_box = ctk.CTkFrame(self.accounts_scroll, fg_color="transparent")
-            empty_box.pack(pady=80)
-            ctk.CTkLabel(
-                empty_box,
-                text="📭",
-                font=ctk.CTkFont(size=48),
-            ).pack()
-            ctk.CTkLabel(
-                empty_box,
-                text="Нет подключенных Google аккаунтов",
-                font=ctk.CTkFont(size=16, weight="bold"),
-                text_color="#f4f4f5",
-            ).pack(pady=(10, 4))
-            ctk.CTkLabel(
-                empty_box,
-                text="Нажмите кнопку '+ Добавить аккаунт Google' вверху, чтобы авторизоваться через браузер.",
-                font=ctk.CTkFont(size=13),
-                text_color="#71717a",
-            ).pack()
-            self.lbl_accounts_count.configure(text="Google: 0 аккаунтов")
-            return
+    def render_google_grid(self):
+        data = self.accounts_data
+        if self.search_query:
+            data = [a for a in data if self.search_query in a.get("email", "").lower()]
 
         total = len(self.accounts_data)
         active_idx = get_active_google_account_index()
-        active_email = ""
-        if 0 <= active_idx < len(self.accounts_data):
-            active_email = self.accounts_data[active_idx].get("email", "")
+        self.lbl_count_pill.configure(text=f"Все ({total})")
 
-        if active_email:
-            self.lbl_accounts_count.configure(
-                text=f"Google: {total} акк. • 🟢 Текущий: #{active_idx + 1}"
-            )
-        else:
-            self.lbl_accounts_count.configure(text=f"Google аккаунтов: {total}")
-
-        for acc in self.accounts_data:
-            self.create_account_card(acc, active_idx)
-
-    def render_openai_accounts(self):
-        if not self.openai_accounts_data:
-            empty_box = ctk.CTkFrame(self.accounts_scroll, fg_color="transparent")
-            empty_box.pack(pady=80)
-            ctk.CTkLabel(
-                empty_box,
-                text="🤖",
-                font=ctk.CTkFont(size=48),
-            ).pack()
-            ctk.CTkLabel(
-                empty_box,
-                text="Нет подключенных аккаунтов OpenAI (ChatGPT)",
-                font=ctk.CTkFont(size=16, weight="bold"),
-                text_color="#f4f4f5",
-            ).pack(pady=(10, 4))
-            ctk.CTkLabel(
-                empty_box,
-                text="Нажмите кнопку '+ Добавить аккаунт OpenAI' вверху, чтобы войти через браузер (OAuth).",
-                font=ctk.CTkFont(size=13),
-                text_color="#71717a",
-            ).pack()
-            self.lbl_accounts_count.configure(text="OpenAI: 0 аккаунтов")
+        if not data:
+            self._render_empty_state("Google (Antigravity)")
             return
 
+        # Grid container: 2 or 3 columns based on width
+        grid_frame = ctk.CTkFrame(self.accounts_container, fg_color="transparent")
+        grid_frame.pack(fill="both", expand=True)
+
+        for col in range(2):
+            grid_frame.grid_columnconfigure(col, weight=1, uniform="card_col")
+
+        for idx, acc in enumerate(data):
+            row = idx // 2
+            col = idx % 2
+            is_active = (acc.get("index", 1) - 1 == active_idx)
+            card = self.create_compact_card(grid_frame, acc, is_active=is_active)
+            card.grid(row=row, column=col, padx=8, pady=8, sticky="nsew")
+
+    def render_openai_grid(self):
+        data = self.openai_accounts_data
+        if self.search_query:
+            data = [a for a in data if self.search_query in a.get("email", "").lower()]
+
         total = len(self.openai_accounts_data)
-        self.lbl_accounts_count.configure(text=f"OpenAI аккаунтов: {total}")
+        self.lbl_count_pill.configure(text=f"Все ({total})")
 
-        for idx, acc in enumerate(self.openai_accounts_data, start=1):
-            self.create_openai_card(acc, idx)
+        if not data:
+            self._render_empty_state("OpenAI (ChatGPT)")
+            return
 
-    def create_openai_card(self, acc, index):
-        email = acc.get("email", "unknown@chatgpt.com")
-        is_active = acc.get("is_active", False)
-        plan_type = (acc.get("plan_type") or "plus").upper()
-        account_id = acc.get("accountId") or acc.get("id") or ""
-        quota = acc.get("quota") or {}
+        grid_frame = ctk.CTkFrame(self.accounts_container, fg_color="transparent")
+        grid_frame.pack(fill="both", expand=True)
 
-        primary_quota = quota.get("primary") or {}
-        secondary_quota = quota.get("secondary") or {}
+        for col in range(2):
+            grid_frame.grid_columnconfigure(col, weight=1, uniform="card_col")
 
-        card = ctk.CTkFrame(self.accounts_scroll, fg_color="#1e1e24", corner_radius=12)
-        card.pack(fill="x", pady=8, padx=4)
+        for idx, acc in enumerate(data):
+            row = idx // 2
+            col = idx % 2
+            is_active = acc.get("is_active", False)
+            card = self.create_compact_openai_card(grid_frame, acc, is_active=is_active)
+            card.grid(row=row, column=col, padx=8, pady=8, sticky="nsew")
 
-        # Card Header
-        header_row = ctk.CTkFrame(card, fg_color="transparent")
-        header_row.pack(fill="x", padx=16, pady=(14, 10))
-        header_row.grid_columnconfigure(1, weight=1)
+    def _render_empty_state(self, title):
+        box = ctk.CTkFrame(self.accounts_container, fg_color="#ffffff", corner_radius=12, border_width=1, border_color="#e2e8f0")
+        box.pack(fill="x", pady=40, padx=20)
+        ctk.CTkLabel(box, text="📭", font=ctk.CTkFont(size=36)).pack(pady=(24, 6))
+        ctk.CTkLabel(box, text=f"Нет подключенных аккаунтов {title}", font=ctk.CTkFont(size=15, weight="bold"), text_color="#1e293b").pack()
+        ctk.CTkLabel(box, text="Нажмите кнопку '+ Добавить аккаунт' вверху для входа через браузер.", font=ctk.CTkFont(size=12), text_color="#64748b").pack(pady=(4, 24))
 
-        # Avatar / Index circle
-        idx_badge = ctk.CTkLabel(
-            header_row,
-            text=f"#{index}",
-            width=32,
-            height=32,
-            corner_radius=16,
-            fg_color="#10a37f",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color="#ffffff",
-        )
-        idx_badge.grid(row=0, column=0, padx=(0, 12))
-
-        # Email + Plan box
-        info_col = ctk.CTkFrame(header_row, fg_color="transparent")
-        info_col.grid(row=0, column=1, sticky="w")
-
-        title_row = ctk.CTkFrame(info_col, fg_color="transparent")
-        title_row.pack(anchor="w")
-
-        email_label = ctk.CTkLabel(
-            title_row,
-            text=email,
-            font=ctk.CTkFont(size=16, weight="bold"),
-            text_color="#f4f4f5",
-        )
-        email_label.pack(side="left")
-
-        # Plan badge
-        plan_lbl = ctk.CTkLabel(
-            title_row,
-            text=f" {plan_type} ",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            text_color="#38bdf8",
-            fg_color="#0c4a6e",
-            corner_radius=6,
-            padx=6,
-            pady=2,
-        )
-        plan_lbl.pack(side="left", padx=(8, 0))
-
-        # Actions on right
-        actions_box = ctk.CTkFrame(header_row, fg_color="transparent")
-        actions_box.grid(row=0, column=2, sticky="e")
-
-        if is_active:
-            status_lbl = ctk.CTkLabel(
-                actions_box,
-                text="● Активен в OpenCode",
-                font=ctk.CTkFont(size=12, weight="bold"),
-                text_color="#10b981",
-                fg_color="#064e3b",
-                corner_radius=8,
-                padx=10,
-                pady=4,
-            )
-            status_lbl.pack(side="left", padx=(0, 10))
-        else:
-            activate_btn = ctk.CTkButton(
-                actions_box,
-                text="⭐ Использовать в OpenCode",
-                font=ctk.CTkFont(size=11, weight="bold"),
-                fg_color="#3b82f6",
-                hover_color="#2563eb",
-                height=28,
-                width=165,
-                command=lambda aid=account_id: self.activate_openai_account_action(aid),
-            )
-            activate_btn.pack(side="left", padx=(0, 10))
-
-        test_btn = ctk.CTkButton(
-            actions_box,
-            text="🩺 Тест",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            fg_color="#475569",
-            hover_color="#64748b",
-            height=28,
-            width=65,
-            command=lambda a=acc: self.test_openai_account_action(a),
-        )
-        test_btn.pack(side="left", padx=(0, 10))
-
-        del_btn = ctk.CTkButton(
-            actions_box,
-            text="🗑",
-            font=ctk.CTkFont(size=13),
-            fg_color="#ef4444",
-            hover_color="#dc2626",
-            height=28,
-            width=32,
-            command=lambda a=acc: self.delete_openai_account_action(a),
-        )
-        del_btn.pack(side="left")
-
-        # Divider
-        divider = ctk.CTkFrame(card, height=1, fg_color="#2e2e38")
-        divider.pack(fill="x", padx=16, pady=4)
-
-        # Quotas Section
-        quotas_container = ctk.CTkFrame(card, fg_color="transparent")
-        quotas_container.pack(fill="x", padx=16, pady=(10, 16))
-        quotas_container.grid_columnconfigure(0, weight=1)
-        quotas_container.grid_columnconfigure(1, weight=1)
-
-        # 1. Primary Window Box
-        self.create_openai_quota_box(
-            quotas_container,
-            col=0,
-            title="Основное окно (3-5 часов)",
-            badge_text="GPT-5.5 / GPT-6 / Codex",
-            window_info=primary_quota,
-        )
-
-        # 2. Secondary Window Box
-        self.create_openai_quota_box(
-            quotas_container,
-            col=1,
-            title="Недельный лимит (7 дней)",
-            badge_text="Rolling 7-day Window",
-            window_info=secondary_quota,
-        )
-
-    def create_openai_quota_box(self, parent, col, title, badge_text, window_info):
-        box = ctk.CTkFrame(parent, fg_color="#26262e", corner_radius=10)
-        box.grid(row=0, column=col, sticky="nsew", padx=6 if col == 1 else 0, pady=2)
-        box.grid_columnconfigure(0, weight=1)
-
-        header = ctk.CTkFrame(box, fg_color="transparent")
-        header.pack(fill="x", padx=12, pady=(10, 4))
-        header.grid_columnconfigure(0, weight=1)
-
-        ctk.CTkLabel(
-            header,
-            text=title,
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color="#e4e4e7",
-        ).grid(row=0, column=0, sticky="w")
-
-        ctk.CTkLabel(
-            header,
-            text=badge_text,
-            font=ctk.CTkFont(size=10),
-            text_color="#a1a1aa",
-            fg_color="#1e1e24",
-            corner_radius=6,
-            padx=6,
-            pady=2,
-        ).grid(row=0, column=1, sticky="e")
-
-        rem_pct = float(window_info.get("remaining_percent", 100.0))
-        used_pct = float(window_info.get("used_percent", 0.0))
-        rem_pct = round(rem_pct, 1)
-
-        val_row = ctk.CTkFrame(box, fg_color="transparent")
-        val_row.pack(fill="x", padx=12, pady=(4, 6))
-
-        pct_color = "#10b981" if rem_pct > 50 else ("#f59e0b" if rem_pct > 20 else "#ef4444")
-
-        ctk.CTkLabel(
-            val_row,
-            text=f"{rem_pct}%",
-            font=ctk.CTkFont(size=20, weight="bold"),
-            text_color=pct_color,
-        ).pack(side="left")
-
-        ctk.CTkLabel(
-            val_row,
-            text=f"доступно (расход: {used_pct}%)",
-            font=ctk.CTkFont(size=12),
-            text_color="#a1a1aa",
-        ).pack(side="left", padx=8)
-
-        bar = ctk.CTkProgressBar(box, height=10, corner_radius=5)
-        bar.pack(fill="x", padx=12, pady=(0, 8))
-        bar.set(max(0.0, min(1.0, rem_pct / 100.0)))
-        bar.configure(progress_color=pct_color, fg_color="#18181b")
-
-        reset_label = window_info.get("reset_label", "неизвестно")
-        ctk.CTkLabel(
-            box,
-            text=f"Сброс квоты: {reset_label}",
-            font=ctk.CTkFont(size=11),
-            text_color="#71717a",
-        ).pack(anchor="w", padx=12, pady=(0, 10))
-
-    def get_gemini_models_badge(self):
-        try:
-            cache_file = Path.home() / ".config" / "opencode" / "antigravity-models-cache.json"
-            if cache_file.exists():
-                data = json.loads(cache_file.read_text(encoding="utf-8"))
-                models = data.get("models", [])
-                gemini_vers = []
-                for m in models:
-                    match = re.search(r"gemini-(\d+(?:\.\d+)?)-(flash|pro)", m, re.I)
-                    if match:
-                        v = match.group(1)
-                        if v not in gemini_vers:
-                            gemini_vers.append(v)
-                if gemini_vers:
-                    # Filter out discontinued 3.7
-                    active_vers = [v for v in gemini_vers if v != "3.7"]
-                    if active_vers:
-                        return ", ".join(active_vers[:4])
-        except Exception:
-            pass
-        return "3.8, 3.6, Pro"
-
-    def create_account_card(self, acc, active_idx=0):
+    # =========================================================================
+    # COMPACT CARD (Exact replica of light screenshot)
+    # =========================================================================
+    def create_compact_card(self, parent, acc, is_active=False):
         email = acc.get("email", "unknown@gmail.com")
         index = acc.get("index", 1)
-        status = acc.get("status", "ok")
+        added_at = acc.get("addedAt")
         groups = acc.get("groups", [])
-
-        zero_idx = int(index) - 1
-        is_current = (zero_idx == active_idx)
 
         # Parse quotas
         gemini_group = next((g for g in groups if g.get("name") == "gemini"), None)
         nongemini_group = next((g for g in groups if g.get("name") == "non-gemini"), None)
 
+        # Card container with sleek white border
         card = ctk.CTkFrame(
-            self.accounts_scroll,
-            fg_color="#1e1e24",
-            corner_radius=12,
-            border_width=2 if is_current else 1,
-            border_color="#10b981" if is_current else "#27272a",
-        )
-        card.pack(fill="x", pady=8, padx=4)
-        card.grid_columnconfigure(1, weight=1)
-
-        # Card Header
-        header_row = ctk.CTkFrame(card, fg_color="transparent")
-        header_row.pack(fill="x", padx=16, pady=(14, 10))
-        header_row.grid_columnconfigure(1, weight=1)
-
-        # Avatar / Index circle
-        idx_badge = ctk.CTkLabel(
-            header_row,
-            text=f"⚡ #{index}" if is_current else f"#{index}",
-            width=38 if is_current else 32,
-            height=32,
+            parent,
+            fg_color="#ffffff",
             corner_radius=16,
-            fg_color="#10b981" if is_current else "#3b82f6",
+            border_width=2 if is_active else 1,
+            border_color="#2563eb" if is_active else "#e2e8f0",
+        )
+
+        # --- 1. Top Header Row ---
+        header = ctk.CTkFrame(card, fg_color="transparent")
+        header.pack(fill="x", padx=14, pady=(12, 6))
+        header.grid_columnconfigure(1, weight=1)
+
+        # Selection checkmark square
+        chk_box = ctk.CTkLabel(
+            header,
+            text="✓" if is_active else " ",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#2563eb" if is_active else "#f8fafc",
+            text_color="#ffffff" if is_active else "#cbd5e1",
+            corner_radius=4,
+            width=20,
+            height=20,
+        )
+        chk_box.grid(row=0, column=0, padx=(0, 8))
+
+        # Email truncated
+        short_email = email if len(email) <= 22 else f"{email[:19]}..."
+        email_lbl = ctk.CTkLabel(
+            header,
+            text=short_email,
             font=ctk.CTkFont(size=13, weight="bold"),
-            text_color="#ffffff",
+            text_color="#0f172a",
         )
-        idx_badge.grid(row=0, column=0, padx=(0, 12))
+        email_lbl.grid(row=0, column=1, sticky="w")
 
-        # Email and info box
-        email_box = ctk.CTkFrame(header_row, fg_color="transparent")
-        email_box.grid(row=0, column=1, sticky="w")
+        # Badges on right
+        badges_box = ctk.CTkFrame(header, fg_color="transparent")
+        badges_box.grid(row=0, column=2, sticky="e")
 
-        email_label = ctk.CTkLabel(
-            email_box,
-            text=email,
-            font=ctk.CTkFont(size=16, weight="bold"),
-            text_color="#f4f4f5",
-        )
-        email_label.pack(side="left")
+        if is_active:
+            status_badge = ctk.CTkLabel(
+                badges_box,
+                text="Текущий",
+                font=ctk.CTkFont(size=10, weight="bold"),
+                fg_color="#22c55e",
+                text_color="#ffffff",
+                corner_radius=10,
+                padx=8,
+                pady=2,
+            )
+            status_badge.pack(side="left", padx=(0, 4))
 
         pro_badge = ctk.CTkLabel(
-            email_box,
-            text=" PRO ",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            text_color="#38bdf8",
-            fg_color="#0c4a6e",
-            corner_radius=6,
-            padx=6,
+            badges_box,
+            text="PRO",
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color="#0284c7",
+            text_color="#ffffff",
+            corner_radius=10,
+            padx=7,
             pady=2,
         )
-        pro_badge.pack(side="left", padx=(8, 0))
+        pro_badge.pack(side="left")
 
-        # Actions and status on right
-        actions_box = ctk.CTkFrame(header_row, fg_color="transparent")
-        actions_box.grid(row=0, column=2, sticky="e")
+        # --- 2. Sub-button row ("📄 Добавить") ---
+        sub_row = ctk.CTkFrame(card, fg_color="transparent")
+        sub_row.pack(fill="x", padx=14, pady=(0, 8))
 
-        if is_current:
-            status_lbl = ctk.CTkLabel(
-                actions_box,
-                text="🟢 Используется сейчас",
-                font=ctk.CTkFont(size=12, weight="bold"),
-                text_color="#10b981",
-                fg_color="#064e3b",
-                corner_radius=8,
-                padx=10,
-                pady=4,
-            )
-            status_lbl.pack(side="left", padx=(0, 8))
-        else:
-            status_lbl = ctk.CTkLabel(
-                actions_box,
-                text="🔄 В пуле ротации (Резерв)",
-                font=ctk.CTkFont(size=12, weight="bold"),
-                text_color="#38bdf8",
-                fg_color="#0c4a6e",
-                corner_radius=8,
-                padx=10,
-                pady=4,
-            )
-            status_lbl.pack(side="left", padx=(0, 8))
-
-            activate_btn = ctk.CTkButton(
-                actions_box,
-                text="⭐ Сделать текущим",
-                font=ctk.CTkFont(size=11, weight="bold"),
-                fg_color="#3b82f6",
-                hover_color="#2563eb",
-                height=28,
-                width=150,
-                command=lambda aidx=zero_idx: self.activate_google_account_action(aidx),
-            )
-            activate_btn.pack(side="left", padx=(0, 8))
-
-        test_btn = ctk.CTkButton(
-            actions_box,
-            text="🩺 Тест",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            fg_color="#475569",
-            hover_color="#64748b",
-            height=28,
-            width=65,
-            command=lambda a=acc: self.test_google_account_action(a),
-        )
-        test_btn.pack(side="left", padx=(0, 8))
-
-        del_btn = ctk.CTkButton(
-            actions_box,
-            text="🗑",
-            font=ctk.CTkFont(size=13),
-            fg_color="#ef4444",
-            hover_color="#dc2626",
-            height=28,
-            width=32,
-            command=lambda a=acc: self.delete_google_account_action(a),
-        )
-        del_btn.pack(side="left")
-
-        # Divider
-        divider = ctk.CTkFrame(card, height=1, fg_color="#2e2e38")
-        divider.pack(fill="x", padx=16, pady=4)
-
-        # Quotas Section
-        quotas_container = ctk.CTkFrame(card, fg_color="transparent")
-        quotas_container.pack(fill="x", padx=16, pady=(10, 16))
-        quotas_container.grid_columnconfigure(0, weight=1)
-        quotas_container.grid_columnconfigure(1, weight=1)
-
-        # 1. Gemini Quota Box
-        self.create_quota_box(
-            quotas_container,
-            col=0,
-            title="Gemini Flash & Pro",
-            badge_text=self.get_gemini_models_badge(),
-            quota_info=gemini_group,
-        )
-
-        # 2. Non-Gemini Quota Box
-        self.create_quota_box(
-            quotas_container,
-            col=1,
-            title="Claude & Другие",
-            badge_text="Sonnet 4.6, Opus 4.6",
-            quota_info=nongemini_group,
-        )
-
-    def create_quota_box(self, parent, col, title, badge_text, quota_info):
-        box = ctk.CTkFrame(parent, fg_color="#26262e", corner_radius=10)
-        box.grid(row=0, column=col, sticky="nsew", padx=6 if col == 1 else 0, pady=2)
-        box.grid_columnconfigure(0, weight=1)
-
-        # Header of quota box
-        header = ctk.CTkFrame(box, fg_color="transparent")
-        header.pack(fill="x", padx=12, pady=(10, 6))
-        header.grid_columnconfigure(0, weight=1)
-
-        ctk.CTkLabel(
-            header,
-            text=title,
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color="#e4e4e7",
-        ).grid(row=0, column=0, sticky="w")
-
-        ctk.CTkLabel(
-            header,
-            text=badge_text,
+        ctk.CTkButton(
+            sub_row,
+            text="📄 Добавить",
             font=ctk.CTkFont(size=10),
-            text_color="#a1a1aa",
-            fg_color="#1e1e24",
+            fg_color="#f8fafc",
+            hover_color="#f1f5f9",
+            text_color="#64748b",
+            border_width=1,
+            border_color="#e2e8f0",
+            height=24,
+            width=80,
             corner_radius=6,
-            padx=6,
-            pady=2,
-        ).grid(row=0, column=1, sticky="e")
+        ).pack(side="left")
 
-        windows = quota_info.get("windows", []) if quota_info else []
+        # --- 3. Dual-Column Quota Box (Claude | Gemini) ---
+        quota_box = ctk.CTkFrame(card, fg_color="#f8fafc", corner_radius=12, border_width=1, border_color="#f1f5f9")
+        quota_box.pack(fill="x", padx=12, pady=(0, 10))
+        quota_box.grid_columnconfigure(0, weight=1)
+        quota_box.grid_columnconfigure(1, weight=1)
+
+        # Left Column: Claude
+        self._render_compact_quota_column(
+            parent=quota_box,
+            col=0,
+            title="Claude",
+            group_info=nongemini_group,
+        )
+
+        # Right Column: Gemini
+        self._render_compact_quota_column(
+            parent=quota_box,
+            col=1,
+            title="Gemini",
+            group_info=gemini_group,
+        )
+
+        # --- 4. Bottom Footer Action Row ---
+        divider = ctk.CTkFrame(card, height=1, fg_color="#f1f5f9")
+        divider.pack(fill="x", padx=12, pady=(0, 6))
+
+        footer = ctk.CTkFrame(card, fg_color="transparent")
+        footer.pack(fill="x", padx=14, pady=(0, 10))
+        footer.grid_columnconfigure(0, weight=1)
+
+        # Date added pill
+        date_str = self.format_added_date(added_at)
+        date_pill = ctk.CTkLabel(
+            footer,
+            text=date_str,
+            font=ctk.CTkFont(size=10),
+            text_color="#64748b",
+            fg_color="#f1f5f9",
+            corner_radius=10,
+            padx=8,
+            pady=2,
+        )
+        date_pill.grid(row=0, column=0, sticky="w")
+
+        # Icon actions pill
+        actions_pill = ctk.CTkFrame(footer, fg_color="#f8fafc", corner_radius=12, border_width=1, border_color="#e2e8f0")
+        actions_pill.grid(row=0, column=1, sticky="e")
+
+        # 1. Test button
+        ctk.CTkButton(
+            actions_pill,
+            text="🩺",
+            font=ctk.CTkFont(size=11),
+            fg_color="transparent",
+            hover_color="#e2e8f0",
+            text_color="#475569",
+            width=26,
+            height=24,
+            command=lambda a=acc: self.test_google_account_action(a),
+        ).pack(side="left", padx=1)
+
+        # 2. Set current button
+        ctk.CTkButton(
+            actions_pill,
+            text="⭐",
+            font=ctk.CTkFont(size=11),
+            fg_color="transparent",
+            hover_color="#e2e8f0",
+            text_color="#2563eb" if is_active else "#94a3b8",
+            width=26,
+            height=24,
+            command=lambda idx=index - 1: self.activate_google_account_action(idx),
+        ).pack(side="left", padx=1)
+
+        # 3. Refresh quota button
+        ctk.CTkButton(
+            actions_pill,
+            text="🔄",
+            font=ctk.CTkFont(size=11),
+            fg_color="transparent",
+            hover_color="#e2e8f0",
+            text_color="#475569",
+            width=26,
+            height=24,
+            command=self.refresh_all_async,
+        ).pack(side="left", padx=1)
+
+        # 4. Delete button
+        ctk.CTkButton(
+            actions_pill,
+            text="🗑",
+            font=ctk.CTkFont(size=11),
+            fg_color="transparent",
+            hover_color="#fee2e2",
+            text_color="#ef4444",
+            width=26,
+            height=24,
+            command=lambda a=acc: self.delete_google_account_action(a),
+        ).pack(side="left", padx=1)
+
+        return card
+
+    def _render_compact_quota_column(self, parent, col, title, group_info):
+        frame = ctk.CTkFrame(parent, fg_color="transparent")
+        frame.grid(row=0, column=col, sticky="nsew", padx=8, pady=8)
+
+        # Title
+        ctk.CTkLabel(
+            frame,
+            text=title,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#0f172a",
+        ).pack(anchor="w", pady=(0, 4))
+
+        windows = group_info.get("windows", []) if group_info else []
         win_5h = next((w for w in windows if "5" in str(w.get("window", "")).lower()), None)
         win_weekly = next((w for w in windows if "week" in str(w.get("window", "")).lower() or "7" in str(w.get("window", "")).lower() or "d" in str(w.get("window", "")).lower()), None)
 
-        if win_5h or win_weekly:
-            if win_5h:
-                self._render_window_subbar(
-                    parent_box=box,
-                    title="⏱ 5 часов (5h):",
-                    pct=win_5h.get("remainingPercent", 100.0),
-                    reset_iso=win_5h.get("resetTime", ""),
-                    is_last=(win_weekly is None),
-                )
-            if win_weekly:
-                self._render_window_subbar(
-                    parent_box=box,
-                    title="📅 Недельный лимит:",
-                    pct=win_weekly.get("remainingPercent", 100.0),
-                    reset_iso=win_weekly.get("resetTime", ""),
-                    is_last=True,
-                )
-        else:
-            # Fallback to single progress bar
-            rem_pct = quota_info.get("remainingPercent", 100.0) if quota_info else 100.0
-            rem_pct = round(float(rem_pct), 1)
+        pct_5h = win_5h.get("remainingPercent", 100.0) if win_5h else (group_info.get("remainingPercent", 100.0) if group_info else 100.0)
+        reset_5h = win_5h.get("resetTime", "") if win_5h else (group_info.get("resetTime", "") if group_info else "")
 
-            val_row = ctk.CTkFrame(box, fg_color="transparent")
-            val_row.pack(fill="x", padx=12, pady=(4, 6))
+        pct_wk = win_weekly.get("remainingPercent", 100.0) if win_weekly else 100.0
+        reset_wk = win_weekly.get("resetTime", "") if win_weekly else ""
 
-            pct_color = "#10b981" if rem_pct > 50 else ("#f59e0b" if rem_pct > 20 else "#ef4444")
+        # 5h line
+        self._render_compact_subrow(frame, label="5h", pct=pct_5h, reset_iso=reset_5h)
 
-            ctk.CTkLabel(
-                val_row,
-                text=f"{rem_pct}%",
-                font=ctk.CTkFont(size=20, weight="bold"),
-                text_color=pct_color,
-            ).pack(side="left")
+        # Weekly line
+        self._render_compact_subrow(frame, label="Weekly", pct=pct_wk, reset_iso=reset_wk)
 
-            ctk.CTkLabel(
-                val_row,
-                text="квоты доступно",
-                font=ctk.CTkFont(size=12),
-                text_color="#a1a1aa",
-            ).pack(side="left", padx=8)
+    def _render_compact_subrow(self, parent, label, pct, reset_iso):
+        rem = round(float(pct), 1)
+        color = "#22c55e" if rem > 50 else ("#f59e0b" if rem > 20 else "#ef4444")
 
-            bar = ctk.CTkProgressBar(box, height=10, corner_radius=5)
-            bar.pack(fill="x", padx=12, pady=(0, 8))
-            bar.set(max(0.0, min(1.0, rem_pct / 100.0)))
-            bar.configure(progress_color=pct_color, fg_color="#18181b")
-
-            reset_str = quota_info.get("resetTime", "") if quota_info else ""
-            reset_label_text = self.format_reset_time(reset_str)
-
-            ctk.CTkLabel(
-                box,
-                text=reset_label_text,
-                font=ctk.CTkFont(size=11),
-                text_color="#71717a",
-            ).pack(anchor="w", padx=12, pady=(0, 10))
-
-    def _render_window_subbar(self, parent_box, title, pct, reset_iso, is_last=False):
-        rem_pct = round(float(pct), 1)
-        pct_color = "#10b981" if rem_pct > 50 else ("#f59e0b" if rem_pct > 20 else "#ef4444")
-
-        row = ctk.CTkFrame(parent_box, fg_color="transparent")
-        row.pack(fill="x", padx=12, pady=(4, 1))
-        row.grid_columnconfigure(1, weight=1)
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", pady=(2, 0))
 
         ctk.CTkLabel(
             row,
-            text=title,
-            font=ctk.CTkFont(size=11, weight="bold"),
-            text_color="#d4d4d8",
-        ).grid(row=0, column=0, sticky="w")
+            text=label,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            text_color="#64748b",
+        ).pack(side="left")
 
         ctk.CTkLabel(
             row,
-            text=f"{rem_pct}%",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=pct_color,
-        ).grid(row=0, column=2, sticky="e")
+            text=f"{int(rem)}%",
+            font=ctk.CTkFont(size=10, weight="bold"),
+            text_color=color,
+        ).pack(side="right")
 
-        bar = ctk.CTkProgressBar(parent_box, height=7, corner_radius=3)
-        bar.pack(fill="x", padx=12, pady=(2, 2))
-        bar.set(max(0.0, min(1.0, rem_pct / 100.0)))
-        bar.configure(progress_color=pct_color, fg_color="#18181b")
+        # Sleek thin progress bar
+        bar = ctk.CTkProgressBar(parent, height=5, corner_radius=3)
+        bar.pack(fill="x", pady=(2, 2))
+        bar.set(max(0.0, min(1.0, rem / 100.0)))
+        bar.configure(progress_color=color, fg_color="#e2e8f0")
 
-        reset_txt = self.format_reset_time(reset_iso)
+        # Reset timer text (compact like "3h 49m (10/13 16:39)")
+        timer_text = self.format_compact_reset(reset_iso)
         ctk.CTkLabel(
-            parent_box,
-            text=reset_txt,
-            font=ctk.CTkFont(size=10),
-            text_color="#71717a",
-        ).pack(anchor="w", padx=12, pady=(0, 10 if is_last else 5))
+            parent,
+            text=timer_text,
+            font=ctk.CTkFont(size=9),
+            text_color="#94a3b8",
+        ).pack(anchor="w", pady=(0, 4))
 
-    def format_reset_time(self, iso_str):
+    def format_compact_reset(self, iso_str):
         if not iso_str:
-            return "Сброс квоты: неизвестно"
+            return "сброс: неизвестно"
         try:
-            # ISO UTC
             dt = datetime.datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
             local_dt = dt.astimezone()
             now = datetime.datetime.now(datetime.timezone.utc).astimezone()
             diff = local_dt - now
 
             if diff.total_seconds() <= 0:
-                return "Сброс квоты: сейчас"
+                return "сброс: сейчас"
 
-            days = diff.days
-            hours = int(diff.seconds // 3600)
-            minutes = int((diff.seconds % 3600) // 60)
+            d = diff.days
+            h = int(diff.seconds // 3600)
+            m = int((diff.seconds % 3600) // 60)
 
-            if days > 0:
-                time_str = f"через {days} дн. {hours} ч."
-            elif hours > 0:
-                time_str = f"через {hours} ч. {minutes} мин."
-            else:
-                time_str = f"через {minutes} мин."
-
-            return f"Сброс: {time_str} ({local_dt.strftime('%d.%m %H:%M')})"
+            dur = f"{d}d {h}h" if d > 0 else (f"{h}h {m}m" if h > 0 else f"{m}m")
+            return f"{dur} ({local_dt.strftime('%m/%d %H:%M')})"
         except Exception:
-            return f"Сброс: {iso_str}"
+            return iso_str[:16]
 
-    # --- Tab 2: Auto-Switch Settings ---
-    def setup_tab_settings(self):
-        self.tab_settings.grid_columnconfigure(0, weight=1)
+    def format_added_date(self, ts):
+        if not ts:
+            return "12.04.2026"
+        try:
+            if isinstance(ts, (int, float)):
+                if ts > 1e11:
+                    ts = ts / 1000
+                d = datetime.datetime.fromtimestamp(ts)
+                return d.strftime("%d.%m.%Y")
+            return str(ts)[:10]
+        except Exception:
+            return "12.04.2026"
 
-        scroll = ctk.CTkScrollableFrame(self.tab_settings, fg_color="transparent")
-        scroll.pack(fill="both", expand=True, padx=10, pady=10)
-        scroll.grid_columnconfigure(0, weight=1)
+    # =========================================================================
+    # COMPACT OPENAI CARD
+    # =========================================================================
+    def create_compact_openai_card(self, parent, acc, is_active=False):
+        email = acc.get("email", "unknown@chatgpt.com")
+        account_id = acc.get("accountId") or acc.get("id") or ""
+        plan_type = (acc.get("plan_type") or "plus").upper()
+        quota = acc.get("quota") or {}
 
-        # 1. Rotation Strategy
-        c1 = ctk.CTkFrame(scroll, fg_color="#1e1e24", corner_radius=12)
+        primary_quota = quota.get("primary") or {}
+        secondary_quota = quota.get("secondary") or {}
+
+        card = ctk.CTkFrame(
+            parent,
+            fg_color="#ffffff",
+            corner_radius=16,
+            border_width=2 if is_active else 1,
+            border_color="#10a37f" if is_active else "#e2e8f0",
+        )
+
+        header = ctk.CTkFrame(card, fg_color="transparent")
+        header.pack(fill="x", padx=14, pady=(12, 6))
+        header.grid_columnconfigure(1, weight=1)
+
+        chk_box = ctk.CTkLabel(
+            header,
+            text="✓" if is_active else " ",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#10a37f" if is_active else "#f8fafc",
+            text_color="#ffffff" if is_active else "#cbd5e1",
+            corner_radius=4,
+            width=20,
+            height=20,
+        )
+        chk_box.grid(row=0, column=0, padx=(0, 8))
+
+        short_email = email if len(email) <= 22 else f"{email[:19]}..."
+        ctk.CTkLabel(
+            header,
+            text=short_email,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color="#0f172a",
+        ).grid(row=0, column=1, sticky="w")
+
+        badges_box = ctk.CTkFrame(header, fg_color="transparent")
+        badges_box.grid(row=0, column=2, sticky="e")
+
+        if is_active:
+            ctk.CTkLabel(
+                badges_box,
+                text="Текущий",
+                font=ctk.CTkFont(size=10, weight="bold"),
+                fg_color="#10a37f",
+                text_color="#ffffff",
+                corner_radius=10,
+                padx=8,
+                pady=2,
+            ).pack(side="left", padx=(0, 4))
+
+        ctk.CTkLabel(
+            badges_box,
+            text=plan_type,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color="#0284c7",
+            text_color="#ffffff",
+            corner_radius=10,
+            padx=7,
+            pady=2,
+        ).pack(side="left")
+
+        # Quota dual column
+        quota_box = ctk.CTkFrame(card, fg_color="#f8fafc", corner_radius=12, border_width=1, border_color="#f1f5f9")
+        quota_box.pack(fill="x", padx=12, pady=(4, 10))
+        quota_box.grid_columnconfigure(0, weight=1)
+        quota_box.grid_columnconfigure(1, weight=1)
+
+        # Primary window
+        f1 = ctk.CTkFrame(quota_box, fg_color="transparent")
+        f1.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+        ctk.CTkLabel(f1, text="GPT-5 / 6", font=ctk.CTkFont(size=12, weight="bold"), text_color="#0f172a").pack(anchor="w")
+        rem_p = round(float(primary_quota.get("remaining_percent", 100.0)), 1)
+        self._render_compact_subrow(f1, "3-5h", rem_p, "")
+
+        # Secondary window
+        f2 = ctk.CTkFrame(quota_box, fg_color="transparent")
+        f2.grid(row=0, column=1, sticky="nsew", padx=8, pady=8)
+        ctk.CTkLabel(f2, text="Codex / 7d", font=ctk.CTkFont(size=12, weight="bold"), text_color="#0f172a").pack(anchor="w")
+        rem_s = round(float(secondary_quota.get("remaining_percent", 100.0)), 1)
+        self._render_compact_subrow(f2, "Weekly", rem_s, "")
+
+        # Footer
+        footer = ctk.CTkFrame(card, fg_color="transparent")
+        footer.pack(fill="x", padx=14, pady=(0, 10))
+        footer.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            footer,
+            text="OpenAI OAuth",
+            font=ctk.CTkFont(size=10),
+            text_color="#64748b",
+            fg_color="#f1f5f9",
+            corner_radius=10,
+            padx=8,
+            pady=2,
+        ).grid(row=0, column=0, sticky="w")
+
+        actions_pill = ctk.CTkFrame(footer, fg_color="#f8fafc", corner_radius=12, border_width=1, border_color="#e2e8f0")
+        actions_pill.grid(row=0, column=1, sticky="e")
+
+        ctk.CTkButton(
+            actions_pill,
+            text="🩺",
+            font=ctk.CTkFont(size=11),
+            fg_color="transparent",
+            hover_color="#e2e8f0",
+            text_color="#475569",
+            width=26,
+            height=24,
+            command=lambda a=acc: self.test_openai_account_action(a),
+        ).pack(side="left", padx=1)
+
+        ctk.CTkButton(
+            actions_pill,
+            text="⭐",
+            font=ctk.CTkFont(size=11),
+            fg_color="transparent",
+            hover_color="#e2e8f0",
+            text_color="#10a37f" if is_active else "#94a3b8",
+            width=26,
+            height=24,
+            command=lambda aid=account_id: self.activate_openai_account_action(aid),
+        ).pack(side="left", padx=1)
+
+        ctk.CTkButton(
+            actions_pill,
+            text="🗑",
+            font=ctk.CTkFont(size=11),
+            fg_color="transparent",
+            hover_color="#fee2e2",
+            text_color="#ef4444",
+            width=26,
+            height=24,
+            command=lambda a=acc: self.delete_openai_account_action(a),
+        ).pack(side="left", padx=1)
+
+        return card
+
+    # =========================================================================
+    # SETTINGS VIEW
+    # =========================================================================
+    def create_settings_view(self):
+        self.settings_frame = ctk.CTkScrollableFrame(self.content_area, fg_color="transparent")
+        self.settings_frame.grid_columnconfigure(0, weight=1)
+
+        c1 = ctk.CTkFrame(self.settings_frame, fg_color="#ffffff", corner_radius=12, border_width=1, border_color="#e2e8f0")
         c1.pack(fill="x", pady=6)
-        c1.grid_columnconfigure(0, weight=1)
-
-        ctk.CTkLabel(
-            c1,
-            text="1. Стратегия выбора и ротации аккаунтов",
-            font=ctk.CTkFont(size=15, weight="bold"),
-            text_color="#f4f4f5",
-        ).pack(anchor="w", padx=16, pady=(14, 4))
-
-        ctk.CTkLabel(
-            c1,
-            text="Определяет как плагин распределяет запросы между вашими Google аккаунтами:",
-            font=ctk.CTkFont(size=12),
-            text_color="#a1a1aa",
-        ).pack(anchor="w", padx=16, pady=(0, 10))
+        ctk.CTkLabel(c1, text="Стратегия выбора аккаунтов", font=ctk.CTkFont(size=14, weight="bold"), text_color="#0f172a").pack(anchor="w", padx=16, pady=(12, 4))
 
         current_strat = self.config_data.get("account_selection_strategy", "hybrid")
         self.strategy_var = tk.StringVar(value=current_strat)
-
         self.strategy_seg = ctk.CTkSegmentedButton(
             c1,
             values=["hybrid", "sticky", "round-robin"],
             variable=self.strategy_var,
-            font=ctk.CTkFont(size=13, weight="bold"),
-            height=34,
+            font=ctk.CTkFont(size=12, weight="bold"),
             command=self.on_strategy_change,
         )
         self.strategy_seg.pack(anchor="w", padx=16, pady=(0, 8))
-
-        self.strategy_desc = ctk.CTkLabel(
-            c1,
-            text="",
-            font=ctk.CTkFont(size=12),
-            text_color="#38bdf8",
-        )
-        self.strategy_desc.pack(anchor="w", padx=16, pady=(0, 14))
+        self.strategy_desc = ctk.CTkLabel(c1, text="", font=ctk.CTkFont(size=11), text_color="#0284c7")
+        self.strategy_desc.pack(anchor="w", padx=16, pady=(0, 12))
         self.update_strategy_description(current_strat)
 
-        # 2. Soft Quota Threshold Slider
-        c2 = ctk.CTkFrame(scroll, fg_color="#1e1e24", corner_radius=12)
+        c2 = ctk.CTkFrame(self.settings_frame, fg_color="#ffffff", corner_radius=12, border_width=1, border_color="#e2e8f0")
         c2.pack(fill="x", pady=6)
+        ctk.CTkLabel(c2, text="Мгновенное переключение при Rate Limit (429)", font=ctk.CTkFont(size=14, weight="bold"), text_color="#0f172a").pack(anchor="w", padx=16, pady=(12, 4))
+        self.rate_limit_var = tk.BooleanVar(value=self.config_data.get("switch_on_first_rate_limit", True))
+        ctk.CTkSwitch(c2, text="Включено", variable=self.rate_limit_var).pack(anchor="w", padx=16, pady=(0, 12))
 
-        ctk.CTkLabel(
-            c2,
-            text="2. Порог упреждающего переключения квоты (Soft Quota Threshold)",
-            font=ctk.CTkFont(size=15, weight="bold"),
-            text_color="#f4f4f5",
-        ).pack(anchor="w", padx=16, pady=(14, 4))
-
-        ctk.CTkLabel(
-            c2,
-            text="Автоматически переключаться на следующий аккаунт, если на текущем осталось меньше X% квоты:",
-            font=ctk.CTkFont(size=12),
-            text_color="#a1a1aa",
-        ).pack(anchor="w", padx=16, pady=(0, 10))
-
-        slider_row = ctk.CTkFrame(c2, fg_color="transparent")
-        slider_row.pack(fill="x", padx=16, pady=(0, 8))
-        slider_row.grid_columnconfigure(0, weight=1)
-
-        init_thresh = self.config_data.get("soft_quota_threshold_percent", 90)
-        self.thresh_var = tk.DoubleVar(value=init_thresh)
-
-        self.thresh_slider = ctk.CTkSlider(
-            slider_row,
-            from_=5,
-            to=100,
-            number_of_steps=19,
-            variable=self.thresh_var,
-            command=self.on_thresh_slider_change,
-        )
-        self.thresh_slider.grid(row=0, column=0, sticky="ew", padx=(0, 16))
-
-        self.thresh_val_label = ctk.CTkLabel(
-            slider_row,
-            text=f"{int(init_thresh)}%",
-            font=ctk.CTkFont(size=16, weight="bold"),
-            text_color="#38bdf8",
-            width=50,
-        )
-        self.thresh_val_label.grid(row=0, column=1)
-
-        ctk.CTkLabel(
-            c2,
-            text="💡 Значение 90-100% гарантирует, что запросы плавно перейдут на запасной аккаунт до получения жесткого отказа.",
-            font=ctk.CTkFont(size=11),
-            text_color="#71717a",
-        ).pack(anchor="w", padx=16, pady=(0, 14))
-
-        # 3. Rate Limit Switch
-        c3 = ctk.CTkFrame(scroll, fg_color="#1e1e24", corner_radius=12)
-        c3.pack(fill="x", pady=6)
-
-        header_switch_row = ctk.CTkFrame(c3, fg_color="transparent")
-        header_switch_row.pack(fill="x", padx=16, pady=14)
-        header_switch_row.grid_columnconfigure(0, weight=1)
-
-        info_box = ctk.CTkFrame(header_switch_row, fg_color="transparent")
-        info_box.grid(row=0, column=0, sticky="w")
-
-        ctk.CTkLabel(
-            info_box,
-            text="3. Мгновенное переключение при Rate Limit (429)",
-            font=ctk.CTkFont(size=15, weight="bold"),
-            text_color="#f4f4f5",
-        ).pack(anchor="w")
-
-        ctk.CTkLabel(
-            info_box,
-            text="Переключаться на следующий аккаунт сразу при первом превышении скорости запросов (RPM/TPM).",
-            font=ctk.CTkFont(size=12),
-            text_color="#a1a1aa",
-        ).pack(anchor="w", pady=(2, 0))
-
-        self.rate_limit_var = tk.BooleanVar(
-            value=self.config_data.get("switch_on_first_rate_limit", True)
-        )
-        self.rate_limit_switch = ctk.CTkSwitch(
-            header_switch_row,
-            text="",
-            variable=self.rate_limit_var,
-            onvalue=True,
-            offvalue=False,
-        )
-        self.rate_limit_switch.grid(row=0, column=1, sticky="e")
-
-        # 4. Max Account Switches Slider
-        c4 = ctk.CTkFrame(scroll, fg_color="#1e1e24", corner_radius=12)
-        c4.pack(fill="x", pady=6)
-
-        ctk.CTkLabel(
-            c4,
-            text="4. Максимальное число переключений на один запрос",
-            font=ctk.CTkFont(size=15, weight="bold"),
-            text_color="#f4f4f5",
-        ).pack(anchor="w", padx=16, pady=(14, 4))
-
-        ctk.CTkLabel(
-            c4,
-            text="Предотвращает бесконечные циклы переключения в случае глобальных сбоев сервиса:",
-            font=ctk.CTkFont(size=12),
-            text_color="#a1a1aa",
-        ).pack(anchor="w", padx=16, pady=(0, 10))
-
-        switches_row = ctk.CTkFrame(c4, fg_color="transparent")
-        switches_row.pack(fill="x", padx=16, pady=(0, 8))
-        switches_row.grid_columnconfigure(0, weight=1)
-
-        init_switches = self.config_data.get("max_account_switches", 10)
-        self.switches_var = tk.DoubleVar(value=init_switches)
-
-        self.switches_slider = ctk.CTkSlider(
-            switches_row,
-            from_=1,
-            to=20,
-            number_of_steps=19,
-            variable=self.switches_var,
-            command=self.on_switches_slider_change,
-        )
-        self.switches_slider.grid(row=0, column=0, sticky="ew", padx=(0, 16))
-
-        self.switches_val_label = ctk.CTkLabel(
-            switches_row,
-            text=f"{int(init_switches)} акк.",
-            font=ctk.CTkFont(size=16, weight="bold"),
-            text_color="#38bdf8",
-            width=60,
-        )
-        self.switches_val_label.grid(row=0, column=1)
-
-        # 5. Quota Style Fallback Switch
-        c5 = ctk.CTkFrame(scroll, fg_color="#1e1e24", corner_radius=12)
-        c5.pack(fill="x", pady=6)
-
-        fallback_row = ctk.CTkFrame(c5, fg_color="transparent")
-        fallback_row.pack(fill="x", padx=16, pady=14)
-        fallback_row.grid_columnconfigure(0, weight=1)
-
-        fb_info = ctk.CTkFrame(fallback_row, fg_color="transparent")
-        fb_info.grid(row=0, column=0, sticky="w")
-
-        ctk.CTkLabel(
-            fb_info,
-            text="5. Резервный протокол квот (Antigravity ↔ Gemini-CLI)",
-            font=ctk.CTkFont(size=15, weight="bold"),
-            text_color="#f4f4f5",
-        ).pack(anchor="w")
-
-        ctk.CTkLabel(
-            fb_info,
-            text="Позволяет использовать альтернативный пул квот, если основной временно недоступен.",
-            font=ctk.CTkFont(size=12),
-            text_color="#a1a1aa",
-        ).pack(anchor="w", pady=(2, 0))
-
-        self.fallback_var = tk.BooleanVar(
-            value=self.config_data.get("quota_style_fallback", True)
-        )
-        self.fallback_switch = ctk.CTkSwitch(
-            fallback_row,
-            text="",
-            variable=self.fallback_var,
-            onvalue=True,
-            offvalue=False,
-        )
-        self.fallback_switch.grid(row=0, column=1, sticky="e")
-
-        # 6. Periodic Auto-Refresh
-        c6 = ctk.CTkFrame(scroll, fg_color="#1e1e24", corner_radius=12)
-        c6.pack(fill="x", pady=6)
-
-        ar_row = ctk.CTkFrame(c6, fg_color="transparent")
-        ar_row.pack(fill="x", padx=16, pady=14)
-        ar_row.grid_columnconfigure(0, weight=1)
-
-        ar_info = ctk.CTkFrame(ar_row, fg_color="transparent")
-        ar_info.grid(row=0, column=0, sticky="w")
-
-        ctk.CTkLabel(
-            ar_info,
-            text="6. Периодическое автообновление квот (раз в 10 минут)",
-            font=ctk.CTkFont(size=15, weight="bold"),
-            text_color="#f4f4f5",
-        ).pack(anchor="w")
-
-        ctk.CTkLabel(
-            ar_info,
-            text="Автоматически опрашивает Google API и обновляет остаток квот в фоновом режиме каждые 10 минут.",
-            font=ctk.CTkFont(size=12),
-            text_color="#a1a1aa",
-        ).pack(anchor="w", pady=(2, 0))
-
-        self.ar_switch_var = tk.BooleanVar(value=self.auto_refresh_enabled)
-        self.ar_switch = ctk.CTkSwitch(
-            ar_row,
-            text="",
-            variable=self.ar_switch_var,
-            onvalue=True,
-            offvalue=False,
-            command=self.on_auto_refresh_toggle,
-        )
-        self.ar_switch.grid(row=0, column=1, sticky="e")
-
-        # Save Button
-        save_box = ctk.CTkFrame(scroll, fg_color="transparent")
-        save_box.pack(fill="x", pady=(15, 20))
-
-        self.btn_save_settings = ctk.CTkButton(
-            save_box,
-            text="💾 Сохранить и применить настройки",
-            font=ctk.CTkFont(size=14, weight="bold"),
-            fg_color="#3b82f6",
-            hover_color="#2563eb",
-            height=40,
+        ctk.CTkButton(
+            self.settings_frame,
+            text="💾 Сохранить настройки",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color="#0284c7",
+            hover_color="#0369a1",
+            height=36,
             command=self.save_settings_action,
-        )
-        self.btn_save_settings.pack(side="left")
-
-        self.lbl_save_status = ctk.CTkLabel(
-            save_box,
-            text="",
-            font=ctk.CTkFont(size=13),
-            text_color="#10b981",
-        )
-        self.lbl_save_status.pack(side="left", padx=16)
+        ).pack(anchor="w", pady=12)
 
     def on_strategy_change(self, val):
         self.update_strategy_description(val)
 
     def update_strategy_description(self, strat):
         descs = {
-            "hybrid": "⭐ Рекомендуется: сохраняет контекст сессии на одном аккаунте, но автоматически ротирует при исчерпании лимитов.",
-            "sticky": "📌 Последовательная: работает с одним аккаунтом до полного исчерпания квоты, затем берет следующий.",
-            "round-robin": "🔄 Равномерная: распределяет каждый новый запрос по очереди между всеми аккаунтами (хорошо для множества параллельных задач).",
+            "hybrid": "⭐ Рекомендуется: сохраняет контекст сессии на одном аккаунте, но плавно ротирует при исчерпании лимитов.",
+            "sticky": "📌 Последовательная: работает с одним аккаунтом до полного отказа, затем переходит к следующему.",
+            "round-robin": "🔄 Равномерная: распределяет каждый новый запрос по очереди между всеми аккаунтами.",
         }
         self.strategy_desc.configure(text=descs.get(strat, ""))
 
-    def on_thresh_slider_change(self, val):
-        self.thresh_val_label.configure(text=f"{int(val)}%")
-
-    def on_switches_slider_change(self, val):
-        self.switches_val_label.configure(text=f"{int(val)} акк.")
-
     def save_settings_action(self):
         self.config_data["account_selection_strategy"] = self.strategy_var.get()
-        self.config_data["soft_quota_threshold_percent"] = int(self.thresh_var.get())
         self.config_data["switch_on_first_rate_limit"] = self.rate_limit_var.get()
-        self.config_data["max_account_switches"] = int(self.switches_var.get())
-        self.config_data["quota_style_fallback"] = self.fallback_var.get()
-
         ok, msg = self.save_config()
         if ok:
-            self.lbl_save_status.configure(text="✅ " + msg, text_color="#10b981")
-            self.set_status("Настройки сохранены в ~/.config/opencode/antigravity.json")
-            self.after(4000, lambda: self.lbl_save_status.configure(text=""))
+            messagebox.showinfo("Успешно", msg)
         else:
-            self.lbl_save_status.configure(text="❌ " + msg, text_color="#ef4444")
+            messagebox.showerror("Ошибка", msg)
 
-    # --- Tab 3: System & OpenCode ---
-    def setup_tab_system(self):
-        self.tab_system.grid_columnconfigure(0, weight=1)
+    # =========================================================================
+    # SYSTEM VIEW
+    # =========================================================================
+    def create_system_view(self):
+        self.system_frame = ctk.CTkScrollableFrame(self.content_area, fg_color="transparent")
+        self.system_frame.grid_columnconfigure(0, weight=1)
 
-        scroll = ctk.CTkScrollableFrame(self.tab_system, fg_color="transparent")
-        scroll.pack(fill="both", expand=True, padx=10, pady=10)
-
-        # OpenCode Controls
-        c1 = ctk.CTkFrame(scroll, fg_color="#1e1e24", corner_radius=12)
+        c1 = ctk.CTkFrame(self.system_frame, fg_color="#ffffff", corner_radius=12, border_width=1, border_color="#e2e8f0")
         c1.pack(fill="x", pady=6)
+        ctk.CTkLabel(c1, text="Управление OpenCode", font=ctk.CTkFont(size=14, weight="bold"), text_color="#0f172a").pack(anchor="w", padx=16, pady=(12, 6))
 
-        ctk.CTkLabel(
-            c1,
-            text="Управление процессом OpenCode Desktop",
-            font=ctk.CTkFont(size=15, weight="bold"),
-            text_color="#f4f4f5",
-        ).pack(anchor="w", padx=16, pady=(14, 4))
+        row = ctk.CTkFrame(c1, fg_color="transparent")
+        row.pack(fill="x", padx=16, pady=(0, 14))
 
-        ctk.CTkLabel(
-            c1,
-            text="OpenCode считывает auth.json и квоты на лету при каждом запросе. Перезапуск приложения НЕ требуется при смене аккаунтов или стратегий (перезапуск нужен только при полном сбое процессов):",
-            font=ctk.CTkFont(size=12),
-            text_color="#a1a1aa",
-        ).pack(anchor="w", padx=16, pady=(0, 12))
+        ctk.CTkButton(row, text="🔄 Перезапустить", fg_color="#2563eb", command=self.restart_opencode_action).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(row, text="⏹ Остановить", fg_color="#ef4444", command=self.stop_opencode_action).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(row, text="▶ Запустить", fg_color="#10b981", command=self.start_opencode_action).pack(side="left")
 
-        btn_row = ctk.CTkFrame(c1, fg_color="transparent")
-        btn_row.pack(fill="x", padx=16, pady=(0, 16))
-
-        ctk.CTkButton(
-            btn_row,
-            text="🔄 Перезапустить OpenCode",
-            fg_color="#3b82f6",
-            hover_color="#2563eb",
-            command=self.restart_opencode_action,
-        ).pack(side="left", padx=(0, 10))
-
-        ctk.CTkButton(
-            btn_row,
-            text="⏹ Остановить OpenCode",
-            fg_color="#ef4444",
-            hover_color="#dc2626",
-            command=self.stop_opencode_action,
-        ).pack(side="left", padx=(0, 10))
-
-        ctk.CTkButton(
-            btn_row,
-            text="▶ Запустить OpenCode",
-            fg_color="#10b981",
-            hover_color="#059669",
-            command=self.start_opencode_action,
-        ).pack(side="left")
-
-        # Quick Links
-        c2 = ctk.CTkFrame(scroll, fg_color="#1e1e24", corner_radius=12)
+        c2 = ctk.CTkFrame(self.system_frame, fg_color="#ffffff", corner_radius=12, border_width=1, border_color="#e2e8f0")
         c2.pack(fill="x", pady=6)
+        ctk.CTkLabel(c2, text="Быстрый доступ к папкам", font=ctk.CTkFont(size=14, weight="bold"), text_color="#0f172a").pack(anchor="w", padx=16, pady=(12, 6))
 
-        ctk.CTkLabel(
-            c2,
-            text="Быстрый доступ к файлам конфигурации",
-            font=ctk.CTkFont(size=15, weight="bold"),
-            text_color="#f4f4f5",
-        ).pack(anchor="w", padx=16, pady=(14, 10))
+        r2 = ctk.CTkFrame(c2, fg_color="transparent")
+        r2.pack(fill="x", padx=16, pady=(0, 14))
+        ctk.CTkButton(r2, text="📂 Конфиги (~/.config/opencode)", fg_color="#e2e8f0", text_color="#334155", command=lambda: os.startfile(CONFIG_DIR) if CONFIG_DIR.exists() else None).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(r2, text="📂 Логи", fg_color="#e2e8f0", text_color="#334155", command=lambda: os.startfile(LOG_DIR) if LOG_DIR.exists() else None).pack(side="left")
 
-        links_box = ctk.CTkFrame(c2, fg_color="transparent")
-        links_box.pack(fill="x", padx=16, pady=(0, 16))
-
-        ctk.CTkButton(
-            links_box,
-            text="📂 Открыть конфиг (~/.config/opencode)",
-            fg_color="#3f3f46",
-            hover_color="#52525b",
-            command=lambda: os.startfile(CONFIG_DIR) if CONFIG_DIR.exists() else None,
-        ).pack(side="left", padx=(0, 10))
-
-        ctk.CTkButton(
-            links_box,
-            text="📂 Папка логов OpenCode",
-            fg_color="#3f3f46",
-            hover_color="#52525b",
-            command=lambda: os.startfile(LOG_DIR) if LOG_DIR.exists() else None,
-        ).pack(side="left")
-
+    # =========================================================================
+    # STATUSBAR
+    # =========================================================================
     def create_statusbar(self):
-        status_frame = ctk.CTkFrame(self, height=28, corner_radius=0, fg_color="#111113")
-        status_frame.grid(row=2, column=0, sticky="ew")
+        self.statusbar = ctk.CTkFrame(self.main_frame, height=28, corner_radius=0, fg_color="#ffffff", border_width=1, border_color="#e2e8f0")
+        self.statusbar.pack(fill="x", side="bottom")
 
         self.lbl_status = ctk.CTkLabel(
-            status_frame,
-            text="Готов",
+            self.statusbar,
+            text="Готов к работе",
             font=ctk.CTkFont(size=11),
-            text_color="#71717a",
+            text_color="#64748b",
         )
         self.lbl_status.pack(side="left", padx=16)
 
         self.lbl_auto_refresh = ctk.CTkLabel(
-            status_frame,
+            self.statusbar,
             text="⏱ Автообновление квот: через 10:00",
             font=ctk.CTkFont(size=11),
-            text_color="#38bdf8",
+            text_color="#0284c7",
         )
         self.lbl_auto_refresh.pack(side="right", padx=16)
 
     def set_status(self, text):
         self.lbl_status.configure(text=text)
 
-    # --- Periodic Auto-Refresh Methods ---
-    def on_auto_refresh_toggle(self):
-        self.auto_refresh_enabled = self.ar_switch_var.get()
-        if self.auto_refresh_enabled:
-            self.countdown_seconds = self.auto_refresh_interval_min * 60
-            self.lbl_auto_refresh.configure(
-                text=f"⏱ Автообновление квот: через {self.auto_refresh_interval_min}:00",
-                text_color="#38bdf8",
-            )
-            self.set_status(f"Автообновление квот включено (раз в {self.auto_refresh_interval_min} минут)")
-        else:
-            self.lbl_auto_refresh.configure(
-                text="⏱ Автообновление: выключено",
-                text_color="#71717a",
-            )
-            self.set_status("Автообновление квот приостановлено")
-
+    # =========================================================================
+    # TIMERS & ACTIONS
+    # =========================================================================
     def start_countdown_timer(self):
         self._countdown_tick()
 
@@ -2034,7 +1708,6 @@ class AntigravityManagerApp(ctk.CTk):
             if self.countdown_seconds <= 0:
                 self.countdown_seconds = self.auto_refresh_interval_min * 60
                 if not self.is_loading:
-                    self.set_status(f"Запуск автообновления квот (раз в {self.auto_refresh_interval_min} мин)...")
                     self.refresh_all_async()
             else:
                 self.countdown_seconds -= 1
@@ -2042,15 +1715,12 @@ class AntigravityManagerApp(ctk.CTk):
             mins = self.countdown_seconds // 60
             secs = self.countdown_seconds % 60
             self.lbl_auto_refresh.configure(
-                text=f"⏱ Автообновление квот: через {mins:02d}:{secs:02d}",
-                text_color="#38bdf8",
+                text=f"⏱ Автообновление: {mins:02d}:{secs:02d}",
             )
 
-            # Check OpenCode running status periodically
             if self.countdown_seconds % 3 == 0:
                 self.update_opencode_status()
 
-            # Background Token Refresh Daemon (every 30 minutes)
             if hasattr(self, "token_refresh_countdown"):
                 if self.token_refresh_countdown <= 0:
                     self.token_refresh_countdown = self.token_refresh_interval_min * 60
@@ -2061,25 +1731,21 @@ class AntigravityManagerApp(ctk.CTk):
         self.after(1000, self._countdown_tick)
 
     def run_background_token_refresh_silent(self):
-        """Silently refreshes Google and OpenAI OAuth tokens ahead of time."""
         def _bg_refresher():
             try:
-                # 1. Google token refresh via CLI
                 node_exe = get_node_executable()
                 cli_js = get_cli_js()
                 if os.path.exists(node_exe) and os.path.exists(cli_js):
                     run_silent_cmd([node_exe, cli_js, "quota", "--refresh", "--json"], timeout=25)
-                # 2. OpenAI token refresh
                 try:
                     openai_manager.refresh_all_openai_accounts()
                 except Exception:
                     pass
             except Exception as e:
-                print(f"Background token refresh warning: {e}")
+                print(f"Token refresh warning: {e}")
 
         threading.Thread(target=_bg_refresher, daemon=True).start()
 
-    # --- Actions & Background Tasks ---
     def refresh_all_async(self):
         if self.is_loading:
             return
@@ -2091,13 +1757,11 @@ class AntigravityManagerApp(ctk.CTk):
         threading.Thread(target=self._worker_refresh_quotas, daemon=True).start()
 
     def _worker_refresh_quotas(self):
-        # 1. Google Antigravity quotas (silent execution)
         google_accounts = []
         try:
             node_exe = get_node_executable()
             cli_js = get_cli_js()
-            if (os.path.exists(node_exe) or shutil.which(node_exe)) and os.path.exists(cli_js):
-                # Try with --refresh first for live updated quotas directly from Google API
+            if os.path.exists(node_exe) and os.path.exists(cli_js):
                 cmd = [node_exe, cli_js, "quota", "--refresh", "--json"]
                 result = run_silent_cmd(cmd, timeout=20)
                 if result.returncode == 0 and result.stdout.strip():
@@ -2106,9 +1770,7 @@ class AntigravityManagerApp(ctk.CTk):
                         google_accounts = data.get("accounts", [])
                     except Exception:
                         pass
-
                 if not google_accounts:
-                    # Fallback to local cached quota
                     cmd = [node_exe, cli_js, "quota", "--json"]
                     result = run_silent_cmd(cmd, timeout=10)
                     if result.returncode == 0 and result.stdout.strip():
@@ -2118,15 +1780,13 @@ class AntigravityManagerApp(ctk.CTk):
                         except Exception:
                             pass
         except Exception as e:
-            print(f"Error fetching Google quotas via CLI: {e}")
+            print(f"Error fetching Google quotas: {e}")
 
-        # Always enrich with generation store for real emails and 5h/weekly windows
         try:
             google_accounts = enrich_google_accounts_with_generation_store(google_accounts)
         except Exception as e:
             print(f"Error enriching Google accounts: {e}")
 
-        # 2. OpenAI / ChatGPT quotas with auto-rotation
         try:
             openai_accounts, rotate_msg = openai_manager.refresh_all_openai_accounts()
         except Exception as e:
@@ -2141,262 +1801,175 @@ class AntigravityManagerApp(ctk.CTk):
         self.openai_accounts_data = openai_accounts
         self.render_accounts()
         self.is_loading = False
-        self.btn_refresh.configure(state="normal", text="🔄 Обновить квоты")
+        self.btn_refresh.configure(state="normal", text="🔄 Обновить")
         now_str = datetime.datetime.now().strftime("%H:%M:%S")
         self.countdown_seconds = self.auto_refresh_interval_min * 60
         if rotate_msg:
             self.set_status(f"🔄 {rotate_msg}")
         else:
-            self.set_status(f"Квоты обновлены в {now_str} (без перезапуска OpenCode)")
+            self.set_status(f"Квоты обновлены в {now_str}")
         self.update_opencode_status()
 
     def add_account_action(self):
-        self.btn_add_account.configure(state="disabled", text="⏳ Открываем браузер...")
+        self.btn_add_account.configure(state="disabled", text="⏳ Открываем...")
         self.set_status("Ожидание входа в Google через браузер...")
 
-        threading.Thread(target=self._worker_add_account, daemon=True).start()
+        def _do_add():
+            try:
+                node_exe = get_node_executable()
+                cli_js = get_cli_js()
+                cmd = [node_exe, cli_js, "login"]
+                proc = run_silent_cmd(cmd, timeout=300)
+                success = proc.returncode == 0
+                output = proc.stdout + proc.stderr
+                if success:
+                    run_silent_cmd([node_exe, cli_js, "migrate", "--offline", "--yes"], timeout=30)
+            except Exception as e:
+                success = False
+                output = str(e)
+            self.after(0, lambda: self._on_account_added(success, output))
 
-    def _worker_add_account(self):
-        try:
-            node_exe = get_node_executable()
-            cli_js = get_cli_js()
-            if not os.path.exists(node_exe) and not shutil.which(node_exe):
-                raise FileNotFoundError(
-                    "Node.js не найден в системе. Установите Node.js (https://nodejs.org) или перезапустите Antigravity Hub."
-                )
-            if not os.path.exists(cli_js):
-                raise FileNotFoundError(f"Файл cli.js не найден по пути: {cli_js}")
-            cmd = [node_exe, cli_js, "login"]
-            proc = run_silent_cmd(cmd, timeout=300)
-            success = proc.returncode == 0
-            output = proc.stdout + proc.stderr
-            if success:
-                # Automatically complete offline migration into store generation
-                run_silent_cmd([node_exe, cli_js, "migrate", "--offline", "--yes"], timeout=30)
-        except Exception as e:
-            success = False
-            output = str(e)
-
-        self.after(0, lambda: self._on_account_added(success, output))
+        threading.Thread(target=_do_add, daemon=True).start()
 
     def _on_account_added(self, success, output):
-        self.btn_add_account.configure(state="normal", text="➕ Добавить аккаунт Google")
+        self.btn_add_account.configure(state="normal", text="➕ Добавить Google")
         if success:
-            messagebox.showinfo(
-                "Успешно!",
-                "Google аккаунт успешно авторизован, мигрирован в пул Antigravity и готов к работе!\n\n💡 Если OpenCode был открыт, нажмите «🔄 Перезапустить OpenCode» вверху окна, чтобы применить новый аккаунт.",
-            )
+            messagebox.showinfo("Успешно!", "Google аккаунт авторизован и добавлен в пул!")
             self.refresh_all_async()
         else:
-            messagebox.showerror(
-                "Ошибка входа",
-                f"Не удалось завершить вход:\n{output[:300]}",
-            )
-            self.set_status("Ошибка авторизации")
+            messagebox.showerror("Ошибка входа", f"Не удалось завершить вход:\n{output[:300]}")
 
     def activate_google_account_action(self, target_idx: int):
         ok = set_active_google_account_index(target_idx)
         if ok:
-            now_str = datetime.datetime.now().strftime("%H:%M:%S")
-            self.set_status(f"Активный Google аккаунт переключен на #{target_idx + 1} в {now_str} (на лету)")
+            email = self.accounts_data[target_idx].get("email", f"#{target_idx+1}") if target_idx < len(self.accounts_data) else f"#{target_idx+1}"
+            self.show_flash(f"Переключено на {email}")
+            self.set_status(f"Активный аккаунт: #{target_idx + 1}")
             self.render_accounts()
-            messagebox.showinfo(
-                "Аккаунт активирован на лету!",
-                f"Google аккаунт #{target_idx + 1} выбран как основной для запросов.\n\n⚡ Перезапуск OpenCode НЕ ТРЕБУЕТСЯ:\nПлагин Antigravity автоматически направляет следующий запрос через этот аккаунт.",
-            )
         else:
-            messagebox.showerror("Ошибка", "Не удалось сменить активный аккаунт Google.")
+            messagebox.showerror("Ошибка", "Не удалось сменить активный аккаунт.")
 
     def delete_google_account_action(self, acc):
         email = acc.get("email", "unknown")
-        if not messagebox.askyesno(
-            "Удаление Google аккаунта",
-            f"Вы уверены, что хотите удалить Google аккаунт:\n{email}?\n\nОн будет удален из хранилища и исключен из пула ротации в OpenCode.",
-            icon="warning"
-        ):
+        if not messagebox.askyesno("Удаление", f"Удалить Google аккаунт {email} из ротации?", icon="warning"):
             return
-        ok = delete_google_account(email)
-        if ok:
-            self.set_status(f"Google аккаунт {email} удален.")
+        if delete_google_account(email):
+            self.show_flash(f"Аккаунт {email} удален")
             self.refresh_all_async()
-            messagebox.showinfo("Удалено", f"Аккаунт {email} успешно удален из пула Antigravity.")
         else:
-            messagebox.showerror("Ошибка", f"Не удалось удалить аккаунт {email}.")
+            messagebox.showerror("Ошибка", f"Не удалось удалить {email}")
 
-    # --- OpenAI / ChatGPT Actions ---
     def add_openai_account_action(self):
-        self.btn_add_account.configure(state="disabled", text="⏳ Открываем браузер...")
-        self.set_status("Ожидание входа в ChatGPT / OpenAI через браузер...")
+        self.btn_add_account.configure(state="disabled", text="⏳ Открываем...")
+        self.set_status("Ожидание входа в ChatGPT через браузер...")
 
-        threading.Thread(target=self._worker_add_openai_account, daemon=True).start()
+        def _do_login():
+            try:
+                success, message, new_acc = openai_manager.login_openai_browser(timeout=300)
+            except Exception as e:
+                success, message, new_acc = False, str(e), None
+            self.after(0, lambda: self._on_openai_added(success, message, new_acc))
 
-    def _worker_add_openai_account(self):
-        try:
-            success, message, new_acc = openai_manager.login_openai_browser(timeout=300)
-        except Exception as e:
-            success = False
-            message = str(e)
-            new_acc = None
+        threading.Thread(target=_do_login, daemon=True).start()
 
-        self.after(0, lambda: self._on_openai_account_added(success, message, new_acc))
-
-    def _on_openai_account_added(self, success, message, new_acc):
-        self.btn_add_account.configure(state="normal", text="➕ Добавить аккаунт OpenAI")
+    def _on_openai_added(self, success, message, new_acc):
+        self.btn_add_account.configure(state="normal", text="➕ Добавить OpenAI")
         if success and new_acc:
-            messagebox.showinfo(
-                "Успешно!",
-                f"Аккаунт OpenAI ({new_acc.get('email', '')}) успешно добавлен и подключен к OpenCode!",
-            )
+            messagebox.showinfo("Успешно!", f"Аккаунт {new_acc.get('email')} добавлен в OpenCode!")
             self.refresh_all_async()
         else:
-            messagebox.showerror(
-                "Ошибка входа",
-                f"Не удалось завершить вход в OpenAI:\n{message}",
-            )
-            self.set_status("Ошибка авторизации OpenAI")
+            messagebox.showerror("Ошибка входа", message)
 
     def activate_openai_account_action(self, account_id):
-        ok = openai_manager.set_active_openai_account(account_id)
-        if ok:
-            self.set_status("Активный аккаунт OpenAI переключен на лету")
+        if openai_manager.set_active_openai_account(account_id):
             self.openai_accounts_data = openai_manager.load_openai_accounts()
+            self.show_flash("Аккаунт ChatGPT активирован в OpenCode")
             self.render_accounts()
-            messagebox.showinfo(
-                "Аккаунт активирован на лету!",
-                "Выбранный аккаунт OpenAI теперь используется в OpenCode.\n\n⚡ Перезапуск OpenCode НЕ ТРЕБУЕТСЯ:\nOpenCode перечитывает auth.json на лету при каждом новом запросе.",
-            )
         else:
             messagebox.showerror("Ошибка", "Не удалось активировать аккаунт.")
 
     def delete_openai_account_action(self, acc):
         email = acc.get("email", "unknown")
-        if not messagebox.askyesno("Удаление аккаунта", f"Вы уверены, что хотите удалить аккаунт OpenAI:\n{email}?"):
+        if not messagebox.askyesno("Удаление", f"Удалить аккаунт {email}?"):
             return
         openai_manager.remove_openai_account(acc.get("accountId") or acc.get("id"))
         self.openai_accounts_data = openai_manager.load_openai_accounts()
+        self.show_flash(f"Аккаунт {email} удален")
         self.render_accounts()
-        self.set_status(f"Аккаунт {email} удален.")
 
-    # --- Health Check Actions ---
     def test_google_account_action(self, acc):
         email = acc.get("email", "unknown")
-        self.set_status(f"🩺 Проверка соединения для {email}...")
+        self.set_status(f"🩺 Проверка {email}...")
 
-        # Find matching account with tokens from generation store
         exported_accs = export_google_accounts()
         matched = next((a for a in exported_accs if a.get("email") == email or a.get("id") == acc.get("id")), None)
         target_dict = matched or acc
 
         def _do_test():
             res = health_checker.test_google_account_health(target_dict)
-            self.after(0, lambda: self._on_google_health_tested(email, res))
+            self.after(0, lambda: self._on_google_tested(email, res))
 
         threading.Thread(target=_do_test, daemon=True).start()
 
-    def _on_google_health_tested(self, email, res):
+    def _on_google_tested(self, email, res):
         ok = res.get("ok", False)
-        status = res.get("status", "")
         latency = res.get("latency_ms", 0)
-        msg = res.get("message", "")
         has_claude = res.get("has_claude", False)
         has_gemini = res.get("has_gemini", False)
-        models_count = res.get("models_count", 0)
 
         if ok:
-            claude_status = "✅ Доступен (Opus 4.6 / Sonnet 4.6)" if has_claude else "⚠️ Не обнаружен"
-            gemini_status = "✅ Доступен (Gemini 3.8 / Pro)" if has_gemini else "⚠️ Не обнаружен"
+            claude_status = "✅ Доступен (Opus / Sonnet 4.6)" if has_claude else "⚠️ Не найден"
+            gemini_status = "✅ Доступен (Gemini 3.8 / Pro)" if has_gemini else "⚠️ Не найден"
             info_text = (
                 f"Аккаунт: {email}\n\n"
-                f"• Статус соединения: 🟢 Отлично (Пинг {latency} мс)\n"
-                f"• Авторизация Google OAuth: Валидна\n"
-                f"• Доступ к Claude в Antigravity: {claude_status}\n"
-                f"• Доступ к Gemini в Antigravity: {gemini_status}\n"
-                f"• Всего моделей в каталоге Google: {models_count}\n\n"
-                f"⚡ Аккаунт полностью готов к работе в OpenCode!"
+                f"• Пинг: 🟢 {latency} мс\n"
+                f"• Google OAuth: Валиден\n"
+                f"• Claude: {claude_status}\n"
+                f"• Gemini: {gemini_status}\n\n"
+                f"⚡ Готов к работе в OpenCode!"
             )
-            messagebox.showinfo("🩺 Результат проверки соединения", info_text)
-            self.set_status(f"Тест для {email} пройден успешно ({latency} мс)")
+            messagebox.showinfo("🩺 Результат теста", info_text)
+            self.set_status(f"Тест {email} пройден ({latency} мс)")
         else:
-            err_text = (
-                f"Аккаунт: {email}\n\n"
-                f"• Статус: 🔴 Ошибка проверки ({status})\n"
-                f"• Задержка ответа: {latency} мс\n"
-                f"• Подробности: {msg}\n\n"
-                f"💡 Рекомендация:\n"
-                f"Если токен истёк, выполните рефреш или добавьте аккаунт заново."
-            )
-            messagebox.showwarning("🩺 Ошибка соединения", err_text)
-            self.set_status(f"Тест для {email} выявил ошибку: {status}")
+            messagebox.showwarning("🩺 Ошибка теста", f"Аккаунт {email} не прошёл проверку:\n{res.get('message')}")
 
     def test_openai_account_action(self, acc):
         email = acc.get("email", "unknown")
-        self.set_status(f"🩺 Проверка соединения для {email} (OpenAI)...")
+        self.set_status(f"🩺 Проверка {email}...")
 
         def _do_test():
             res = health_checker.test_openai_account_health(acc)
-            self.after(0, lambda: self._on_openai_health_tested(email, res))
+            self.after(0, lambda: self._on_openai_tested(email, res))
 
         threading.Thread(target=_do_test, daemon=True).start()
 
-    def _on_openai_health_tested(self, email, res):
+    def _on_openai_tested(self, email, res):
         ok = res.get("ok", False)
-        status = res.get("status", "")
         latency = res.get("latency_ms", 0)
-        msg = res.get("message", "")
-
         if ok:
-            info_text = (
-                f"OpenAI / ChatGPT Аккаунт: {email}\n\n"
-                f"• Статус сессии: 🟢 Активна (Пинг {latency} мс)\n"
-                f"• Сессионный токен: Валиден\n"
-                f"• Доступ к моделям GPT-5 / GPT-6: ✅ Доступен\n\n"
-                f"⚡ Аккаунт готов к работе в OpenCode!"
-            )
-            messagebox.showinfo("🩺 Результат проверки OpenAI", info_text)
-            self.set_status(f"Тест OpenAI для {email} пройден ({latency} мс)")
+            messagebox.showinfo("🩺 Результат теста", f"Аккаунт: {email}\n\n• Пинг: 🟢 {latency} мс\n• Сессия: Активна\n• Модели: Доступны")
         else:
-            err_text = (
-                f"OpenAI / ChatGPT Аккаунт: {email}\n\n"
-                f"• Статус: 🔴 Ошибка ({status})\n"
-                f"• Задержка: {latency} мс\n"
-                f"• Подробности: {msg}\n\n"
-                f"💡 Если сессия истекла, нажмите '+ Добавить аккаунт OpenAI' для повторного входа через браузер."
-            )
-            messagebox.showwarning("🩺 Ошибка OpenAI", err_text)
-            self.set_status(f"Тест OpenAI для {email}: {status}")
+            messagebox.showwarning("🩺 Ошибка теста", f"Ошибка: {res.get('message')}")
 
-    # --- Backup Export & Import (Cross-PC Migration with Optional Encryption) ---
     def export_accounts_action(self):
-        # Ask user if they want password protection
         want_pwd = messagebox.askyesno(
-            "Шифрование резервной копии",
-            "Хотите защитить экспортируемый файл паролем?\n\n"
-            "• Да — файл будет надёжно зашифрован (формат .agb, PBKDF2 + HMAC).\n"
-            "• Нет — файл сохранится в открытом формате JSON (.json).",
+            "Шифрование",
+            "Защитить резервную копию паролем?\n\n• Да — зашифрованный файл .agb\n• Нет — обычный JSON",
             icon="question"
         )
-
         password = None
         if want_pwd:
-            # Simple Tkinter password dialog
-            pwd_dialog = ctk.CTkInputDialog(
-                title="Пароль для шифрования",
-                text="Введите пароль для защиты аккаунтов (запомните его):"
-            )
+            pwd_dialog = ctk.CTkInputDialog(title="Пароль", text="Введите пароль:")
             password = pwd_dialog.get_input()
             if not password:
-                messagebox.showwarning("Отмена", "Пароль не введён. Экспорт отменён.")
                 return
 
         ext = ".agb" if password else ".json"
-        ftypes = [("Зашифрованный бэкап (*.agb)", "*.agb")] if password else [("JSON Backup (*.json)", "*.json")]
-        ftypes.append(("Все файлы (*.*)", "*.*"))
-
         file_path = filedialog.asksaveasfilename(
-            title="Экспорт аккаунтов Antigravity & ChatGPT",
+            title="Экспорт",
             defaultextension=ext,
-            initialfile=f"antigravity_accounts_backup{ext}",
-            filetypes=ftypes,
+            initialfile=f"antigravity_backup{ext}",
+            filetypes=[("Файл бэкапа", f"*{ext}")],
         )
         if not file_path:
             return
@@ -2404,157 +1977,77 @@ class AntigravityManagerApp(ctk.CTk):
         try:
             google_accs = export_google_accounts()
             openai_accs = openai_manager.load_openai_accounts()
-
             backup_data = {
                 "schemaVersion": 2,
                 "exported_at": datetime.datetime.now().isoformat(),
-                "app": "Antigravity Hub",
                 "google_accounts": google_accs,
                 "openai_accounts": openai_accs,
                 "config": self.config_data,
             }
-
             if password:
-                encrypted_bytes = crypto_backup.encrypt_backup(backup_data, password)
                 with open(file_path, "wb") as f:
-                    f.write(encrypted_bytes)
-                enc_msg = "🔒 Файл надёжно зашифрован паролем."
+                    f.write(crypto_backup.encrypt_backup(backup_data, password))
             else:
                 with open(file_path, "w", encoding="utf-8") as f:
                     json.dump(backup_data, f, indent=2, ensure_ascii=False)
-                enc_msg = "📄 Файл сохранён в формате JSON."
-
-            self.set_status(f"Экспорт сохранен в {Path(file_path).name}")
-            messagebox.showinfo(
-                "Экспорт завершен",
-                f"Успешно экспортировано:\n"
-                f"• Google (Antigravity): {len(google_accs)} акк.\n"
-                f"• OpenAI (ChatGPT): {len(openai_accs)} акк.\n\n"
-                f"{enc_msg}\n"
-                f"Путь: {file_path}\n\n"
-                "Вы можете перенести этот файл на любой ПК и нажать «📥 Импорт» в Antigravity Hub."
-            )
+            messagebox.showinfo("Успешно", f"Экспортировано {len(google_accs)} Google и {len(openai_accs)} OpenAI аккаунтов!")
         except Exception as e:
-            messagebox.showerror("Ошибка экспорта", f"Не удалось экспортировать аккаунты:\n{e}")
+            messagebox.showerror("Ошибка", str(e))
 
     def import_accounts_action(self):
         file_path = filedialog.askopenfilename(
-            title="Импорт аккаунтов для переноса",
-            filetypes=[
-                ("Все бэкапы (*.agb, *.json)", "*.agb;*.json"),
-                ("Зашифрованный бэкап (*.agb)", "*.agb"),
-                ("JSON Backup (*.json)", "*.json"),
-                ("Все файлы (*.*)", "*.*")
-            ],
+            title="Импорт",
+            filetypes=[("Все файлы бэкапа", "*.agb;*.json"), ("Все файлы", "*.*")],
         )
         if not file_path:
             return
 
         try:
             with open(file_path, "rb") as f:
-                raw_bytes = f.read()
+                raw = f.read()
 
-            if crypto_backup.is_encrypted_backup(raw_bytes):
-                pwd_dialog = ctk.CTkInputDialog(
-                    title="Ввод пароля",
-                    text="Этот файл защищён паролем. Введите пароль для расшифровки:"
-                )
+            if crypto_backup.is_encrypted_backup(raw):
+                pwd_dialog = ctk.CTkInputDialog(title="Ввод пароля", text="Введите пароль от файла:")
                 pwd = pwd_dialog.get_input()
                 if not pwd:
-                    messagebox.showwarning("Отмена", "Пароль не введён. Импорт отменён.")
                     return
-                try:
-                    data = crypto_backup.decrypt_backup(raw_bytes, pwd)
-                except Exception as de:
-                    messagebox.showerror("Ошибка расшифровки", str(de))
-                    return
+                data = crypto_backup.decrypt_backup(raw, pwd)
             else:
-                try:
-                    data = json.loads(raw_bytes.decode("utf-8"))
-                except Exception as je:
-                    messagebox.showerror("Ошибка чтения", f"Не удалось разобрать JSON файл:\n{je}")
-                    return
+                data = json.loads(raw.decode("utf-8"))
 
-            imported_google = 0
-            imported_openai = 0
+            imp_g, imp_o = 0, 0
+            g_list = data.get("google_accounts", data.get("accounts", []))
+            for g in g_list:
+                if isinstance(g, dict) and import_google_account(g):
+                    imp_g += 1
 
-            # 1. Google accounts
-            google_list = []
-            if isinstance(data, dict):
-                if "google_accounts" in data and isinstance(data["google_accounts"], list):
-                    google_list = data["google_accounts"]
-                elif "accounts" in data and isinstance(data["accounts"], list):
-                    google_list = data["accounts"]
-            elif isinstance(data, list):
-                google_list = data
+            o_list = data.get("openai_accounts", [])
+            if o_list:
+                imp_o = openai_manager.import_openai_accounts(o_list)
 
-            for g_acc in google_list:
-                if isinstance(g_acc, dict) and ("refreshToken" in g_acc or "refresh" in g_acc):
-                    if import_google_account(g_acc):
-                        imported_google += 1
-
-            # 2. OpenAI accounts
-            openai_list = []
-            if isinstance(data, dict) and "openai_accounts" in data and isinstance(data["openai_accounts"], list):
-                openai_list = data["openai_accounts"]
-            elif isinstance(data, list) and any("chatgpt" in str(x).lower() or "openai" in str(x).lower() for x in data):
-                openai_list = data
-
-            if openai_list:
-                imported_openai = openai_manager.import_openai_accounts(openai_list)
-
-            # 3. Config
-            if isinstance(data, dict) and "config" in data and isinstance(data["config"], dict):
-                try:
-                    merged_cfg = {**self.config_data, **data["config"]}
-                    self.config_data = merged_cfg
-                    with open(CONFIG_FILE, "w", encoding="utf-8") as cf:
-                        json.dump(merged_cfg, cf, indent=2, ensure_ascii=False)
-                except Exception:
-                    pass
-
-            self.set_status(f"Импортировано: Google: {imported_google}, OpenAI: {imported_openai}")
+            messagebox.showinfo("Импорт завершен", f"Импортировано:\n• Google: {imp_g}\n• OpenAI: {imp_o}")
             self.refresh_all_async()
-
-            messagebox.showinfo(
-                "Импорт завершен",
-                f"Успешно импортировано:\n"
-                f"• Google (Antigravity): {imported_google} акк.\n"
-                f"• OpenAI (ChatGPT): {imported_openai} акк.\n\n"
-                "Все аккаунты активированы и готовы к работе в OpenCode!"
-            )
         except Exception as e:
-            messagebox.showerror("Ошибка импорта", f"Не удалось импортировать аккаунты:\n{e}")
+            messagebox.showerror("Ошибка импорта", str(e))
 
     def update_opencode_status(self):
-        def check():
+        def _check():
             try:
-                res = run_silent_cmd(
-                    ["tasklist", "/nh", "/fi", "IMAGENAME eq opencode*"],
-                    timeout=3
-                )
-                stdout_lower = (res.stdout or "").lower()
-                is_running = ("opencode.exe" in stdout_lower) or ("opencode-cli.exe" in stdout_lower)
+                res = run_silent_cmd(["tasklist", "/nh", "/fi", "IMAGENAME eq opencode*"], timeout=3)
+                out = (res.stdout or "").lower()
+                is_running = ("opencode.exe" in out) or ("opencode-cli.exe" in out)
             except Exception:
                 is_running = False
 
-            self.after(0, lambda: self._set_opencode_badge(is_running))
+            def _update():
+                if is_running:
+                    self.opencode_badge.configure(text="● OpenCode: Запущен", text_color="#15803d", fg_color="#dcfce7")
+                else:
+                    self.opencode_badge.configure(text="○ OpenCode: Остановлен", text_color="#64748b", fg_color="#f1f5f9")
 
-        threading.Thread(target=check, daemon=True).start()
+            self.after(0, _update)
 
-    def _set_opencode_badge(self, is_running):
-        if is_running:
-            self.opencode_badge.configure(
-                text="🟢 OpenCode: Запущен",
-                text_color="#10b981",
-                fg_color="#064e3b",
-            )
-        else:
-            self.opencode_badge.configure(
-                text="⚪ OpenCode: Остановлен",
-                text_color="#a1a1aa",
-                fg_color="#27272a",
-            )
+        threading.Thread(target=_check, daemon=True).start()
 
     def restart_opencode_action(self):
         self.set_status("Перезапуск OpenCode...")
@@ -2566,17 +2059,12 @@ class AntigravityManagerApp(ctk.CTk):
             cleanup_opencode_locks()
             time.sleep(1)
             exe = get_opencode_exe()
-            try:
-                if sys.platform == "win32" and os.path.exists(exe):
+            if os.path.exists(exe):
+                if sys.platform == "win32":
                     os.startfile(exe)
-                elif os.path.exists(exe):
-                    subprocess.Popen([exe], cwd=os.path.dirname(exe))
                 else:
-                    self.after(0, lambda: self.set_status(f"OpenCode.exe не найден: {exe}"))
-                    return
-            except Exception as e:
-                print(f"Error starting OpenCode: {e}")
-            time.sleep(3)
+                    subprocess.Popen([exe], cwd=os.path.dirname(exe))
+            time.sleep(2)
             self.after(0, self.update_opencode_status)
             self.after(0, lambda: self.set_status("OpenCode перезапущен!"))
 
@@ -2592,18 +2080,13 @@ class AntigravityManagerApp(ctk.CTk):
     def start_opencode_action(self):
         cleanup_opencode_locks()
         exe = get_opencode_exe()
-        if not os.path.exists(exe):
-            self.set_status(f"OpenCode.exe не найден: {exe}")
-            return
-        try:
+        if os.path.exists(exe):
             if sys.platform == "win32":
                 os.startfile(exe)
             else:
                 subprocess.Popen([exe], cwd=os.path.dirname(exe))
             self.set_status("OpenCode запущен")
-        except Exception as e:
-            self.set_status(f"Ошибка запуска OpenCode: {e}")
-        self.after(3000, self.update_opencode_status)
+        self.after(2000, self.update_opencode_status)
 
 
 if __name__ == "__main__":
