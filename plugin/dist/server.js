@@ -21923,11 +21923,135 @@ Host: ${targetHost}:${targetPort}\r
     });
   });
 }
+function buildDnsQueryWire(hostname) {
+  const parts = hostname.split(".");
+  const buffer = [0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+  for (const part of parts) {
+    buffer.push(part.length);
+    for (let i = 0; i < part.length; i++) buffer.push(part.charCodeAt(i));
+  }
+  buffer.push(0x00, 0x00, 0x01, 0x00, 0x01);
+  return Buffer3.from(buffer);
+}
+function parseDnsAnswerIp(data) {
+  try {
+    if (!data || data.length < 12) return null;
+    let idx = 12;
+    while (idx < data.length && data[idx] !== 0) {
+      if ((data[idx] & 0xC0) === 0xC0) { idx += 2; break; }
+      idx += 1 + data[idx];
+    }
+    if (idx < data.length && data[idx] === 0) idx += 1;
+    idx += 4;
+    while (idx < data.length) {
+      if ((data[idx] & 0xC0) === 0xC0) { idx += 2; }
+      else {
+        while (idx < data.length && data[idx] !== 0) idx += 1 + data[idx];
+        if (idx < data.length) idx += 1;
+      }
+      if (idx + 10 > data.length) break;
+      const rtype = data.readUInt16BE(idx);
+      const rdlen = data.readUInt16BE(idx + 8);
+      idx += 10;
+      if (rtype === 1 && rdlen === 4 && idx + 4 <= data.length) {
+        return `${data[idx]}.${data[idx+1]}.${data[idx+2]}.${data[idx+3]}`;
+      }
+      idx += rdlen;
+    }
+  } catch {}
+  return null;
+}
+async function resolveViaDoH(dohUrl, hostname, onDebug) {
+  try {
+    const wire = buildDnsQueryWire(hostname);
+    const resp = await fetch(dohUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/dns-message",
+        "accept": "application/dns-message"
+      },
+      body: wire
+    });
+    if (resp.ok) {
+      const buf = Buffer3.from(await resp.arrayBuffer());
+      const ip = parseDnsAnswerIp(buf);
+      if (ip) {
+        onDebug?.(`[DoH] Resolved ${hostname} to ${ip} via ${dohUrl}`);
+        return ip;
+      }
+    }
+  } catch (err) {
+    onDebug?.(`[DoH] Error resolving ${hostname} via ${dohUrl}: ${err?.message || err}`);
+  }
+  return null;
+}
+async function resolveViaDoT(dotHost, hostname, onDebug) {
+  try {
+    let host = dotHost;
+    let port = 853;
+    if (host.includes(":")) {
+      const parts = host.split(":");
+      host = parts[0];
+      port = Number(parts[1]) || 853;
+    }
+    const wire = buildDnsQueryWire(hostname);
+    const prefix = Buffer3.alloc(2);
+    prefix.writeUInt16BE(wire.length, 0);
+    const packet = Buffer3.concat([prefix, wire]);
+    const ip = await new Promise((resolveDns, rejectDns) => {
+      const socket = tls.connect({ host, port, servername: host }, () => {
+        socket.write(packet);
+      });
+      socket.setTimeout(4000);
+      let incoming = Buffer3.alloc(0);
+      socket.on("data", (chunk) => {
+        incoming = Buffer3.concat([incoming, chunk]);
+        if (incoming.length >= 2) {
+          const expectedLen = incoming.readUInt16BE(0);
+          if (incoming.length >= 2 + expectedLen) {
+            socket.destroy();
+            const parsedIp = parseDnsAnswerIp(incoming.subarray(2, 2 + expectedLen));
+            resolveDns(parsedIp);
+          }
+        }
+      });
+      socket.on("timeout", () => { socket.destroy(); rejectDns(new Error("DoT timeout")); });
+      socket.on("error", (e) => rejectDns(e));
+    });
+    if (ip) {
+      onDebug?.(`[DoT] Resolved ${hostname} to ${ip} via ${dotHost}`);
+      return ip;
+    }
+  } catch (err) {
+    onDebug?.(`[DoT] Error resolving ${hostname} via ${dotHost}: ${err?.message || err}`);
+  }
+  return null;
+}
 async function resolveHostWithCustomDns(hostname, onDebug) {
   try {
     const configPath = getUserConfigPath();
     if (existsSync5(configPath)) {
       const parsed = JSON.parse(readFileSync2(configPath, "utf-8"));
+      const mode = parsed.dns_mode || "standard";
+
+      // 0. If user chose system DNS, bypass custom resolution
+      if (mode === "system") {
+        return hostname;
+      }
+
+      // 1. If mode is DoH or DoH URL provided
+      if (mode === "doh" && parsed.doh_url && typeof parsed.doh_url === "string" && parsed.doh_url.trim()) {
+        const dohIp = await resolveViaDoH(parsed.doh_url.trim(), hostname, onDebug);
+        if (dohIp) return dohIp;
+      }
+
+      // 2. If mode is DoT or DoT host provided
+      if (mode === "dot" && parsed.dot_host && typeof parsed.dot_host === "string" && parsed.dot_host.trim()) {
+        const dotIp = await resolveViaDoT(parsed.dot_host.trim(), hostname, onDebug);
+        if (dotIp) return dotIp;
+      }
+
+      // 3. Fallback / Standard UDP/IPv4 DNS
       const dnsServers = parsed.custom_dns;
       if (Array.isArray(dnsServers) && dnsServers.length > 0) {
         const resolver = new dns.Resolver();

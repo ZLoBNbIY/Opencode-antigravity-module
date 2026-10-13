@@ -259,7 +259,14 @@ node plugin/dist/cli.js login
   "soft_quota_threshold_percent": 100,
   "switch_on_first_rate_limit": true,
   "quota_style_fallback": true,
-  "debug": false
+  "debug": false,
+  "dns_mode": "standard",
+  "custom_dns": [
+    "143.20.64.55",
+    "31.58.216.201"
+  ],
+  "dot_host": "dns.bezmezhau.com",
+  "doh_url": "https://dns.bezmezhau.com/dns-query"
 }
 ```
 
@@ -267,11 +274,14 @@ node plugin/dist/cli.js login
 
 | Параметр | Тип | По умолчанию | Описание |
 | :--- | :--- | :--- | :--- |
-| `account_selection_strategy` | `string` | `"hybrid"` | Стратегия выбора аккаунта из пула:<br>• `"hybrid"`: комбинация наименьшей нагрузки и максимального остатка квоты.<br>• `"round-robin"`: поочерёдный перебор аккаунтов.<br>• `"least-used"`: выбор аккаунта с минимальным расходом квоты. |
-| `soft_quota_threshold_percent` | `number` | `100` | **Критический параметр!** Процент расхода квоты, при котором аккаунт считается исчерпанным.<br>**Важно:** Значение `100` отключает ложные блокировки 412 и использует аккаунт на полную мощность. |
-| `switch_on_first_rate_limit` | `boolean` | `true` | Немедленно переключаться на следующий аккаунт при получении ошибки 429 (лимит запросов в минуту), не дожидаясь тайм-аута. |
-| `quota_style_fallback` | `boolean` | `true` | Разрешает переключение стилей заголовков авторизации при исчерпании квот основного API. |
-| `debug` | `boolean` | `false` | Включает подробное логирование запросов, заголовков и ротации в папку логов. |
+| `account_selection_strategy` | `string` | `"sticky"` | Стратегия выбора аккаунта:<br>• `"sticky"`: строгая фиксация выбранного в Hub аккаунта (рекомендуется).<br>• `"hybrid"`: ротация по очкам здоровья и доступности.<br>• `"round-robin"`: поочерёдный перебор аккаунтов. |
+| `soft_quota_threshold_percent` | `number` | `100` | Процент расхода квоты. Значение `100` использует аккаунт на полную мощность. |
+| `switch_on_first_rate_limit` | `boolean` | `true` | Мгновенно переключаться на следующий аккаунт при 429 Rate Limit. |
+| `dns_mode` | `string` | `"standard"` | Протокол изолированного DNS:<br>• `"standard"`: Обычный DNS (UDP/53).<br>• `"dot"`: DNS-over-TLS (порт 853).<br>• `"doh"`: DNS-over-HTTPS (RFC 8484).<br>• `"system"`: Использовать системный DNS Windows. |
+| `custom_dns` | `array` | `["143.20.64.55", "31.58.216.201"]` | Список IP серверов обычного DNS для изоляции OpenCode. |
+| `dot_host` | `string` | `"dns.bezmezhau.com"` | Имя хоста для защищённого DNS-over-TLS. |
+| `doh_url` | `string` | `"https://dns.bezmezhau.com/dns-query"` | URL эндпоинта для скрытного DNS-over-HTTPS. |
+| `proxy` | `string` | `""` | Опциональный SOCKS5/HTTP прокси только для запросов OpenCode. |
 
 ---
 

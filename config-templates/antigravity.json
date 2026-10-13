@@ -5,8 +5,11 @@
   "switch_on_first_rate_limit": true,
   "quota_style_fallback": true,
   "debug": false,
+  "dns_mode": "standard",
   "custom_dns": [
     "143.20.64.55",
     "31.58.216.201"
-  ]
+  ],
+  "dot_host": "dns.bezmezhau.com",
+  "doh_url": "https://dns.bezmezhau.com/dns-query"
 }

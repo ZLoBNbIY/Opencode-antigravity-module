@@ -30,6 +30,7 @@ import win_tray
 import health_checker
 import auto_updater
 import crypto_backup
+import dns_tester
 
 # --- Paths & Dynamic Resolution ---
 def get_node_executable():
@@ -1729,54 +1730,148 @@ class AntigravityManagerApp(ctk.CTk):
         self.rate_limit_var = tk.BooleanVar(value=self.config_data.get("switch_on_first_rate_limit", True))
         ctk.CTkSwitch(c2, text="Включено", variable=self.rate_limit_var).pack(anchor="w", padx=16, pady=(0, 12))
 
-        # 3. Custom DNS & Proxy (Isolated Geo-Bypass for OpenCode only)
+        # 3. DNS Configuration (Cockpit / Bezmezhau layout: Standard DNS, DoT, DoH)
         c3 = ctk.CTkFrame(self.settings_frame, fg_color=COLOR["card_bg"], corner_radius=12, border_width=1, border_color=COLOR["border"])
         c3.pack(fill="x", pady=6)
-        ctk.CTkLabel(c3, text="🌐 Изолированный DNS и Прокси (Только для OpenCode)", font=self.font(size=14, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w", padx=16, pady=(12, 4))
+        ctk.CTkLabel(c3, text="🌐 Адреса серверов DNS (Обход ограничений Google)", font=self.font(size=14, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w", padx=16, pady=(12, 4))
         ctk.CTkLabel(
             c3,
-            text="Позволяет обходить геоблокировки Google (User location not supported) ТОЛЬКО для OpenCode, не меняя сетевые настройки всей Windows:",
+            text="Изолированный обход гео-фильтра Google ТОЛЬКО для OpenCode (не затрагивает другие приложения Windows):",
             font=self.font(size=11),
             text_color=COLOR["text_secondary"]
         ).pack(anchor="w", padx=16, pady=(0, 10))
 
-        # DNS Entry
-        dns_row = ctk.CTkFrame(c3, fg_color="transparent")
-        dns_row.pack(fill="x", padx=16, pady=(0, 6))
-        ctk.CTkLabel(dns_row, text="Кастомный DNS (через запятую):", font=self.font(size=12, weight="bold"), text_color=COLOR["text_primary"], width=230, anchor="w").pack(side="left")
-        current_dns = self.config_data.get("custom_dns", ["143.20.64.55", "31.58.216.201"])
-        if isinstance(current_dns, list):
-            current_dns_str = ", ".join(current_dns)
-        else:
-            current_dns_str = str(current_dns)
-        self.dns_entry = ctk.CTkEntry(
-            dns_row,
-            placeholder_text="143.20.64.55, 31.58.216.201",
-            font=self.font(size=12),
-            height=32,
-            fg_color=COLOR["subbox_bg"],
-            border_color=COLOR["border"],
-            text_color=COLOR["text_primary"]
-        )
-        self.dns_entry.pack(side="left", fill="x", expand=True)
-        self.dns_entry.insert(0, current_dns_str)
+        # DNS Mode Selector (Standard / DoT / DoH / System)
+        mode_row = ctk.CTkFrame(c3, fg_color="transparent")
+        mode_row.pack(fill="x", padx=16, pady=(0, 10))
+        ctk.CTkLabel(mode_row, text="Активный протокол:", font=self.font(size=12, weight="bold"), text_color=COLOR["text_primary"]).pack(side="left", padx=(0, 10))
 
-        # Proxy Entry
+        self.dns_mode_var = tk.StringVar(value=self.config_data.get("dns_mode", "standard"))
+        self.dns_mode_seg = ctk.CTkSegmentedButton(
+            mode_row,
+            values=["Обычный DNS", "DNS-over-TLS (DoT)", "DNS-over-HTTPS (DoH)", "Системный DNS"],
+            variable=self.dns_mode_var,
+            font=self.font(size=11, weight="bold"),
+            command=self.on_dns_mode_change,
+        )
+        self.dns_mode_seg.pack(side="left")
+
+        # Three side-by-side DNS Blocks (Like the user's screenshot)
+        dns_blocks_container = ctk.CTkFrame(c3, fg_color="transparent")
+        dns_blocks_container.pack(fill="x", padx=16, pady=(0, 12))
+        dns_blocks_container.grid_columnconfigure(0, weight=1, uniform="dns_col")
+        dns_blocks_container.grid_columnconfigure(1, weight=1, uniform="dns_col")
+        dns_blocks_container.grid_columnconfigure(2, weight=1, uniform="dns_col")
+
+        # --- BLOCK 1: Standard DNS ---
+        b1 = ctk.CTkFrame(dns_blocks_container, fg_color=COLOR["subbox_bg"], corner_radius=10, border_width=1, border_color=COLOR["border"])
+        b1.grid(row=0, column=0, sticky="nsew", padx=(0, 6), pady=4)
+
+        b1_hdr = ctk.CTkFrame(b1, fg_color="transparent")
+        b1_hdr.pack(fill="x", padx=12, pady=(10, 4))
+        ctk.CTkLabel(b1_hdr, text="Обычный DNS", font=self.font(size=12, weight="bold"), text_color=COLOR["text_primary"]).pack(side="left")
+
+        ctk.CTkLabel(b1, text="Основной DNS (Primary):", font=self.font(size=10), text_color=COLOR["text_secondary"]).pack(anchor="w", padx=12, pady=(2, 0))
+        self.dns_primary_entry = ctk.CTkEntry(b1, font=self.font(size=11), height=28, fg_color=COLOR["card_bg"], border_color=COLOR["border"], text_color=COLOR["text_primary"])
+        self.dns_primary_entry.pack(fill="x", padx=12, pady=(2, 6))
+        current_dns_list = self.config_data.get("custom_dns", ["143.20.64.55", "31.58.216.201"])
+        self.dns_primary_entry.insert(0, current_dns_list[0] if len(current_dns_list) > 0 else "143.20.64.55")
+
+        ctk.CTkLabel(b1, text="Дополнительный DNS (Secondary):", font=self.font(size=10), text_color=COLOR["text_secondary"]).pack(anchor="w", padx=12, pady=(2, 0))
+        self.dns_secondary_entry = ctk.CTkEntry(b1, font=self.font(size=11), height=28, fg_color=COLOR["card_bg"], border_color=COLOR["border"], text_color=COLOR["text_primary"])
+        self.dns_secondary_entry.pack(fill="x", padx=12, pady=(2, 6))
+        self.dns_secondary_entry.insert(0, current_dns_list[1] if len(current_dns_list) > 1 else "31.58.216.201")
+
+        b1_btn_row = ctk.CTkFrame(b1, fg_color="transparent")
+        b1_btn_row.pack(fill="x", padx=12, pady=(4, 10))
+        self.btn_test_std_dns = ctk.CTkButton(
+            b1_btn_row,
+            text="🩺 Проверить доступность",
+            font=self.font(size=11, weight="bold"),
+            fg_color="#0284c7",
+            hover_color="#0369a1",
+            height=26,
+            command=self.test_standard_dns_action,
+        )
+        self.btn_test_std_dns.pack(fill="x")
+        self.lbl_test_std_dns = ctk.CTkLabel(b1, text="", font=self.font(size=10), text_color="#16a34a")
+        self.lbl_test_std_dns.pack(anchor="w", padx=12, pady=(0, 6))
+
+        # --- BLOCK 2: DNS-over-TLS (DoT) ---
+        b2 = ctk.CTkFrame(dns_blocks_container, fg_color=COLOR["subbox_bg"], corner_radius=10, border_width=1, border_color=COLOR["border"])
+        b2.grid(row=0, column=1, sticky="nsew", padx=6, pady=4)
+
+        b2_hdr = ctk.CTkFrame(b2, fg_color="transparent")
+        b2_hdr.pack(fill="x", padx=12, pady=(10, 4))
+        ctk.CTkLabel(b2_hdr, text="DNS-over-TLS (DoT)", font=self.font(size=12, weight="bold"), text_color=COLOR["text_primary"]).pack(side="left")
+
+        ctk.CTkLabel(b2, text="Имя хоста DoT (порт 853):", font=self.font(size=10), text_color=COLOR["text_secondary"]).pack(anchor="w", padx=12, pady=(2, 0))
+        self.dot_host_entry = ctk.CTkEntry(b2, font=self.font(size=11), height=28, fg_color=COLOR["card_bg"], border_color=COLOR["border"], text_color=COLOR["text_primary"])
+        self.dot_host_entry.pack(fill="x", padx=12, pady=(2, 6))
+        self.dot_host_entry.insert(0, self.config_data.get("dot_host", "dns.bezmezhau.com"))
+
+        ctk.CTkLabel(b2, text="Для защищённого TLS-резолвинга\nбез перехвата провайдером.", font=self.font(size=10), text_color=COLOR["text_muted"], justify="left").pack(anchor="w", padx=12, pady=(2, 6))
+
+        b2_btn_row = ctk.CTkFrame(b2, fg_color="transparent")
+        b2_btn_row.pack(fill="x", padx=12, pady=(4, 10))
+        self.btn_test_dot = ctk.CTkButton(
+            b2_btn_row,
+            text="🩺 Проверить доступность",
+            font=self.font(size=11, weight="bold"),
+            fg_color="#0284c7",
+            hover_color="#0369a1",
+            height=26,
+            command=self.test_dot_action,
+        )
+        self.btn_test_dot.pack(fill="x")
+        self.lbl_test_dot = ctk.CTkLabel(b2, text="", font=self.font(size=10), text_color="#16a34a")
+        self.lbl_test_dot.pack(anchor="w", padx=12, pady=(0, 6))
+
+        # --- BLOCK 3: DNS-over-HTTPS (DoH) ---
+        b3 = ctk.CTkFrame(dns_blocks_container, fg_color=COLOR["subbox_bg"], corner_radius=10, border_width=1, border_color=COLOR["border"])
+        b3.grid(row=0, column=2, sticky="nsew", padx=(6, 0), pady=4)
+
+        b3_hdr = ctk.CTkFrame(b3, fg_color="transparent")
+        b3_hdr.pack(fill="x", padx=12, pady=(10, 4))
+        ctk.CTkLabel(b3_hdr, text="DNS-over-HTTPS (DoH)", font=self.font(size=12, weight="bold"), text_color=COLOR["text_primary"]).pack(side="left")
+
+        ctk.CTkLabel(b3, text="URL эндпоинта DoH:", font=self.font(size=10), text_color=COLOR["text_secondary"]).pack(anchor="w", padx=12, pady=(2, 0))
+        self.doh_url_entry = ctk.CTkEntry(b3, font=self.font(size=11), height=28, fg_color=COLOR["card_bg"], border_color=COLOR["border"], text_color=COLOR["text_primary"])
+        self.doh_url_entry.pack(fill="x", padx=12, pady=(2, 6))
+        self.doh_url_entry.insert(0, self.config_data.get("doh_url", "https://dns.bezmezhau.com/dns-query"))
+
+        ctk.CTkLabel(b3, text="Стандарт RFC 8484 по HTTPS.\nМаксимальная скрытность.", font=self.font(size=10), text_color=COLOR["text_muted"], justify="left").pack(anchor="w", padx=12, pady=(2, 6))
+
+        b3_btn_row = ctk.CTkFrame(b3, fg_color="transparent")
+        b3_btn_row.pack(fill="x", padx=12, pady=(4, 10))
+        self.btn_test_doh = ctk.CTkButton(
+            b3_btn_row,
+            text="🩺 Проверить доступность",
+            font=self.font(size=11, weight="bold"),
+            fg_color="#0284c7",
+            hover_color="#0369a1",
+            height=26,
+            command=self.test_doh_action,
+        )
+        self.btn_test_doh.pack(fill="x")
+        self.lbl_test_doh = ctk.CTkLabel(b3, text="", font=self.font(size=10), text_color="#16a34a")
+        self.lbl_test_doh.pack(anchor="w", padx=12, pady=(0, 6))
+
+        # Proxy Row
         proxy_row = ctk.CTkFrame(c3, fg_color="transparent")
-        proxy_row.pack(fill="x", padx=16, pady=(0, 12))
-        ctk.CTkLabel(proxy_row, text="Прокси (опционально HTTP/SOCKS):", font=self.font(size=12, weight="bold"), text_color=COLOR["text_primary"], width=230, anchor="w").pack(side="left")
-        current_proxy = self.config_data.get("proxy", "")
+        proxy_row.pack(fill="x", padx=16, pady=(0, 14))
+        ctk.CTkLabel(proxy_row, text="Прокси (опционально SOCKS5/HTTP):", font=self.font(size=11, weight="bold"), text_color=COLOR["text_primary"], width=230, anchor="w").pack(side="left")
         self.proxy_entry = ctk.CTkEntry(
             proxy_row,
-            placeholder_text="http://127.0.0.1:10809 или socks5://127.0.0.1:10808",
-            font=self.font(size=12),
-            height=32,
+            placeholder_text="например: socks5://127.0.0.1:10808 или http://127.0.0.1:10809",
+            font=self.font(size=11),
+            height=30,
             fg_color=COLOR["subbox_bg"],
             border_color=COLOR["border"],
             text_color=COLOR["text_primary"]
         )
         self.proxy_entry.pack(side="left", fill="x", expand=True)
-        self.proxy_entry.insert(0, current_proxy or "")
+        self.proxy_entry.insert(0, self.config_data.get("proxy", "") or "")
 
         ctk.CTkButton(
             self.settings_frame,
@@ -1799,19 +1894,98 @@ class AntigravityManagerApp(ctk.CTk):
         }
         self.strategy_desc.configure(text=descs.get(strat, ""))
 
+    def on_dns_mode_change(self, val):
+        pass
+
+    def test_standard_dns_action(self):
+        p_ip = self.dns_primary_entry.get().strip()
+        self.btn_test_std_dns.configure(state="disabled", text="⏳ Проверка...")
+
+        def _test():
+            res = dns_tester.test_standard_dns(p_ip or "143.20.64.55")
+            def _update():
+                self.btn_test_std_dns.configure(state="normal", text="🩺 Проверить доступность")
+                if res.get("ok"):
+                    self.lbl_test_std_dns.configure(text=f"✅ {res.get('message')}", text_color="#16a34a")
+                else:
+                    self.lbl_test_std_dns.configure(text=f"❌ {res.get('message')}", text_color="#ef4444")
+            self.after(0, _update)
+
+        threading.Thread(target=_test, daemon=True).start()
+
+    def test_dot_action(self):
+        host = self.dot_host_entry.get().strip()
+        self.btn_test_dot.configure(state="disabled", text="⏳ Проверка...")
+
+        def _test():
+            res = dns_tester.test_dot_endpoint(host or "dns.bezmezhau.com")
+            def _update():
+                self.btn_test_dot.configure(state="normal", text="🩺 Проверить доступность")
+                if res.get("ok"):
+                    self.lbl_test_dot.configure(text=f"✅ {res.get('message')}", text_color="#16a34a")
+                else:
+                    self.lbl_test_dot.configure(text=f"❌ {res.get('message')}", text_color="#ef4444")
+            self.after(0, _update)
+
+        threading.Thread(target=_test, daemon=True).start()
+
+    def test_doh_action(self):
+        url = self.doh_url_entry.get().strip()
+        self.btn_test_doh.configure(state="disabled", text="⏳ Проверка...")
+
+        def _test():
+            res = dns_tester.test_doh_endpoint(url or "https://dns.bezmezhau.com/dns-query")
+            def _update():
+                self.btn_test_doh.configure(state="normal", text="🩺 Проверить доступность")
+                if res.get("ok"):
+                    self.lbl_test_doh.configure(text=f"✅ {res.get('message')}", text_color="#16a34a")
+                else:
+                    self.lbl_test_doh.configure(text=f"❌ {res.get('message')}", text_color="#ef4444")
+            self.after(0, _update)
+
+        threading.Thread(target=_test, daemon=True).start()
+
     def save_settings_action(self):
         self.config_data["account_selection_strategy"] = self.strategy_var.get()
         self.config_data["switch_on_first_rate_limit"] = self.rate_limit_var.get()
 
-        # Parse and save custom DNS
-        dns_val = self.dns_entry.get().strip()
-        if dns_val:
-            dns_list = [d.strip() for d in dns_val.split(",") if d.strip()]
+        # Save DNS Mode
+        selected_mode = self.dns_mode_var.get()
+        if "DoT" in selected_mode:
+            self.config_data["dns_mode"] = "dot"
+        elif "DoH" in selected_mode:
+            self.config_data["dns_mode"] = "doh"
+        elif "Системный" in selected_mode:
+            self.config_data["dns_mode"] = "system"
+        else:
+            self.config_data["dns_mode"] = "standard"
+
+        # Save Standard DNS
+        p_ip = self.dns_primary_entry.get().strip()
+        s_ip = self.dns_secondary_entry.get().strip()
+        dns_list = []
+        if p_ip: dns_list.append(p_ip)
+        if s_ip: dns_list.append(s_ip)
+        if dns_list:
             self.config_data["custom_dns"] = dns_list
         else:
             self.config_data.pop("custom_dns", None)
 
-        # Parse and save proxy
+        # Save DoT Host
+        dot_val = self.dot_host_entry.get().strip()
+        if dot_val:
+            self.config_data["dot_host"] = dot_val
+        else:
+            self.config_data.pop("dot_host", None)
+
+        # Save DoH URL
+        doh_val = self.doh_url_entry.get().strip()
+        if doh_val:
+            self.config_data["doh_url"] = doh_val
+        else:
+            self.config_data.pop("doh_url", None)
+
+        # Save Proxy
         proxy_val = self.proxy_entry.get().strip()
         if proxy_val:
             self.config_data["proxy"] = proxy_val
@@ -1820,7 +1994,7 @@ class AntigravityManagerApp(ctk.CTk):
 
         ok, msg = self.save_config()
         if ok:
-            messagebox.showinfo("Успешно", "Настройки сохранены!\n\nИзолированный DNS и параметры маршрутизации будут применяться только к OpenCode.")
+            messagebox.showinfo("Успешно", "Настройки сохранены!\n\nИзолированный DNS (Обычный/DoT/DoH) и параметры маршрутизации будут применяться только к OpenCode.")
         else:
             messagebox.showerror("Ошибка", msg)
 
