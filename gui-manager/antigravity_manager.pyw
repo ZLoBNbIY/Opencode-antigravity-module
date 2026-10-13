@@ -603,6 +603,10 @@ class AntigravityManagerApp(ctk.CTk):
         self.geometry("1180x760")
         self.minsize(980, 680)
 
+        # Load config first to read theme
+        self.config_data = self.load_config()
+        self.current_theme = self.config_data.get("theme_mode", "dark")
+
         # Apply CustomTkinter appearance mode directly
         self.appearance_mode = "Dark" if self.current_theme == "dark" else "Light"
         ctk.set_appearance_mode(self.appearance_mode)
@@ -1199,12 +1203,11 @@ class AntigravityManagerApp(ctk.CTk):
             card.grid(row=row, column=col, padx=8, pady=8, sticky="nsew")
 
     def _render_empty_state(self, title):
-        c = self.colors
-        box = ctk.CTkFrame(self.accounts_container, fg_color=c["card_bg"], corner_radius=12, border_width=1, border_color=c["border"])
+        box = ctk.CTkFrame(self.accounts_container, fg_color=COLOR["card_bg"], corner_radius=12, border_width=1, border_color=COLOR["border"])
         box.pack(fill="x", pady=40, padx=20)
         ctk.CTkLabel(box, text="📭", font=self.font(size=36)).pack(pady=(24, 6))
-        ctk.CTkLabel(box, text=f"Нет подключенных аккаунтов {title}", font=self.font(size=15, weight="bold"), text_color=c["text_primary"]).pack()
-        ctk.CTkLabel(box, text="Нажмите кнопку '+ Добавить аккаунт' вверху для входа через браузер.", font=self.font(size=12), text_color=c["text_secondary"]).pack(pady=(4, 24))
+        ctk.CTkLabel(box, text=f"Нет подключенных аккаунтов {title}", font=self.font(size=15, weight="bold"), text_color=COLOR["text_primary"]).pack()
+        ctk.CTkLabel(box, text="Нажмите кнопку '+ Добавить аккаунт' вверху для входа через браузер.", font=self.font(size=12), text_color=COLOR["text_secondary"]).pack(pady=(4, 24))
 
     # =========================================================================
     # COMPACT CARD (High-contrast Segoe UI, Dual Theme)
@@ -1629,13 +1632,12 @@ class AntigravityManagerApp(ctk.CTk):
     # SETTINGS VIEW
     # =========================================================================
     def create_settings_view(self):
-        c = self.colors
-        self.settings_frame = ctk.CTkScrollableFrame(self.content_area, fg_color="transparent")
+        self.settings_frame = ctk.CTkScrollableFrame(self.content_area, fg_color=COLOR["bg"])
         self.settings_frame.grid_columnconfigure(0, weight=1)
 
-        c1 = ctk.CTkFrame(self.settings_frame, fg_color=c["card_bg"], corner_radius=12, border_width=1, border_color=c["border"])
+        c1 = ctk.CTkFrame(self.settings_frame, fg_color=COLOR["card_bg"], corner_radius=12, border_width=1, border_color=COLOR["border"])
         c1.pack(fill="x", pady=6)
-        ctk.CTkLabel(c1, text="Стратегия выбора аккаунтов", font=self.font(size=14, weight="bold"), text_color=c["text_primary"]).pack(anchor="w", padx=16, pady=(12, 4))
+        ctk.CTkLabel(c1, text="Стратегия выбора аккаунтов", font=self.font(size=14, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w", padx=16, pady=(12, 4))
 
         current_strat = self.config_data.get("account_selection_strategy", "hybrid")
         self.strategy_var = tk.StringVar(value=current_strat)
@@ -1651,9 +1653,9 @@ class AntigravityManagerApp(ctk.CTk):
         self.strategy_desc.pack(anchor="w", padx=16, pady=(0, 12))
         self.update_strategy_description(current_strat)
 
-        c2 = ctk.CTkFrame(self.settings_frame, fg_color=c["card_bg"], corner_radius=12, border_width=1, border_color=c["border"])
+        c2 = ctk.CTkFrame(self.settings_frame, fg_color=COLOR["card_bg"], corner_radius=12, border_width=1, border_color=COLOR["border"])
         c2.pack(fill="x", pady=6)
-        ctk.CTkLabel(c2, text="Мгновенное переключение при Rate Limit (429)", font=self.font(size=14, weight="bold"), text_color=c["text_primary"]).pack(anchor="w", padx=16, pady=(12, 4))
+        ctk.CTkLabel(c2, text="Мгновенное переключение при Rate Limit (429)", font=self.font(size=14, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w", padx=16, pady=(12, 4))
         self.rate_limit_var = tk.BooleanVar(value=self.config_data.get("switch_on_first_rate_limit", True))
         ctk.CTkSwitch(c2, text="Включено", variable=self.rate_limit_var).pack(anchor="w", padx=16, pady=(0, 12))
 
@@ -1691,13 +1693,12 @@ class AntigravityManagerApp(ctk.CTk):
     # SYSTEM VIEW
     # =========================================================================
     def create_system_view(self):
-        c = self.colors
-        self.system_frame = ctk.CTkScrollableFrame(self.content_area, fg_color="transparent")
+        self.system_frame = ctk.CTkScrollableFrame(self.content_area, fg_color=COLOR["bg"])
         self.system_frame.grid_columnconfigure(0, weight=1)
 
-        c1 = ctk.CTkFrame(self.system_frame, fg_color=c["card_bg"], corner_radius=12, border_width=1, border_color=c["border"])
+        c1 = ctk.CTkFrame(self.system_frame, fg_color=COLOR["card_bg"], corner_radius=12, border_width=1, border_color=COLOR["border"])
         c1.pack(fill="x", pady=6)
-        ctk.CTkLabel(c1, text="Управление OpenCode", font=self.font(size=14, weight="bold"), text_color=c["text_primary"]).pack(anchor="w", padx=16, pady=(12, 6))
+        ctk.CTkLabel(c1, text="Управление OpenCode", font=self.font(size=14, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w", padx=16, pady=(12, 6))
 
         row = ctk.CTkFrame(c1, fg_color="transparent")
         row.pack(fill="x", padx=16, pady=(0, 14))
@@ -1706,28 +1707,27 @@ class AntigravityManagerApp(ctk.CTk):
         ctk.CTkButton(row, text="⏹ Остановить", fg_color="#ef4444", command=self.stop_opencode_action).pack(side="left", padx=(0, 8))
         ctk.CTkButton(row, text="▶ Запустить", fg_color="#10b981", command=self.start_opencode_action).pack(side="left")
 
-        c2 = ctk.CTkFrame(self.system_frame, fg_color=c["card_bg"], corner_radius=12, border_width=1, border_color=c["border"])
+        c2 = ctk.CTkFrame(self.system_frame, fg_color=COLOR["card_bg"], corner_radius=12, border_width=1, border_color=COLOR["border"])
         c2.pack(fill="x", pady=6)
-        ctk.CTkLabel(c2, text="Быстрый доступ к папкам", font=self.font(size=14, weight="bold"), text_color=c["text_primary"]).pack(anchor="w", padx=16, pady=(12, 6))
+        ctk.CTkLabel(c2, text="Быстрый доступ к папкам", font=self.font(size=14, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w", padx=16, pady=(12, 6))
 
         r2 = ctk.CTkFrame(c2, fg_color="transparent")
         r2.pack(fill="x", padx=16, pady=(0, 14))
-        ctk.CTkButton(r2, text="📂 Конфиги (~/.config/opencode)", fg_color=c["subbox_bg"], text_color=c["text_primary"], command=lambda: os.startfile(CONFIG_DIR) if CONFIG_DIR.exists() else None).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(r2, text="📂 Логи", fg_color=c["subbox_bg"], text_color=c["text_primary"], command=lambda: os.startfile(LOG_DIR) if LOG_DIR.exists() else None).pack(side="left")
+        ctk.CTkButton(r2, text="📂 Конфиги (~/.config/opencode)", fg_color=COLOR["subbox_bg"], text_color=COLOR["text_primary"], command=lambda: os.startfile(CONFIG_DIR) if CONFIG_DIR.exists() else None).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(r2, text="📂 Логи", fg_color=COLOR["subbox_bg"], text_color=COLOR["text_primary"], command=lambda: os.startfile(LOG_DIR) if LOG_DIR.exists() else None).pack(side="left")
 
     # =========================================================================
     # STATUSBAR
     # =========================================================================
     def create_statusbar(self):
-        c = self.colors
-        self.statusbar = ctk.CTkFrame(self.main_frame, height=28, corner_radius=0, fg_color=c["statusbar_bg"], border_width=1, border_color=c["border"])
+        self.statusbar = ctk.CTkFrame(self.main_frame, height=28, corner_radius=0, fg_color=COLOR["statusbar_bg"], border_width=1, border_color=COLOR["border"])
         self.statusbar.pack(fill="x", side="bottom")
 
         self.lbl_status = ctk.CTkLabel(
             self.statusbar,
             text="Готов к работе",
             font=self.font(size=11),
-            text_color=c["text_muted"],
+            text_color=COLOR["text_muted"],
         )
         self.lbl_status.pack(side="left", padx=16)
 
@@ -2086,9 +2086,9 @@ class AntigravityManagerApp(ctk.CTk):
 
             def _update():
                 if is_running:
-                    self.opencode_badge.configure(text="● OpenCode: Запущен", text_color="#16a34a", fg_color="#dcfce7" if self.current_theme == "light" else "#14532d")
+                    self.opencode_badge.configure(text="● OpenCode: Запущен", text_color="#16a34a", fg_color=("#dcfce7", "#14532d"))
                 else:
-                    self.opencode_badge.configure(text="○ OpenCode: Остановлен", text_color=self.colors["text_muted"], fg_color=self.colors["subbox_bg"])
+                    self.opencode_badge.configure(text="○ OpenCode: Остановлен", text_color=COLOR["text_muted"], fg_color=COLOR["subbox_bg"])
 
             self.after(0, _update)
 
