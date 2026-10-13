@@ -206,6 +206,23 @@ function patchAdmissionInCode(text, file) {
 for (const basePath of targetPaths) {
   console.log(`\n=== Applying patches to: ${basePath} ===`);
 
+  // If local plugin dist exists and we're patching an external cache directory,
+  // sync the verified dist files (which include store generation login and routing fixes).
+  if (basePath !== localPluginPath && fs.existsSync(localPluginPath)) {
+    for (const distFile of ['cli.js', 'server.js', 'index.js']) {
+      const srcFile = path.join(localPluginPath, 'dist', distFile);
+      const destFile = path.join(basePath, 'dist', distFile);
+      if (fs.existsSync(srcFile) && fs.existsSync(destFile)) {
+        try {
+          fs.copyFileSync(srcFile, destFile);
+          console.log(`✓ Synchronized ${distFile} from local verified bundle`);
+        } catch (copyErr) {
+          console.warn(`! Failed to copy ${distFile}: ${copyErr.message}`);
+        }
+      }
+    }
+  }
+
   // 1. Patch dist/cli.js
   const cliPath = path.join(basePath, 'dist', 'cli.js');
   if (fs.existsSync(cliPath)) {

@@ -40,6 +40,10 @@ def get_node_executable():
     return "node"
 
 def get_cli_js():
+    local_cli = Path(__file__).resolve().parent.parent / "plugin" / "dist" / "cli.js"
+    if local_cli.exists():
+        return str(local_cli)
+
     npm_dir = Path.home() / ".cache" / "opencode" / "npm"
     if npm_dir.exists():
         matches = list(npm_dir.glob("**/@cortexkit/opencode-antigravity-auth/dist/cli.js"))
@@ -48,10 +52,6 @@ def get_cli_js():
         matches_multi = list(npm_dir.glob("**/opencode-antigravity-multi-auth/dist/cli.js"))
         if matches_multi and matches_multi[0].exists():
             return str(matches_multi[0])
-
-    local_cli = Path(__file__).resolve().parent.parent / "plugin" / "dist" / "cli.js"
-    if local_cli.exists():
-        return str(local_cli)
 
     cache_cli = Path.home() / ".cache" / "opencode" / "packages" / "@cortexkit" / "opencode-antigravity-auth@latest" / "node_modules" / "@cortexkit" / "opencode-antigravity-auth" / "dist" / "cli.js"
     if cache_cli.exists():
