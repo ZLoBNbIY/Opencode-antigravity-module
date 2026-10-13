@@ -17547,14 +17547,11 @@ var QUOTA_GROUP_BY_MODEL_ID = {
 };
 var ANTIGRAVITY_OPENCODE_MODEL_IDS = [
   "antigravity-gemini-3.8-flash",
-  "antigravity-gemini-3.6-flash",
   "antigravity-gemini-3.5-flash",
-  "antigravity-gemini-3.1-pro",
   "antigravity-claude-opus-4-6",
   "antigravity-claude-opus-4-6-thinking",
   "antigravity-claude-sonnet-4-6",
   "antigravity-claude-sonnet-4-6-thinking",
-  "antigravity-gemini-3.1-flash-image",
   "antigravity-gpt-oss-120b-medium"
 ];
 
@@ -17603,13 +17600,18 @@ function ensureDynamicModelDefinition(id) {
   return null;
 }
 
+var DEPRECATED_MODEL_VERSIONS = ["3.7", "3.6", "3.1"];
+function isDeprecatedModel(id) {
+  return DEPRECATED_MODEL_VERSIONS.some((v) => id.includes(v));
+}
 try {
   const initCache = loadDynamicModelsCache();
   if (initCache && Array.isArray(initCache.models) && initCache.models.length > 0) {
-    for (const mId of initCache.models) {
+    const filtered = initCache.models.filter((mId) => !isDeprecatedModel(mId));
+    for (const mId of filtered) {
       ensureDynamicModelDefinition(mId);
     }
-    ANTIGRAVITY_OPENCODE_MODEL_IDS = [...initCache.models];
+    ANTIGRAVITY_OPENCODE_MODEL_IDS = [...filtered];
   }
 } catch {}
 

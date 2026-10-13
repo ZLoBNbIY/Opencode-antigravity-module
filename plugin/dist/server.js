@@ -17549,9 +17549,7 @@ var QUOTA_GROUP_BY_MODEL_ID = {
 };
 var ANTIGRAVITY_OPENCODE_MODEL_IDS = [
   "antigravity-gemini-3.8-flash",
-  "antigravity-gemini-3.6-flash",
   "antigravity-gemini-3.5-flash",
-  "antigravity-gemini-3.1-pro",
   "antigravity-claude-opus-4-6",
   "antigravity-claude-opus-4-6-thinking",
   "antigravity-claude-sonnet-4-6",
@@ -17617,14 +17615,20 @@ function ensureDynamicModelDefinition(id) {
   return null;
 }
 
+var DEPRECATED_MODEL_VERSIONS = ["3.7", "3.6", "3.1"];
+function isDeprecatedModel(id) {
+  return DEPRECATED_MODEL_VERSIONS.some((v) => id.includes(v));
+}
+
 // Initialise from disk cache if present
 try {
   const initCache = loadDynamicModelsCache();
   if (initCache && Array.isArray(initCache.models) && initCache.models.length > 0) {
-    for (const mId of initCache.models) {
+    const filtered = initCache.models.filter((mId) => !isDeprecatedModel(mId));
+    for (const mId of filtered) {
       ensureDynamicModelDefinition(mId);
     }
-    ANTIGRAVITY_OPENCODE_MODEL_IDS = [...initCache.models];
+    ANTIGRAVITY_OPENCODE_MODEL_IDS = [...filtered];
   }
 } catch {}
 
@@ -43941,7 +43945,7 @@ function registerGaModels(editor, catalog) {
   const record2 = editor.get(GA_PROVIDER_ID);
   if (!record2) return;
   const kept = [...record2.models.values()].filter(
-    (model) => !model.id.startsWith("antigravity-") && !model.id.includes("3.7") && !catalog.has(model.id)
+    (model) => !model.id.startsWith("antigravity-") && !model.id.includes("3.7") && !model.id.includes("3.6") && !model.id.includes("3.1") && !catalog.has(model.id)
   );
   editor.models.set(GA_PROVIDER_ID, [...kept, ...catalog.values()]);
 }
@@ -44040,8 +44044,8 @@ async function runDynamicModelCatalogSync(context, catalog, runtime) {
   for (const verType of sortedVersions) {
     const [ver, type] = verType.split("-");
     if (parseFloat(ver) < 3.1) continue;
-    // Discontinued models: 3.7 is deprecated and shut down by Google
-    if (ver === "3.7") continue;
+    // Discontinued models: 3.7, 3.6, 3.1 are deprecated and shut down by Google
+    if (ver === "3.7" || ver === "3.6" || ver === "3.1") continue;
 
     const id = `antigravity-gemini-${ver}-${type}`;
     ensureDynamicModelDefinition(id);
@@ -44050,16 +44054,16 @@ async function runDynamicModelCatalogSync(context, catalog, runtime) {
 
   // Claude models
   if (modelEntries.some(([k]) => k.includes("claude-sonnet-4-6"))) {
+    newModelIds.push("antigravity-claude-sonnet-4-6");
     newModelIds.push("antigravity-claude-sonnet-4-6-thinking");
   }
   if (modelEntries.some(([k]) => k.includes("claude-opus-4-6"))) {
+    newModelIds.push("antigravity-claude-opus-4-6");
     newModelIds.push("antigravity-claude-opus-4-6-thinking");
   }
 
   // Image models
-  if (modelEntries.some(([k]) => k.includes("gemini-3.1-flash-image"))) {
-    newModelIds.push("antigravity-gemini-3.1-flash-image");
-  }
+  // Note: 3.1 is deprecated, skipping gemini-3.1-flash-image
 
   // GPT-OSS
   if (modelEntries.some(([k]) => k.includes("gpt-oss-120b"))) {

@@ -11,7 +11,7 @@ def fix_models_visibility():
     try:
         conn = sqlite3.connect(str(drafts_path))
         cur = conn.cursor()
-        cur.execute("SELECT rowid, value FROM state WHERE key='opencode.global.dat' AND name='model'")
+        cur.execute("SELECT rowid, value FROM state WHERE name='opencode.global.dat' AND key='model'")
         row = cur.fetchone()
         if not row:
             conn.close()
@@ -20,8 +20,12 @@ def fix_models_visibility():
         rowid, val_str = row
         data = json.loads(val_str)
 
-        # 1. Remove discontinued 3.7 models
-        user_models = [m for m in data.get("user", []) if "3.7" not in m.get("modelID", "")]
+        # 1. Remove discontinued models (3.7, 3.6, 3.1)
+        deprecated_versions = ("3.7", "3.6", "3.1")
+        def is_dep(mid):
+            return any(v in mid for v in deprecated_versions)
+
+        user_models = [m for m in data.get("user", []) if not is_dep(m.get("modelID", ""))]
 
         # 2. Models that should be immediately visible in the quick dropdown
         to_show = [
@@ -30,8 +34,7 @@ def fix_models_visibility():
             "antigravity-claude-sonnet-4-6",
             "antigravity-claude-sonnet-4-6-thinking",
             "antigravity-gemini-3.8-flash",
-            "antigravity-gemini-3.6-flash",
-            "antigravity-gemini-3.1-pro"
+            "antigravity-gemini-3.5-flash"
         ]
 
         existing_keys = {f"{m.get('providerID')}:{m.get('modelID')}" for m in user_models}
@@ -50,7 +53,7 @@ def fix_models_visibility():
 
         # 3. Clean recent & ensure Claude Opus/Sonnet and Gemini 3.8 are at top
         if "recent" in data:
-            data["recent"] = [m for m in data["recent"] if "3.7" not in m.get("modelID", "")]
+            data["recent"] = [m for m in data["recent"] if not is_dep(m.get("modelID", ""))]
             recent_keys = {f"{m.get('providerID')}:{m.get('modelID')}" for m in data["recent"]}
             for m_id in ["antigravity-claude-opus-4-6", "antigravity-claude-sonnet-4-6", "antigravity-gemini-3.8-flash"]:
                 k = f"google:{m_id}"
@@ -59,7 +62,7 @@ def fix_models_visibility():
 
         # 4. Clean variant
         if "variant" in data:
-            data["variant"] = {k: v for k, v in data["variant"].items() if "3.7" not in k}
+            data["variant"] = {k: v for k, v in data["variant"].items() if not is_dep(k)}
 
         cur.execute("UPDATE state SET value=? WHERE rowid=?", (json.dumps(data), rowid))
         conn.commit()
