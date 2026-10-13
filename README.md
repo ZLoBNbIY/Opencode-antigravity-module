@@ -1,16 +1,35 @@
-# OpenCode Antigravity Module (Ветка V2)
+# ⚠️ ВНИМАНИЕ: Ветка `main` устарела! Все актуальные обновления — в ветке `V2`
 
-> [!IMPORTANT]
-> **Ветка `V2` разработана специально для OpenCode версии 2.0.27 и выше.**  
-> Данная ветка включает полную поддержку архитектуры OpenCode 2.x:
-> * Внутренняя база данных SQLite (`opencode.db`) и таблица `credential`.
-> * Мгновенная синхронизация учетных записей через интерфейс `opencode-cli auth import / export`.
-> * Поддержка двойного пути конфигурации `auth.json` (`%USERPROFILE%\.opencode\auth.json` и `%USERPROFILE%\.local\share\opencode\auth.json`).
-> * Мульти-аккаунт и авто-ротация Google Antigravity & OpenAI ChatGPT.
-> * Устранение несовместимости JSON Schema (`exclusiveMinimum`) с Protobuf-валидатором Gemini API.
-> * Автоматическая очистка блокировок `service.json*` для предотвращения ошибок Windows Desktop IPC.
+> [!WARNING]
+> **Ветка `main` больше не поддерживается и может работать некорректно в актуальных версиях OpenCode!**
 > 
-> *Для устаревших версий OpenCode 1.x (до 2.0.0) используйте ветку `main`.*
+> 🚀 **Все свежие исправления, обновления и стабильная работа перенесены в ветку [`V2`](https://github.com/ZLoBNbIY/Opencode-antigravity-module/tree/V2).**
+>
+> ### Что реализовано и исправлено в ветке `V2`:
+> * ✅ **Полная поддержка OpenCode 2.0.27+** (архитектура провайдеров OpenCode 2.x и поколенческое хранилище аккаунтов `*.generation`).
+> * ✅ **Исправление ошибки добавления аккаунтов Google**: устранена ошибка `LegacyAccountPoolRetiredError: Account pool file is owned by the account store`.
+> * ✅ **Устранение ошибки авторизации Google**: решена проблема `GOOGLE_GENERATIVE_AI_API_KEY is not set`.
+> * ✅ **Динамический каталог моделей и автосинхронизация с Google API**:
+>   * Устаревшая и отключенная Google модель `gemini-3.7-flash` автоматически исключена.
+>   * Будущие модели (включая **Gemini 4 Flash / Pro**) добавляются автоматически при их релизе Google без правки кода.
+> * ✅ **Мульти-аккаунты и квоты**: живой мониторинг квот Google и OpenAI/ChatGPT, переключение аккаунтов в GUI Antigravity Hub в 1 клик.
+> * ✅ **Исправление зависаний стриминга**: стабильный поток Server-Sent Events (SSE) без остановок на «Размышление...».
+>
+> ---
+>
+> ### ⚡ Быстрая установка актуальной версии из ветки `V2` (1 команда в PowerShell):
+> ```powershell
+> (irm https://raw.githubusercontent.com/ZLoBNbIY/Opencode-antigravity-module/V2/install.ps1).Trim([char]65279) | iex
+> ```
+> *Если вы уже клонировали репозиторий локально, переключитесь на ветку `V2`:*
+> ```bash
+> git checkout V2
+> powershell -ExecutionPolicy Bypass -File .\install.ps1
+> ```
+
+---
+
+# OpenCode Antigravity Module (Архивная ветка main)
 
 > **Комплексный модуль интеграции Google Antigravity OAuth для OpenCode**  
 > Доступ к моделям **Gemini 3.8 Flash**, **Gemini 3.7 Flash / Pro** и **Claude** через аккаунты Google с поддержкой мульти-аккаунта, умной ротации квот, нативного GUI-менеджера и полным устранением зависаний стриминга («Размышление...»).
