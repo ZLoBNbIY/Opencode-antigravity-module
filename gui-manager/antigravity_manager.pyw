@@ -624,6 +624,7 @@ class AntigravityManagerApp(ctk.CTk):
         self.accounts_data = []
         self.openai_accounts_data = []
         self.current_nav = "antigravity"
+        self.current_provider_view = "google"
         self.is_loading = False
         self.search_query = ""
 
