@@ -16837,7 +16837,6 @@ var QUOTA_GROUP_BY_MODEL_ID = {
 };
 var ANTIGRAVITY_OPENCODE_MODEL_IDS = [
   "antigravity-gemini-3.8-flash",
-  "antigravity-gemini-3.7-flash",
   "antigravity-gemini-3.6-flash",
   "antigravity-gemini-3.5-flash",
   "antigravity-gemini-3.1-pro",
@@ -16846,8 +16845,64 @@ var ANTIGRAVITY_OPENCODE_MODEL_IDS = [
   "antigravity-gemini-3.1-flash-image",
   "antigravity-gpt-oss-120b-medium"
 ];
+
+// --- Dynamic Model Catalog & Google CloudCode Sync ---
+var DYNAMIC_MODELS_CACHE_FILE = "antigravity-models-cache.json";
+function getDynamicModelsCachePath() {
+  try {
+    const configDir = typeof getLegacyWindowsConfigDir === "function" ? getLegacyWindowsConfigDir() : (process.env.USERPROFILE ? join(process.env.USERPROFILE, ".config", "opencode") : "");
+    return configDir ? join(configDir, DYNAMIC_MODELS_CACHE_FILE) : "";
+  } catch {
+    return "";
+  }
+}
+function loadDynamicModelsCache() {
+  try {
+    const p = getDynamicModelsCachePath();
+    if (p && existsSync(p)) {
+      const data = JSON.parse(readFileSync(p, "utf-8"));
+      if (Array.isArray(data.models) && data.models.length > 0) {
+        return data;
+      }
+    }
+  } catch {}
+  return null;
+}
+function ensureDynamicModelDefinition(id) {
+  if (ALL_MODEL_DEFINITIONS[id]) return ALL_MODEL_DEFINITIONS[id];
+  const match = id.match(/^antigravity-gemini-(\d+(?:\.\d+)?)-(flash|pro)/i);
+  if (match) {
+    const ver = match[1];
+    const type = match[2].toLowerCase();
+    const capType = type.charAt(0).toUpperCase() + type.slice(1);
+    const isPro = type === "pro";
+    ALL_MODEL_DEFINITIONS[id] = defineModel(id, {
+      name: `Gemini ${ver} ${capType} (Antigravity)`,
+      reasoning: true,
+      limit: { context: 1048576, output: isPro ? 65535 : 65536 },
+      modalities: DEFAULT_MODALITIES,
+      variants: {
+        low: { thinkingLevel: "low" },
+        high: { thinkingLevel: "high" }
+      }
+    });
+    return ALL_MODEL_DEFINITIONS[id];
+  }
+  return null;
+}
+
+try {
+  const initCache = loadDynamicModelsCache();
+  if (initCache && Array.isArray(initCache.models) && initCache.models.length > 0) {
+    for (const mId of initCache.models) {
+      ensureDynamicModelDefinition(mId);
+    }
+    ANTIGRAVITY_OPENCODE_MODEL_IDS = [...initCache.models];
+  }
+} catch {}
+
 function pickModelDefinitions(ids) {
-  return Object.fromEntries(ids.map((id) => [id, ALL_MODEL_DEFINITIONS[id]]));
+  return Object.fromEntries(ids.map((id) => [id, ALL_MODEL_DEFINITIONS[id] || ensureDynamicModelDefinition(id)]).filter(([, def]) => Boolean(def)));
 }
 var OPENCODE_MODEL_DEFINITIONS = pickModelDefinitions(ANTIGRAVITY_OPENCODE_MODEL_IDS);
 function getResolverAliasMap() {

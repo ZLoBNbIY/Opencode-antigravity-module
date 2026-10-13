@@ -17535,7 +17535,6 @@ var QUOTA_GROUP_BY_MODEL_ID = {
 };
 var ANTIGRAVITY_OPENCODE_MODEL_IDS = [
   "antigravity-gemini-3.8-flash",
-  "antigravity-gemini-3.7-flash",
   "antigravity-gemini-3.6-flash",
   "antigravity-gemini-3.5-flash",
   "antigravity-gemini-3.1-pro",
@@ -17544,12 +17543,81 @@ var ANTIGRAVITY_OPENCODE_MODEL_IDS = [
   "antigravity-gemini-3.1-flash-image",
   "antigravity-gpt-oss-120b-medium"
 ];
+
+// --- Dynamic Model Catalog & Google CloudCode Sync ---
+var DYNAMIC_MODELS_CACHE_FILE = "antigravity-models-cache.json";
+function getDynamicModelsCachePath() {
+  try {
+    const configDir = typeof getLegacyWindowsConfigDir === "function" ? getLegacyWindowsConfigDir() : (process.env.USERPROFILE ? join(process.env.USERPROFILE, ".config", "opencode") : "");
+    return configDir ? join(configDir, DYNAMIC_MODELS_CACHE_FILE) : "";
+  } catch {
+    return "";
+  }
+}
+function loadDynamicModelsCache() {
+  try {
+    const p = getDynamicModelsCachePath();
+    if (p && existsSync(p)) {
+      const data = JSON.parse(readFileSync(p, "utf-8"));
+      if (Array.isArray(data.models) && data.models.length > 0) {
+        return data;
+      }
+    }
+  } catch {}
+  return null;
+}
+function saveDynamicModelsCache(modelIds) {
+  try {
+    const p = getDynamicModelsCachePath();
+    if (!p) return;
+    const dir = dirname(p);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(p, JSON.stringify({
+      updatedAt: Date.now(),
+      models: modelIds
+    }, null, 2), "utf-8");
+  } catch {}
+}
+function ensureDynamicModelDefinition(id) {
+  if (ALL_MODEL_DEFINITIONS[id]) return ALL_MODEL_DEFINITIONS[id];
+  const match = id.match(/^antigravity-gemini-(\d+(?:\.\d+)?)-(flash|pro)/i);
+  if (match) {
+    const ver = match[1];
+    const type = match[2].toLowerCase();
+    const capType = type.charAt(0).toUpperCase() + type.slice(1);
+    const isPro = type === "pro";
+    ALL_MODEL_DEFINITIONS[id] = defineModel(id, {
+      name: `Gemini ${ver} ${capType} (Antigravity)`,
+      reasoning: true,
+      limit: { context: 1048576, output: isPro ? 65535 : 65536 },
+      modalities: DEFAULT_MODALITIES,
+      variants: {
+        low: { thinkingLevel: "low" },
+        high: { thinkingLevel: "high" }
+      }
+    });
+    return ALL_MODEL_DEFINITIONS[id];
+  }
+  return null;
+}
+
+// Initialise from disk cache if present
+try {
+  const initCache = loadDynamicModelsCache();
+  if (initCache && Array.isArray(initCache.models) && initCache.models.length > 0) {
+    for (const mId of initCache.models) {
+      ensureDynamicModelDefinition(mId);
+    }
+    ANTIGRAVITY_OPENCODE_MODEL_IDS = [...initCache.models];
+  }
+} catch {}
+
 function pickModelDefinitions(ids) {
-  return Object.fromEntries(ids.map((id) => [id, ALL_MODEL_DEFINITIONS[id]]));
+  return Object.fromEntries(ids.map((id) => [id, ALL_MODEL_DEFINITIONS[id] || ensureDynamicModelDefinition(id)]).filter(([, def]) => Boolean(def)));
 }
 var OPENCODE_MODEL_DEFINITIONS = pickModelDefinitions(ANTIGRAVITY_OPENCODE_MODEL_IDS);
 function getPublicModelDefinitions() {
-  return OPENCODE_MODEL_DEFINITIONS;
+  return pickModelDefinitions(ANTIGRAVITY_OPENCODE_MODEL_IDS);
 }
 function getAntigravityOpencodeModelIds() {
   return [...ANTIGRAVITY_OPENCODE_MODEL_IDS];
@@ -24504,12 +24572,12 @@ var THINKING_TIER_BUDGETS = {
 var MODEL_ALIASES = getResolverAliasMap();
 var TIER_REGEX = /-(minimal|low|medium|high)$/;
 var QUOTA_PREFIX_REGEX = /^antigravity-/i;
-var GEMINI_3_PRO_REGEX = /^gemini-3(?:\.\d+)?-pro/i;
-var GEMINI_3_FLASH_REGEX = /^gemini-3(?:\.\d+)?-flash/i;
+var GEMINI_3_PRO_REGEX = /^gemini-[3-9](?:\.\d+)?-pro/i;
+var GEMINI_3_FLASH_REGEX = /^gemini-[3-9](?:\.\d+)?-flash/i;
 var IMAGE_GENERATION_MODELS = /image|imagen/i;
 function supportsThinkingTiers(model) {
   const lower = model.toLowerCase();
-  return lower.includes("gemini-3") || lower.includes("gemini-2.5") || lower.includes("claude") && lower.includes("thinking");
+  return lower.includes("gemini-") || lower.includes("claude") && lower.includes("thinking");
 }
 function extractThinkingTierFromModel(model) {
   if (!supportsThinkingTiers(model)) {
@@ -24532,7 +24600,7 @@ function getBudgetFamily(model) {
 }
 function isThinkingCapableModel(model) {
   const lower = model.toLowerCase();
-  return lower.includes("thinking") || lower.includes("gemini-3") || lower.includes("gemini-2.5");
+  return lower.includes("thinking") || lower.includes("gemini-");
 }
 function isGemini3ProModel(model) {
   return GEMINI_3_PRO_REGEX.test(model);
@@ -24641,6 +24709,21 @@ function resolveModelWithTier(requestedModel, options = {}) {
       explicitQuota
     };
   }
+  const isGenericGemini = /^gemini-(\d+(?:\.\d+)?)-(flash|pro)/i.test(baseName);
+  if (isGenericGemini && quotaPreference === "antigravity") {
+    const matchGen = baseName.match(/^gemini-(\d+(?:\.\d+)?)-(flash|pro)/i);
+    const typeGen = matchGen[2].toLowerCase();
+    const defaultTier = typeGen === "pro" ? "low" : "medium";
+    const actualTier = tier || defaultTier;
+    return {
+      actualModel: `${baseName}-${actualTier}`,
+      thinkingBudget: typeGen === "pro" ? 10001 : 4000,
+      tier: actualTier,
+      isThinkingModel: true,
+      quotaPreference,
+      explicitQuota
+    };
+  }
   let antigravityModel = modelWithoutQuota;
   if (skipAlias) {
     if ((isGemini3Pro || isGemini3Flash) && !tier && !isImageModel) {
@@ -24723,8 +24806,8 @@ function resolveModelWithTier(requestedModel, options = {}) {
 }
 function resolveModelForHeaderStyle(requestedModel, headerStyle) {
   const lower = requestedModel.toLowerCase();
-  const isGemini3 = lower.includes("gemini-3");
-  if (!isGemini3) {
+  const isGeminiFamily = /gemini-(2\.5|3|4|5|[0-9]+)/i.test(lower);
+  if (!isGeminiFamily) {
     return resolveModelWithTier(requestedModel);
   }
   if (headerStyle === "antigravity") {
@@ -43862,6 +43945,142 @@ function headerValue(request, names) {
   }
   return null;
 }
+
+async function getDynamicActiveRefreshToken() {
+  try {
+    const legacyPath = getStoragePath();
+    const modules = await loadCommonAuthStoreModules();
+    const admission = await readAccountStoreBinding(legacyPath, modules, Date.now);
+    if (admission && admission.status === "bound") {
+      const state = JSON.parse(readFileSync(admission.paths.statePath, "utf-8"));
+      const accounts = state.accounts;
+      if (accounts) {
+        for (const acc of Object.values(accounts)) {
+          if (acc && acc.refresh) return acc.refresh;
+          if (acc && acc.credential?.refreshToken) return acc.credential.refreshToken;
+        }
+      }
+    }
+  } catch {}
+  try {
+    const authPath = process.env.USERPROFILE ? join(process.env.USERPROFILE, ".local", "share", "opencode", "auth.json") : "";
+    if (authPath && existsSync(authPath)) {
+      const auth = JSON.parse(readFileSync(authPath, "utf-8"));
+      if (auth.google?.refresh) return auth.google.refresh;
+    }
+  } catch {}
+  return null;
+}
+
+async function runDynamicModelCatalogSync(context, catalog, runtime) {
+  const refreshToken = await getDynamicActiveRefreshToken();
+  if (!refreshToken) return;
+
+  let accessToken;
+  try {
+    const tokenRes = await refreshAntigravityToken(refreshToken);
+    accessToken = tokenRes?.access;
+  } catch {}
+  if (!accessToken) return;
+
+  let rawModelsData;
+  const endpoints = [
+    "https://cloudcode-pa.googleapis.com",
+    "https://daily-cloudcode-pa.googleapis.com"
+  ];
+  for (const ep of endpoints) {
+    try {
+      const res = await fetch(`${ep}/v1internal:fetchAvailableModels`, {
+        method: "POST",
+        headers: {
+          "User-Agent": buildAntigravityHarnessUserAgent(),
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({})
+      });
+      if (res.ok) {
+        rawModelsData = await res.json();
+        break;
+      }
+    } catch {}
+  }
+
+  const googleModels = rawModelsData?.models;
+  if (!googleModels || typeof googleModels !== "object") return;
+
+  const modelEntries = Object.entries(googleModels);
+  const detectedGemini = new Set();
+  for (const [key] of modelEntries) {
+    const m = key.match(/^gemini-(\d+(?:\.\d+)?)-(flash|pro)/i);
+    if (m) {
+      detectedGemini.add(`${m[1]}-${m[2].toLowerCase()}`);
+    }
+  }
+
+  const newModelIds = [];
+  const sortedVersions = [...detectedGemini].sort((a, b) => parseFloat(b) - parseFloat(a));
+
+  for (const verType of sortedVersions) {
+    const [ver, type] = verType.split("-");
+    if (parseFloat(ver) < 3.1) continue;
+    // Exclude discontinued models (like 3.7) if only fallback tiered exists
+    if (ver === "3.7") {
+      const hasStandard = modelEntries.some(([k]) => k.startsWith("gemini-3.7-flash-medium") || k.startsWith("gemini-3.7-flash-high") || k === "gemini-3.7-flash");
+      if (!hasStandard) continue;
+    }
+
+    const id = `antigravity-gemini-${ver}-${type}`;
+    ensureDynamicModelDefinition(id);
+    newModelIds.push(id);
+  }
+
+  // Claude models
+  if (modelEntries.some(([k]) => k.includes("claude-sonnet-4-6"))) {
+    newModelIds.push("antigravity-claude-sonnet-4-6-thinking");
+  }
+  if (modelEntries.some(([k]) => k.includes("claude-opus-4-6"))) {
+    newModelIds.push("antigravity-claude-opus-4-6-thinking");
+  }
+
+  // Image models
+  if (modelEntries.some(([k]) => k.includes("gemini-3.1-flash-image"))) {
+    newModelIds.push("antigravity-gemini-3.1-flash-image");
+  }
+
+  // GPT-OSS
+  if (modelEntries.some(([k]) => k.includes("gpt-oss-120b"))) {
+    newModelIds.push("antigravity-gpt-oss-120b-medium");
+  }
+
+  const currentSet = new Set(ANTIGRAVITY_OPENCODE_MODEL_IDS);
+  const isDiff = newModelIds.length !== ANTIGRAVITY_OPENCODE_MODEL_IDS.length || newModelIds.some((id) => !currentSet.has(id));
+
+  if (isDiff) {
+    ANTIGRAVITY_OPENCODE_MODEL_IDS.length = 0;
+    ANTIGRAVITY_OPENCODE_MODEL_IDS.push(...newModelIds);
+    saveDynamicModelsCache(newModelIds);
+
+    if (catalog && context?.provider?.transform) {
+      catalog.clear();
+      for (const [id, def] of Object.entries(getPublicModelDefinitions())) {
+        catalog.set(id, toGaModelInfo(id, def));
+      }
+      await context.provider.transform((editor) => registerGaModels(editor, catalog));
+      await context.provider.reload();
+      try {
+        process.stderr.write(`[antigravity] Dynamic model catalog updated from Google API (${newModelIds.length} models active)\n`);
+      } catch {}
+    }
+  }
+}
+
+function scheduleDynamicModelSync(context, catalog, runtime) {
+  setTimeout(() => {
+    void runDynamicModelCatalogSync(context, catalog, runtime).catch(() => {});
+  }, 1000);
+}
+
 async function setupGaActivation(context, factory, overrides = {}) {
   if (classifyGaSetupContext(context) === "legacy") return void 0;
   const directory = context.location.directory;
@@ -43939,6 +44158,7 @@ async function setupGaActivation(context, factory, overrides = {}) {
     );
     runtime.scope.add(modelRegistration, "producer");
     await context.provider.reload();
+    scheduleDynamicModelSync(context, catalog, runtime);
     const commandRuns = new AbortController();
     runtime.scope.add(
       {

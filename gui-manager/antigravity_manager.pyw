@@ -1110,6 +1110,28 @@ class AntigravityManagerApp(ctk.CTk):
             text_color="#71717a",
         ).pack(anchor="w", padx=12, pady=(0, 10))
 
+    def get_gemini_models_badge(self):
+        try:
+            cache_file = Path.home() / ".config" / "opencode" / "antigravity-models-cache.json"
+            if cache_file.exists():
+                data = json.loads(cache_file.read_text(encoding="utf-8"))
+                models = data.get("models", [])
+                gemini_vers = []
+                for m in models:
+                    match = re.search(r"gemini-(\d+(?:\.\d+)?)-(flash|pro)", m, re.I)
+                    if match:
+                        v = match.group(1)
+                        if v not in gemini_vers:
+                            gemini_vers.append(v)
+                if gemini_vers:
+                    # Filter out discontinued 3.7
+                    active_vers = [v for v in gemini_vers if v != "3.7"]
+                    if active_vers:
+                        return ", ".join(active_vers[:4])
+        except Exception:
+            pass
+        return "3.8, 3.6, Pro"
+
     def create_account_card(self, acc, active_idx=0):
         email = acc.get("email", "unknown@gmail.com")
         index = acc.get("index", 1)
@@ -1243,7 +1265,7 @@ class AntigravityManagerApp(ctk.CTk):
             quotas_container,
             col=0,
             title="Gemini Flash & Pro",
-            badge_text="2.5, 3.7, 3.8",
+            badge_text=self.get_gemini_models_badge(),
             quota_info=gemini_group,
         )
 
