@@ -1746,7 +1746,8 @@ class AntigravityManagerApp(ctk.CTk):
         mode_row.pack(fill="x", padx=16, pady=(0, 10))
         ctk.CTkLabel(mode_row, text="Активный протокол:", font=self.font(size=12, weight="bold"), text_color=COLOR["text_primary"]).pack(side="left", padx=(0, 10))
 
-        self.dns_mode_var = tk.StringVar(value=self.config_data.get("dns_mode", "standard"))
+        dns_mode_labels = {"standard": "Обычный DNS", "dot": "DNS-over-TLS (DoT)", "doh": "DNS-over-HTTPS (DoH)", "system": "Системный DNS"}
+        self.dns_mode_var = tk.StringVar(value=dns_mode_labels.get(self.config_data.get("dns_mode", "standard"), "Обычный DNS"))
         self.dns_mode_seg = ctk.CTkSegmentedButton(
             mode_row,
             values=["Обычный DNS", "DNS-over-TLS (DoT)", "DNS-over-HTTPS (DoH)", "Системный DNS"],

@@ -17511,11 +17511,11 @@ var GEMINI_37_FLASH_ROUTES = {
   }
 };
 var GEMINI_38_FLASH_ROUTES = {
-  defaultModel: "gemini-3.8-flash-medium",
+  defaultModel: "gemini-3.8-flash-tiered",
   byTier: {
-    low: "gemini-3.8-flash-low",
-    medium: "gemini-3.8-flash-medium",
-    high: "gemini-3.8-flash-high"
+    low: "gemini-3.8-flash-tiered",
+    medium: "gemini-3.8-flash-tiered",
+    high: "gemini-3.8-flash-tiered"
   }
 };
 var QUOTA_GROUP_BY_MODEL_ID = {
@@ -21961,7 +21961,7 @@ function parseDnsAnswerIp(data) {
   } catch {}
   return null;
 }
-async function resolveViaDoH(dohUrl, hostname, onDebug) {
+async function resolveViaDoH(dohUrl, hostname, onDebug, signal) {
   try {
     const wire = buildDnsQueryWire(hostname);
     const resp = await fetch(dohUrl, {
@@ -21970,7 +21970,8 @@ async function resolveViaDoH(dohUrl, hostname, onDebug) {
         "content-type": "application/dns-message",
         "accept": "application/dns-message"
       },
-      body: wire
+      body: wire,
+      signal
     });
     if (resp.ok) {
       const buf = Buffer3.from(await resp.arrayBuffer());
@@ -21985,7 +21986,7 @@ async function resolveViaDoH(dohUrl, hostname, onDebug) {
   }
   return null;
 }
-async function resolveViaDoT(dotHost, hostname, onDebug) {
+async function resolveViaDoT(dotHost, hostname, onDebug, signal) {
   try {
     let host = dotHost;
     let port = 853;
@@ -21999,7 +22000,7 @@ async function resolveViaDoT(dotHost, hostname, onDebug) {
     prefix.writeUInt16BE(wire.length, 0);
     const packet = Buffer3.concat([prefix, wire]);
     const ip = await new Promise((resolveDns, rejectDns) => {
-      const socket = tls.connect({ host, port, servername: host }, () => {
+      const socket = tls.connect({ host, port, servername: host, signal }, () => {
         socket.write(packet);
       });
       socket.setTimeout(4000);
@@ -22017,6 +22018,7 @@ async function resolveViaDoT(dotHost, hostname, onDebug) {
       });
       socket.on("timeout", () => { socket.destroy(); rejectDns(new Error("DoT timeout")); });
       socket.on("error", (e) => rejectDns(e));
+      socket.once("close", () => rejectDns(new Error("DoT connection closed before a complete answer")));
     });
     if (ip) {
       onDebug?.(`[DoT] Resolved ${hostname} to ${ip} via ${dotHost}`);
@@ -22027,8 +22029,15 @@ async function resolveViaDoT(dotHost, hostname, onDebug) {
   }
   return null;
 }
-async function resolveHostWithCustomDns(hostname, onDebug) {
+async function resolveHostWithCustomDns(hostname, onDebug, callerSignal, timeoutMs = 5000) {
+  const controller = new AbortController();
+  const abort = () => controller.abort(callerSignal.reason);
+  const timer = setTimeout(() => controller.abort(new Error("Custom DNS timed out")), Math.min(timeoutMs, 5000));
+  callerSignal?.addEventListener("abort", abort, { once: true });
+  if (callerSignal?.aborted) abort();
+  const signal = controller.signal;
   try {
+    signal.throwIfAborted();
     const configPath = getUserConfigPath();
     if (existsSync5(configPath)) {
       const parsed = JSON.parse(readFileSync2(configPath, "utf-8"));
@@ -22041,23 +22050,30 @@ async function resolveHostWithCustomDns(hostname, onDebug) {
 
       // 1. If mode is DoH or DoH URL provided
       if (mode === "doh" && parsed.doh_url && typeof parsed.doh_url === "string" && parsed.doh_url.trim()) {
-        const dohIp = await resolveViaDoH(parsed.doh_url.trim(), hostname, onDebug);
+        const dohIp = await resolveViaDoH(parsed.doh_url.trim(), hostname, onDebug, signal);
         if (dohIp) return dohIp;
+        throw new Error("DoH resolution failed");
       }
 
       // 2. If mode is DoT or DoT host provided
       if (mode === "dot" && parsed.dot_host && typeof parsed.dot_host === "string" && parsed.dot_host.trim()) {
-        const dotIp = await resolveViaDoT(parsed.dot_host.trim(), hostname, onDebug);
+        const dotIp = await resolveViaDoT(parsed.dot_host.trim(), hostname, onDebug, signal);
         if (dotIp) return dotIp;
+        throw new Error("DoT resolution failed");
       }
 
       // 3. Fallback / Standard UDP/IPv4 DNS
       const dnsServers = parsed.custom_dns;
+      if (mode !== "standard") throw new Error("Selected DNS protocol has no valid endpoint");
       if (Array.isArray(dnsServers) && dnsServers.length > 0) {
         const resolver = new dns.Resolver();
         resolver.setServers(dnsServers);
         const addresses = await new Promise((resolveDns, rejectDns) => {
+          const cancel = () => { resolver.cancel(); rejectDns(signal.reason); };
+          if (signal.aborted) return cancel();
+          signal.addEventListener("abort", cancel, { once: true });
           resolver.resolve4(hostname, (err, addrs) => {
+            signal.removeEventListener("abort", cancel);
             if (err || !addrs || addrs.length === 0) rejectDns(err || new Error("No addresses"));
             else resolveDns(addrs);
           });
@@ -22070,11 +22086,16 @@ async function resolveHostWithCustomDns(hostname, onDebug) {
     }
   } catch (dnsErr) {
     onDebug?.(`[DNS] Custom DNS resolution failed for ${hostname}: ${dnsErr?.message || dnsErr}`);
+    if (callerSignal?.aborted) throw callerSignal.reason;
+    throw new Error(`Antigravity DNS: ${dnsErr?.message || dnsErr}`);
+  } finally {
+    clearTimeout(timer);
+    callerSignal?.removeEventListener("abort", abort);
   }
   return hostname;
 }
 async function connectDirect(targetUrl, timeoutMs, signal, onDebug) {
-  const targetHost = await resolveHostWithCustomDns(targetUrl.hostname, onDebug);
+  const targetHost = await resolveHostWithCustomDns(targetUrl.hostname, onDebug, signal, timeoutMs);
   return await new Promise((resolve12, reject) => {
     const tlsOptions = {
       host: targetHost,
@@ -22353,14 +22374,14 @@ var ANTIGRAVITY_REDIRECT_URI = "http://localhost:51121/oauth-callback";
 var ANTIGRAVITY_ENDPOINT_DAILY = "https://daily-cloudcode-pa.googleapis.com";
 var ANTIGRAVITY_ENDPOINT_PROD = "https://cloudcode-pa.googleapis.com";
 var ANTIGRAVITY_ENDPOINT_FALLBACKS = [
-  ANTIGRAVITY_ENDPOINT_PROD,
-  ANTIGRAVITY_ENDPOINT_DAILY
+  ANTIGRAVITY_ENDPOINT_DAILY,
+  ANTIGRAVITY_ENDPOINT_PROD
 ];
 var ANTIGRAVITY_LOAD_ENDPOINTS = [
   ANTIGRAVITY_ENDPOINT_PROD,
   ANTIGRAVITY_ENDPOINT_DAILY
 ];
-var ANTIGRAVITY_ENDPOINT = ANTIGRAVITY_ENDPOINT_PROD;
+var ANTIGRAVITY_ENDPOINT = ANTIGRAVITY_ENDPOINT_DAILY;
 var GEMINI_CLI_ENDPOINT = ANTIGRAVITY_ENDPOINT_PROD;
 var ANTIGRAVITY_DEFAULT_PROJECT_ID = "rising-fact-p41fc";
 var ANTIGRAVITY_VERSION_FALLBACK = "1.18.3";

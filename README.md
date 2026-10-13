@@ -258,6 +258,7 @@ node plugin/dist/cli.js login
   "account_selection_strategy": "sticky",
   "soft_quota_threshold_percent": 100,
   "switch_on_first_rate_limit": true,
+  "max_rate_limit_wait_seconds": 5,
   "quota_style_fallback": true,
   "debug": false,
   "dns_mode": "standard",
@@ -271,6 +272,8 @@ node plugin/dist/cli.js login
 ```
 
 ### Подробное описание настроек:
+
+Если все аккаунты ограничены, `max_rate_limit_wait_seconds: 5` возвращает ошибку вместо длительного ожидания сброса квоты. Проверка DNS подтверждает только разрешение адреса, а не доступность генерации: API может вернуть 429 даже при рабочем DNS. Выбранные DoH/DoT завершаются ошибкой при недоступности за 5 секунд, без скрытого переключения на обычный DNS. Настройки применяются к прямым соединениям транспорта Antigravity; прокси может разрешать адреса самостоятельно.
 
 | Параметр | Тип | По умолчанию | Описание |
 | :--- | :--- | :--- | :--- |

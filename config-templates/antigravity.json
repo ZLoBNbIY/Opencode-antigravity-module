@@ -3,6 +3,7 @@
   "account_selection_strategy": "sticky",
   "soft_quota_threshold_percent": 100,
   "switch_on_first_rate_limit": true,
+  "max_rate_limit_wait_seconds": 5,
   "quota_style_fallback": true,
   "debug": false,
   "dns_mode": "standard",
