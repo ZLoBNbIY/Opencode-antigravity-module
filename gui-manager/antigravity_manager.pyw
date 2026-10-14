@@ -642,6 +642,8 @@ class AntigravityManagerApp(ctk.CTk):
         self.current_provider_view = "google"
         self.is_loading = False
         self.search_query = ""
+        self._opencode_status_check_running = False
+        self._opencode_status_after_id = None
 
         # Periodic auto-refresh (every 10 minutes)
         self.auto_refresh_enabled = True
@@ -856,7 +858,7 @@ class AntigravityManagerApp(ctk.CTk):
         threading.Thread(target=_do_manual_check, daemon=True).start()
 
     def _on_manual_updates_checked(self, info):
-        self.btn_check_update.configure(state="normal", text="🚀 Обновления")
+        self.btn_check_update.configure(state="normal", text="🔄 Проверить обновления Antigravity Hub")
         has_update = info.get("has_update", False)
         local_sha = info.get("local_sha", "HEAD")
         remote_sha = info.get("remote_sha", "")
@@ -1178,7 +1180,7 @@ class AntigravityManagerApp(ctk.CTk):
 
         self.btn_refresh = ctk.CTkButton(
             self.top_action_bar,
-            text="🔄 Обновить",
+            text="🔄 Обновить квоты",
             font=self.font(size=12, weight="bold"),
             fg_color=COLOR["card_bg"],
             hover_color=COLOR["subbox_bg"],
@@ -1186,7 +1188,7 @@ class AntigravityManagerApp(ctk.CTk):
             border_width=1,
             border_color=COLOR["border"],
             height=36,
-            width=95,
+            width=135,
             corner_radius=8,
             command=self.refresh_all_async,
         )
@@ -1223,23 +1225,6 @@ class AntigravityManagerApp(ctk.CTk):
             command=self.import_accounts_action,
         )
         self.btn_import.pack(side="right", padx=(8, 0))
-
-        # Check Updates button
-        self.btn_check_update = ctk.CTkButton(
-            self.top_action_bar,
-            text="🚀 Обновления",
-            font=self.font(size=12, weight="bold"),
-            fg_color=COLOR["card_bg"],
-            hover_color=COLOR["subbox_bg"],
-            text_color=COLOR["text_primary"],
-            border_width=1,
-            border_color=COLOR["border"],
-            height=36,
-            width=110,
-            corner_radius=8,
-            command=self.manual_check_updates_action,
-        )
-        self.btn_check_update.pack(side="right")
 
     def update_action_bar_for_provider(self):
         if self.current_provider_view == "google":
@@ -1799,6 +1784,23 @@ class AntigravityManagerApp(ctk.CTk):
         self.settings_frame = ctk.CTkScrollableFrame(self.content_area, fg_color=COLOR["bg"])
         self.settings_frame.grid_columnconfigure(0, weight=1)
 
+        update_card = ctk.CTkFrame(self.settings_frame, fg_color=COLOR["card_bg"], corner_radius=12, border_width=1, border_color=COLOR["border"])
+        update_card.pack(fill="x", pady=6)
+        ctk.CTkLabel(
+            update_card,
+            text="Обновление Antigravity Hub",
+            font=self.font(size=14, weight="bold"),
+            text_color=COLOR["text_primary"],
+        ).pack(anchor="w", padx=16, pady=(12, 4))
+        self.btn_check_update = ctk.CTkButton(
+            update_card,
+            text="🔄 Проверить обновления Antigravity Hub",
+            font=self.font(size=12, weight="bold"),
+            command=self.manual_check_updates_action,
+            height=34,
+        )
+        self.btn_check_update.pack(anchor="w", padx=16, pady=(4, 12))
+
         c1 = ctk.CTkFrame(self.settings_frame, fg_color=COLOR["card_bg"], corner_radius=12, border_width=1, border_color=COLOR["border"])
         c1.pack(fill="x", pady=6)
         ctk.CTkLabel(c1, text="Стратегия выбора аккаунтов", font=self.font(size=14, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w", padx=16, pady=(12, 4))
@@ -2327,7 +2329,7 @@ class AntigravityManagerApp(ctk.CTk):
         self.openai_accounts_data = openai_accounts
         self.render_accounts()
         self.is_loading = False
-        self.btn_refresh.configure(state="normal", text="🔄 Обновить")
+        self.btn_refresh.configure(state="normal", text="🔄 Обновить квоты")
         now_str = datetime.datetime.now().strftime("%H:%M:%S")
         self.countdown_seconds = self.auto_refresh_interval_min * 60
         if rotate_msg:
@@ -2557,6 +2559,17 @@ class AntigravityManagerApp(ctk.CTk):
             messagebox.showerror("Ошибка импорта", str(e))
 
     def update_opencode_status(self):
+        # Coalesce overlapping requests (startup, refresh, start/stop actions).
+        if self._opencode_status_check_running:
+            return
+        self._opencode_status_check_running = True
+        if self._opencode_status_after_id is not None:
+            try:
+                self.after_cancel(self._opencode_status_after_id)
+            except Exception:
+                pass
+            self._opencode_status_after_id = None
+
         def _check():
             visible_window = False
             desktop_running = False
@@ -2589,7 +2602,11 @@ class AntigravityManagerApp(ctk.CTk):
 
                     def inspect_window(hwnd, _lparam):
                         nonlocal visible_window
-                        if is_window_visible(hwnd):
+                        rect = wintypes.RECT()
+                        title_length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+                        if is_window_visible(hwnd) and title_length > 0 and ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                            if rect.right <= rect.left or rect.bottom <= rect.top:
+                                return True
                             pid = wintypes.DWORD()
                             get_window_pid(hwnd, ctypes.byref(pid))
                             if pid.value in desktop_pids:
@@ -2611,40 +2628,41 @@ class AntigravityManagerApp(ctk.CTk):
                 pass
 
             def _update():
-                if visible_window:
-                    self.opencode_badge.configure(
-                        text="● OpenCode: Окно открыто",
-                        text_color="#16a34a",
-                        fg_color=("#dcfce7", "#14532d"),
-                    )
-                elif service_running:
-                    self.opencode_badge.configure(
-                        text="◉ OpenCode: Фоновый сервис работает (окно закрыто)",
-                        text_color="#d97706",
-                        fg_color=("#fef3c7", "#78350f"),
-                    )
-                elif desktop_running:
-                    self.opencode_badge.configure(
-                        text="◉ OpenCode: Запущен без видимого окна",
-                        text_color="#d97706",
-                        fg_color=("#fef3c7", "#78350f"),
-                    )
-                else:
-                    self.opencode_badge.configure(
-                        text="○ OpenCode: Остановлен",
-                        text_color=COLOR["text_muted"],
-                        fg_color=COLOR["subbox_bg"],
-                    )
-                # Keep the badge in sync even when OpenCode is closed outside the Hub.
+                self._opencode_status_check_running = False
                 try:
-                    self.after(5000, self.update_opencode_status)
+                    if visible_window:
+                        self.opencode_badge.configure(
+                            text="● OpenCode: Окно открыто",
+                            text_color="#16a34a",
+                            fg_color=("#dcfce7", "#14532d"),
+                        )
+                    elif service_running:
+                        self.opencode_badge.configure(
+                            text="◉ OpenCode: Фоновый сервис работает",
+                            text_color="#d97706",
+                            fg_color=("#fef3c7", "#78350f"),
+                        )
+                    elif desktop_running:
+                        self.opencode_badge.configure(
+                            text="◉ OpenCode: Запущен в фоне",
+                            text_color="#d97706",
+                            fg_color=("#fef3c7", "#78350f"),
+                        )
+                    else:
+                        self.opencode_badge.configure(
+                            text="○ OpenCode: Остановлен",
+                            text_color=COLOR["text_muted"],
+                            fg_color=COLOR["subbox_bg"],
+                        )
+                    # One recurring poll; explicit refreshes replace its pending timer.
+                    self._opencode_status_after_id = self.after(5000, self.update_opencode_status)
                 except Exception:
                     pass
 
             try:
                 self.after(0, _update)
             except Exception:
-                pass
+                self._opencode_status_check_running = False
 
         threading.Thread(target=_check, daemon=True).start()
 
