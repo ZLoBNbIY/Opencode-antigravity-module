@@ -13,6 +13,5 @@
     "31.58.216.201"
   ],
   "dot_host": "dns.bezmezhau.com",
-  "doh_url": "https://dns.bezmezhau.com/dns-query",
-  "proxy": "http://127.0.0.1:51180"
+  "doh_url": "https://dns.bezmezhau.com/dns-query"
 }

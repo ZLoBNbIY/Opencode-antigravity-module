@@ -1993,35 +1993,32 @@ class AntigravityManagerApp(ctk.CTk):
         else:
             self.config_data.pop("doh_url", None)
 
-        # Save Proxy (Auto-enable embedded local tunnel if proxy is empty and custom DNS/DoH is active)
-        proxy_val = self.proxy_entry.get().strip()
-        dns_active = self.config_data.get("dns_mode") in ("standard", "dot", "doh")
-        if not proxy_val and dns_active:
-            proxy_val = "http://127.0.0.1:51180"
-            try:
-                self.proxy_entry.delete(0, "end")
-                self.proxy_entry.insert(0, proxy_val)
-            except Exception:
-                pass
-
-        if proxy_val:
-            self.config_data["proxy"] = proxy_val
+        # Save Proxy for Antigravity:
+        # Antigravity uses its own direct transport with custom DNS (DoH/DoT/Standard).
+        # We only save proxy to antigravity.json if the user explicitly provided an external proxy.
+        user_proxy = self.proxy_entry.get().strip()
+        if user_proxy and user_proxy != "http://127.0.0.1:51180":
+            self.config_data["proxy"] = user_proxy
         else:
             self.config_data.pop("proxy", None)
 
-        # Synchronize proxy to opencode.json for Bun runtime (ChatGPT / OpenAI provider)
+        # Synchronize proxy to opencode.json strictly for OpenAI provider:
+        # OpenAI/ChatGPT will use http://127.0.0.1:51180 (or user proxy), while Antigravity stays on direct DNS.
         try:
             opencode_cfg_path = Path.home() / ".config" / "opencode" / "opencode.json"
             if opencode_cfg_path.exists():
                 oc_data = json.loads(opencode_cfg_path.read_text(encoding="utf-8"))
-                if proxy_val:
+                dns_active = self.config_data.get("dns_mode") in ("standard", "dot", "doh")
+                effective_openai_proxy = user_proxy if (user_proxy and user_proxy != "http://127.0.0.1:51180") else ("http://127.0.0.1:51180" if dns_active else None)
+
+                if effective_openai_proxy:
                     if "provider" not in oc_data:
                         oc_data["provider"] = {}
                     if "openai" not in oc_data["provider"]:
                         oc_data["provider"]["openai"] = {}
                     if "options" not in oc_data["provider"]["openai"]:
                         oc_data["provider"]["openai"]["options"] = {}
-                    oc_data["provider"]["openai"]["options"]["proxy"] = proxy_val
+                    oc_data["provider"]["openai"]["options"]["proxy"] = effective_openai_proxy
                 else:
                     if "provider" in oc_data and "openai" in oc_data["provider"]:
                         if "options" in oc_data["provider"]["openai"]:
@@ -2032,7 +2029,7 @@ class AntigravityManagerApp(ctk.CTk):
 
         ok, msg = self.save_config()
         if ok:
-            messagebox.showinfo("Успешно", "Настройки сохранены!\n\nЛокальный SmartDNS-туннель (127.0.0.1:51180) и параметры DoH/DNS активированы для OpenCode.")
+            messagebox.showinfo("Успешно", "Настройки сохранены!\n\n• Antigravity (Google/Claude) работает напрямую через указанный DNS.\n• OpenAI/ChatGPT изолированно направляется через локальный туннель.")
         else:
             messagebox.showerror("Ошибка", msg)
 

@@ -90,6 +90,18 @@ def resolve_target(host: str) -> str:
     return final_ip
 
 
+def is_openai_domain(host: str) -> bool:
+    h = host.lower().strip()
+    if ":" in h:
+        h = h.split(":", 1)[0]
+    openai_domains = (
+        "openai.com",
+        "chatgpt.com",
+        "oaistatic.com",
+        "oaiusercontent.com",
+    )
+    return any(h == d or h.endswith("." + d) for d in openai_domains)
+
 class TunnelHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         # Silent logging for embedded proxy
@@ -103,6 +115,11 @@ class TunnelHandler(BaseHTTPRequestHandler):
         else:
             host = self.path
             port = 443
+
+        # Strict isolation: Only OpenAI / ChatGPT traffic goes through this tunnel
+        if not is_openai_domain(host):
+            self.send_error(403, f"Forbidden: Local tunnel is reserved for OpenAI/ChatGPT traffic only. Host {host} rejected.")
+            return
 
         resolved_target = resolve_target(host)
 
