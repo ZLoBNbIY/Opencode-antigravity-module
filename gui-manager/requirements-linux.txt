@@ -1,0 +1,2 @@
+-r requirements.txt
+pystray>=0.19.5

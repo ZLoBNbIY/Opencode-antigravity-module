@@ -1,6 +1,6 @@
 """
 Auto-Updater & GitHub Synchronizer for Antigravity Hub
-Checks origin/V2 for fresh updates and applies them seamlessly.
+Checks the platform's release branch for fresh updates and applies them seamlessly.
 """
 
 import os
@@ -14,7 +14,7 @@ from pathlib import Path
 
 REPO_OWNER = "ZLoBNbIY"
 REPO_NAME = "Opencode-antigravity-module"
-BRANCH = "V2"
+BRANCH = "linux" if sys.platform.startswith("linux") else "V2"
 GITHUB_COMMITS_API = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/commits/{BRANCH}"
 
 def get_local_commit_sha(repo_dir: Path) -> str:
@@ -46,7 +46,7 @@ def get_local_commit_sha(repo_dir: Path) -> str:
 
 def check_for_updates(repo_dir: Path, timeout=6) -> dict:
     """
-    Checks GitHub API for the latest commit on branch V2.
+    Checks GitHub API for the latest commit on the platform's release branch.
     Returns:
         {
             "has_update": bool,

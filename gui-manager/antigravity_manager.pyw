@@ -27,7 +27,15 @@ import customtkinter as ctk
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import openai_manager
-import win_tray
+if sys.platform == "win32":
+    from win_tray import WindowsTrayIcon as TrayIcon
+elif sys.platform.startswith("linux"):
+    try:
+        from linux_tray import LinuxTrayIcon as TrayIcon
+    except ImportError:
+        TrayIcon = None
+else:
+    TrayIcon = None
 import health_checker
 import auto_updater
 import crypto_backup
@@ -36,11 +44,29 @@ import local_proxy
 
 # Keep the Windows mutex handle alive for the lifetime of this process.
 _SINGLE_INSTANCE_MUTEX = None
+_SINGLE_INSTANCE_LOCK_FILE = None
 
 
 def acquire_single_instance():
     """Return False when another Antigravity Hub instance already owns the mutex."""
-    global _SINGLE_INSTANCE_MUTEX
+    global _SINGLE_INSTANCE_MUTEX, _SINGLE_INSTANCE_LOCK_FILE
+    if sys.platform.startswith("linux"):
+        try:
+            import fcntl
+
+            lock_path = Path.home() / ".local" / "state" / "antigravity-hub" / "hub.lock"
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            lock_file = open(lock_path, "a+", encoding="utf-8")
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock_file.seek(0)
+            lock_file.truncate()
+            lock_file.write(str(os.getpid()))
+            lock_file.flush()
+            _SINGLE_INSTANCE_LOCK_FILE = lock_file
+            return True
+        except (BlockingIOError, OSError) as e:
+            print(f"Another Antigravity Hub instance is already running: {e}")
+            return False
     if sys.platform != "win32":
         return True
     try:
@@ -102,6 +128,8 @@ def get_cli_js():
     return str(local_cli)
 
 def get_opencode_exe():
+    if sys.platform.startswith("linux"):
+        return shutil.which("opencode-desktop") or shutil.which("opencode") or ""
     candidates = [
         Path.home() / "AppData" / "Local" / "Programs" / "@opencodedesktop" / "OpenCode.exe",
         Path.home() / "AppData" / "Local" / "Programs" / "@opencode-desktop" / "OpenCode.exe",
@@ -124,12 +152,24 @@ def cleanup_opencode_locks():
         state_dir = Path(os.path.expanduser("~/.local/state/opencode"))
         if state_dir.exists():
             for f in state_dir.glob("service.json*"):
+                if sys.platform.startswith("linux"):
+                    continue  # Do not remove a potentially active user's service lock.
                 try:
                     f.unlink()
                 except Exception:
                     pass
     except Exception:
         pass
+
+
+def stop_opencode_processes():
+    if sys.platform.startswith("linux"):
+        run_silent_cmd(["pkill", "-x", "opencode"], timeout=5)
+        run_silent_cmd(["pkill", "-x", "opencode-desktop"], timeout=5)
+        run_silent_cmd(["pkill", "-x", "opencode-cli"], timeout=5)
+    elif sys.platform == "win32":
+        run_silent_cmd(["taskkill", "/f", "/im", "OpenCode.exe"], timeout=5)
+        run_silent_cmd(["taskkill", "/f", "/im", "opencode-cli.exe"], timeout=5)
 
 NODE_EXE = get_node_executable()
 CLI_JS = get_cli_js()
@@ -150,7 +190,7 @@ DEFAULT_CONFIG = {
 }
 
 def run_silent_cmd(cmd, timeout=30):
-    flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+    flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
     startupinfo = None
     if sys.platform == "win32":
         startupinfo = subprocess.STARTUPINFO()
@@ -170,6 +210,17 @@ def run_silent_cmd(cmd, timeout=30):
         return type("SilentResult", (), {"returncode": 1, "stdout": "", "stderr": str(e)})()
 
     return type("SilentResult", (), {"returncode": proc.returncode, "stdout": stdout_str, "stderr": stderr_str})()
+
+
+def open_path(path: Path):
+    if not path.exists():
+        return
+    if sys.platform == "win32":
+        os.startfile(path)
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", str(path)])
+    else:
+        subprocess.Popen(["xdg-open", str(path)])
 
 def get_active_google_account_index() -> int:
     config_dir = Path(os.path.expanduser("~/.config/opencode"))
@@ -658,10 +709,16 @@ class AntigravityManagerApp(ctk.CTk):
         ctk.set_default_color_theme("blue")
         self.configure(fg_color=COLOR["bg"])
 
-        icon_file = Path(__file__).resolve().parent / "icon.ico"
+        icon_file = Path(__file__).resolve().parent / ("icon.ico" if sys.platform == "win32" else "icon.png")
         if icon_file.exists():
             try:
-                self.iconbitmap(str(icon_file))
+                if sys.platform == "win32":
+                    self.iconbitmap(str(icon_file))
+                else:
+                    png_icon = Path(__file__).resolve().parent / "icon.png"
+                    if png_icon.exists():
+                        self._window_icon = tk.PhotoImage(file=str(png_icon))
+                        self.iconphoto(True, self._window_icon)
             except Exception:
                 pass
 
@@ -767,10 +824,13 @@ class AntigravityManagerApp(ctk.CTk):
 
     # --- System Tray Integration ---
     def init_system_tray(self):
+        if TrayIcon is None:
+            print("System tray is unavailable; install Linux GUI dependencies to enable it.")
+            return
         try:
-            icon_file = Path(__file__).resolve().parent / "icon.ico"
+            icon_file = Path(__file__).resolve().parent / ("icon.ico" if sys.platform == "win32" else "icon.png")
             icon_str = str(icon_file) if icon_file.exists() else None
-            self.tray = win_tray.WindowsTrayIcon(
+            self.tray = TrayIcon(
                 title="Antigravity Hub — Google & ChatGPT",
                 icon_path=icon_str,
                 on_show=lambda: self.after(0, self.show_from_tray),
@@ -788,6 +848,15 @@ class AntigravityManagerApp(ctk.CTk):
         if choice not in ("tray", "exit"):
             choice, remember = self.ask_close_choice()
         if choice is None:
+            return
+        if choice == "tray" and (not self.tray or not self.tray.is_visible):
+            self.config_data.pop("close_choice", None)
+            self.config_data["close_choice_remembered"] = False
+            self.save_config()
+            messagebox.showwarning(
+                "Системный трей недоступен",
+                "Не удалось запустить значок в системном трее. Установите Linux-зависимости Antigravity Hub или закройте приложение.",
+            )
             return
         if remember:
             self.config_data["close_choice"] = choice
@@ -878,7 +947,7 @@ class AntigravityManagerApp(ctk.CTk):
     # --- Auto-Updater ---
     def manual_check_updates_action(self):
         self.btn_check_update.configure(state="disabled", text="⏳ Проверка...")
-        self.set_status("Проверка обновлений на GitHub (ветка V2)...")
+        self.set_status(f"Проверка обновлений на GitHub (ветка {auto_updater.BRANCH})...")
 
         def _do_manual_check():
             repo_dir = Path(__file__).resolve().parent.parent
@@ -902,7 +971,7 @@ class AntigravityManagerApp(ctk.CTk):
             self.show_update_banner(info)
             messagebox.showinfo(
                 "Доступно обновление!",
-                f"Найдена новая версия на GitHub (ветка V2)!\n\n"
+                f"Найдена новая версия на GitHub (ветка {auto_updater.BRANCH})!\n\n"
                 f"• Локальный коммит: {local_sha}\n"
                 f"• Свежий коммит: {remote_sha}\n"
                 f"• Что нового: {msg}\n\n"
@@ -913,7 +982,7 @@ class AntigravityManagerApp(ctk.CTk):
             messagebox.showinfo(
                 "Обновления не требуются",
                 f"У вас установлена самая актуальная версия Antigravity Hub!\n\n"
-                f"• Ветка: V2\n"
+                f"• Ветка: {auto_updater.BRANCH}\n"
                 f"• Коммит: {local_sha}\n"
                 f"• Статус: Синхронизировано с GitHub",
             )
@@ -985,7 +1054,7 @@ class AntigravityManagerApp(ctk.CTk):
 
     def apply_update_action(self):
         repo_dir = Path(__file__).resolve().parent.parent
-        self.set_status("Применение обновления с GitHub (ветка V2)...")
+        self.set_status(f"Применение обновления с GitHub (ветка {auto_updater.BRANCH})...")
 
         def _do_update():
             ok, msg = auto_updater.apply_update_git(repo_dir)
@@ -2219,8 +2288,8 @@ class AntigravityManagerApp(ctk.CTk):
 
         r2 = ctk.CTkFrame(c2, fg_color="transparent")
         r2.pack(fill="x", padx=16, pady=(0, 14))
-        ctk.CTkButton(r2, text="📂 Конфиги (~/.config/opencode)", fg_color=COLOR["subbox_bg"], text_color=COLOR["text_primary"], command=lambda: os.startfile(CONFIG_DIR) if CONFIG_DIR.exists() else None).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(r2, text="📂 Логи", fg_color=COLOR["subbox_bg"], text_color=COLOR["text_primary"], command=lambda: os.startfile(LOG_DIR) if LOG_DIR.exists() else None).pack(side="left")
+        ctk.CTkButton(r2, text="📂 Конфиги (~/.config/opencode)", fg_color=COLOR["subbox_bg"], text_color=COLOR["text_primary"], command=lambda: open_path(CONFIG_DIR)).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(r2, text="📂 Логи", fg_color=COLOR["subbox_bg"], text_color=COLOR["text_primary"], command=lambda: open_path(LOG_DIR)).pack(side="left")
 
     # =========================================================================
     # STATUSBAR
@@ -2268,9 +2337,6 @@ class AntigravityManagerApp(ctk.CTk):
             self.lbl_auto_refresh.configure(
                 text=f"⏱ Автообновление: {mins:02d}:{secs:02d}",
             )
-
-            if self.countdown_seconds % 3 == 0:
-                self.update_opencode_status()
 
             if hasattr(self, "token_refresh_countdown"):
                 if self.token_refresh_countdown <= 0:
@@ -2605,55 +2671,63 @@ class AntigravityManagerApp(ctk.CTk):
             desktop_running = False
             service_running = False
             try:
-                res = run_silent_cmd(
-                    ["tasklist", "/fo", "csv", "/nh", "/fi", "IMAGENAME eq OpenCode.exe"],
-                    timeout=3,
-                )
-                desktop_pids = set()
-                for row in (res.stdout or "").splitlines():
-                    try:
-                        fields = next(csv.reader([row]))
-                        if len(fields) >= 2 and fields[0].lower() == "opencode.exe":
-                            desktop_running = True
-                            desktop_pids.add(int(fields[1]))
-                    except (ValueError, csv.Error, StopIteration):
-                        continue
+                if sys.platform.startswith("linux"):
+                    desktop_running = any(
+                        run_silent_cmd(["pgrep", "-x", process_name], timeout=3).returncode == 0
+                        for process_name in ("opencode", "opencode-desktop")
+                    )
+                    service_res = run_silent_cmd([get_opencode_exe(), "service", "status"], timeout=5)
+                    service_running = service_res.returncode == 0 and "127.0.0.1" in service_res.stdout
+                else:
+                    res = run_silent_cmd(
+                        ["tasklist", "/fo", "csv", "/nh", "/fi", "IMAGENAME eq OpenCode.exe"],
+                        timeout=3,
+                    )
+                    desktop_pids = set()
+                    for row in (res.stdout or "").splitlines():
+                        try:
+                            fields = next(csv.reader([row]))
+                            if len(fields) >= 2 and fields[0].lower() == "opencode.exe":
+                                desktop_running = True
+                                desktop_pids.add(int(fields[1]))
+                        except (ValueError, csv.Error, StopIteration):
+                            continue
 
-                # A desktop process may remain alive in the tray/background.
-                # Only call the UI open if a visible top-level window belongs to it.
-                if desktop_pids and sys.platform == "win32":
-                    import ctypes
-                    from ctypes import wintypes
+                    # A desktop process may remain alive in the tray/background.
+                    # Only call the UI open if a visible top-level window belongs to it.
+                    if desktop_pids and sys.platform == "win32":
+                        import ctypes
+                        from ctypes import wintypes
 
-                    enum_windows = ctypes.windll.user32.EnumWindows
-                    is_window_visible = ctypes.windll.user32.IsWindowVisible
-                    get_window_pid = ctypes.windll.user32.GetWindowThreadProcessId
-                    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+                        enum_windows = ctypes.windll.user32.EnumWindows
+                        is_window_visible = ctypes.windll.user32.IsWindowVisible
+                        get_window_pid = ctypes.windll.user32.GetWindowThreadProcessId
+                        callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
-                    def inspect_window(hwnd, _lparam):
-                        nonlocal visible_window
-                        rect = wintypes.RECT()
-                        title_length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
-                        if is_window_visible(hwnd) and title_length > 0 and ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-                            if rect.right <= rect.left or rect.bottom <= rect.top:
-                                return True
-                            pid = wintypes.DWORD()
-                            get_window_pid(hwnd, ctypes.byref(pid))
-                            if pid.value in desktop_pids:
-                                visible_window = True
-                                return False
-                        return True
+                        def inspect_window(hwnd, _lparam):
+                            nonlocal visible_window
+                            rect = wintypes.RECT()
+                            title_length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+                            if is_window_visible(hwnd) and title_length > 0 and ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                                if rect.right <= rect.left or rect.bottom <= rect.top:
+                                    return True
+                                pid = wintypes.DWORD()
+                                get_window_pid(hwnd, ctypes.byref(pid))
+                                if pid.value in desktop_pids:
+                                    visible_window = True
+                                    return False
+                            return True
 
-                    enum_windows(callback_type(inspect_window), 0)
+                        enum_windows(callback_type(inspect_window), 0)
 
-                cli_res = run_silent_cmd(
-                    ["tasklist", "/fo", "csv", "/nh", "/fi", "IMAGENAME eq opencode-cli.exe"],
-                    timeout=3,
-                )
-                service_running = any(
-                    row.lower().startswith('"opencode-cli.exe"')
-                    for row in (cli_res.stdout or "").splitlines()
-                )
+                    cli_res = run_silent_cmd(
+                        ["tasklist", "/fo", "csv", "/nh", "/fi", "IMAGENAME eq opencode-cli.exe"],
+                        timeout=3,
+                    )
+                    service_running = any(
+                        row.lower().startswith('"opencode-cli.exe"')
+                        for row in (cli_res.stdout or "").splitlines()
+                    )
             except Exception:
                 pass
 
@@ -2674,7 +2748,7 @@ class AntigravityManagerApp(ctk.CTk):
                         )
                     elif desktop_running:
                         self.opencode_badge.configure(
-                            text="◉ OpenCode: Запущен в фоне",
+                            text="◉ OpenCode: Запущен" if sys.platform.startswith("linux") else "◉ OpenCode: Запущен в фоне",
                             text_color="#d97706",
                             fg_color=("#fef3c7", "#78350f"),
                         )
@@ -2700,8 +2774,7 @@ class AntigravityManagerApp(ctk.CTk):
         self.set_status("Перезапуск OpenCode...")
 
         def _do_restart():
-            run_silent_cmd(["taskkill", "/f", "/im", "OpenCode.exe"], timeout=5)
-            run_silent_cmd(["taskkill", "/f", "/im", "opencode-cli.exe"], timeout=5)
+            stop_opencode_processes()
             time.sleep(1)
             cleanup_opencode_locks()
             time.sleep(1)
@@ -2726,8 +2799,7 @@ class AntigravityManagerApp(ctk.CTk):
         threading.Thread(target=_do_restart, daemon=True).start()
 
     def stop_opencode_action(self):
-        run_silent_cmd(["taskkill", "/f", "/im", "OpenCode.exe"], timeout=5)
-        run_silent_cmd(["taskkill", "/f", "/im", "opencode-cli.exe"], timeout=5)
+        stop_opencode_processes()
         cleanup_opencode_locks()
         self.update_opencode_status()
         self.set_status("OpenCode остановлен")
