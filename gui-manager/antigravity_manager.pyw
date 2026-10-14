@@ -1877,7 +1877,7 @@ class AntigravityManagerApp(ctk.CTk):
         # 3. DNS Configuration (Cockpit / Bezmezhau layout: Standard DNS, DoT, DoH)
         c3 = ctk.CTkFrame(self.settings_frame, fg_color=COLOR["card_bg"], corner_radius=12, border_width=1, border_color=COLOR["border"])
         c3.pack(fill="x", pady=6)
-        ctk.CTkLabel(c3, text="🌐 Адреса серверов DNS (Обход ограничений Google)", font=self.font(size=14, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w", padx=16, pady=(12, 4))
+        ctk.CTkLabel(c3, text="🌐 DNS-серверы и маршрутизация", font=self.font(size=14, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w", padx=16, pady=(12, 4))
         ctk.CTkLabel(
             c3,
             text="DNS применяется внутри сетевых компонентов Antigravity Hub/OpenCode; системный DNS Windows не меняется.",
@@ -1893,7 +1893,7 @@ class AntigravityManagerApp(ctk.CTk):
                 "Как работают DNS и туннель\n"
                 "• Выбранный протокол (Обычный DNS / DoT / DoH) используется для DNS-запросов, которые выполняют плагин и встроенный туннель.\n"
                 "• Локальный адрес http://127.0.0.1:51180 Hub настраивает как прокси OpenCode. Запросы через него разрешаются DNS-сервером, выбранным выше.\n"
-                "• Важно: OpenCode может применять переменные прокси ко всему своему HTTPS-трафику, а не только к OpenAI. Поэтому через туннель могут идти и другие запросы OpenCode, включая Google.\n"
+                "• Важно: OpenCode может применять переменные прокси ко всему своему HTTPS-трафику, а не только к OpenAI. Поэтому через туннель могут идти запросы и других сервисов.\n"
                 "• Кнопки «Проверить доступность» проверяют DNS-резолвер, но не гарантируют успешную авторизацию, доступность модели или наличие квоты. После изменения настроек перезапустите OpenCode из Hub."
             ),
             font=self.font(size=11),
