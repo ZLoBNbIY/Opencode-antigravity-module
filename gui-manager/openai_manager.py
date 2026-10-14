@@ -382,6 +382,44 @@ def remove_openai_account(account_id: str) -> bool:
     return True
 
 
+def _get_http_opener(timeout: int = 15):
+    """
+    Returns a urllib opener configured with proxy (local SmartDNS tunnel 51180 or custom proxy)
+    to bypass geo-restrictions and Cloudflare blocks.
+    """
+    proxy_url = None
+    try:
+        if CONFIG_DIR.exists():
+            cfg_file = CONFIG_DIR / "antigravity.json"
+            if cfg_file.exists():
+                with open(cfg_file, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                    proxy_url = cfg.get("proxy")
+    except Exception:
+        pass
+
+    if not proxy_url:
+        import socket
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.2)
+                if s.connect_ex(("127.0.0.1", 51180)) == 0:
+                    proxy_url = "http://127.0.0.1:51180"
+        except Exception:
+            pass
+
+    if proxy_url:
+        handler = urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+        return urllib.request.build_opener(handler)
+    return urllib.request.build_opener()
+
+
+OPENAI_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+
 def refresh_openai_token(account: dict) -> tuple[bool, dict]:
     refresh_token = account.get("refresh")
     if not refresh_token:
@@ -398,12 +436,14 @@ def refresh_openai_token(account: dict) -> tuple[bool, dict]:
         data=form_data,
         headers={
             "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "opencode/1.0.0",
+            "User-Agent": OPENAI_BROWSER_UA,
         },
     )
 
+    opener = _get_http_opener(timeout=15)
+
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with opener.open(req, timeout=15) as resp:
             tokens = json.loads(resp.read().decode("utf-8"))
             access_token = tokens.get("access_token")
             new_refresh = tokens.get("refresh_token") or refresh_token
@@ -442,12 +482,15 @@ def fetch_openai_usage(account: dict) -> dict:
         headers={
             "Authorization": f"Bearer {access_token}",
             "chatgpt-account-id": account_id,
-            "User-Agent": "opencode/1.0.0",
+            "User-Agent": OPENAI_BROWSER_UA,
+            "Accept": "application/json",
         },
     )
 
+    opener = _get_http_opener(timeout=12)
+
     try:
-        with urllib.request.urlopen(req, timeout=12) as resp:
+        with opener.open(req, timeout=12) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
             return _parse_usage_payload(payload, account)
     except urllib.error.HTTPError as he:
@@ -475,8 +518,21 @@ def _parse_usage_payload(payload: dict, account: dict) -> dict:
         account["plan_type"] = payload["plan_type"]
 
     rate_limit = payload.get("rate_limit", {})
-    primary = rate_limit.get("primary_window") or {}
-    secondary = rate_limit.get("secondary_window") or {}
+    w1 = rate_limit.get("primary_window") or {}
+    w2 = rate_limit.get("secondary_window") or {}
+
+    # Identify 5h window (<= 86400s) and weekly window (> 86400s) dynamically
+    w1_secs = w1.get("limit_window_seconds") or 0
+    w2_secs = w2.get("limit_window_seconds") or 0
+    if w1_secs > w2_secs and w2_secs > 0:
+        win_5h = w2
+        win_weekly = w1
+    elif w1_secs > 0:
+        win_5h = w1
+        win_weekly = w2
+    else:
+        win_5h = w1
+        win_weekly = w2
 
     def parse_window(win: dict) -> dict:
         used_pct = float(win.get("used_percent", 0.0))
@@ -506,13 +562,18 @@ def _parse_usage_payload(payload: dict, account: dict) -> dict:
             "limit_window_seconds": win.get("limit_window_seconds", 0),
         }
 
+    parsed_5h = parse_window(win_5h)
+    parsed_weekly = parse_window(win_weekly)
+
     quota_data = {
         "status": "ok",
         "plan_type": payload.get("plan_type", account.get("plan_type", "plus")),
         "allowed": rate_limit.get("allowed", True),
         "limit_reached": rate_limit.get("limit_reached", False),
-        "primary": parse_window(primary),
-        "secondary": parse_window(secondary),
+        "primary": parsed_5h,
+        "secondary": parsed_weekly,
+        "window_5h": parsed_5h,
+        "window_weekly": parsed_weekly,
         "credits": payload.get("credits", {}),
         "last_checked": int(time.time()),
     }
@@ -523,7 +584,7 @@ def _parse_usage_payload(payload: dict, account: dict) -> dict:
 
 def check_and_auto_rotate_openai(accounts: list[dict]) -> tuple[bool, str]:
     """
-    Checks if active OpenAI account has exhausted its quota, and if so,
+    Checks if active OpenAI account has exhausted its quota (5h or weekly), and if so,
     seamlessly rotates to the next available account with quota,
     updating auth.json without requiring any restart of OpenCode.
     """
@@ -536,20 +597,24 @@ def check_and_auto_rotate_openai(accounts: list[dict]) -> tuple[bool, str]:
 
     quota = active_acc.get("quota") or {}
     primary = quota.get("primary") or {}
+    secondary = quota.get("secondary") or {}
     limit_reached = (
         quota.get("limit_reached", False)
         or primary.get("remaining_percent", 100) <= 0
         or primary.get("used_percent", 0) >= 100
+        or secondary.get("remaining_percent", 100) <= 0
+        or secondary.get("used_percent", 0) >= 100
     )
 
     if not limit_reached:
         return False, ""
 
-    # Find candidates with remaining quota
+    # Find candidates with remaining quota in both windows
     candidates = [
         a for a in accounts
         if (a.get("accountId") != active_acc.get("accountId") and a.get("id") != active_acc.get("id"))
         and (a.get("quota") or {}).get("primary", {}).get("remaining_percent", 100) > 0
+        and (a.get("quota") or {}).get("secondary", {}).get("remaining_percent", 100) > 0
     ]
 
     if not candidates:
@@ -751,12 +816,14 @@ def login_openai_browser(timeout: int = 300) -> tuple[bool, str, dict | None]:
         data=form_data,
         headers={
             "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "opencode/1.0.0",
+            "User-Agent": OPENAI_BROWSER_UA,
         },
     )
 
+    opener = _get_http_opener(timeout=15)
+
     try:
-        with urllib.request.urlopen(token_req, timeout=15) as resp:
+        with opener.open(token_req, timeout=15) as resp:
             tokens = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
         return False, f"Ошибка обмена кода на токены: {e}", None

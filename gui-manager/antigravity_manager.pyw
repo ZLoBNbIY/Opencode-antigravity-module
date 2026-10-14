@@ -1732,8 +1732,8 @@ class AntigravityManagerApp(ctk.CTk):
         plan_type = (acc.get("plan_type") or "plus").upper()
         quota = acc.get("quota") or {}
 
-        primary_quota = quota.get("primary") or {}
-        secondary_quota = quota.get("secondary") or {}
+        primary_quota = quota.get("window_5h") or quota.get("primary") or {}
+        secondary_quota = quota.get("window_weekly") or quota.get("secondary") or {}
 
         card = ctk.CTkFrame(
             parent,
@@ -1800,13 +1800,13 @@ class AntigravityManagerApp(ctk.CTk):
 
         f1 = ctk.CTkFrame(quota_box, fg_color="transparent")
         f1.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
-        ctk.CTkLabel(f1, text="GPT-5 / 6", font=self.font(size=13, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w")
+        ctk.CTkLabel(f1, text="Лимит 5 часов", font=self.font(size=13, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w")
         rem_p = round(float(primary_quota.get("remaining_percent", 100.0)), 1)
-        self._render_compact_subrow(f1, "3-5h", rem_p, primary_quota.get("reset_at"))
+        self._render_compact_subrow(f1, "5h", rem_p, primary_quota.get("reset_at"))
 
         f2 = ctk.CTkFrame(quota_box, fg_color="transparent")
         f2.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
-        ctk.CTkLabel(f2, text="Codex / 7d", font=self.font(size=13, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w")
+        ctk.CTkLabel(f2, text="Недельный лимит", font=self.font(size=13, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w")
         rem_s = round(float(secondary_quota.get("remaining_percent", 100.0)), 1)
         self._render_compact_subrow(f2, "Weekly", rem_s, secondary_quota.get("reset_at"))
 
@@ -2781,16 +2781,15 @@ class AntigravityManagerApp(ctk.CTk):
             exe = get_opencode_exe()
             if os.path.exists(exe):
                 launch_env = os.environ.copy()
-                # If custom DNS/DoH is configured, inject local SmartDNS tunnel proxy into OpenCode's environment
-                dns_active = self.config_data.get("dns_mode") in ("standard", "dot", "doh")
-                if dns_active:
-                    tunnel_url = "http://127.0.0.1:51180"
-                    launch_env["HTTPS_PROXY"] = tunnel_url
-                    launch_env["HTTP_PROXY"] = tunnel_url
-                    launch_env["ALL_PROXY"] = tunnel_url
-                    launch_env["https_proxy"] = tunnel_url
-                    launch_env["http_proxy"] = tunnel_url
-                    launch_env["all_proxy"] = tunnel_url
+                # Do NOT force local 51180 proxy onto OpenCode globally - Gemini & Google Antigravity use direct custom DNS transport.
+                # Only explicit external proxy configured by user should be set if any.
+                for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+                    if launch_env.get(var) == "http://127.0.0.1:51180":
+                        launch_env.pop(var, None)
+                user_proxy = self.config_data.get("proxy")
+                if user_proxy and user_proxy != "http://127.0.0.1:51180":
+                    launch_env["HTTPS_PROXY"] = user_proxy
+                    launch_env["HTTP_PROXY"] = user_proxy
                 subprocess.Popen([exe], cwd=os.path.dirname(exe), env=launch_env)
             time.sleep(2)
             self.after(0, self.update_opencode_status)
@@ -2809,15 +2808,15 @@ class AntigravityManagerApp(ctk.CTk):
         exe = get_opencode_exe()
         if os.path.exists(exe):
             launch_env = os.environ.copy()
-            dns_active = self.config_data.get("dns_mode") in ("standard", "dot", "doh")
-            if dns_active:
-                tunnel_url = "http://127.0.0.1:51180"
-                launch_env["HTTPS_PROXY"] = tunnel_url
-                launch_env["HTTP_PROXY"] = tunnel_url
-                launch_env["ALL_PROXY"] = tunnel_url
-                launch_env["https_proxy"] = tunnel_url
-                launch_env["http_proxy"] = tunnel_url
-                launch_env["all_proxy"] = tunnel_url
+            # Do NOT force local 51180 proxy onto OpenCode globally - Gemini & Google Antigravity use direct custom DNS transport.
+            # Only explicit external proxy configured by user should be set if any.
+            for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+                if launch_env.get(var) == "http://127.0.0.1:51180":
+                    launch_env.pop(var, None)
+            user_proxy = self.config_data.get("proxy")
+            if user_proxy and user_proxy != "http://127.0.0.1:51180":
+                launch_env["HTTPS_PROXY"] = user_proxy
+                launch_env["HTTP_PROXY"] = user_proxy
             subprocess.Popen([exe], cwd=os.path.dirname(exe), env=launch_env)
             self.set_status("OpenCode запущен")
         self.after(2000, self.update_opencode_status)
