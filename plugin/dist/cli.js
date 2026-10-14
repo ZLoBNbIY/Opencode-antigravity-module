@@ -18174,8 +18174,7 @@ function initGlobalDnsHook() {
   try {
     let cjsDns;
     try {
-      const req = createRequireDns(import.meta.url);
-      cjsDns = req("node:dns");
+      cjsDns = createRequireDns("file:///root/placeholder.js")("node:dns");
     } catch {
       cjsDns = dns;
     }
