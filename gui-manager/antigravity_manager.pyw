@@ -960,7 +960,7 @@ class AntigravityManagerApp(ctk.CTk):
         threading.Thread(target=_do_manual_check, daemon=True).start()
 
     def _on_manual_updates_checked(self, info):
-        self.btn_check_update.configure(state="normal", text="🔄 Проверить обновления Antigravity Hub")
+        self.btn_check_update.configure(state="normal", text="🔄 Проверить обновления")
         has_update = info.get("has_update", False)
         local_sha = info.get("local_sha", "HEAD")
         remote_sha = info.get("remote_sha", "")
@@ -971,16 +971,9 @@ class AntigravityManagerApp(ctk.CTk):
             self.set_status(f"Ошибка проверки: {err}")
         elif has_update:
             msg = info.get("message", "Новые улучшения")
+            self.update_info = info
             self.show_update_banner(info)
-            messagebox.showinfo(
-                "Доступно обновление!",
-                f"Найдена новая версия на GitHub (ветка {auto_updater.BRANCH})!\n\n"
-                f"• Локальный коммит: {local_sha}\n"
-                f"• Свежий коммит: {remote_sha}\n"
-                f"• Что нового: {msg}\n\n"
-                "Нажмите «⚡ Обновить в 1 клик» на баннере для применения изменений.",
-            )
-            self.set_status(f"Доступно обновление ({remote_sha}): {msg}")
+            self.set_status("Доступна новая версия Antigravity Hub")
         else:
             messagebox.showinfo(
                 "Обновления не требуются",
@@ -1008,10 +1001,9 @@ class AntigravityManagerApp(ctk.CTk):
             self.show_update_banner(info)
 
     def show_update_banner(self, info):
+        self.update_info = info
         if hasattr(self, "update_banner") and self.update_banner:
             return
-        msg = info.get("message", "Новые улучшения")
-        sha = info.get("remote_sha", "")
 
         self.update_banner = ctk.CTkFrame(
             self.content_area,
@@ -1025,17 +1017,18 @@ class AntigravityManagerApp(ctk.CTk):
 
         ctk.CTkLabel(
             self.update_banner,
-            text=f"🚀 Доступно обновление ({sha}): {msg}",
+            text="🚀 Доступна новая версия Antigravity Hub",
             font=self.font(size=12, weight="bold"),
             text_color="#ffffff" if self.current_theme == "dark" else "#1d4ed8",
-        ).pack(side="left", padx=16, pady=8)
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", padx=16, pady=8)
 
         btn_box = ctk.CTkFrame(self.update_banner, fg_color="transparent")
-        btn_box.pack(side="right", padx=12, pady=6)
+        btn_box.grid(row=0, column=1, sticky="e", padx=12, pady=6)
 
         ctk.CTkButton(
             btn_box,
-            text="⚡ Обновить в 1 клик",
+            text="Обновить",
             font=self.font(size=11, weight="bold"),
             fg_color="#0284c7",
             hover_color="#0369a1",
@@ -1052,10 +1045,25 @@ class AntigravityManagerApp(ctk.CTk):
             text_color="#ffffff" if self.current_theme == "dark" else "#475569",
             height=28,
             width=28,
-            command=lambda: self.update_banner.destroy(),
+            command=self.dismiss_update_banner,
         ).pack(side="left")
 
+    def dismiss_update_banner(self):
+        if getattr(self, "update_banner", None):
+            self.update_banner.destroy()
+            self.update_banner = None
+
     def apply_update_action(self):
+        info = self.update_info or {}
+        changes = (info.get("message") or "Исправления и улучшения Antigravity Hub.").strip()
+        changes = changes.splitlines()[0][:240]
+        remote_sha = info.get("remote_sha")
+        changelog = f"Что обновлено:\n• {changes}"
+        if remote_sha:
+            changelog += f"\n\nВерсия: {remote_sha}"
+        if not messagebox.askyesno("Обновление Antigravity Hub", f"{changelog}\n\nЗагрузить и установить обновление сейчас?"):
+            return
+
         repo_dir = Path(__file__).resolve().parent.parent
         self.set_status(f"Применение обновления с GitHub (ветка {auto_updater.BRANCH})...")
 
@@ -1068,8 +1076,7 @@ class AntigravityManagerApp(ctk.CTk):
     def _on_update_applied(self, ok, msg):
         if ok:
             messagebox.showinfo("Обновление завершено!", f"{msg}\n\nРекомендуется перезапустить OpenCode и Hub.")
-            if hasattr(self, "update_banner") and self.update_banner:
-                self.update_banner.destroy()
+            self.dismiss_update_banner()
             self.refresh_all_async()
         else:
             messagebox.showerror("Ошибка обновления", msg)
@@ -1919,7 +1926,7 @@ class AntigravityManagerApp(ctk.CTk):
         ).pack(anchor="w", padx=16, pady=(12, 4))
         self.btn_check_update = ctk.CTkButton(
             update_card,
-            text="🔄 Проверить обновления Antigravity Hub",
+            text="🔄 Проверить обновления",
             font=self.font(size=12, weight="bold"),
             command=self.manual_check_updates_action,
             height=34,
