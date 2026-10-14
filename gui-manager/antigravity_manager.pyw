@@ -489,12 +489,15 @@ def enrich_google_accounts_with_generation_store(accounts: list[dict]) -> list[d
             if not acc.get("id"):
                 acc["id"] = disk_acc.get("id")
 
-            for g in acc.get("groups", []):
-                g_name = g.get("name")
-                if not g.get("windows"):
-                    matching_dg = next((dg for dg in disk_acc.get("groups", []) if dg.get("name") == g_name), None)
-                    if matching_dg and matching_dg.get("windows"):
-                        g["windows"] = matching_dg["windows"]
+            if not acc.get("groups"):
+                acc["groups"] = disk_acc.get("groups", [])
+            else:
+                for g in acc.get("groups", []):
+                    g_name = g.get("name")
+                    if not g.get("windows"):
+                        matching_dg = next((dg for dg in disk_acc.get("groups", []) if dg.get("name") == g_name), None)
+                        if matching_dg and matching_dg.get("windows"):
+                            g["windows"] = matching_dg["windows"]
 
     return accounts
 
@@ -1649,12 +1652,25 @@ class AntigravityManagerApp(ctk.CTk):
         win_5h = next((w for w in windows if window_key(w) == "5h"), None)
         win_weekly = next((w for w in windows if window_key(w) == "weekly"), None)
 
-        # Never substitute the aggregate group quota for a missing 5h window:
-        # it may represent the weekly minimum and make the 5h bar falsely drop.
-        pct_5h = win_5h.get("remainingPercent") if win_5h else None
-        reset_5h = win_5h.get("resetTime", "") if win_5h else ""
-        pct_wk = win_weekly.get("remainingPercent") if win_weekly else None
-        reset_wk = win_weekly.get("resetTime", "") if win_weekly else ""
+        if win_5h:
+            pct_5h = win_5h.get("remainingPercent", 100.0)
+            reset_5h = win_5h.get("resetTime", "")
+        elif group_info:
+            pct_5h = 100.0
+            reset_5h = ""
+        else:
+            pct_5h = None
+            reset_5h = ""
+
+        if win_weekly:
+            pct_wk = win_weekly.get("remainingPercent", 100.0)
+            reset_wk = win_weekly.get("resetTime", "")
+        elif group_info:
+            pct_wk = group_info.get("remainingPercent", 100.0)
+            reset_wk = group_info.get("resetTime", "")
+        else:
+            pct_wk = None
+            reset_wk = ""
 
         self._render_compact_subrow(frame, label="5h", pct=pct_5h, reset_iso=reset_5h)
         self._render_compact_subrow(frame, label="Weekly", pct=pct_wk, reset_iso=reset_wk)
@@ -2791,15 +2807,25 @@ class AntigravityManagerApp(ctk.CTk):
             exe = get_opencode_exe()
             if os.path.exists(exe):
                 launch_env = os.environ.copy()
-                # Do NOT force local 51180 proxy onto OpenCode globally - Gemini & Google Antigravity use direct custom DNS transport.
-                # Only explicit external proxy configured by user should be set if any.
-                for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
-                    if launch_env.get(var) == "http://127.0.0.1:51180":
-                        launch_env.pop(var, None)
+                dns_active = self.config_data.get("dns_mode") in ("standard", "dot", "doh")
+                tunnel_url = "http://127.0.0.1:51180" if dns_active else None
                 user_proxy = self.config_data.get("proxy")
-                if user_proxy and user_proxy != "http://127.0.0.1:51180":
-                    launch_env["HTTPS_PROXY"] = user_proxy
-                    launch_env["HTTP_PROXY"] = user_proxy
+                effective_proxy = user_proxy if (user_proxy and user_proxy != "http://127.0.0.1:51180") else tunnel_url
+
+                if effective_proxy:
+                    launch_env["HTTPS_PROXY"] = effective_proxy
+                    launch_env["HTTP_PROXY"] = effective_proxy
+                    launch_env["ALL_PROXY"] = effective_proxy
+                    launch_env["https_proxy"] = effective_proxy
+                    launch_env["http_proxy"] = effective_proxy
+                    launch_env["all_proxy"] = effective_proxy
+                    # Exclude Google / Gemini and localhost so Gemini uses direct SmartDNS transport and never connects to 51180
+                    no_proxy_rules = "googleapis.com,.googleapis.com,google.com,.google.com,cloudcode-pa.googleapis.com,localhost,127.0.0.1"
+                    launch_env["NO_PROXY"] = no_proxy_rules
+                    launch_env["no_proxy"] = no_proxy_rules
+                else:
+                    for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
+                        launch_env.pop(var, None)
                 subprocess.Popen([exe], cwd=os.path.dirname(exe), env=launch_env)
             time.sleep(2)
             self.after(0, self.update_opencode_status)
@@ -2818,15 +2844,25 @@ class AntigravityManagerApp(ctk.CTk):
         exe = get_opencode_exe()
         if os.path.exists(exe):
             launch_env = os.environ.copy()
-            # Do NOT force local 51180 proxy onto OpenCode globally - Gemini & Google Antigravity use direct custom DNS transport.
-            # Only explicit external proxy configured by user should be set if any.
-            for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
-                if launch_env.get(var) == "http://127.0.0.1:51180":
-                    launch_env.pop(var, None)
+            dns_active = self.config_data.get("dns_mode") in ("standard", "dot", "doh")
+            tunnel_url = "http://127.0.0.1:51180" if dns_active else None
             user_proxy = self.config_data.get("proxy")
-            if user_proxy and user_proxy != "http://127.0.0.1:51180":
-                launch_env["HTTPS_PROXY"] = user_proxy
-                launch_env["HTTP_PROXY"] = user_proxy
+            effective_proxy = user_proxy if (user_proxy and user_proxy != "http://127.0.0.1:51180") else tunnel_url
+
+            if effective_proxy:
+                launch_env["HTTPS_PROXY"] = effective_proxy
+                launch_env["HTTP_PROXY"] = effective_proxy
+                launch_env["ALL_PROXY"] = effective_proxy
+                launch_env["https_proxy"] = effective_proxy
+                launch_env["http_proxy"] = effective_proxy
+                launch_env["all_proxy"] = effective_proxy
+                # Exclude Google / Gemini and localhost so Gemini uses direct SmartDNS transport and never connects to 51180
+                no_proxy_rules = "googleapis.com,.googleapis.com,google.com,.google.com,cloudcode-pa.googleapis.com,localhost,127.0.0.1"
+                launch_env["NO_PROXY"] = no_proxy_rules
+                launch_env["no_proxy"] = no_proxy_rules
+            else:
+                for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
+                    launch_env.pop(var, None)
             subprocess.Popen([exe], cwd=os.path.dirname(exe), env=launch_env)
             self.set_status("OpenCode запущен")
         self.after(2000, self.update_opencode_status)

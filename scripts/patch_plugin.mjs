@@ -301,13 +301,19 @@ for (const basePath of targetPaths) {
     };
   }`;
 
-    if (cliContent.includes(quotaSummaryTarget)) {
-      cliContent = cliContent.replace(quotaSummaryTarget, quotaSummaryRepl);
+    const norm = (s) => s.replace(/\r\n/g, '\n');
+    const isCRLF = cliContent.includes('\r\n');
+    let normCli = norm(cliContent);
+
+    if (normCli.includes(norm(quotaSummaryTarget))) {
+      normCli = normCli.replace(norm(quotaSummaryTarget), norm(quotaSummaryRepl));
+      cliContent = isCRLF ? normCli.replace(/\n/g, '\r\n') : normCli;
       cliChanged = true;
       console.log('✓ Patched dist/cli.js (Quota windows 5h/weekly preservation)');
     }
-    if (cliContent.includes(cliAccountTarget)) {
-      cliContent = cliContent.replace(cliAccountTarget, cliAccountRepl);
+    if (normCli.includes(norm(cliAccountTarget))) {
+      normCli = normCli.replace(norm(cliAccountTarget), norm(cliAccountRepl));
+      cliContent = isCRLF ? normCli.replace(/\n/g, '\r\n') : normCli;
       cliChanged = true;
       console.log('✓ Patched dist/cli.js (cliAccountOf quota windows preservation)');
     }
