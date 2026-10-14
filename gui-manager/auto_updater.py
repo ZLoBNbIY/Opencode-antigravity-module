@@ -7,6 +7,7 @@ import os
 import sys
 import json
 import subprocess
+import shutil
 import urllib.request
 import urllib.error
 import ssl
@@ -102,19 +103,56 @@ def check_for_updates(repo_dir: Path, timeout=6) -> dict:
         }
 
 def apply_update_git(repo_dir: Path) -> tuple[bool, str]:
-    """Applies update via git pull and re-applies patches."""
+    """Pull updates while preserving local edits, then re-apply bundled patches."""
     flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-    try:
-        proc = subprocess.run(
-            ["git", "pull", "origin", BRANCH],
+
+    def git(*args, timeout=30):
+        return subprocess.run(
+            ["git", *args],
             cwd=str(repo_dir),
             capture_output=True,
             text=True,
             creationflags=flags,
-            timeout=30,
+            timeout=timeout,
         )
+
+    def restore_stash():
+        return git("stash", "pop", "--index", timeout=30)
+
+    try:
+        status = git("status", "--porcelain", timeout=10)
+        if status.returncode != 0:
+            return False, f"Не удалось проверить локальные изменения: {status.stderr or status.stdout}"
+
+        stashed = bool(status.stdout.strip())
+        if stashed:
+            stash = git("stash", "push", "--include-untracked", "-m", "antigravity-hub-auto-update")
+            if stash.returncode != 0:
+                return False, f"Не удалось временно сохранить локальные изменения: {stash.stderr or stash.stdout}"
+            # Git may report success even when there was nothing to stash.
+            stashed = "No local changes to save" not in (stash.stdout + stash.stderr)
+
+        proc = git("pull", "--rebase", "origin", BRANCH, timeout=60)
         if proc.returncode != 0:
-            return False, f"Git pull failed: {proc.stderr or proc.stdout}"
+            detail = proc.stderr or proc.stdout
+            if stashed:
+                restored = restore_stash()
+                if restored.returncode != 0:
+                    return False, (
+                        f"Не удалось загрузить обновление: {detail}\n"
+                        "Локальные изменения сохранены в git stash, но не восстановлены автоматически. "
+                        f"Восстановите их командой `git stash pop`.\n{restored.stderr or restored.stdout}"
+                    )
+            return False, f"Не удалось загрузить обновление: {detail}"
+
+        if stashed:
+            restored = restore_stash()
+            if restored.returncode != 0:
+                return False, (
+                    "Обновление загружено, но локальные изменения конфликтуют с новой версией. "
+                    "Они сохранены в git stash и не потеряны; разрешите конфликт или выполните `git stash pop`.\n"
+                    f"{restored.stderr or restored.stdout}"
+                )
 
         # Re-run python fix desktop models
         fix_py = repo_dir / "scripts" / "fix_desktop_models.py"
@@ -126,6 +164,22 @@ def apply_update_git(repo_dir: Path) -> tuple[bool, str]:
                 creationflags=flags,
                 timeout=10,
             )
+
+        # Re-apply generated compatibility patches after the repository update.
+        patch_script = repo_dir / "scripts" / "patch_plugin.mjs"
+        if patch_script.exists():
+            node = shutil.which("node")
+            if node:
+                patch = subprocess.run(
+                    [node, str(patch_script)],
+                    cwd=str(repo_dir),
+                    capture_output=True,
+                    text=True,
+                    creationflags=flags,
+                    timeout=60,
+                )
+                if patch.returncode != 0:
+                    return False, f"Обновление загружено, но не удалось применить патчи плагина: {patch.stderr or patch.stdout}"
 
         return True, "Обновление успешно загружено и применено!"
     except Exception as e:
