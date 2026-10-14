@@ -11,6 +11,7 @@ Features:
 import os
 import sys
 import json
+import csv
 import time
 import datetime
 import subprocess
@@ -2446,20 +2447,93 @@ class AntigravityManagerApp(ctk.CTk):
 
     def update_opencode_status(self):
         def _check():
+            visible_window = False
+            desktop_running = False
+            service_running = False
             try:
-                res = run_silent_cmd(["tasklist", "/nh", "/fi", "IMAGENAME eq opencode*"], timeout=3)
-                out = (res.stdout or "").lower()
-                is_running = ("opencode.exe" in out) or ("opencode-cli.exe" in out)
+                res = run_silent_cmd(
+                    ["tasklist", "/fo", "csv", "/nh", "/fi", "IMAGENAME eq OpenCode.exe"],
+                    timeout=3,
+                )
+                desktop_pids = set()
+                for row in (res.stdout or "").splitlines():
+                    try:
+                        fields = next(csv.reader([row]))
+                        if len(fields) >= 2 and fields[0].lower() == "opencode.exe":
+                            desktop_running = True
+                            desktop_pids.add(int(fields[1]))
+                    except (ValueError, csv.Error, StopIteration):
+                        continue
+
+                # A desktop process may remain alive in the tray/background.
+                # Only call the UI open if a visible top-level window belongs to it.
+                if desktop_pids and sys.platform == "win32":
+                    import ctypes
+                    from ctypes import wintypes
+
+                    enum_windows = ctypes.windll.user32.EnumWindows
+                    is_window_visible = ctypes.windll.user32.IsWindowVisible
+                    get_window_pid = ctypes.windll.user32.GetWindowThreadProcessId
+                    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+                    def inspect_window(hwnd, _lparam):
+                        nonlocal visible_window
+                        if is_window_visible(hwnd):
+                            pid = wintypes.DWORD()
+                            get_window_pid(hwnd, ctypes.byref(pid))
+                            if pid.value in desktop_pids:
+                                visible_window = True
+                                return False
+                        return True
+
+                    enum_windows(callback_type(inspect_window), 0)
+
+                cli_res = run_silent_cmd(
+                    ["tasklist", "/fo", "csv", "/nh", "/fi", "IMAGENAME eq opencode-cli.exe"],
+                    timeout=3,
+                )
+                service_running = any(
+                    row.lower().startswith('"opencode-cli.exe"')
+                    for row in (cli_res.stdout or "").splitlines()
+                )
             except Exception:
-                is_running = False
+                pass
 
             def _update():
-                if is_running:
-                    self.opencode_badge.configure(text="● OpenCode: Запущен", text_color="#16a34a", fg_color=("#dcfce7", "#14532d"))
+                if visible_window:
+                    self.opencode_badge.configure(
+                        text="● OpenCode: Окно открыто",
+                        text_color="#16a34a",
+                        fg_color=("#dcfce7", "#14532d"),
+                    )
+                elif service_running:
+                    self.opencode_badge.configure(
+                        text="◉ OpenCode: Фоновый сервис работает (окно закрыто)",
+                        text_color="#d97706",
+                        fg_color=("#fef3c7", "#78350f"),
+                    )
+                elif desktop_running:
+                    self.opencode_badge.configure(
+                        text="◉ OpenCode: Запущен без видимого окна",
+                        text_color="#d97706",
+                        fg_color=("#fef3c7", "#78350f"),
+                    )
                 else:
-                    self.opencode_badge.configure(text="○ OpenCode: Остановлен", text_color=COLOR["text_muted"], fg_color=COLOR["subbox_bg"])
+                    self.opencode_badge.configure(
+                        text="○ OpenCode: Остановлен",
+                        text_color=COLOR["text_muted"],
+                        fg_color=COLOR["subbox_bg"],
+                    )
+                # Keep the badge in sync even when OpenCode is closed outside the Hub.
+                try:
+                    self.after(5000, self.update_opencode_status)
+                except Exception:
+                    pass
 
-            self.after(0, _update)
+            try:
+                self.after(0, _update)
+            except Exception:
+                pass
 
         threading.Thread(target=_check, daemon=True).start()
 
