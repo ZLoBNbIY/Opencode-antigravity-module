@@ -1,15 +1,13 @@
 """
-Lightweight embedded local HTTP/HTTPS CONNECT proxy for Antigravity Hub.
-Resolves upstream destinations using the configured DoH / DoT / SmartDNS
-and tunnels OpenCode traffic (OpenAI, Google, etc.) cleanly without
-touching Windows-wide network settings.
+Robust and lightweight embedded local HTTP/HTTPS CONNECT proxy for Antigravity Hub.
+Resolves destinations using configured DoH / DoT / SmartDNS and tunnels OpenAI/ChatGPT traffic cleanly.
 """
 
 import sys
 import socket
-import select
 import threading
 import json
+import time
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import urllib.request
@@ -50,8 +48,7 @@ def resolve_target(host: str) -> str:
     # If host is already an IP, return as is
     if host.replace(".", "").isdigit() or ":" in host:
         return host
-    
-    import time
+
     now = time.time()
     with _cache_lock:
         if host in _dns_cache:
@@ -68,20 +65,23 @@ def resolve_target(host: str) -> str:
 
     dns_tester.DOMAIN_TO_TEST = host
 
-    if mode == "doh":
-        res = dns_tester.test_doh_endpoint(settings.get("doh_url", "https://dns.bezmezhau.com/dns-query"))
-        if res.get("ok") and res.get("resolved_ip") and res["resolved_ip"] != "OK":
-            resolved_ip = res["resolved_ip"]
-    elif mode == "dot":
-        res = dns_tester.test_dot_endpoint(settings.get("dot_host", "dns.bezmezhau.com"))
-        if res.get("ok") and res.get("resolved_ip") and res["resolved_ip"] != "OK":
-            resolved_ip = res["resolved_ip"]
-    elif mode == "standard":
-        custom_dns = settings.get("custom_dns", [])
-        primary = custom_dns[0] if custom_dns else "143.20.64.55"
-        res = dns_tester.test_standard_dns(primary)
-        if res.get("ok") and res.get("resolved_ip") and res["resolved_ip"] != "OK":
-            resolved_ip = res["resolved_ip"]
+    try:
+        if mode == "doh":
+            res = dns_tester.test_doh_endpoint(settings.get("doh_url", "https://dns.bezmezhau.com/dns-query"))
+            if res.get("ok") and res.get("resolved_ip") and res["resolved_ip"] != "OK":
+                resolved_ip = res["resolved_ip"]
+        elif mode == "dot":
+            res = dns_tester.test_dot_endpoint(settings.get("dot_host", "dns.bezmezhau.com"))
+            if res.get("ok") and res.get("resolved_ip") and res["resolved_ip"] != "OK":
+                resolved_ip = res["resolved_ip"]
+        elif mode == "standard":
+            custom_dns = settings.get("custom_dns", [])
+            primary = custom_dns[0] if custom_dns else "143.20.64.55"
+            res = dns_tester.test_standard_dns(primary)
+            if res.get("ok") and res.get("resolved_ip") and res["resolved_ip"] != "OK":
+                resolved_ip = res["resolved_ip"]
+    except Exception:
+        pass
 
     final_ip = resolved_ip if resolved_ip else host
     with _cache_lock:
@@ -92,31 +92,63 @@ def resolve_target(host: str) -> str:
 
 class TunnelHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        # Silent logging for embedded proxy
+        # Silent logging
         pass
 
     def do_CONNECT(self):
         # Extract target host and port
         if ":" in self.path:
             host, port_str = self.path.split(":", 1)
-            port = int(port_str)
+            try:
+                port = int(port_str)
+            except ValueError:
+                port = 443
         else:
             host = self.path
             port = 443
+
+        # Self-loop protection
+        if host in ("127.0.0.1", "localhost") and port == PROXY_PORT:
+            self.send_error(400, "Proxy Loop Detected")
+            return
 
         resolved_target = resolve_target(host)
 
         try:
             upstream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            upstream.settimeout(12)
+            upstream.settimeout(10)
             upstream.connect((resolved_target, port))
             upstream.settimeout(None)
 
             self.send_response(200, "Connection Established")
             self.end_headers()
 
-            # Bidirectional pipe
-            self._pipe_sockets(self.connection, upstream)
+            # Bidirectional streaming using threads for zero socket leaks
+            client_sock = self.connection
+
+            def forward(src, dst):
+                try:
+                    while True:
+                        buf = src.recv(32768)
+                        if not buf:
+                            break
+                        dst.sendall(buf)
+                except Exception:
+                    pass
+                finally:
+                    try: dst.shutdown(socket.SHUT_WR)
+                    except Exception: pass
+                    try: src.close()
+                    except Exception: pass
+                    try: dst.close()
+                    except Exception: pass
+
+            t1 = threading.Thread(target=forward, args=(client_sock, upstream), daemon=True)
+            t2 = threading.Thread(target=forward, args=(upstream, client_sock), daemon=True)
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
         except Exception:
             try:
                 self.send_error(502, f"Bad Gateway: Unable to connect to {host}")
@@ -132,17 +164,7 @@ class TunnelHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         self._proxy_plain_http("POST")
 
-    def do_PUT(self):
-        self._proxy_plain_http("PUT")
-
-    def do_DELETE(self):
-        self._proxy_plain_http("DELETE")
-
-    def do_HEAD(self):
-        self._proxy_plain_http("HEAD")
-
     def _proxy_plain_http(self, method):
-        # Fallback for plain HTTP requests
         url = self.path
         if not url.startswith("http"):
             url = f"http://{self.headers.get('Host', '')}{self.path}"
@@ -153,7 +175,7 @@ class TunnelHandler(BaseHTTPRequestHandler):
             for k, v in self.headers.items():
                 if k.lower() not in ("host", "content-length"):
                     req.add_header(k, v)
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with urllib.request.urlopen(req, timeout=12) as resp:
                 self.send_response(resp.status)
                 for k, v in resp.headers.items():
                     self.send_header(k, v)
@@ -162,25 +184,6 @@ class TunnelHandler(BaseHTTPRequestHandler):
         except Exception as e:
             try: self.send_error(502, f"Proxy Error: {e}")
             except Exception: pass
-
-    def _pipe_sockets(self, client_sock, server_sock):
-        sockets = [client_sock, server_sock]
-        client_sock.setblocking(False)
-        server_sock.setblocking(False)
-
-        while True:
-            readable, _, exceptional = select.select(sockets, [], sockets, 60)
-            if exceptional or not readable:
-                break
-            for s in readable:
-                other = server_sock if s is client_sock else client_sock
-                try:
-                    data = s.recv(32768)
-                    if not data:
-                        return
-                    other.sendall(data)
-                except Exception:
-                    return
 
 
 class ThreadedTunnelServer(HTTPServer):
@@ -227,15 +230,3 @@ def stop_local_proxy():
         except Exception:
             pass
         _server_instance = None
-
-if __name__ == "__main__":
-    print(f"Starting standalone test of local proxy on {PROXY_HOST}:{PROXY_PORT}...")
-    if start_local_proxy():
-        print(f"Proxy is running on http://{PROXY_HOST}:{PROXY_PORT}")
-        import time
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            stop_local_proxy()
-            print("Stopped.")

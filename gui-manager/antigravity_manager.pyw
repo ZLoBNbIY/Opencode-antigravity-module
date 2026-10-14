@@ -2456,10 +2456,18 @@ class AntigravityManagerApp(ctk.CTk):
             time.sleep(1)
             exe = get_opencode_exe()
             if os.path.exists(exe):
-                if sys.platform == "win32":
-                    os.startfile(exe)
-                else:
-                    subprocess.Popen([exe], cwd=os.path.dirname(exe))
+                launch_env = os.environ.copy()
+                # If custom DNS/DoH is configured, inject local SmartDNS tunnel proxy into OpenCode's environment
+                dns_active = self.config_data.get("dns_mode") in ("standard", "dot", "doh")
+                if dns_active:
+                    tunnel_url = "http://127.0.0.1:51180"
+                    launch_env["HTTPS_PROXY"] = tunnel_url
+                    launch_env["HTTP_PROXY"] = tunnel_url
+                    launch_env["ALL_PROXY"] = tunnel_url
+                    launch_env["https_proxy"] = tunnel_url
+                    launch_env["http_proxy"] = tunnel_url
+                    launch_env["all_proxy"] = tunnel_url
+                subprocess.Popen([exe], cwd=os.path.dirname(exe), env=launch_env)
             time.sleep(2)
             self.after(0, self.update_opencode_status)
             self.after(0, lambda: self.set_status("OpenCode перезапущен!"))
@@ -2477,10 +2485,17 @@ class AntigravityManagerApp(ctk.CTk):
         cleanup_opencode_locks()
         exe = get_opencode_exe()
         if os.path.exists(exe):
-            if sys.platform == "win32":
-                os.startfile(exe)
-            else:
-                subprocess.Popen([exe], cwd=os.path.dirname(exe))
+            launch_env = os.environ.copy()
+            dns_active = self.config_data.get("dns_mode") in ("standard", "dot", "doh")
+            if dns_active:
+                tunnel_url = "http://127.0.0.1:51180"
+                launch_env["HTTPS_PROXY"] = tunnel_url
+                launch_env["HTTP_PROXY"] = tunnel_url
+                launch_env["ALL_PROXY"] = tunnel_url
+                launch_env["https_proxy"] = tunnel_url
+                launch_env["http_proxy"] = tunnel_url
+                launch_env["all_proxy"] = tunnel_url
+            subprocess.Popen([exe], cwd=os.path.dirname(exe), env=launch_env)
             self.set_status("OpenCode запущен")
         self.after(2000, self.update_opencode_status)
 
