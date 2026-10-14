@@ -750,6 +750,23 @@ class AntigravityManagerApp(ctk.CTk):
             print(f"Error initializing system tray: {e}")
 
     def on_close_to_tray(self):
+        remembered = self.config_data.get("close_choice_remembered", False)
+        choice = self.config_data.get("close_choice") if remembered else None
+        remember = remembered
+        if choice not in ("tray", "exit"):
+            choice, remember = self.ask_close_choice()
+        if choice is None:
+            return
+        if remember:
+            self.config_data["close_choice"] = choice
+            self.config_data["close_choice_remembered"] = True
+        else:
+            self.config_data.pop("close_choice", None)
+            self.config_data["close_choice_remembered"] = False
+        self.save_config()
+        if choice == "exit":
+            self.exit_app_fully()
+            return
         try:
             self.withdraw()
             if self.tray and self.tray.is_visible:
@@ -759,6 +776,56 @@ class AntigravityManagerApp(ctk.CTk):
                 )
         except Exception:
             self.destroy()
+
+    def ask_close_choice(self):
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Закрытие Antigravity Hub")
+        dialog.geometry("390x220")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.protocol("WM_DELETE_WINDOW", lambda: finish(None))
+
+        result = {"choice": None, "remember": False}
+        remember_var = tk.BooleanVar(value=False)
+
+        def finish(choice):
+            result["choice"] = choice
+            result["remember"] = remember_var.get()
+            try:
+                dialog.grab_release()
+                dialog.destroy()
+            except Exception:
+                pass
+
+        ctk.CTkLabel(
+            dialog,
+            text="Что сделать с Antigravity Hub?",
+            font=self.font(size=15, weight="bold"),
+            text_color=COLOR["text_primary"],
+        ).pack(padx=20, pady=(22, 14))
+        ctk.CTkCheckBox(
+            dialog,
+            text="Запомнить мой выбор (изменить его можно в настройках)",
+            variable=remember_var,
+            font=self.font(size=11),
+        ).pack(anchor="w", padx=22, pady=(0, 16))
+        buttons = ctk.CTkFrame(dialog, fg_color="transparent")
+        buttons.pack(fill="x", padx=20, pady=(0, 18))
+        ctk.CTkButton(
+            buttons,
+            text="Свернуть в трей",
+            command=lambda: finish("tray"),
+        ).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ctk.CTkButton(
+            buttons,
+            text="Закрыть приложение",
+            fg_color="#dc2626",
+            hover_color="#b91c1c",
+            command=lambda: finish("exit"),
+        ).pack(side="left", expand=True, fill="x", padx=(6, 0))
+        self.wait_window(dialog)
+        return result["choice"], result["remember"]
 
     def show_from_tray(self):
         try:
@@ -1756,6 +1823,25 @@ class AntigravityManagerApp(ctk.CTk):
         self.rate_limit_var = tk.BooleanVar(value=self.config_data.get("switch_on_first_rate_limit", True))
         ctk.CTkSwitch(c2, text="Включено", variable=self.rate_limit_var).pack(anchor="w", padx=16, pady=(0, 12))
 
+        close_card = ctk.CTkFrame(self.settings_frame, fg_color=COLOR["card_bg"], corner_radius=12, border_width=1, border_color=COLOR["border"])
+        close_card.pack(fill="x", pady=6)
+        ctk.CTkLabel(
+            close_card,
+            text="Поведение при нажатии на крестик",
+            font=self.font(size=14, weight="bold"),
+            text_color=COLOR["text_primary"],
+        ).pack(anchor="w", padx=16, pady=(12, 4))
+        self.close_choice_remember_var = tk.BooleanVar(
+            value=self.config_data.get("close_choice_remembered", False)
+        )
+        ctk.CTkCheckBox(
+            close_card,
+            text="Запоминать выбранное действие (свернуть в трей / закрыть приложение)",
+            variable=self.close_choice_remember_var,
+            command=self.on_close_choice_remember_changed,
+            font=self.font(size=11),
+        ).pack(anchor="w", padx=16, pady=(0, 12))
+
         # 3. DNS Configuration (Cockpit / Bezmezhau layout: Standard DNS, DoT, DoH)
         c3 = ctk.CTkFrame(self.settings_frame, fg_color=COLOR["card_bg"], corner_radius=12, border_width=1, border_color=COLOR["border"])
         c3.pack(fill="x", pady=6)
@@ -1989,6 +2075,13 @@ class AntigravityManagerApp(ctk.CTk):
             self.after(0, _update)
 
         threading.Thread(target=_test, daemon=True).start()
+
+    def on_close_choice_remember_changed(self):
+        enabled = self.close_choice_remember_var.get()
+        self.config_data["close_choice_remembered"] = enabled
+        if not enabled:
+            self.config_data.pop("close_choice", None)
+        self.save_config()
 
     def save_settings_action(self):
         self.config_data["account_selection_strategy"] = self.strategy_var.get()
