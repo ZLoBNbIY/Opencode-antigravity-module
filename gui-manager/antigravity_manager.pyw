@@ -34,6 +34,36 @@ import crypto_backup
 import dns_tester
 import local_proxy
 
+# Keep the Windows mutex handle alive for the lifetime of this process.
+_SINGLE_INSTANCE_MUTEX = None
+
+
+def acquire_single_instance():
+    """Return False when another Antigravity Hub instance already owns the mutex."""
+    global _SINGLE_INSTANCE_MUTEX
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        ctypes.set_last_error(0)
+        handle = kernel32.CreateMutexW(None, True, "Local\\AntigravityHub.SingleInstance")
+        if not handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+            kernel32.CloseHandle(handle)
+            return False
+        _SINGLE_INSTANCE_MUTEX = handle
+        return True
+    except Exception as e:
+        # Fail closed: do not risk launching a second Hub if the mutex cannot be checked.
+        print(f"Could not acquire Antigravity Hub single-instance mutex: {e}")
+        return False
+
+
 # --- Paths & Dynamic Resolution ---
 def get_node_executable():
     node = shutil.which("node")
@@ -1017,7 +1047,7 @@ class AntigravityManagerApp(ctk.CTk):
         nav_items = [
             ("antigravity", "🚀  Antigravity (Google)", "google"),
             ("openai", "🟢  ChatGPT (OpenAI)", "openai"),
-            ("settings", "⚙️  Настройки ротации", "settings"),
+            ("settings", "⚙️  Настройки", "settings"),
             ("system", "🛠  OpenCode & Диагностика", "system"),
         ]
 
@@ -2722,5 +2752,7 @@ class AntigravityManagerApp(ctk.CTk):
 
 
 if __name__ == "__main__":
+    if not acquire_single_instance():
+        sys.exit(0)
     app = AntigravityManagerApp()
     app.mainloop()
