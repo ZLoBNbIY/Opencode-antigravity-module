@@ -3,14 +3,16 @@
   "account_selection_strategy": "sticky",
   "soft_quota_threshold_percent": 100,
   "switch_on_first_rate_limit": true,
-  "max_rate_limit_wait_seconds": 5,
+  "max_account_switches": 10,
   "quota_style_fallback": true,
   "debug": false,
-  "dns_mode": "standard",
+  "max_rate_limit_wait_seconds": 5,
+  "dns_mode": "doh",
   "custom_dns": [
     "143.20.64.55",
     "31.58.216.201"
   ],
   "dot_host": "dns.bezmezhau.com",
-  "doh_url": "https://dns.bezmezhau.com/dns-query"
+  "doh_url": "https://dns.bezmezhau.com/dns-query",
+  "proxy": "http://127.0.0.1:51180"
 }

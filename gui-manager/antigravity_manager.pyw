@@ -31,6 +31,7 @@ import health_checker
 import auto_updater
 import crypto_backup
 import dns_tester
+import local_proxy
 
 # --- Paths & Dynamic Resolution ---
 def get_node_executable():
@@ -631,6 +632,12 @@ class AntigravityManagerApp(ctk.CTk):
 
         # Periodic auto-refresh (every 10 minutes)
         self.auto_refresh_enabled = True
+
+        # Start embedded local proxy tunnel for Bun/OpenCode OpenAI & Google geo-bypass
+        try:
+            local_proxy.start_local_proxy()
+        except Exception as e:
+            print(f"Error starting local proxy: {e}")
         self.auto_refresh_interval_min = 10
         self.countdown_seconds = self.auto_refresh_interval_min * 60
 
@@ -1986,16 +1993,46 @@ class AntigravityManagerApp(ctk.CTk):
         else:
             self.config_data.pop("doh_url", None)
 
-        # Save Proxy
+        # Save Proxy (Auto-enable embedded local tunnel if proxy is empty and custom DNS/DoH is active)
         proxy_val = self.proxy_entry.get().strip()
+        dns_active = self.config_data.get("dns_mode") in ("standard", "dot", "doh")
+        if not proxy_val and dns_active:
+            proxy_val = "http://127.0.0.1:51180"
+            try:
+                self.proxy_entry.delete(0, "end")
+                self.proxy_entry.insert(0, proxy_val)
+            except Exception:
+                pass
+
         if proxy_val:
             self.config_data["proxy"] = proxy_val
         else:
             self.config_data.pop("proxy", None)
 
+        # Synchronize proxy to opencode.json for Bun runtime (ChatGPT / OpenAI provider)
+        try:
+            opencode_cfg_path = Path.home() / ".config" / "opencode" / "opencode.json"
+            if opencode_cfg_path.exists():
+                oc_data = json.loads(opencode_cfg_path.read_text(encoding="utf-8"))
+                if proxy_val:
+                    if "provider" not in oc_data:
+                        oc_data["provider"] = {}
+                    if "openai" not in oc_data["provider"]:
+                        oc_data["provider"]["openai"] = {}
+                    if "options" not in oc_data["provider"]["openai"]:
+                        oc_data["provider"]["openai"]["options"] = {}
+                    oc_data["provider"]["openai"]["options"]["proxy"] = proxy_val
+                else:
+                    if "provider" in oc_data and "openai" in oc_data["provider"]:
+                        if "options" in oc_data["provider"]["openai"]:
+                            oc_data["provider"]["openai"]["options"].pop("proxy", None)
+                opencode_cfg_path.write_text(json.dumps(oc_data, indent=4, ensure_ascii=False), encoding="utf-8")
+        except Exception as e:
+            print(f"Warning: Failed to sync proxy to opencode.json: {e}")
+
         ok, msg = self.save_config()
         if ok:
-            messagebox.showinfo("Успешно", "Настройки сохранены!\n\nИзолированный DNS (Обычный/DoT/DoH) и параметры маршрутизации будут применяться только к OpenCode.")
+            messagebox.showinfo("Успешно", "Настройки сохранены!\n\nЛокальный SmartDNS-туннель (127.0.0.1:51180) и параметры DoH/DNS активированы для OpenCode.")
         else:
             messagebox.showerror("Ошибка", msg)
 
