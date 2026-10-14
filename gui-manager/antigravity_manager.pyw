@@ -387,8 +387,20 @@ def enrich_google_accounts_with_generation_store(accounts: list[dict]) -> list[d
         return disk_accounts
 
     for idx, acc in enumerate(accounts):
-        if idx < len(disk_accounts):
+        account_id = acc.get("id") or acc.get("accountId")
+        email = (acc.get("email") or "").strip().lower()
+        disk_acc = next(
+            (
+                item for item in disk_accounts
+                if (account_id and item.get("id") == account_id)
+                or (email and item.get("email", "").strip().lower() == email)
+            ),
+            None,
+        )
+        # Older CLI output omits stable identifiers; only then use its ordering.
+        if disk_acc is None and not account_id and not email and idx < len(disk_accounts):
             disk_acc = disk_accounts[idx]
+        if disk_acc:
             if not acc.get("email") or acc.get("email", "").startswith("Account "):
                 acc["email"] = disk_acc["email"]
             if not acc.get("addedAt"):
@@ -1520,11 +1532,17 @@ class AntigravityManagerApp(ctk.CTk):
             text_color=COLOR["text_muted"],
         ).pack(anchor="w", pady=(0, 4))
 
-    def format_compact_reset(self, iso_str):
-        if not iso_str:
+    def format_compact_reset(self, reset_value):
+        if reset_value is None or reset_value == "":
             return "квота доступна"
         try:
-            dt = datetime.datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+            if isinstance(reset_value, (int, float)):
+                timestamp = reset_value / 1000 if reset_value > 1e11 else reset_value
+                dt = datetime.datetime.fromtimestamp(timestamp, tz=datetime.timezone.utc)
+            else:
+                dt = datetime.datetime.fromisoformat(str(reset_value).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=datetime.timezone.utc)
             local_dt = dt.astimezone()
             now = datetime.datetime.now(datetime.timezone.utc).astimezone()
             diff = local_dt - now
@@ -1539,7 +1557,7 @@ class AntigravityManagerApp(ctk.CTk):
             dur = f"{d}d {h}h" if d > 0 else (f"{h}h {m}m" if h > 0 else f"{m}m")
             return f"через {dur} ({local_dt.strftime('%H:%M')})"
         except Exception:
-            return iso_str[:16]
+            return str(reset_value)[:16]
 
     def format_added_date(self, ts):
         if not ts:
@@ -1633,13 +1651,13 @@ class AntigravityManagerApp(ctk.CTk):
         f1.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
         ctk.CTkLabel(f1, text="GPT-5 / 6", font=self.font(size=13, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w")
         rem_p = round(float(primary_quota.get("remaining_percent", 100.0)), 1)
-        self._render_compact_subrow(f1, "3-5h", rem_p, "")
+        self._render_compact_subrow(f1, "3-5h", rem_p, primary_quota.get("reset_at"))
 
         f2 = ctk.CTkFrame(quota_box, fg_color="transparent")
         f2.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
         ctk.CTkLabel(f2, text="Codex / 7d", font=self.font(size=13, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w")
         rem_s = round(float(secondary_quota.get("remaining_percent", 100.0)), 1)
-        self._render_compact_subrow(f2, "Weekly", rem_s, "")
+        self._render_compact_subrow(f2, "Weekly", rem_s, secondary_quota.get("reset_at"))
 
         footer = ctk.CTkFrame(card, fg_color="transparent")
         footer.pack(fill="x", padx=14, pady=(0, 10))
