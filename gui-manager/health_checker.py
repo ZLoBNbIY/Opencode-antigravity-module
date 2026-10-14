@@ -100,41 +100,70 @@ def test_google_account_health(account: dict, timeout=10) -> dict:
 
 def test_openai_account_health(account: dict, timeout=10) -> dict:
     """
-    Tests an OpenAI / ChatGPT account using its access token or session token.
-    Pings the ChatGPT models/usage endpoint to check validity and latency.
+    Tests an OpenAI / ChatGPT account using its access token and backend API.
+    Pings the ChatGPT wham/usage endpoint through proxy to verify credentials,
+    plan type, model readiness, and latency.
     """
     access_token = account.get("accessToken") or account.get("access")
+    account_id = account.get("accountId", "")
     email = account.get("email", "unknown")
 
     if not access_token:
         return {
             "ok": False,
             "status": "error",
-            "message": "Access token отсутствует",
+            "message": "Access token отсутствует (требуется вход)",
             "latency_ms": 0,
         }
 
-    url = "https://chatgpt.com/backend-api/models"
+    try:
+        import openai_manager
+        # Proactively refresh token if close to expiry
+        now_ms = int(time.time() * 1000)
+        if account.get("expires", 0) - now_ms < 120000:
+            openai_manager.refresh_openai_token(account)
+            access_token = account.get("access", access_token)
+            account_id = account.get("accountId", account_id)
+        opener = openai_manager._get_http_opener(timeout=timeout)
+    except Exception:
+        opener = urllib.request.build_opener()
+
+    url = "https://chatgpt.com/backend-api/wham/usage"
     headers = {
         "Authorization": f"Bearer {access_token}",
+        "chatgpt-account-id": account_id,
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json",
     }
 
-    ctx = ssl.create_default_context()
     start_t = time.perf_counter()
 
     try:
         req = urllib.request.Request(url, headers=headers, method="GET")
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+        with opener.open(req, timeout=timeout) as resp:
             elapsed_ms = round((time.perf_counter() - start_t) * 1000)
             data = json.loads(resp.read().decode("utf-8"))
-            categories = data.get("categories", [])
+            plan_type = (data.get("plan_type") or account.get("plan_type") or "plus").upper()
+            rate_limit = data.get("rate_limit", {})
+            allowed = rate_limit.get("allowed", True)
+            limit_reached = rate_limit.get("limit_reached", False)
+
+            if limit_reached or not allowed:
+                return {
+                    "ok": True,
+                    "status": "rate_limited",
+                    "message": f"Связь активна ({elapsed_ms} мс), но квота исчерпана",
+                    "latency_ms": elapsed_ms,
+                    "plan_type": plan_type,
+                }
+
             return {
                 "ok": True,
                 "status": "active",
-                "message": f"Токен валиден, пинг {elapsed_ms} мс",
+                "message": f"Токен валиден, связь отличная (пинг {elapsed_ms} мс)",
                 "latency_ms": elapsed_ms,
-                "categories_count": len(categories),
+                "plan_type": plan_type,
+                "models_available": True,
             }
     except urllib.error.HTTPError as e:
         elapsed_ms = round((time.perf_counter() - start_t) * 1000)
@@ -149,7 +178,7 @@ def test_openai_account_health(account: dict, timeout=10) -> dict:
             return {
                 "ok": False,
                 "status": "rate_limited",
-                "message": f"Квота исчерпана (429, {elapsed_ms} мс)",
+                "message": f"Квота исчерпана (429 Rate Limit, {elapsed_ms} мс)",
                 "latency_ms": elapsed_ms,
             }
         else:
