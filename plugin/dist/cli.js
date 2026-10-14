@@ -21745,7 +21745,14 @@ function quotaSummary(results) {
         ([name, group]) => ({
           name,
           ...typeof group.remainingFraction === "number" ? { remainingPercent: group.remainingFraction * 100 } : {},
-          ...group.resetTime ? { resetTime: group.resetTime } : {}
+          ...group.resetTime ? { resetTime: group.resetTime } : {},
+          ...Array.isArray(group.windows) ? {
+            windows: group.windows.map((w) => ({
+              window: w.window,
+              remainingPercent: typeof w.remainingFraction === "number" ? w.remainingFraction * 100 : (w.remainingPercent ?? 100),
+              resetTime: w.resetTime
+            }))
+          } : {}
         })
       )
     }))
@@ -21994,7 +22001,8 @@ function cliAccountOf(row) {
     cachedQuota[name] = {
       modelCount: group.modelCount,
       ...typeof group.remainingFraction === "number" ? { remainingFraction: group.remainingFraction } : {},
-      ...typeof group.resetTime === "string" ? { resetTime: group.resetTime } : {}
+      ...typeof group.resetTime === "string" ? { resetTime: group.resetTime } : {},
+      ...Array.isArray(group.windows) ? { windows: group.windows } : {}
     };
   }
   const email = present(metadata?.email);
