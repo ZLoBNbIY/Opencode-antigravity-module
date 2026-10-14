@@ -1743,10 +1743,28 @@ class AntigravityManagerApp(ctk.CTk):
         ctk.CTkLabel(c3, text="🌐 Адреса серверов DNS (Обход ограничений Google)", font=self.font(size=14, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w", padx=16, pady=(12, 4))
         ctk.CTkLabel(
             c3,
-            text="Изолированный обход гео-фильтра Google ТОЛЬКО для OpenCode (не затрагивает другие приложения Windows):",
+            text="DNS применяется внутри сетевых компонентов Antigravity Hub/OpenCode; системный DNS Windows не меняется.",
             font=self.font(size=11),
             text_color=COLOR["text_secondary"]
         ).pack(anchor="w", padx=16, pady=(0, 10))
+
+        dns_notice = ctk.CTkFrame(c3, fg_color=COLOR["subbox_bg"], corner_radius=8, border_width=1, border_color=COLOR["border"])
+        dns_notice.pack(fill="x", padx=16, pady=(0, 10))
+        ctk.CTkLabel(
+            dns_notice,
+            text=(
+                "Как работают DNS и туннель\n"
+                "• Выбранный протокол (Обычный DNS / DoT / DoH) используется для DNS-запросов, которые выполняют плагин и встроенный туннель.\n"
+                "• Локальный адрес http://127.0.0.1:51180 Hub настраивает как прокси OpenCode. Запросы через него разрешаются DNS-сервером, выбранным выше.\n"
+                "• Важно: OpenCode может применять переменные прокси ко всему своему HTTPS-трафику, а не только к OpenAI. Поэтому через туннель могут идти и другие запросы OpenCode, включая Google.\n"
+                "• Кнопки «Проверить доступность» проверяют DNS-резолвер, но не гарантируют успешную авторизацию, доступность модели или наличие квоты. После изменения настроек перезапустите OpenCode из Hub."
+            ),
+            font=self.font(size=11),
+            text_color=COLOR["text_secondary"],
+            justify="left",
+            anchor="w",
+            wraplength=980
+        ).pack(fill="x", padx=12, pady=10)
 
         # DNS Mode Selector (Standard / DoT / DoH / System)
         mode_row = ctk.CTkFrame(c3, fg_color="transparent")
@@ -1868,10 +1886,10 @@ class AntigravityManagerApp(ctk.CTk):
         # Proxy Row
         proxy_row = ctk.CTkFrame(c3, fg_color="transparent")
         proxy_row.pack(fill="x", padx=16, pady=(0, 14))
-        ctk.CTkLabel(proxy_row, text="Прокси (опционально SOCKS5/HTTP):", font=self.font(size=11, weight="bold"), text_color=COLOR["text_primary"], width=230, anchor="w").pack(side="left")
+        ctk.CTkLabel(proxy_row, text="Прокси для Antigravity (необязательно):", font=self.font(size=11, weight="bold"), text_color=COLOR["text_primary"], width=250, anchor="w").pack(side="left")
         self.proxy_entry = ctk.CTkEntry(
             proxy_row,
-            placeholder_text="например: socks5://127.0.0.1:10808 или http://127.0.0.1:10809",
+            placeholder_text="Оставьте пустым для встроенного туннеля OpenCode",
             font=self.font(size=11),
             height=30,
             fg_color=COLOR["subbox_bg"],
