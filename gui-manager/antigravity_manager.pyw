@@ -1637,21 +1637,31 @@ class AntigravityManagerApp(ctk.CTk):
         ).pack(anchor="w", pady=(0, 4))
 
         windows = group_info.get("windows", []) if group_info else []
-        win_5h = next((w for w in windows if "5" in str(w.get("window", "")).lower()), None)
-        win_weekly = next((w for w in windows if "week" in str(w.get("window", "")).lower() or "7" in str(w.get("window", "")).lower() or "d" in str(w.get("window", "")).lower()), None)
 
-        pct_5h = win_5h.get("remainingPercent", 100.0) if win_5h else (group_info.get("remainingPercent", 100.0) if group_info else 100.0)
-        reset_5h = win_5h.get("resetTime", "") if win_5h else (group_info.get("resetTime", "") if group_info else "")
+        def window_key(window):
+            name = str(window.get("window", "")).strip().lower().replace("_", "-")
+            if name in {"5h", "5-hour", "5-hours", "5hr", "5-hr"}:
+                return "5h"
+            if name in {"weekly", "week", "7d", "7-day", "7-days"}:
+                return "weekly"
+            return None
 
-        pct_wk = win_weekly.get("remainingPercent", 100.0) if win_weekly else 100.0
+        win_5h = next((w for w in windows if window_key(w) == "5h"), None)
+        win_weekly = next((w for w in windows if window_key(w) == "weekly"), None)
+
+        # Never substitute the aggregate group quota for a missing 5h window:
+        # it may represent the weekly minimum and make the 5h bar falsely drop.
+        pct_5h = win_5h.get("remainingPercent") if win_5h else None
+        reset_5h = win_5h.get("resetTime", "") if win_5h else ""
+        pct_wk = win_weekly.get("remainingPercent") if win_weekly else None
         reset_wk = win_weekly.get("resetTime", "") if win_weekly else ""
 
         self._render_compact_subrow(frame, label="5h", pct=pct_5h, reset_iso=reset_5h)
         self._render_compact_subrow(frame, label="Weekly", pct=pct_wk, reset_iso=reset_wk)
 
     def _render_compact_subrow(self, parent, label, pct, reset_iso):
-        rem = round(float(pct), 1)
-        color = "#16a34a" if rem > 50 else ("#f59e0b" if rem > 20 else "#ef4444")
+        rem = round(float(pct), 1) if pct is not None else None
+        color = ("#16a34a" if rem > 50 else ("#f59e0b" if rem > 20 else "#ef4444")) if rem is not None else COLOR["text_muted"]
 
         row = ctk.CTkFrame(parent, fg_color="transparent")
         row.pack(fill="x", pady=(3, 0))
@@ -1665,17 +1675,17 @@ class AntigravityManagerApp(ctk.CTk):
 
         ctk.CTkLabel(
             row,
-            text=f"{int(rem)}%",
+            text=f"{int(rem)}%" if rem is not None else "—",
             font=self.font(size=11, weight="bold"),
             text_color=color,
         ).pack(side="right")
 
         bar = ctk.CTkProgressBar(parent, height=6, corner_radius=3)
         bar.pack(fill="x", pady=(2, 2))
-        bar.set(max(0.0, min(1.0, rem / 100.0)))
+        bar.set(max(0.0, min(1.0, rem / 100.0)) if rem is not None else 0.0)
         bar.configure(progress_color=color, fg_color=COLOR["bar_bg"])
 
-        timer_text = self.format_compact_reset(reset_iso)
+        timer_text = self.format_compact_reset(reset_iso) if rem is not None else "окно квоты недоступно"
         ctk.CTkLabel(
             parent,
             text=timer_text,
