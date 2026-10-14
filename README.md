@@ -1,16 +1,19 @@
-# OpenCode Antigravity Module (Ветка V2)
+# OpenCode Antigravity Module (ветка Linux)
 
 > [!IMPORTANT]
-> **Ветка `V2` разработана специально для OpenCode версии 2.0.27 и выше.**  
-> Данная ветка включает полную поддержку архитектуры OpenCode 2.x:
+> **Эта ветка (`linux`) содержит экспериментальную версию Antigravity Hub для Linux.**
+> GUI адаптирован для Linux desktop, включая одиночный запуск, системный трей и управление OpenCode.
+> Для стабильной Windows-версии используйте ветку [`V2`](https://github.com/ZLoBNbIY/Opencode-antigravity-module/tree/V2).
+> Linux-установка и список ограничений: [LINUX.md](LINUX.md).
+>
+> Базовый модуль рассчитан на OpenCode версии 2.0.27 и выше и поддерживает архитектуру OpenCode 2.x:
 > * Внутренняя база данных SQLite (`opencode.db`) и таблица `credential`.
 > * Мгновенная синхронизация учетных записей через интерфейс `opencode-cli auth import / export`.
-> * Поддержка двойного пути конфигурации `auth.json` (`%USERPROFILE%\.opencode\auth.json` и `%USERPROFILE%\.local\share\opencode\auth.json`).
+> * Поддержка путей конфигурации OpenCode для Windows и Linux (`auth.json`, `opencode.db`).
 > * Мульти-аккаунт и авто-ротация Google Antigravity & OpenAI ChatGPT.
 > * Устранение несовместимости JSON Schema (`exclusiveMinimum`) с Protobuf-валидатором Gemini API.
-> * Автоматическая очистка блокировок `service.json*` для предотвращения ошибок Windows Desktop IPC.
-> 
-> *Для устаревших версий OpenCode 1.x (до 2.0.0) используйте ветку `main`.*
+>
+> Ветка Linux экспериментальная: проверка интерфейса и системного трея зависит от дистрибутива и графического окружения.
 
 > **Комплексный модуль интеграции Google Antigravity OAuth для OpenCode**  
 > Доступ к моделям **Gemini 3.8 Flash**, **Gemini 3.7 Flash / Pro** и **Claude** через аккаунты Google с поддержкой мульти-аккаунта, умной ротации квот, нативного GUI-менеджера и полным устранением зависаний стриминга («Размышление...»).
@@ -159,14 +162,14 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 ---
 
-### Способ 3: Автоматическая установка (Linux / macOS)
+### Способ 3: Antigravity Hub для Linux (экспериментально)
 
 ```bash
-git clone https://github.com/ZLoBNbIY/Opencode-antigravity-module.git
+git clone -b linux --single-branch https://github.com/ZLoBNbIY/Opencode-antigravity-module.git
 cd Opencode-antigravity-module
-chmod +x install.sh
-./install.sh
 ```
+
+Затем выполните шаги установки зависимостей и запуска из [LINUX.md](LINUX.md). Linux-версия Hub находится в отдельной ветке и не меняет Windows-реализацию `V2`.
 
 ---
 

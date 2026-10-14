@@ -1,39 +1,38 @@
-# Antigravity Hub for Linux (experimental)
+# Antigravity Hub для Linux (экспериментальная версия)
 
-Linux work is isolated on the `linux` Git branch. The Windows release remains on
-`V2`; Linux-specific tray code and launch instructions are maintained here.
+Linux-версия Hub развивается отдельно в ветке `linux` и не меняет Windows-реализацию из ветки `V2`. Она адаптирует графический интерфейс, системный трей, блокировку второго экземпляра, открытие папок и базовое управление OpenCode. Получение аккаунтов и квот, DNS-настройки и встроенный туннель используют общую логику проекта.
 
-## Requirements
+> Версия экспериментальная. Работа системного трея зависит от дистрибутива и рабочего стола; перед использованием проверьте запуск и управление OpenCode в своей среде.
 
-- OpenCode CLI (`opencode`) installed and available on `PATH`
-- Python 3.10+, Tk support, and pip
-- A desktop session with a system-tray/AppIndicator implementation
-- Node.js, required by the Antigravity CLI
+## Требования
 
-On Debian/Ubuntu, install the OS packages first:
+- OpenCode CLI (`opencode`) в `PATH`
+- Python 3.10+, Tkinter и pip
+- Node.js для CLI Antigravity
+- Графическая сессия с поддержкой системного трея/AppIndicator
+
+Для Debian/Ubuntu установите системные пакеты:
 
 ```bash
 sudo apt install python3 python3-tk python3-venv python3-pip python3-gi gir1.2-ayatanaappindicator3-0.1
 ```
 
-Then install the Hub's Python dependencies and start it:
+## Установка и запуск
+
+Клонируйте именно Linux-ветку:
 
 ```bash
-python3 -m venv .venv
+git clone -b linux --single-branch https://github.com/ZLoBNbIY/Opencode-antigravity-module.git
+cd Opencode-antigravity-module
+```
+
+Установите Python-зависимости и запустите Hub:
+
+```bash
+python3 -m venv --system-site-packages .venv
 . .venv/bin/activate
 python -m pip install -r gui-manager/requirements-linux.txt
 bash gui-manager/start_manager.sh
 ```
 
-If the system tray backend cannot start, closing to tray is prevented so the
-window is not hidden with no way to restore it. OpenCode management is best-effort
-and targets processes named `opencode` / `opencode-cli`; test it in your desktop
-environment before relying on start/stop actions.
-
-## Current scope
-
-The Linux branch adapts the Hub GUI, tray, single-instance lock, path opening,
-and OpenCode process checks/actions. Authentication, quotas, custom DNS and the
-embedded tunnel use the existing shared implementation. This is an experimental
-port; the GUI and tray need validation on real Linux desktop environments
-(GNOME, KDE, and Wayland/X11 differ in tray support).
+Если системный трей не запустился, Hub не будет сворачиваться в недоступный фон. Управление процессами OpenCode выполняется по именам `opencode`, `opencode-desktop` и `opencode-cli`; проверьте эти действия на своём дистрибутиве, прежде чем полагаться на них.
