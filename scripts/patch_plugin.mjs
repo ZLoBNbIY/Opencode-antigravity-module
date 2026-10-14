@@ -1,9 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 const homeDir = os.homedir();
-const localPluginPath = path.resolve(import.meta.dirname, '..', 'plugin');
+const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+const localPluginPath = path.resolve(scriptDir, '..', 'plugin');
 
 function findTargetPaths() {
   const targets = [];

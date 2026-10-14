@@ -104,6 +104,18 @@ if (-not $HasLocalRepo) {
 
 # --- 1. Поиск Node.js ---
 Write-Step "Проверка окружения Node.js..."
+$MinimumNodeVersion = [version]"20.0.0"
+
+function Get-NodeVersion {
+    param([string]$Executable)
+    if (-not $Executable -or -not (Test-Path -LiteralPath $Executable)) { return $null }
+    try {
+        $raw = (& $Executable -v 2>$null | Select-Object -First 1) -replace '^v', ''
+        return [version]$raw
+    } catch {
+        return $null
+    }
+}
 
 $NodePath = $null
 $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
@@ -128,17 +140,26 @@ if ($nodeCmd) {
     }
 }
 
-if (-not $NodePath) {
-    Write-WarningMsg "Node.js не найден в системе. Запуск автоматической установки Node.js LTS..."
+if (-not $NodePath -or (Get-NodeVersion $NodePath) -lt $MinimumNodeVersion) {
+    $currentNodeVersion = Get-NodeVersion $NodePath
+    if ($currentNodeVersion) {
+        Write-WarningMsg "Найдена Node.js $currentNodeVersion, требуется $MinimumNodeVersion или новее. Попытка обновления до LTS..."
+    } else {
+        Write-WarningMsg "Node.js не найден. Запуск автоматической установки Node.js LTS..."
+    }
     $installedOk = $false
     $wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
     if ($wingetCmd) {
-        Write-Info "Попытка тихой установки Node.js LTS через winget..."
+        Write-Info "Попытка установить/обновить Node.js LTS через winget..."
         try {
-            & winget install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements --silent
+            if ($currentNodeVersion) {
+                & winget upgrade --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements --silent
+            } else {
+                & winget install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements --silent
+            }
             if (Test-Path "C:\Program Files\nodejs\node.exe") {
                 $NodePath = "C:\Program Files\nodejs\node.exe"
-                $installedOk = $true
+                $installedOk = (Get-NodeVersion $NodePath) -ge $MinimumNodeVersion
             }
         } catch {
             Write-Info "Winget завершился с ошибкой, переходим к установщику MSI..."
@@ -147,8 +168,9 @@ if (-not $NodePath) {
 
     if (-not $installedOk) {
         Write-Info "Загрузка официального MSI-установщика Node.js LTS с nodejs.org..."
-        $msiUrl = "https://nodejs.org/dist/v24.20.0/node-v24.20.0-x64.msi"
-        $tempMsi = Join-Path $env:TEMP "node-v24.20.0-x64.msi"
+        $nodeLtsVersion = "24.20.0"
+        $msiUrl = "https://nodejs.org/dist/v$nodeLtsVersion/node-v$nodeLtsVersion-x64.msi"
+        $tempMsi = Join-Path $env:TEMP "node-v$nodeLtsVersion-x64.msi"
         try {
             Invoke-WebRequest -Uri $msiUrl -OutFile $tempMsi -UseBasicParsing
             Write-Info "Установка Node.js в тихом режиме..."
@@ -156,7 +178,7 @@ if (-not $NodePath) {
             Remove-Item -LiteralPath $tempMsi -Force -ErrorAction SilentlyContinue
             if (Test-Path "C:\Program Files\nodejs\node.exe") {
                 $NodePath = "C:\Program Files\nodejs\node.exe"
-                $installedOk = $true
+                $installedOk = (Get-NodeVersion $NodePath) -ge $MinimumNodeVersion
             }
         } catch {
             Write-WarningMsg "Ошибка при установке Node.js через MSI: $_"
@@ -171,10 +193,15 @@ if (-not $NodePath) {
 }
 
 if ($NodePath) {
-    $nodeVer = & "$NodePath" -v 2>$null
-    Write-Success "Node.js готов к работе: $NodePath ($nodeVer)"
+    $nodeVer = Get-NodeVersion $NodePath
+    if ($nodeVer -ge $MinimumNodeVersion) {
+        Write-Success "Node.js готов к работе: $NodePath (v$nodeVer)"
+    } else {
+        Write-WarningMsg "Не удалось обновить Node.js до $MinimumNodeVersion. Установите Node.js 20 LTS или новее с https://nodejs.org; патчи плагина могут не примениться."
+        $NodePath = $null
+    }
 } else {
-    Write-ErrorMsg "Node.js не найден и не удалось установить автоматически. Установите Node.js с https://nodejs.org"
+    Write-WarningMsg "Node.js $MinimumNodeVersion или новее не найден и не удалось установить автоматически. Установите Node.js 20 LTS или новее с https://nodejs.org; патчи плагина будут пропущены."
 }
 
 # --- 2. Поиск Python ---
@@ -323,7 +350,11 @@ if (-not $SkipPatch -and $NodePath) {
     $PatchScript = Join-Path $ScriptDir "scripts\patch_plugin.mjs"
     if (Test-Path -LiteralPath $PatchScript) {
         $res = & "$NodePath" "$PatchScript"
-        Write-Success "Патчи стриминга и совместимости успешно применены!"
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "Патчи стриминга и совместимости успешно применены!"
+        } else {
+            Write-WarningMsg "Не удалось применить патчи совместимости (код $LASTEXITCODE). Установка продолжится, но часть исправлений плагина может быть недоступна."
+        }
     } else {
         Write-WarningMsg "Скрипт patch_plugin.mjs не найден по пути: $PatchScript"
     }
