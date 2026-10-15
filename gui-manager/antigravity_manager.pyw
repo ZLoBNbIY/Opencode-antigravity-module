@@ -33,6 +33,7 @@ import auto_updater
 import crypto_backup
 import dns_tester
 import local_proxy
+import hub_restart
 from deepseek_view import DeepSeekView
 from openrouter_view import OpenRouterView
 
@@ -1008,11 +1009,27 @@ class AntigravityManagerApp(ctk.CTk):
 
     def _on_update_applied(self, ok, msg):
         if ok:
-            messagebox.showinfo("Обновление завершено!", f"{msg}\n\nРекомендуется перезапустить OpenCode и Hub.")
             self.dismiss_update_banner()
-            self.refresh_all_async()
+            self.update_banner = ctk.CTkFrame(self.content_area, corner_radius=10)
+            self.update_banner.pack(fill="x", padx=24, pady=(12, 0))
+            ctk.CTkLabel(
+                self.update_banner, text="Обновление установлено. Перезапустите Hub, чтобы применить изменения.",
+                wraplength=520, justify="left",
+            ).pack(side="left", padx=16, pady=12)
+            ctk.CTkButton(
+                self.update_banner, text="Перезапустить Hub", command=self.restart_hub_action,
+            ).pack(side="right", padx=16, pady=12)
+            self.set_status(msg)
         else:
             messagebox.showerror("Ошибка обновления", msg)
+
+    def restart_hub_action(self):
+        try:
+            hub_restart.schedule_restart()
+        except OSError as error:
+            messagebox.showerror("Перезапуск Hub", f"Не удалось запустить Hub заново:\n{error}")
+            return
+        self.exit_app_fully()
 
     # =========================================================================
     # SIDEBAR COMPONENT (Cockpit Tools Style)
