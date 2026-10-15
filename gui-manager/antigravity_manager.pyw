@@ -34,7 +34,6 @@ import crypto_backup
 import dns_tester
 import local_proxy
 import hub_restart
-from deepseek_view import DeepSeekView
 from openrouter_view import OpenRouterView
 
 # Keep the Windows mutex handle alive for the lifetime of this process.
@@ -777,7 +776,7 @@ class AntigravityManagerApp(ctk.CTk):
             icon_file = Path(__file__).resolve().parent / "icon.ico"
             icon_str = str(icon_file) if icon_file.exists() else None
             self.tray = win_tray.WindowsTrayIcon(
-                title="Antigravity Hub — Google, ChatGPT & DeepSeek",
+                title="Antigravity Hub — Google, ChatGPT & OpenRouter Free",
                 icon_path=icon_str,
                 on_show=lambda: self.after(0, self.show_from_tray),
                 on_refresh=lambda: self.after(0, self.refresh_all_async),
@@ -874,8 +873,6 @@ class AntigravityManagerApp(ctk.CTk):
             pass
 
     def exit_app_fully(self):
-        if hasattr(self, "deepseek_view"):
-            self.deepseek_view.shutdown()
         try:
             if self.tray:
                 self.tray.remove()
@@ -1077,7 +1074,6 @@ class AntigravityManagerApp(ctk.CTk):
             ("antigravity", "🚀  Antigravity (Google)", "google"),
             ("openai", "🟢  ChatGPT (OpenAI)", "openai"),
             ("openrouter", "🟣  OpenRouter Free", "openrouter"),
-            ("deepseek", "🔵  DeepSeek (Web)", "deepseek"),
             ("settings", "⚙️  Настройки", "settings"),
             ("system", "🛠  OpenCode & Диагностика", "system"),
         ]
@@ -1142,7 +1138,6 @@ class AntigravityManagerApp(ctk.CTk):
 
     def switch_nav(self, target_nav):
         self.current_nav = target_nav
-        self.deepseek_view.pack_forget()
         self.openrouter_view.pack_forget()
         for key, btn in self.nav_btns.items():
             if key == target_nav:
@@ -1159,13 +1154,6 @@ class AntigravityManagerApp(ctk.CTk):
             self.system_frame.pack_forget()
             self.update_action_bar_for_provider()
             self.render_accounts()
-        elif target_nav == "deepseek":
-            self.top_action_bar.pack_forget()
-            self.accounts_container.pack_forget()
-            self.settings_frame.pack_forget()
-            self.system_frame.pack_forget()
-            self.deepseek_view.update_status()
-            self.deepseek_view.pack(fill="both", expand=True, padx=24, pady=16)
         elif target_nav == "openrouter":
             self.top_action_bar.pack_forget()
             self.accounts_container.pack_forget()
@@ -1207,7 +1195,6 @@ class AntigravityManagerApp(ctk.CTk):
 
         self.create_settings_view()
         self.create_system_view()
-        self.deepseek_view = DeepSeekView(self.content_area, self, COLOR)
         self.openrouter_view = OpenRouterView(self.content_area, self, COLOR)
         self.create_statusbar()
 

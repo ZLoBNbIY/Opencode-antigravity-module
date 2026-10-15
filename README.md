@@ -53,7 +53,7 @@ chmod +x install.sh
 - Antigravity Hub для управления аккаунтами, квотами и настройками.
 - Поддержка OAuth-аккаунтов ChatGPT/OpenAI в Hub.
 - Бесплатные текстовые модели OpenRouter через ваш API-ключ — отдельный провайдер **OpenRouter Free** в Hub и OpenCode.
-- Экспериментальный DeepSeek Web: вход и ограничения описаны в [docs/deepseek.md](docs/deepseek.md).
+- Для DeepSeek используйте доступную бесплатную модель в самом OpenCode. Отдельная интеграция DeepSeek Web в Hub больше не запускается; доступность и квоты определяются сервисом.
 
 Чтобы подключить бесплатные модели OpenRouter:
 
