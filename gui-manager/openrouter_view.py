@@ -59,7 +59,7 @@ class OpenRouterView(ctk.CTkScrollableFrame):
     def _instruction_link(self, text, url):
         link = ctk.CTkLabel(
             self, text=text, anchor="w", text_color=("#1769aa", "#67b7ff"),
-            cursor="hand2", font=self.app.font(13, "underline"),
+            cursor="hand2", font=self.app.font(13, underline=True),
         )
         link.pack(fill="x", pady=(4, 0))
         link.bind("<Button-1>", lambda _event, address=url: webbrowser.open(address))

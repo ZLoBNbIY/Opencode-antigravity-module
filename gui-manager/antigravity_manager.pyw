@@ -717,8 +717,8 @@ class AntigravityManagerApp(ctk.CTk):
         self.check_updates_async()
 
     # --- Font Helper (Crisp Segoe UI) ---
-    def font(self, size=12, weight="normal"):
-        return ctk.CTkFont(family="Segoe UI", size=size, weight=weight)
+    def font(self, size=12, weight="normal", underline=False):
+        return ctk.CTkFont(family="Segoe UI", size=size, weight=weight, underline=underline)
 
     # --- Configuration Management ---
     def load_config(self):
