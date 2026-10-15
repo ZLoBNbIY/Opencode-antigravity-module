@@ -1,4 +1,4 @@
-"""OpenRouter setup and free Qwen/Llama model selection for Antigravity Hub."""
+"""OpenRouter Free setup and model selection for Antigravity Hub."""
 import threading
 from tkinter import messagebox
 
@@ -16,8 +16,19 @@ class OpenRouterView(ctk.CTkScrollableFrame):
         ctk.CTkLabel(self, text="OpenRouter Free", font=app.font(22, "bold"), anchor="w").pack(fill="x", pady=(0, 12))
         ctk.CTkLabel(
             self,
-            text="Hub создаст в OpenCode отдельный раздел OpenRouter Free только с выбранными бесплатными текстовыми моделями. Платный каталог OpenRouter останется отдельным.",
-            anchor="w", justify="left", wraplength=760,
+            text=(
+                "Чтобы подключить бесплатные модели OpenRouter:\n"
+                "1. Зарегистрируйтесь или войдите на openrouter.ai.\n"
+                "2. На openrouter.ai/settings/keys создайте ключ (Create API Key). Создание ключа бесплатно; "
+                "бесплатные модели доступны в пределах квот OpenRouter.\n"
+                "3. Вставьте ключ ниже и нажмите «Проверить ключ и загрузить модели».\n"
+                "4. Отметьте нужные бесплатные модели и нажмите «Добавить выбранные в OpenCode».\n\n"
+                "Выбранные модели появятся в отдельном провайдере OpenRouter Free. Встроенный провайдер "
+                "OpenRouter отключится, чтобы его общий каталог платных моделей не отображался; при отключении "
+                "интеграции встроенный провайдер включится снова. Доступность, бесплатные квоты и состав каталога "
+                "задаёт OpenRouter, и они могут меняться."
+            ),
+            anchor="w", justify="left", wraplength=760, font=app.font(13),
         ).pack(fill="x", pady=(0, 14))
 
         self.key_entry = ctk.CTkEntry(self, placeholder_text="sk-or-v1-…", show="•", height=38)
