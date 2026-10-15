@@ -36,6 +36,19 @@ class OpenRouterView(ctk.CTkScrollableFrame):
             anchor="w", justify="left", wraplength=760, font=app.font(13),
         ).pack(fill="x", pady=(4, 14))
 
+        ctk.CTkLabel(
+            self,
+            text=(
+                "Важно: стабильная работа бесплатных моделей не гарантируется. Из-за особенностей модели "
+                "или её совместимости с OpenCode возможны ошибки; поддержка изображений и инструментов "
+                "зависит от модели. При перегрузке или исчерпании квот модели могут отвечать медленно "
+                "или временно быть недоступны. Попробуйте позже или выберите другую модель. "
+                "Для текстовых моделей начните новый чат без изображений в истории."
+            ),
+            anchor="w", justify="left", wraplength=760, font=app.font(13),
+            text_color=("#8a4b00", "#fbbf24"),
+        ).pack(fill="x", pady=(0, 14))
+
         self.key_entry = ctk.CTkEntry(self, placeholder_text="sk-or-v1-…", show="•", height=38)
         self.key_entry.pack(fill="x", pady=(0, 8))
         saved_key = openrouter_manager.load_api_key()
