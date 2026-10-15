@@ -1,5 +1,6 @@
 """OpenRouter Free setup and model selection for Antigravity Hub."""
 import threading
+import webbrowser
 from tkinter import messagebox
 
 import customtkinter as ctk
@@ -14,13 +15,17 @@ class OpenRouterView(ctk.CTkScrollableFrame):
         self.models = []
         self.checkboxes = []
         ctk.CTkLabel(self, text="OpenRouter Free", font=app.font(22, "bold"), anchor="w").pack(fill="x", pady=(0, 12))
+        ctk.CTkLabel(self, text="Чтобы подключить бесплатные модели OpenRouter:", anchor="w", font=app.font(13)).pack(fill="x")
+        self._instruction_link("1. Зарегистрируйтесь или войдите на openrouter.ai.", "https://openrouter.ai/")
+        ctk.CTkLabel(
+            self,
+            text="2. Откройте страницу API-ключей и создайте ключ (Create API Key). Создание ключа бесплатно; бесплатные модели доступны в пределах квот OpenRouter.",
+            anchor="w", justify="left", wraplength=760, font=app.font(13),
+        ).pack(fill="x", pady=(4, 0))
+        self._instruction_link("Открыть страницу API-ключей OpenRouter", "https://openrouter.ai/settings/keys")
         ctk.CTkLabel(
             self,
             text=(
-                "Чтобы подключить бесплатные модели OpenRouter:\n"
-                "1. Зарегистрируйтесь или войдите на openrouter.ai.\n"
-                "2. На openrouter.ai/settings/keys создайте ключ (Create API Key). Создание ключа бесплатно; "
-                "бесплатные модели доступны в пределах квот OpenRouter.\n"
                 "3. Вставьте ключ ниже и нажмите «Проверить ключ и загрузить модели».\n"
                 "4. Отметьте нужные бесплатные модели и нажмите «Добавить выбранные в OpenCode».\n\n"
                 "Выбранные модели появятся в отдельном провайдере OpenRouter Free. Встроенный провайдер "
@@ -29,7 +34,7 @@ class OpenRouterView(ctk.CTkScrollableFrame):
                 "задаёт OpenRouter, и они могут меняться."
             ),
             anchor="w", justify="left", wraplength=760, font=app.font(13),
-        ).pack(fill="x", pady=(0, 14))
+        ).pack(fill="x", pady=(4, 14))
 
         self.key_entry = ctk.CTkEntry(self, placeholder_text="sk-or-v1-…", show="•", height=38)
         self.key_entry.pack(fill="x", pady=(0, 8))
@@ -50,6 +55,14 @@ class OpenRouterView(ctk.CTkScrollableFrame):
         self.status.pack(fill="x", pady=(0, 8))
         self.model_list = ctk.CTkScrollableFrame(self, height=320, fg_color=colors["card_bg"])
         self.model_list.pack(fill="both", expand=True, pady=(0, 8))
+
+    def _instruction_link(self, text, url):
+        link = ctk.CTkLabel(
+            self, text=text, anchor="w", text_color=("#1769aa", "#67b7ff"),
+            cursor="hand2", font=self.app.font(13, "underline"),
+        )
+        link.pack(fill="x", pady=(4, 0))
+        link.bind("<Button-1>", lambda _event, address=url: webbrowser.open(address))
 
     def _busy(self, state, message=None):
         self.connect_button.configure(state="disabled" if state else "normal")
