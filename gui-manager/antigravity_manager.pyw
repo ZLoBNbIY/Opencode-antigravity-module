@@ -1231,81 +1231,165 @@ class AntigravityManagerApp(ctk.CTk):
         self.lbl_count_pill.pack(side="left", padx=(0, 10))
 
         # Action buttons
-        self.btn_add_account = ctk.CTkButton(
-            self.top_action_bar,
-            text="➕ Добавить аккаунт",
-            font=self.font(size=12, weight="bold"),
-            fg_color="#0284c7",
-            hover_color="#0369a1",
-            height=36,
-            corner_radius=8,
-            command=self.add_account_action,
-        )
-        self.btn_add_account.pack(side="right", padx=(8, 0))
-
-        self.btn_refresh = ctk.CTkButton(
-            self.top_action_bar,
-            text="🔄 Обновить квоты",
-            font=self.font(size=12, weight="bold"),
-            fg_color=COLOR["card_bg"],
-            hover_color=COLOR["subbox_bg"],
-            text_color=COLOR["text_primary"],
-            border_width=1,
-            border_color=COLOR["border"],
-            height=36,
-            width=135,
-            corner_radius=8,
-            command=self.refresh_all_async,
-        )
-        self.btn_refresh.pack(side="right", padx=(8, 0))
-
-        self.btn_export = ctk.CTkButton(
-            self.top_action_bar,
-            text="📤 Экспорт",
-            font=self.font(size=12, weight="bold"),
-            fg_color=COLOR["card_bg"],
-            hover_color=COLOR["subbox_bg"],
-            text_color=COLOR["text_primary"],
-            border_width=1,
-            border_color=COLOR["border"],
-            height=36,
-            width=90,
-            corner_radius=8,
-            command=self.export_accounts_action,
-        )
-        self.btn_export.pack(side="right", padx=(8, 0))
+        self.actions_right_frame = ctk.CTkFrame(self.top_action_bar, fg_color="transparent")
+        self.actions_right_frame.pack(side="right")
 
         self.btn_import = ctk.CTkButton(
-            self.top_action_bar,
+            self.actions_right_frame,
             text="📥 Импорт",
-            font=self.font(size=12, weight="bold"),
+            font=self.font(size=11, weight="bold"),
             fg_color=COLOR["card_bg"],
             hover_color=COLOR["subbox_bg"],
             text_color=COLOR["text_primary"],
             border_width=1,
             border_color=COLOR["border"],
-            height=36,
-            width=90,
+            height=34,
+            width=80,
             corner_radius=8,
             command=self.import_accounts_action,
         )
-        self.btn_import.pack(side="right", padx=(8, 0))
+        self.btn_import.pack(side="left", padx=3)
+
+        self.btn_export = ctk.CTkButton(
+            self.actions_right_frame,
+            text="📤 Экспорт",
+            font=self.font(size=11, weight="bold"),
+            fg_color=COLOR["card_bg"],
+            hover_color=COLOR["subbox_bg"],
+            text_color=COLOR["text_primary"],
+            border_width=1,
+            border_color=COLOR["border"],
+            height=34,
+            width=80,
+            corner_radius=8,
+            command=self.export_accounts_action,
+        )
+        self.btn_export.pack(side="left", padx=3)
+
+        self.btn_refresh = ctk.CTkButton(
+            self.actions_right_frame,
+            text="🔄 Обновить",
+            font=self.font(size=11, weight="bold"),
+            fg_color=COLOR["card_bg"],
+            hover_color=COLOR["subbox_bg"],
+            text_color=COLOR["text_primary"],
+            border_width=1,
+            border_color=COLOR["border"],
+            height=34,
+            width=95,
+            corner_radius=8,
+            command=self.refresh_all_async,
+        )
+        self.btn_refresh.pack(side="left", padx=3)
+
+        self.btn_google_models = ctk.CTkButton(
+            self.actions_right_frame,
+            text="📋 Модели",
+            font=self.font(size=11, weight="bold"),
+            fg_color=COLOR["card_bg"],
+            hover_color=COLOR["subbox_bg"],
+            text_color=COLOR["text_primary"],
+            border_width=1,
+            border_color=COLOR["border"],
+            height=34,
+            width=90,
+            corner_radius=8,
+            command=self.show_google_models_action,
+        )
+        self.btn_google_models.pack(side="left", padx=3)
+
+        self.btn_add_account = ctk.CTkButton(
+            self.actions_right_frame,
+            text="➕ Добавить",
+            font=self.font(size=11, weight="bold"),
+            fg_color="#0284c7",
+            hover_color="#0369a1",
+            height=34,
+            corner_radius=8,
+            command=self.add_account_action,
+        )
+        self.btn_add_account.pack(side="left", padx=(3, 0))
 
     def update_action_bar_for_provider(self):
         if self.current_provider_view == "google":
+            self.btn_google_models.pack(side="left", padx=3, before=self.btn_add_account)
             self.btn_add_account.configure(
-                text="➕ Добавить Google",
+                text="➕ Добавить",
                 command=self.add_account_action,
                 fg_color="#0284c7",
                 hover_color="#0369a1",
             )
         else:
+            self.btn_google_models.pack_forget()
             self.btn_add_account.configure(
-                text="➕ Добавить OpenAI",
+                text="➕ Добавить",
                 command=self.add_openai_account_action,
                 fg_color="#10a37f",
                 hover_color="#0e8a6c",
             )
+
+    def show_google_models_action(self):
+        """Show models currently registered for the Google provider in OpenCode."""
+        if getattr(self, "google_models_loading", False):
+            return
+        self.google_models_loading = True
+        self.btn_google_models.configure(state="disabled", text="⏳ Загружаю...")
+
+        def _load():
+            try:
+                desktop_exe = Path(get_opencode_exe())
+                cli_candidates = [desktop_exe.parent / "resources" / "opencode-cli.exe"]
+                path_cli = shutil.which("opencode-cli") or shutil.which("opencode")
+                if path_cli:
+                    cli_candidates.append(Path(path_cli))
+                exe = next((str(candidate) for candidate in cli_candidates if candidate.is_file()), None)
+                if not exe:
+                    raise RuntimeError("Не найден CLI OpenCode (opencode-cli.exe).")
+                result = run_silent_cmd([exe, "models"], timeout=45)
+                output = (result.stdout or "").strip()
+                error = (result.stderr or "").strip()
+                if result.returncode != 0:
+                    detail = error or output or f"OpenCode завершился с кодом {result.returncode}."
+                    raise RuntimeError(detail[:3000])
+                antigravity_models = sorted({line.strip() for line in output.splitlines()
+                                             if "antigravity" in line.strip().lower()})
+                if not antigravity_models:
+                    output = "OpenCode не вывел модели Antigravity. Проверьте, что Antigravity-плагин загружен."
+                else:
+                    output = "\n".join(antigravity_models)
+                self.after(0, lambda: self._show_google_models_result(output, None))
+            except Exception as exc:
+                self.after(0, lambda message=str(exc): self._show_google_models_result("", message))
+
+        threading.Thread(target=_load, name="hub-google-model-list", daemon=True).start()
+
+    def _show_google_models_result(self, output, error):
+        self.google_models_loading = False
+        self.btn_google_models.configure(state="normal", text="📋 Модели")
+        if error:
+            messagebox.showerror("Модели Antigravity в OpenCode", error, parent=self)
+            return
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Модели Antigravity, доступные в OpenCode")
+        dialog.geometry("640x480")
+        dialog.transient(self)
+        dialog.grab_set()
+        ctk.CTkLabel(
+            dialog,
+            text="Список моделей Antigravity, возвращаемых OpenCode для текущей конфигурации. "
+                 "Он не проверяет доступность каждой модели для вашей учётной записи.\n\n"
+                 "Список может включать уже отключённые модели: их ID по-прежнему видны "
+                 "при сканировании, но сами модели могут быть недоступны для использования.",
+            justify="left",
+            anchor="w",
+            wraplength=600,
+        ).pack(fill="x", padx=16, pady=(16, 8))
+        textbox = ctk.CTkTextbox(dialog, wrap="none")
+        textbox.pack(fill="both", expand=True, padx=16, pady=8)
+        textbox.insert("1.0", output)
+        textbox.configure(state="disabled")
+        ctk.CTkButton(dialog, text="Закрыть", command=dialog.destroy).pack(anchor="e", padx=16, pady=(4, 16))
 
     def create_flash_banner(self):
         self.flash_banner = ctk.CTkFrame(
