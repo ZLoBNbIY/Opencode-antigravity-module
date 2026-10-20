@@ -9,7 +9,45 @@ import urllib.request
 import urllib.error
 import ssl
 
-def test_google_account_health(account: dict, timeout=10) -> dict:
+def test_google_account_health(account: dict, timeout=10, refresh_account=None) -> dict:
+    """Refresh stale credentials and retry one rejected token, without a loop."""
+    refreshed = False
+
+    def refresh():
+        nonlocal account, refreshed
+        refreshed = True
+        try:
+            updated = refresh_account(account)
+            if not updated or not (updated.get("accessToken") or updated.get("access")):
+                raise ValueError("missing access token")
+            account = updated
+            return None
+        except Exception:
+            return {
+                "ok": False, "status": "refresh_failed", "latency_ms": 0,
+                "message": "Не удалось обновить токен Google. Проверьте сеть; если ошибка повторяется, войдите в аккаунт заново.",
+            }
+
+    expires = account.get("expires", 0)
+    stale = not (account.get("accessToken") or account.get("access"))
+    if isinstance(expires, (int, float)) and expires > 0:
+        stale = stale or expires <= time.time() * 1000 + 60000
+    if stale and refresh_account:
+        failure = refresh()
+        if failure:
+            return failure
+    result = _test_google_account_health_once(account, timeout)
+    if result.get("status") == "expired" and refresh_account and not refreshed:
+        failure = refresh()
+        if failure:
+            return failure
+        result = _test_google_account_health_once(account, timeout)
+    if refreshed and result.get("status") == "expired":
+        result["message"] = "Google отклонил обновлённый токен (401). Требуется повторный вход в аккаунт."
+    return result
+
+
+def _test_google_account_health_once(account: dict, timeout=10) -> dict:
     """
     Tests a Google Antigravity account using its access token.
     Pings cloudcode-pa.googleapis.com to check auth validity and model readiness.

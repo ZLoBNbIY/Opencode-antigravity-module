@@ -265,6 +265,7 @@ def export_google_accounts() -> list[dict]:
                             "email": email,
                             "refreshToken": refresh,
                             "accessToken": st.get("access", ""),
+                            "expires": st.get("expires", 0),
                             "projectId": meta.get("projectId", "aicode-consumers"),
                             "addedAt": meta.get("addedAt") or acc.get("addedAt"),
                             "label": meta.get("label", ""),
@@ -2601,12 +2602,22 @@ class AntigravityManagerApp(ctk.CTk):
         email = acc.get("email", "unknown")
         self.set_status(f"🩺 Проверка {email}...")
 
-        exported_accs = export_google_accounts()
-        matched = next((a for a in exported_accs if a.get("email") == email or a.get("id") == acc.get("id")), None)
-        target_dict = matched or acc
-
         def _do_test():
-            res = health_checker.test_google_account_health(target_dict)
+            def reload_account():
+                exported = export_google_accounts()
+                return next((a for a in exported if a.get("email") == email), None)
+
+            def refresh_account(_account):
+                # The plugin owns OAuth refresh, locking and credential persistence.
+                result = run_silent_cmd(
+                    [get_node_executable(), get_cli_js(), "quota", "--refresh", "--json"], timeout=30,
+                )
+                if result.returncode != 0:
+                    raise ValueError("Google token refresh failed")
+                return reload_account()
+
+            target_dict = reload_account() or acc
+            res = health_checker.test_google_account_health(target_dict, refresh_account=refresh_account)
             self.after(0, lambda: self._on_google_tested(email, res))
 
         threading.Thread(target=_do_test, daemon=True).start()
