@@ -455,7 +455,7 @@ def enrich_google_accounts_with_generation_store(accounts: list[dict]) -> list[d
     return accounts
 
 def repair_legacy_google_account_file(config_dir=None) -> str | None:
-    """Repair the known missing-lastUsed migration defect without touching tokens."""
+    """Normalize known legacy credential metadata before the plugin migration."""
     config_dir = Path(config_dir) if config_dir else Path(os.path.expanduser("~/.config/opencode"))
     legacy_file = config_dir / "antigravity-accounts.json"
     if not legacy_file.exists():
@@ -471,11 +471,43 @@ def repair_legacy_google_account_file(config_dir=None) -> str | None:
     for index, account in enumerate(data["accounts"]):
         if not isinstance(account, dict):
             return f"Запись Google-аккаунта #{index + 1} имеет неверный формат; файл оставлен без изменений."
+
+        # Older Hub exports wrapped provider fields in `metadata`. The current
+        # migration expects a flat legacy row and rejects credential material
+        # inside provider metadata. Preserve non-credential fields, but never
+        # copy access tokens into the new metadata shape.
+        nested = account.get("metadata")
+        if nested is not None:
+            if not isinstance(nested, dict):
+                return f"Metadata записи Google-аккаунта #{index + 1} имеет неверный формат; файл оставлен без изменений."
+            nested_refresh = nested.get("refreshToken") or nested.get("refresh")
+            if not account.get("refreshToken") and isinstance(nested_refresh, str) and nested_refresh:
+                account["refreshToken"] = nested_refresh
+            for key, value in nested.items():
+                if key not in {"refreshToken", "refresh", "accessToken", "access", "expires", "apiKey"}:
+                    account.setdefault(key, value)
+            del account["metadata"]
+            changed = True
+
+        if not account.get("refreshToken"):
+            alias = account.get("refresh")
+            if isinstance(alias, str) and alias:
+                account["refreshToken"] = alias
+                changed = True
         if not isinstance(account.get("refreshToken"), str) or not account["refreshToken"]:
             return f"У записи Google-аккаунта #{index + 1} отсутствует refresh token; файл оставлен без изменений."
+
+        # Access tokens are short-lived. The plugin refreshes them using the
+        # refresh token and accepts credentials only in its credential field.
+        for key in ("accessToken", "access", "refresh", "expires", "apiKey"):
+            if key in account:
+                del account[key]
+                changed = True
+
         added_at = account.get("addedAt")
         if not isinstance(added_at, (int, float)) or isinstance(added_at, bool) or not math.isfinite(added_at):
-            return f"У записи Google-аккаунта #{index + 1} некорректное addedAt; файл оставлен без изменений."
+            account["addedAt"] = int(time.time() * 1000)
+            changed = True
         last_used = account.get("lastUsed")
         if not isinstance(last_used, (int, float)) or isinstance(last_used, bool) or not math.isfinite(last_used):
             account["lastUsed"] = 0
@@ -498,14 +530,14 @@ def repair_legacy_google_account_file(config_dir=None) -> str | None:
 
 
 def import_google_account(account_dict: dict) -> bool:
-    email = account_dict.get("email")
-    refresh_token = account_dict.get("refreshToken") or account_dict.get("refresh")
-    access_token = account_dict.get("accessToken") or account_dict.get("access") or ""
-    project_id = account_dict.get("projectId") or "aicode-consumers"
-    added_at = account_dict.get("addedAt")
+    nested_metadata = account_dict.get("metadata") if isinstance(account_dict.get("metadata"), dict) else {}
+    email = account_dict.get("email") or nested_metadata.get("email")
+    refresh_token = account_dict.get("refreshToken") or account_dict.get("refresh") or nested_metadata.get("refreshToken") or nested_metadata.get("refresh")
+    project_id = account_dict.get("projectId") or nested_metadata.get("projectId") or "aicode-consumers"
+    added_at = account_dict.get("addedAt") or nested_metadata.get("addedAt")
     if not isinstance(added_at, (int, float)) or isinstance(added_at, bool) or not math.isfinite(added_at) or added_at <= 0:
         added_at = int(time.time() * 1000)
-    label = account_dict.get("label") or (email.split("@")[0] if email else "Google Account")
+    label = account_dict.get("label") or nested_metadata.get("label") or (email.split("@")[0] if email else "Google Account")
 
     if not email or not refresh_token:
         return False
@@ -556,8 +588,6 @@ def import_google_account(account_dict: dict) -> bool:
                 a["refreshToken"] = refresh_token
                 a.setdefault("addedAt", added_at)
                 a.setdefault("lastUsed", 0)
-                if access_token:
-                    a["accessToken"] = access_token
                 found = True
                 changed = True
                 break
@@ -568,7 +598,6 @@ def import_google_account(account_dict: dict) -> bool:
             old_accs.append({
                 "email": email,
                 "refreshToken": refresh_token,
-                "accessToken": access_token,
                 "projectId": project_id,
                 "addedAt": added_at,
                 "lastUsed": imported_last_used,
@@ -2490,10 +2519,15 @@ class AntigravityManagerApp(ctk.CTk):
                 success = proc.returncode == 0
                 output = proc.stdout + proc.stderr
                 if success:
-                    migration = run_silent_cmd([node_exe, cli_js, "migrate", "--offline", "--yes"], timeout=30)
-                    if migration.returncode != 0:
+                    repair_error = repair_legacy_google_account_file()
+                    if repair_error:
                         success = False
-                        output += "\nМиграция аккаунта не завершилась:\n" + (migration.stderr or migration.stdout or "Неизвестная ошибка")
+                        output += "\nНе удалось подготовить файл аккаунтов к миграции:\n" + repair_error
+                    else:
+                        migration = run_silent_cmd([node_exe, cli_js, "migrate", "--offline", "--yes"], timeout=30)
+                        if migration.returncode != 0:
+                            success = False
+                            output += "\nМиграция аккаунта не завершилась:\n" + (migration.stderr or migration.stdout or "Неизвестная ошибка")
             except Exception as e:
                 success = False
                 output = str(e)
