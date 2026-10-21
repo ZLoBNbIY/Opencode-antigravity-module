@@ -11,6 +11,7 @@ Features:
 import os
 import sys
 import json
+import math
 import csv
 import time
 import datetime
@@ -458,7 +459,9 @@ def import_google_account(account_dict: dict) -> bool:
     refresh_token = account_dict.get("refreshToken") or account_dict.get("refresh")
     access_token = account_dict.get("accessToken") or account_dict.get("access") or ""
     project_id = account_dict.get("projectId") or "aicode-consumers"
-    added_at = account_dict.get("addedAt") or int(time.time() * 1000)
+    added_at = account_dict.get("addedAt")
+    if not isinstance(added_at, (int, float)) or isinstance(added_at, bool) or not math.isfinite(added_at) or added_at <= 0:
+        added_at = int(time.time() * 1000)
     label = account_dict.get("label") or (email.split("@")[0] if email else "Google Account")
 
     if not email or not refresh_token:
@@ -598,28 +601,60 @@ def import_google_account(account_dict: dict) -> bool:
         if legacy_file.exists():
             try:
                 legacy_data = json.loads(legacy_file.read_text(encoding="utf-8"))
-            except Exception:
-                pass
-        old_accs = legacy_data.get("accounts", [])
+            except Exception as exc:
+                print(f"Cannot read existing Google account file: {exc}")
+                return False
+        if not isinstance(legacy_data, dict) or not isinstance(legacy_data.get("accounts"), list):
+            print("Existing Google account file has an unsupported shape; leaving it untouched")
+            return False
+        old_accs = legacy_data["accounts"]
+        changed = False
+        for index, old_account in enumerate(old_accs):
+            if not isinstance(old_account, dict) or not isinstance(old_account.get("refreshToken"), str) or not old_account["refreshToken"]:
+                print(f"Existing Google account entry {index} is invalid; leaving the file untouched")
+                return False
+            # V4 account storage requires finite numeric timestamps. Older Hub
+            # exports omitted lastUsed, which made migration fail after import.
+            if not isinstance(old_account.get("addedAt"), (int, float)) or isinstance(old_account.get("addedAt"), bool) or not math.isfinite(old_account["addedAt"]):
+                print(f"Existing Google account entry {index} has invalid addedAt; leaving the file untouched")
+                return False
+            last_used = old_account.get("lastUsed")
+            if not isinstance(last_used, (int, float)) or isinstance(last_used, bool) or not math.isfinite(last_used):
+                old_account["lastUsed"] = 0
+                changed = True
         found = False
         for a in old_accs:
             if a.get("email") == email:
                 a["refreshToken"] = refresh_token
+                a.setdefault("addedAt", added_at)
+                a.setdefault("lastUsed", 0)
                 if access_token:
                     a["accessToken"] = access_token
                 found = True
+                changed = True
                 break
         if not found:
+            imported_last_used = account_dict.get("lastUsed", 0)
+            if not isinstance(imported_last_used, (int, float)) or isinstance(imported_last_used, bool) or not math.isfinite(imported_last_used):
+                imported_last_used = 0
             old_accs.append({
                 "email": email,
                 "refreshToken": refresh_token,
                 "accessToken": access_token,
                 "projectId": project_id,
-                "addedAt": added_at
+                "addedAt": added_at,
+                "lastUsed": imported_last_used,
             })
+            changed = True
         legacy_data["accounts"] = old_accs
+        if legacy_file.exists() and changed:
+            backup_file = legacy_file.with_name(legacy_file.name + ".pre-import-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".bak")
+            shutil.copy2(legacy_file, backup_file)
         legacy_file.write_text(json.dumps(legacy_data, indent=2, ensure_ascii=False), encoding="utf-8")
-        run_silent_cmd([NODE_EXE, CLI_JS, "migrate", "--offline", "--yes"], timeout=15)
+        migration = run_silent_cmd([NODE_EXE, CLI_JS, "migrate", "--offline", "--yes"], timeout=30)
+        if migration.returncode != 0:
+            print(f"Google account migration failed: {(migration.stderr or migration.stdout or '')[:1000]}")
+            return False
 
     return True
 
@@ -2736,7 +2771,13 @@ class AntigravityManagerApp(ctk.CTk):
             if o_list:
                 imp_o = openai_manager.import_openai_accounts(o_list)
 
-            messagebox.showinfo("Импорт завершен", f"Импортировано:\n• Google: {imp_g}\n• OpenAI: {imp_o}")
+            if imp_g or imp_o:
+                messagebox.showinfo("Импорт завершен", f"Импортировано:\n• Google: {imp_g}\n• OpenAI: {imp_o}")
+            else:
+                messagebox.showwarning(
+                    "Импорт не выполнен",
+                    "Ни один аккаунт не был импортирован. Проверьте формат резервной копии и сообщение об ошибке в консоли Hub.",
+                )
             self.refresh_all_async()
         except Exception as e:
             messagebox.showerror("Ошибка импорта", str(e))
