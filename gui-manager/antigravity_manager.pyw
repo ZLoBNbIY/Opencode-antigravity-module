@@ -454,6 +454,49 @@ def enrich_google_accounts_with_generation_store(accounts: list[dict]) -> list[d
 
     return accounts
 
+def repair_legacy_google_account_file(config_dir=None) -> str | None:
+    """Repair the known missing-lastUsed migration defect without touching tokens."""
+    config_dir = Path(config_dir) if config_dir else Path(os.path.expanduser("~/.config/opencode"))
+    legacy_file = config_dir / "antigravity-accounts.json"
+    if not legacy_file.exists():
+        return None
+    try:
+        data = json.loads(legacy_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return f"Не удалось прочитать файл аккаунтов Google: {exc}"
+    if not isinstance(data, dict) or not isinstance(data.get("accounts"), list):
+        return "Файл аккаунтов Google имеет неизвестный формат; он оставлен без изменений."
+
+    changed = False
+    for index, account in enumerate(data["accounts"]):
+        if not isinstance(account, dict):
+            return f"Запись Google-аккаунта #{index + 1} имеет неверный формат; файл оставлен без изменений."
+        if not isinstance(account.get("refreshToken"), str) or not account["refreshToken"]:
+            return f"У записи Google-аккаунта #{index + 1} отсутствует refresh token; файл оставлен без изменений."
+        added_at = account.get("addedAt")
+        if not isinstance(added_at, (int, float)) or isinstance(added_at, bool) or not math.isfinite(added_at):
+            return f"У записи Google-аккаунта #{index + 1} некорректное addedAt; файл оставлен без изменений."
+        last_used = account.get("lastUsed")
+        if not isinstance(last_used, (int, float)) or isinstance(last_used, bool) or not math.isfinite(last_used):
+            account["lastUsed"] = 0
+            changed = True
+    if not changed:
+        return None
+
+    backup = legacy_file.with_name(
+        legacy_file.name + ".pre-repair-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".bak"
+    )
+    temporary = legacy_file.with_name(legacy_file.name + "." + secrets.token_hex(6) + ".tmp")
+    try:
+        shutil.copy2(legacy_file, backup)
+        temporary.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        os.replace(temporary, legacy_file)
+    except OSError as exc:
+        temporary.unlink(missing_ok=True)
+        return f"Не удалось исправить файл аккаунтов Google: {exc}"
+    return None
+
+
 def import_google_account(account_dict: dict) -> bool:
     email = account_dict.get("email")
     refresh_token = account_dict.get("refreshToken") or account_dict.get("refresh")
@@ -468,133 +511,18 @@ def import_google_account(account_dict: dict) -> bool:
         return False
 
     config_dir = Path(os.path.expanduser("~/.config/opencode"))
+    repair_error = repair_legacy_google_account_file(config_dir)
+    if repair_error:
+        print(repair_error)
+        return False
     gen_dirs = list(config_dir.glob("*.generation"))
 
     if gen_dirs:
-        gen_dir = gen_dirs[0]
-        cfg_file = gen_dir / "config.json"
-        state_file = gen_dir / "state.json"
-        mig_file = gen_dir / "migration.json"
-        if cfg_file.exists() and state_file.exists():
-            try:
-                cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
-                state = json.loads(state_file.read_text(encoding="utf-8"))
-
-                existing_id = None
-                for acc in cfg.get("accounts", []):
-                    aid = acc.get("id")
-                    st = state.get("accounts", {}).get(aid, {})
-                    if st.get("commonAuthProviderState", {}).get("metadata", {}).get("email") == email:
-                        existing_id = aid
-                        break
-
-                target_id = existing_id or str(uuid.uuid4())
-
-                if not existing_id:
-                    cfg.setdefault("accounts", []).append({
-                        "id": target_id,
-                        "type": "oauth",
-                        "addedAt": added_at
-                    })
-                    cfg.setdefault("commonAuthPool", {}).setdefault("rows", {})[target_id] = {
-                        "credentialEpoch": 1,
-                        "needsFirstReading": True
-                    }
-                    if len(cfg["accounts"]) == 1:
-                        routing = cfg.setdefault("antigravityRouting", {})
-                        routing["activeIndex"] = 0
-                        routing["activeIndexByFamily"] = {"claude": 0, "gemini": 0}
-                        routing["activeRow"] = {"id": target_id, "credentialEpoch": 1}
-                        routing["activeRowByFamily"] = {
-                            "claude": {"id": target_id, "credentialEpoch": 1},
-                            "gemini": {"id": target_id, "credentialEpoch": 1},
-                        }
-                    cfg_file.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
-
-                state_accounts = state.setdefault("accounts", {})
-                existing_state = state_accounts.get(target_id, {})
-                existing_meta = existing_state.get("commonAuthProviderState", {}).get("metadata", {})
-
-                device_id = existing_meta.get("fingerprint", {}).get("deviceId") or str(uuid.uuid4())
-                session_token = secrets.token_hex(16)
-
-                state_accounts[target_id] = {
-                    "commonAuthProviderState": {
-                        "schemaVersion": 1,
-                        "metadata": {
-                            "email": email,
-                            "label": label,
-                            "projectId": project_id,
-                            "addedAt": added_at,
-                            "lastUsed": int(time.time() * 1000),
-                            "enabled": True,
-                            "fingerprint": {
-                                "deviceId": device_id,
-                                "sessionToken": session_token,
-                                "userAgent": "antigravity/cli/1.1.24 (aidev_client; os_type=windows; arch=amd64; cl=974782877; auth_method=consumer)",
-                                "apiClient": "antigravity-cli",
-                                "clientMetadata": {
-                                    "ideType": "ANTIGRAVITY",
-                                    "platform": "WINDOWS",
-                                    "pluginType": "GEMINI"
-                                },
-                                "createdAt": int(time.time() * 1000)
-                            },
-                            "fingerprintHistory": [],
-                            "managedProjectId": project_id,
-                            "dailyRequestCounts": {
-                                "date": datetime.date.today().isoformat(),
-                                "claude": 0,
-                                "gemini": 0
-                            }
-                        }
-                    },
-                    "commonAuthPool": {},
-                    "access": access_token,
-                    "refresh": refresh_token,
-                    "expires": int(time.time() * 1000) + 3600000,
-                    "lastRefreshedAt": int(time.time() * 1000)
-                }
-                state_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
-
-                if mig_file.exists():
-                    try:
-                        mig_data = json.loads(mig_file.read_text(encoding="utf-8"))
-                        manifest_accs = mig_data.setdefault("manifest", {}).setdefault("accounts", [])
-                        m_found = False
-                        for ma in manifest_accs:
-                            if ma.get("metadata", {}).get("email") == email:
-                                ma["refreshToken"] = refresh_token
-                                m_found = True
-                                break
-                        if not m_found:
-                            manifest_accs.append({
-                                "ordinal": len(manifest_accs),
-                                "refreshToken": refresh_token,
-                                "metadata": {
-                                    "email": email,
-                                    "label": label,
-                                    "projectId": project_id,
-                                    "addedAt": added_at,
-                                    "lastUsed": added_at,
-                                    "enabled": True
-                                }
-                            })
-                        mig_file.write_text(json.dumps(mig_data, indent=2, ensure_ascii=False), encoding="utf-8")
-                    except Exception:
-                        pass
-
-                legacy_file = config_dir / "antigravity-accounts.json"
-                if legacy_file.exists():
-                    try:
-                        legacy_file.unlink()
-                    except Exception:
-                        pass
-
-                return True
-            except Exception as e:
-                print(f"Error importing to generation store: {e}")
-                return False
+        # Generation stores are transactionally managed by the plugin. Editing
+        # their config/state files directly can target an inactive generation
+        # and falsely report success; the plugin exposes no token-import CLI.
+        print("Import into an initialized Antigravity generation store is unsupported; sign in to each Google account in the browser instead.")
+        return False
     else:
         legacy_file = config_dir / "antigravity-accounts.json"
         legacy_data = {"version": 4, "activeIndex": 0, "accounts": []}
@@ -2552,6 +2480,9 @@ class AntigravityManagerApp(ctk.CTk):
 
         def _do_add():
             try:
+                repair_error = repair_legacy_google_account_file()
+                if repair_error:
+                    raise RuntimeError(repair_error)
                 node_exe = get_node_executable()
                 cli_js = get_cli_js()
                 cmd = [node_exe, cli_js, "login"]
@@ -2559,7 +2490,10 @@ class AntigravityManagerApp(ctk.CTk):
                 success = proc.returncode == 0
                 output = proc.stdout + proc.stderr
                 if success:
-                    run_silent_cmd([node_exe, cli_js, "migrate", "--offline", "--yes"], timeout=30)
+                    migration = run_silent_cmd([node_exe, cli_js, "migrate", "--offline", "--yes"], timeout=30)
+                    if migration.returncode != 0:
+                        success = False
+                        output += "\nМиграция аккаунта не завершилась:\n" + (migration.stderr or migration.stdout or "Неизвестная ошибка")
             except Exception as e:
                 success = False
                 output = str(e)
@@ -2774,9 +2708,16 @@ class AntigravityManagerApp(ctk.CTk):
             if imp_g or imp_o:
                 messagebox.showinfo("Импорт завершен", f"Импортировано:\n• Google: {imp_g}\n• OpenAI: {imp_o}")
             else:
+                has_generation_store = any(Path(os.path.expanduser("~/.config/opencode")).glob("*.generation"))
+                google_detail = (
+                    "В этом профиле уже создано новое хранилище Antigravity, а плагин не поддерживает прямой импорт refresh token в него. "
+                    "Для каждого Google-аккаунта используйте «Добавить Google» и войдите через браузер."
+                    if g_list and has_generation_store else
+                    "Проверьте формат резервной копии и сообщение об ошибке в консоли Hub."
+                )
                 messagebox.showwarning(
                     "Импорт не выполнен",
-                    "Ни один аккаунт не был импортирован. Проверьте формат резервной копии и сообщение об ошибке в консоли Hub.",
+                    "Ни один аккаунт не был импортирован. " + google_detail,
                 )
             self.refresh_all_async()
         except Exception as e:
