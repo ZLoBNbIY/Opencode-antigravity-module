@@ -67,6 +67,19 @@ def acquire_single_instance():
         return False
 
 
+def set_windows_taskbar_identity():
+    """Give taskbar windows a Hub identity instead of Python's default identity."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        result = ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("AntigravityHub.Desktop")
+        if result != 0:
+            raise OSError(f"SetCurrentProcessExplicitAppUserModelID failed: 0x{result & 0xffffffff:08X}")
+    except Exception as exc:
+        print(f"Could not set Antigravity Hub taskbar identity: {exc}")
+
+
 # --- Paths & Dynamic Resolution ---
 def get_node_executable():
     node = shutil.which("node")
@@ -660,8 +673,9 @@ class AntigravityManagerApp(ctk.CTk):
         if icon_file.exists():
             try:
                 self.iconbitmap(str(icon_file))
+                self.iconbitmap(default=str(icon_file))
             except Exception:
-                pass
+                print("Could not set Antigravity Hub window icon")
 
         # State
         self.accounts_data = []
@@ -2942,5 +2956,6 @@ class AntigravityManagerApp(ctk.CTk):
 if __name__ == "__main__":
     if not acquire_single_instance():
         sys.exit(0)
+    set_windows_taskbar_identity()
     app = AntigravityManagerApp()
     app.mainloop()
