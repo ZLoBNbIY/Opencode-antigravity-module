@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import openai_manager
 import win_tray
 import health_checker
+from google_health_auth import refresh_google_health_account
 import auto_updater
 import crypto_backup
 import dns_tester
@@ -2625,13 +2626,9 @@ class AntigravityManagerApp(ctk.CTk):
                 return next((a for a in exported if a.get("email") == email), None)
 
             def refresh_account(_account):
-                # The plugin owns OAuth refresh, locking and credential persistence.
-                result = run_silent_cmd(
-                    [get_node_executable(), get_cli_js(), "quota", "--refresh", "--json"], timeout=30,
+                return refresh_google_health_account(
+                    _account, run_silent_cmd, get_node_executable(), get_cli_js(),
                 )
-                if result.returncode != 0:
-                    raise ValueError("Google token refresh failed")
-                return reload_account()
 
             target_dict = reload_account() or acc
             res = health_checker.test_google_account_health(target_dict, refresh_account=refresh_account)

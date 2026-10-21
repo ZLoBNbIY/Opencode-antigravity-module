@@ -21612,6 +21612,7 @@ Commands:
   login [--project <id>] [--no-browser]
   list [--json]
   quota [--json] [--refresh]
+  health-token --email <email>  (private GUI pipe; outputs an access token)
   init
   migrate --offline [--yes]
   rollback --offline [--yes]
@@ -21658,6 +21659,12 @@ function parseArgs(argv) {
       else return { ok: false, error: `Unknown option for list: ${arg}` };
     }
     return { ok: true, value: { command, json } };
+  }
+  if (command === "health-token") {
+    if (args.length !== 2 || args[0] !== "--email" || !args[1] || args[1].startsWith("--")) {
+      return { ok: false, error: "Usage: health-token --email <email>" };
+    }
+    return { ok: true, value: { command, email: args[1] } };
   }
   if (command === "quota") {
     let json = false;
@@ -21842,6 +21849,25 @@ async function runCli(argv, deps) {
       return 1;
     }
     const storage = source.kind === "legacy" ? await deps.loadAccounts() : source.kind === "store" ? { version: 4, accounts: source.accounts, activeIndex: 0 } : null;
+    if (parsed.value.command === "health-token") {
+      const matches = (storage?.accounts ?? []).filter((account) => account.email === parsed.value.email);
+      if (matches.length !== 1 || matches[0].enabled === false) {
+        deps.stderr.write("Google health account is missing, ambiguous or disabled\n");
+        return 1;
+      }
+      try {
+        const token = await deps.refreshHealthToken(matches[0]);
+        if (!token?.accessToken || !Number.isFinite(token.expires) || token.expires <= Date.now()) {
+          throw new Error("Missing fresh access token");
+        }
+        // Deliberately opt-in: never include credentials in list/quota output.
+        deps.stdout.write(`${JSON.stringify({ email: matches[0].email, accessToken: token.accessToken, expires: token.expires, projectId: token.projectId })}\n`);
+        return 0;
+      } catch {
+        deps.stderr.write("Google health token refresh failed\n");
+        return 1;
+      }
+    }
     if (parsed.value.command === "list") {
       const summary = accountSummary(storage);
       deps.stdout.write(
@@ -21986,6 +22012,12 @@ function createDefaultCliDependencies() {
       }
     }),
     loadAccounts,
+    refreshHealthToken: async (account) => {
+      const refreshed = await refreshAccessToken(buildAuthFromAccount(account), void 0, ANTIGRAVITY_PROVIDER_ID);
+      if (!refreshed?.access) throw new Error("Google token refresh failed");
+      const project = await ensureProjectContext(refreshed);
+      return { accessToken: project.auth.access, expires: project.auth.expires, projectId: project.effectiveProjectId };
+    },
     getQuota: (accounts, options) => checkAccountsQuotaStandalone(accounts, options),
     accountStore: createDefaultAccountStoreOperations()
   };
@@ -22085,7 +22117,7 @@ function createDefaultAccountStoreOperations() {
     read: readAccountStore
   };
 }
-if (import.meta.main || (typeof process !== "undefined" && process.argv && process.argv[1])) {
+if (import.meta.main || (process.argv[1] && resolve6(process.argv[1]) === (await import("node:url")).fileURLToPath(import.meta.url))) {
   process.exitCode = await runCli(
     process.argv.slice(2),
     createDefaultCliDependencies()

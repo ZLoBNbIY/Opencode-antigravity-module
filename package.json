@@ -7,6 +7,7 @@
   "scripts": {
     "patch": "node scripts/patch_plugin.mjs",
     "test:stream": "node scripts/test_stream.mjs",
+    "test:google": "python -m unittest discover -s tests -p \"test_google_health*.py\" -v && node --test tests/google-health-cli.test.mjs",
     "test:deepseek": "python -m unittest discover -s tests -p \"test_deepseek*.py\" -v && node --test tests/deepseek-plugin.test.mjs",
     "login": "node plugin/dist/cli.js login",
     "accounts": "node plugin/dist/cli.js accounts list"
