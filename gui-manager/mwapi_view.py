@@ -109,6 +109,68 @@ class MwapiView(ctk.CTkScrollableFrame):
         self.model_list = ctk.CTkScrollableFrame(self, height=320, fg_color=colors["card_bg"])
         self.model_list.pack(fill="both", expand=True, pady=(0, 8))
 
+        ctk.CTkLabel(
+            self,
+            text="Баланс и расход токенов",
+            font=app.font(16, "bold"),
+            anchor="w",
+        ).pack(fill="x", pady=(16, 6))
+
+        ctk.CTkLabel(
+            self,
+            text=(
+                "Баланс доступен только через личный кабинет MWAPI (sk-ключ его не показывает). "
+                "Войдите на https://api.mwapi.dev, откройте DevTools → вкладка Network, выполните вход "
+                "и найдите запрос login — в его ответе будет поле access_token. Скопируйте его значение "
+                "ниже и нажмите «Показать баланс»."
+            ),
+            anchor="w",
+            justify="left",
+            wraplength=760,
+            font=app.font(13),
+        ).pack(fill="x", pady=(0, 8))
+
+        self._instruction_link(
+            "Открыть личный кабинет MWAPI для входа.",
+            "https://api.mwapi.dev/dashboard",
+        )
+
+        self.token_entry = ctk.CTkEntry(self, placeholder_text="access_token из кабинета MWAPI…", show="•", height=38)
+        self.token_entry.pack(fill="x", pady=(8, 8))
+        saved_token = mwapi_manager.load_dashboard_token()
+        if saved_token:
+            self.token_entry.insert(0, saved_token)
+
+        balance_actions = ctk.CTkFrame(self, fg_color="transparent")
+        balance_actions.pack(fill="x", pady=(0, 10))
+
+        self.balance_button = ctk.CTkButton(
+            balance_actions,
+            text="Показать баланс",
+            command=self.load_balance,
+        )
+        self.balance_button.pack(side="left", padx=(0, 8))
+
+        self.forget_token_button = ctk.CTkButton(
+            balance_actions,
+            text="Забыть токен",
+            width=120,
+            command=self.forget_token,
+            fg_color=("#e2e8f0", "#334155"),
+            text_color=colors["text_primary"],
+            hover_color=("#cbd5e1", "#475569"),
+        )
+        self.forget_token_button.pack(side="left")
+
+        self.balance_status = ctk.CTkLabel(
+            self,
+            text="Баланс ещё не запрошен.",
+            anchor="w",
+            justify="left",
+            wraplength=760,
+        )
+        self.balance_status.pack(fill="x", pady=(0, 8))
+
     def _instruction_link(self, text, url):
         link = ctk.CTkLabel(
             self,
@@ -127,11 +189,14 @@ class MwapiView(ctk.CTkScrollableFrame):
         self.select_all_button.configure(state="disabled" if state or not self.checkboxes else "normal")
         self.disconnect_button.configure(state="disabled" if state else "normal")
         self.key_entry.configure(state="disabled" if state else "normal")
+        self.balance_button.configure(state="disabled" if state else "normal")
+        self.forget_token_button.configure(state="disabled" if state else "normal")
+        self.token_entry.configure(state="disabled" if state else "normal")
         if message:
             self.status.configure(text=message)
 
-    def _run(self, operation, success):
-        self._busy(True, "Подключение к MWAPI…")
+    def _run(self, operation, success, busy_message="Подключение к MWAPI…", on_error=None):
+        self._busy(True, busy_message)
 
         def worker():
             try:
@@ -139,13 +204,18 @@ class MwapiView(ctk.CTkScrollableFrame):
                 self.app.after(0, lambda value=result: success(value))
             except Exception as error:
                 error_text = str(error).strip() or type(error).__name__
-                self.app.after(0, lambda message=error_text: self._failed(message))
+                self.app.after(0, lambda message=error_text: (on_error or self._failed)(message))
 
         threading.Thread(target=worker, name="hub-mwapi", daemon=True).start()
 
     def _failed(self, message):
         self._busy(False)
         self.status.configure(text=message)
+        messagebox.showerror("MWAPI", message, parent=self.app)
+
+    def _balance_failed(self, message):
+        self._busy(False)
+        self.balance_status.configure(text=message)
         messagebox.showerror("MWAPI", message, parent=self.app)
 
     def load_models(self):
@@ -214,15 +284,53 @@ class MwapiView(ctk.CTkScrollableFrame):
         )
 
     def disconnect(self):
-        if not messagebox.askyesno("MWAPI", "Удалить настройки MWAPI и сохранённый ключ?", parent=self.app):
+        if not messagebox.askyesno("MWAPI", "Удалить настройки MWAPI, сохранённый ключ и токен баланса?", parent=self.app):
             return
         self._run(mwapi_manager.disconnect, lambda _result: self._disconnected())
 
     def _disconnected(self):
         self.key_entry.configure(state="normal")
         self.key_entry.delete(0, "end")
+        self.token_entry.configure(state="normal")
+        self.token_entry.delete(0, "end")
         for widget in self.model_list.winfo_children():
             widget.destroy()
         self.checkboxes.clear()
         self.select_all_button.configure(state="disabled", text="Выбрать все")
+        self.balance_status.configure(text="Баланс ещё не запрошен.")
         self._busy(False, "MWAPI отключён. Конфигурация провайдера удалена из OpenCode.")
+
+    def load_balance(self):
+        token = self.token_entry.get().strip()
+        if not token:
+            messagebox.showwarning("MWAPI", "Сначала вставьте access_token из кабинета MWAPI.", parent=self.app)
+            return
+
+        def operation():
+            info = mwapi_manager.fetch_balance(token)
+            mwapi_manager.save_dashboard_token(token)
+            return info
+
+        self._run(
+            operation,
+            self._balance_loaded,
+            busy_message="Запрашиваю баланс MWAPI…",
+            on_error=self._balance_failed,
+        )
+
+    def _balance_loaded(self, info):
+        text = (
+            f"Баланс: {info['balance']:.2f} $"
+            f"  ·  заморожено: {info['frozen_balance']:.2f} $"
+            f"  ·  всего пополнено: {info['total_recharged']:.2f} $"
+        )
+        if info.get("email"):
+            text += f"  ·  аккаунт: {info['email']}"
+        self._busy(False, None)
+        self.balance_status.configure(text=text)
+
+    def forget_token(self):
+        mwapi_manager.clear_dashboard_token()
+        self.token_entry.configure(state="normal")
+        self.token_entry.delete(0, "end")
+        self.balance_status.configure(text="Токен удалён. Баланс ещё не запрошен.")

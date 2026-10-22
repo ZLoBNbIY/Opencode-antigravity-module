@@ -14,9 +14,12 @@ import openai_manager
 
 API_BASE_URL = "https://api.mwapi.dev/v1"
 API_MODELS_URL = "https://api.mwapi.dev/v1/models"
+PROFILE_URL = "https://api.mwapi.dev/api/v1/user/profile"
 PROVIDER_ID = "mwapi"
 SECRET_PURPOSE = "mwapi-api-key"
 SECRET_FILE = Path.home() / ".local" / "share" / "antigravity-hub" / "mwapi.json"
+TOKEN_SECRET_PURPOSE = "mwapi-dashboard-token"
+TOKEN_SECRET_FILE = Path.home() / ".local" / "share" / "antigravity-hub" / "mwapi_token.json"
 CONFIG_DIR = Path.home() / ".config" / "opencode"
 LOCAL_PROXY = "http://127.0.0.1:51180"
 
@@ -144,6 +147,80 @@ def load_api_key() -> str:
         return ""
 
 
+def save_dashboard_token(access_token: str):
+    """Store the user-supplied dashboard JWT (access_token) used only to read balance."""
+    record = deepseek_storage.protect_secret(TOKEN_SECRET_PURPOSE, {"accessToken": access_token.strip()})
+    deepseek_storage.atomic_write(TOKEN_SECRET_FILE, json.dumps(record))
+
+
+def load_dashboard_token() -> str:
+    if not TOKEN_SECRET_FILE.exists():
+        return ""
+    try:
+        record = json.loads(TOKEN_SECRET_FILE.read_text(encoding="utf-8"))
+        return deepseek_storage.unprotect_secret(record, TOKEN_SECRET_PURPOSE)["accessToken"]
+    except Exception:
+        return ""
+
+
+def clear_dashboard_token():
+    TOKEN_SECRET_FILE.unlink(missing_ok=True)
+
+
+def fetch_balance(access_token: str, timeout: int = 20) -> dict:
+    """Fetch account balance/spend from the MWAPI dashboard using a user-supplied JWT.
+
+    The gateway sk- API key cannot be used for this: MWAPI exposes balance only
+    through the panel's session-authenticated profile endpoint, not the gateway
+    API-key auth. The access_token must be copied manually by the user from the
+    dashboard (e.g. DevTools Network tab after logging in), because the login
+    endpoint itself requires solving a Cloudflare Turnstile challenge that the
+    Hub cannot complete programmatically.
+    """
+    if not access_token or not access_token.strip():
+        raise ValueError("Токен панели MWAPI не указан.")
+
+    request = urllib.request.Request(
+        PROFILE_URL,
+        headers={
+            "Authorization": f"Bearer {access_token.strip()}",
+            "User-Agent": "Antigravity-Hub",
+            "Accept": "application/json",
+        },
+    )
+
+    try:
+        raw_data = _request_with_fallback(request, timeout=timeout)
+        payload = json.loads(raw_data.decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        if error.code in (401, 403):
+            raise ValueError("Токен панели MWAPI недействителен или истёк. Войдите в кабинет заново и скопируйте новый токен.") from None
+        if error.code == 429:
+            raise ValueError("MWAPI вернул 429: слишком много запросов к панели.") from None
+        raise ValueError(f"MWAPI вернул HTTP {error.code} при запросе баланса.") from None
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise ValueError("Не удалось подключиться к https://api.mwapi.dev. Проверьте подключение к интернету.") from None
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise ValueError("MWAPI вернул некорректный ответ при запросе баланса.") from None
+
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        raise ValueError("MWAPI вернул ответ без данных профиля.")
+
+    def _as_float(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    return {
+        "balance": _as_float(data.get("balance")),
+        "frozen_balance": _as_float(data.get("frozen_balance")),
+        "total_recharged": _as_float(data.get("total_recharged")),
+        "email": data.get("email") or "",
+    }
+
+
 def sync_opencode_credential(api_key: str):
     """Import the key through OpenCode CLI so OpenCode credential store is updated."""
     cli = openai_manager.find_opencode_cli()
@@ -221,3 +298,4 @@ def disconnect(config_dir=None):
             deepseek_storage.atomic_write(config_path, updated)
 
     SECRET_FILE.unlink(missing_ok=True)
+    TOKEN_SECRET_FILE.unlink(missing_ok=True)

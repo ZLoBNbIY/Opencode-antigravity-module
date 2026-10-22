@@ -88,13 +88,63 @@ class MwapiManagerTests(unittest.TestCase):
             }), encoding="utf-8")
             secret_path = Path(temp_dir) / "mwapi.json"
             secret_path.write_text("{}", encoding="utf-8")
+            token_path = Path(temp_dir) / "mwapi_token.json"
+            token_path.write_text("{}", encoding="utf-8")
 
-            with patch.object(mwapi_manager, "SECRET_FILE", secret_path):
+            with patch.object(mwapi_manager, "SECRET_FILE", secret_path), \
+                    patch.object(mwapi_manager, "TOKEN_SECRET_FILE", token_path):
                 mwapi_manager.disconnect(config_dir=temp_dir)
                 saved = json.loads(config_path.read_text(encoding="utf-8"))
                 self.assertNotIn("mwapi", saved.get("provider", {}))
                 self.assertIn("google", saved["provider"])
                 self.assertFalse(secret_path.exists())
+                self.assertFalse(token_path.exists())
+
+    def test_dashboard_token_is_protected_in_hub_storage(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "mwapi_token.json"
+            with patch.object(mwapi_manager, "TOKEN_SECRET_FILE", path):
+                mwapi_manager.save_dashboard_token("eyJhbGciOiJIUzI1NiJ9.mwapi-secret-jwt")
+                self.assertNotIn("mwapi-secret-jwt", path.read_text(encoding="utf-8"))
+                self.assertEqual(mwapi_manager.load_dashboard_token(), "eyJhbGciOiJIUzI1NiJ9.mwapi-secret-jwt")
+
+    def test_clear_dashboard_token_removes_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "mwapi_token.json"
+            with patch.object(mwapi_manager, "TOKEN_SECRET_FILE", path):
+                mwapi_manager.save_dashboard_token("some-jwt-token")
+                self.assertTrue(path.exists())
+                mwapi_manager.clear_dashboard_token()
+                self.assertFalse(path.exists())
+
+    @patch("mwapi_manager._request_with_fallback")
+    def test_fetch_balance_parses_profile_response(self, mock_request):
+        mock_request.return_value = json.dumps({"code": 0, "message": "success", "data": {
+            "email": "user@example.com",
+            "balance": 12.5,
+            "frozen_balance": 1.25,
+            "total_recharged": 50,
+        }}).encode()
+
+        info = mwapi_manager.fetch_balance("eyJhbGciOiJIUzI1NiJ9.some-token")
+        self.assertEqual(info["balance"], 12.5)
+        self.assertEqual(info["frozen_balance"], 1.25)
+        self.assertEqual(info["total_recharged"], 50.0)
+        self.assertEqual(info["email"], "user@example.com")
+
+    def test_fetch_balance_requires_token(self):
+        with self.assertRaises(ValueError):
+            mwapi_manager.fetch_balance("")
+
+    @patch("mwapi_manager._request_with_fallback")
+    def test_fetch_balance_reports_expired_token(self, mock_request):
+        import urllib.error
+        mock_request.side_effect = urllib.error.HTTPError(
+            mwapi_manager.PROFILE_URL, 401, "Unauthorized", {}, None
+        )
+        with self.assertRaises(ValueError) as ctx:
+            mwapi_manager.fetch_balance("expired-token")
+        self.assertIn("недействителен", str(ctx.exception))
 
 
 if __name__ == "__main__":
