@@ -51,7 +51,7 @@ def protect_channel(payload):
 
 def protect_secret(purpose, payload):
     """Protect Hub secrets at rest; never serialize them raw on Windows."""
-    if purpose not in {"deepseek-web-session", "openrouter-api-key"}:
+    if purpose not in {"deepseek-web-session", "openrouter-api-key", "mwapi-api-key"}:
         raise ValueError("Unknown protected secret purpose")
     raw = json.dumps({"purpose": purpose, "data": payload}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     if os.name == "nt":
@@ -79,6 +79,6 @@ def unprotect_secret(record, purpose):
     if purpose == "deepseek-web-session" and (not isinstance(data.get("token"), str) or not data["token"]
             or not isinstance(data.get("cookies"), dict) or not isinstance(data.get("userAgent"), str)):
         raise WebError("login-required")
-    if purpose == "openrouter-api-key" and (not isinstance(data.get("apiKey"), str) or not data["apiKey"].strip()):
+    if purpose in {"openrouter-api-key", "mwapi-api-key"} and (not isinstance(data.get("apiKey"), str) or not data["apiKey"].strip()):
         raise WebError("login-required")
     return data

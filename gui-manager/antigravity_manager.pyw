@@ -37,6 +37,7 @@ import dns_tester
 import local_proxy
 import hub_restart
 from openrouter_view import OpenRouterView
+from mwapi_view import MwapiView
 
 # Keep the Windows mutex handle alive for the lifetime of this process.
 _SINGLE_INSTANCE_MUTEX = None
@@ -1082,6 +1083,7 @@ class AntigravityManagerApp(ctk.CTk):
             ("antigravity", "🚀  Antigravity (Google)", "google"),
             ("openai", "🟢  ChatGPT (OpenAI)", "openai"),
             ("openrouter", "🟣  OpenRouter Free", "openrouter"),
+            ("mwapi", "🌐  MWAPI (Cloud Code)", "mwapi"),
             ("settings", "⚙️  Настройки", "settings"),
             ("system", "🛠  OpenCode & Диагностика", "system"),
         ]
@@ -1104,7 +1106,7 @@ class AntigravityManagerApp(ctk.CTk):
 
         # Sidebar Footer: Theme Toggle + OpenCode status
         footer_box = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        footer_box.grid(row=7, column=0, padx=14, pady=16, sticky="ew")
+        footer_box.grid(row=8, column=0, padx=14, pady=16, sticky="ew")
 
         # Theme toggle button
         theme_txt = "☀️  Светлая тема" if self.current_theme == "dark" else "🌙  Тёмная тема"
@@ -1147,6 +1149,7 @@ class AntigravityManagerApp(ctk.CTk):
     def switch_nav(self, target_nav):
         self.current_nav = target_nav
         self.openrouter_view.pack_forget()
+        self.mwapi_view.pack_forget()
         for key, btn in self.nav_btns.items():
             if key == target_nav:
                 btn.configure(fg_color=COLOR["nav_active_bg"], text_color=COLOR["nav_active_text"])
@@ -1168,6 +1171,12 @@ class AntigravityManagerApp(ctk.CTk):
             self.settings_frame.pack_forget()
             self.system_frame.pack_forget()
             self.openrouter_view.pack(fill="both", expand=True, padx=24, pady=16)
+        elif target_nav == "mwapi":
+            self.top_action_bar.pack_forget()
+            self.accounts_container.pack_forget()
+            self.settings_frame.pack_forget()
+            self.system_frame.pack_forget()
+            self.mwapi_view.pack(fill="both", expand=True, padx=24, pady=16)
         elif target_nav == "settings":
             self.top_action_bar.pack_forget()
             self.accounts_container.pack_forget()
@@ -1204,6 +1213,7 @@ class AntigravityManagerApp(ctk.CTk):
         self.create_settings_view()
         self.create_system_view()
         self.openrouter_view = OpenRouterView(self.content_area, self, COLOR)
+        self.mwapi_view = MwapiView(self.content_area, self, COLOR)
         self.create_statusbar()
 
     def create_action_bar(self):
