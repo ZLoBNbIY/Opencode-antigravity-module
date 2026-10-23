@@ -727,18 +727,18 @@ def import_google_account(account_dict: dict) -> bool:
 # Dark sapphire glass, luminous cyan borders, high-contrast typography
 # =========================================================================
 COLOR = {
-    "bg": ("#f1f5f9", "#080c16"),
-    "sidebar_bg": ("#ffffff", "#0c101d"),
-    "card_bg": ("#ffffff", "#101728"),
-    "card_active_bg": ("#f0fdf4", "#131f36"),
-    "subbox_bg": ("#f8fafc", "#090d18"),
-    "border": ("#e2e8f0", "#182236"),
+    "bg": ("#f1f5f9", "#060911"),
+    "sidebar_bg": ("#ffffff", "#090d18"),
+    "card_bg": ("#ffffff", "#0e1526"),
+    "card_active_bg": ("#f0fdf4", "#131f38"),
+    "subbox_bg": ("#f8fafc", "#080c16"),
+    "border": ("#e2e8f0", "#1e2d4a"),
     "border_active": ("#0284c7", "#38bdf8"),
     "text_primary": ("#0f172a", "#f8fafc"),
     "text_secondary": ("#334155", "#cbd5e1"),
     "text_muted": ("#64748b", "#94a3b8"),
-    "bar_bg": ("#e2e8f0", "#1e293b"),
-    "statusbar_bg": ("#ffffff", "#0c101d"),
+    "bar_bg": ("#e2e8f0", "#182238"),
+    "statusbar_bg": ("#ffffff", "#090d18"),
     "nav_active_bg": ("#e0f2fe", "#16233a"),
     "nav_active_text": ("#0284c7", "#38bdf8"),
     "nav_idle_text": ("#475569", "#94a3b8"),
@@ -751,6 +751,19 @@ def apply_windows_acrylic_effect(window):
     """Enables Windows 11 DWM Acrylic/Mica backdrop blur and immersive dark titlebar."""
     if sys.platform != "win32":
         return
+    try:
+        import pywinstyles
+        try:
+            pywinstyles.apply_style(window, "acrylic")
+        except Exception:
+            pywinstyles.apply_style(window, "mica")
+        pywinstyles.change_header_color(window, color="#060911")
+        pywinstyles.change_border_color(window, color="#38bdf8")
+        pywinstyles.change_title_color(window, color="#38bdf8")
+        return
+    except Exception:
+        pass
+
     try:
         import ctypes
         hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
@@ -786,17 +799,17 @@ def create_cyber_switch(master, text="", variable=None, command=None, font=None,
         variable=variable,
         command=command,
         font=font,
-        width=46,
-        height=24,
-        switch_width=18,
-        switch_height=18,
-        corner_radius=12,
+        width=52,
+        height=26,
+        switch_width=44,
+        switch_height=22,
+        corner_radius=11,
         border_width=1,
-        fg_color=("#cbd5e1", "#1e293b"),
-        progress_color=("#0284c7", "#0284c7"),
-        button_color=("#ffffff", "#f8fafc"),
-        button_hover_color=("#f1f5f9", "#ffffff"),
-        border_color=("#94a3b8", "#334155"),
+        fg_color=("#cbd5e1", "#172338"),
+        progress_color=("#0284c7", "#0ea5e9"),
+        button_color=("#ffffff", "#ffffff"),
+        button_hover_color=("#f1f5f9", "#e2e8f0"),
+        border_color=("#94a3b8", "#2a3d5e"),
         **kwargs
     )
 
@@ -2122,11 +2135,11 @@ class AntigravityManagerApp(ctk.CTk):
             actions_pill,
             text="🩺 Тест",
             font=self.font(size=11, weight="bold"),
-            fg_color=COLOR["subbox_bg"],
-            hover_color=COLOR["border"],
+            fg_color=("#f1f5f9", "#151f33"),
+            hover_color=("#e2e8f0", "#1e2d4a"),
             text_color=COLOR["text_primary"],
             border_width=1,
-            border_color=COLOR["border"],
+            border_color=("#cbd5e1", "#2a3b5c"),
             width=58,
             height=28,
             corner_radius=8,
@@ -2151,11 +2164,11 @@ class AntigravityManagerApp(ctk.CTk):
             actions_pill,
             text="📋",
             font=self.font(size=13, weight="bold"),
-            fg_color=COLOR["subbox_bg"],
-            hover_color=COLOR["border"],
+            fg_color=("#f1f5f9", "#151f33"),
+            hover_color=("#e2e8f0", "#1e2d4a"),
             text_color=COLOR["text_primary"],
             border_width=1,
-            border_color=COLOR["border"],
+            border_color=("#cbd5e1", "#2a3b5c"),
             width=32,
             height=28,
             corner_radius=8,
@@ -2166,11 +2179,11 @@ class AntigravityManagerApp(ctk.CTk):
             actions_pill,
             text="🗑",
             font=self.font(size=13, weight="bold"),
-            fg_color=COLOR["subbox_bg"],
-            hover_color=("#fee2e2", "#7f1d1d"),
-            text_color="#ef4444",
+            fg_color=("#f1f5f9", "#151f33"),
+            hover_color=("#fee2e2", "#3b1818"),
+            text_color="#f87171",
             border_width=1,
-            border_color=COLOR["border"],
+            border_color=("#cbd5e1", "#2a3b5c"),
             width=32,
             height=28,
             corner_radius=8,
@@ -2444,11 +2457,11 @@ class AntigravityManagerApp(ctk.CTk):
             actions_pill,
             text="🩺 Тест",
             font=self.font(size=11, weight="bold"),
-            fg_color=COLOR["subbox_bg"],
-            hover_color=COLOR["border"],
+            fg_color=("#f1f5f9", "#151f33"),
+            hover_color=("#e2e8f0", "#1e2d4a"),
             text_color=COLOR["text_primary"],
             border_width=1,
-            border_color=COLOR["border"],
+            border_color=("#cbd5e1", "#2a3b5c"),
             width=58,
             height=28,
             corner_radius=8,
@@ -2473,11 +2486,11 @@ class AntigravityManagerApp(ctk.CTk):
             actions_pill,
             text="📋",
             font=self.font(size=13, weight="bold"),
-            fg_color=COLOR["subbox_bg"],
-            hover_color=COLOR["border"],
+            fg_color=("#f1f5f9", "#151f33"),
+            hover_color=("#e2e8f0", "#1e2d4a"),
             text_color=COLOR["text_primary"],
             border_width=1,
-            border_color=COLOR["border"],
+            border_color=("#cbd5e1", "#2a3b5c"),
             width=32,
             height=28,
             corner_radius=8,
@@ -2488,11 +2501,11 @@ class AntigravityManagerApp(ctk.CTk):
             actions_pill,
             text="🗑",
             font=self.font(size=13, weight="bold"),
-            fg_color=COLOR["subbox_bg"],
-            hover_color=("#fee2e2", "#7f1d1d"),
-            text_color="#ef4444",
+            fg_color=("#f1f5f9", "#151f33"),
+            hover_color=("#fee2e2", "#3b1818"),
+            text_color="#f87171",
             border_width=1,
-            border_color=COLOR["border"],
+            border_color=("#cbd5e1", "#2a3b5c"),
             width=32,
             height=28,
             corner_radius=8,
