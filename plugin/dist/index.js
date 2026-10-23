@@ -17771,6 +17771,9 @@ function getGemini37FlashAntigravityModel(tier) {
 function getGemini38FlashAntigravityModel(tier) {
   return getTieredAntigravityModel(GEMINI_38_FLASH_ROUTES, tier);
 }
+function getGemini4ArgonAntigravityModel(tier) {
+  return getTieredAntigravityModel(GEMINI_4_ARGON_ROUTES, tier);
+}
 function getQuotaGroupForModel(modelId) {
   const normalized = modelId.toLowerCase();
   return QUOTA_GROUP_BY_MODEL_ID[normalized] ?? // Check Claude / GPT-OSS substrings BEFORE the `gemini` substring so
