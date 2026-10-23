@@ -196,3 +196,152 @@ def test_openai_account_health(account: dict, timeout=10) -> dict:
             "message": f"Ошибка сети: {str(e)[:100]}",
             "latency_ms": elapsed_ms,
         }
+
+
+ANTIGRAVITY_MODEL_INTERNAL_MAP = {
+    "antigravity-gemini-3.8-flash": ("Gemini 3.8 Flash", "gemini-3.8-flash-high"),
+    "antigravity-gemini-3.5-flash": ("Gemini 3.5 Flash", "gemini-3.5-flash-low"),
+    "antigravity-gemini-4-argon": ("Gemini 4 Argon", "gemini-4-argon-medium"),
+    "gemini-4-argon": ("Gemini 4 Argon", "gemini-4-argon-medium"),
+    "antigravity-claude-opus-4-6": ("Claude Opus 4.6", "claude-opus-4-6-thinking"),
+    "antigravity-claude-opus-4-6-thinking": ("Claude Opus 4.6 Thinking", "claude-opus-4-6-thinking"),
+    "antigravity-claude-sonnet-4-6": ("Claude Sonnet 4.6", "claude-sonnet-4-6"),
+    "antigravity-claude-sonnet-4-6-thinking": ("Claude Sonnet 4.6 Thinking", "claude-sonnet-4-6"),
+    "antigravity-claude-opus-5-5": ("Claude Opus 5.5", "claude-opus-5-5"),
+    "antigravity-claude-opus-5-5-thinking": ("Claude Opus 5.5 Thinking", "claude-opus-5-5"),
+    "antigravity-claude-sonnet-5-5": ("Claude Sonnet 5.5", "claude-sonnet-5-5"),
+    "antigravity-claude-sonnet-5-5-thinking": ("Claude Sonnet 5.5 Thinking", "claude-sonnet-5-5"),
+    "antigravity-gpt-oss-120b-medium": ("GPT-OSS 120B", "gpt-oss-120b-medium"),
+    "antigravity-gemini-3.1-flash-image": ("Gemini 3.1 Flash Image", "gemini-3.1-flash-image"),
+}
+
+
+def test_antigravity_model(account: dict, model_id: str, timeout=6, proxy_url="http://127.0.0.1:51180") -> dict:
+    """
+    Tests a specific Antigravity model using a lightweight generation probe.
+    Returns: {ok: bool, status: str, latency_ms: int, badge: str, color: str, display_name: str}
+    """
+    clean_id = model_id.strip()
+    if clean_id.startswith("google/"):
+        clean_id = clean_id[7:]
+
+    mapping = ANTIGRAVITY_MODEL_INTERNAL_MAP.get(clean_id)
+    if mapping:
+        display_name, internal_name = mapping
+    else:
+        display_name = clean_id.replace("antigravity-", "").replace("-", " ").title()
+        internal_name = clean_id.replace("antigravity-", "")
+
+    access_token = account.get("accessToken") or account.get("access")
+    if not access_token:
+        return {
+            "ok": False,
+            "status": "no_auth",
+            "latency_ms": 0,
+            "badge": "🔴 Нет токена",
+            "color": "#ef4444",
+            "display_name": display_name,
+        }
+
+    body = {
+        "project": account.get("projectId") or "rising-fact-p41fc",
+        "model": internal_name,
+        "userAgent": "antigravity",
+        "requestType": "agent",
+        "request": {
+            "contents": [{"role": "user", "parts": [{"text": "1"}]}],
+            "generationConfig": {"maxOutputTokens": 2}
+        }
+    }
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "User-Agent": "antigravity/cli/1.1.24 (aidev_client; os_type=windows; arch=amd64; cl=974782877; auth_method=consumer)",
+    }
+
+    handlers = []
+    if proxy_url:
+        handlers.append(urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}))
+    opener = urllib.request.build_opener(*handlers)
+
+    endpoints = [
+        "https://daily-cloudcode-pa.googleapis.com",
+        "https://cloudcode-pa.googleapis.com",
+    ]
+    last_res = None
+
+    for ep in endpoints:
+        url = f"{ep}/v1internal:streamGenerateContent?alt=sse"
+        req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=headers)
+        t0 = time.perf_counter()
+        try:
+            with opener.open(req, timeout=timeout) as resp:
+                elapsed = round((time.perf_counter() - t0) * 1000)
+                return {
+                    "ok": True,
+                    "status": "active",
+                    "latency_ms": elapsed,
+                    "badge": f"🟢 Работает ({elapsed} мс)",
+                    "color": "#16a34a",
+                    "display_name": display_name,
+                }
+        except urllib.error.HTTPError as e:
+            elapsed = round((time.perf_counter() - t0) * 1000)
+            raw = e.read().decode("utf-8", errors="ignore")
+            err_msg = ""
+            try:
+                err_msg = json.loads(raw).get("error", {}).get("message", "")
+            except Exception:
+                pass
+
+            if "User location is not supported" in err_msg:
+                continue
+
+            if e.code == 429:
+                last_res = {
+                    "ok": False,
+                    "status": "rate_limited",
+                    "latency_ms": elapsed,
+                    "badge": "🟡 Лимит 429 (Ранний доступ / квота)",
+                    "color": "#f59e0b",
+                    "display_name": display_name,
+                }
+                continue
+            if e.code == 404:
+                last_res = {
+                    "ok": False,
+                    "status": "not_found",
+                    "latency_ms": elapsed,
+                    "badge": "🔴 Не найдена (404)",
+                    "color": "#ef4444",
+                    "display_name": display_name,
+                }
+                continue
+            last_res = {
+                "ok": False,
+                "status": f"http_{e.code}",
+                "latency_ms": elapsed,
+                "badge": f"🔴 Ошибка {e.code}",
+                "color": "#ef4444",
+                "display_name": display_name,
+            }
+        except Exception as e:
+            elapsed = round((time.perf_counter() - t0) * 1000)
+            last_res = {
+                "ok": False,
+                "status": "error",
+                "latency_ms": elapsed,
+                "badge": f"🔴 Ошибка сети ({elapsed} мс)",
+                "color": "#ef4444",
+                "display_name": display_name,
+            }
+
+    return last_res or {
+        "ok": False,
+        "status": "geo_blocked",
+        "latency_ms": 0,
+        "badge": "🔴 Ошибка региона Google",
+        "color": "#ef4444",
+        "display_name": display_name,
+    }

@@ -1395,26 +1395,284 @@ class AntigravityManagerApp(ctk.CTk):
             messagebox.showerror("Модели Antigravity в OpenCode", error, parent=self)
             return
 
+        model_lines = [line.strip() for line in output.splitlines() if line.strip()]
+
         dialog = ctk.CTkToplevel(self)
         dialog.title("Модели Antigravity, доступные в OpenCode")
-        dialog.geometry("640x480")
+        dialog.geometry("740x600")
+        dialog.minsize(640, 480)
         dialog.transient(self)
         dialog.grab_set()
+
+        # Header Frame
+        header = ctk.CTkFrame(dialog, fg_color="transparent")
+        header.pack(fill="x", padx=18, pady=(16, 8))
+
         ctk.CTkLabel(
-            dialog,
-            text="Список моделей Antigravity, возвращаемых OpenCode для текущей конфигурации. "
-                 "Он не проверяет доступность каждой модели для вашей учётной записи.\n\n"
-                 "Список может включать уже отключённые модели: их ID по-прежнему видны "
-                 "при сканировании, но сами модели могут быть недоступны для использования.",
-            justify="left",
-            anchor="w",
-            wraplength=600,
-        ).pack(fill="x", padx=16, pady=(16, 8))
-        textbox = ctk.CTkTextbox(dialog, wrap="none")
-        textbox.pack(fill="both", expand=True, padx=16, pady=8)
-        textbox.insert("1.0", output)
-        textbox.configure(state="disabled")
-        ctk.CTkButton(dialog, text="Закрыть", command=dialog.destroy).pack(anchor="e", padx=16, pady=(4, 16))
+            header,
+            text="📋 Модели Antigravity в OpenCode",
+            font=self.font(size=16, weight="bold"),
+            text_color=COLOR["text_primary"]
+        ).pack(anchor="w")
+
+        # Find active account
+        active_idx = get_active_google_account_index()
+        active_acc = None
+        if self.accounts_data:
+            for a in self.accounts_data:
+                if a.get("index", 1) - 1 == active_idx:
+                    active_acc = a
+                    break
+            if not active_acc:
+                active_acc = self.accounts_data[0]
+        if not active_acc:
+            accs = export_google_accounts()
+            if accs:
+                active_acc = accs[0]
+
+        acc_email = active_acc.get("email", "Не выбран") if active_acc else "Не найден"
+
+        ctk.CTkLabel(
+            header,
+            text=f"Аккаунт для тестирования: {acc_email} | Проверка выполняет реальный пробный запрос через API",
+            font=self.font(size=11),
+            text_color=COLOR["text_secondary"]
+        ).pack(anchor="w", pady=(2, 8))
+
+        top_bar = ctk.CTkFrame(header, fg_color="transparent")
+        top_bar.pack(fill="x", pady=(4, 0))
+
+        btn_check_all = ctk.CTkButton(
+            top_bar,
+            text="🩺 Проверить доступность всех моделей",
+            font=self.font(size=12, weight="bold"),
+            fg_color="#0284c7",
+            hover_color="#0369a1",
+            height=34,
+            corner_radius=8
+        )
+        btn_check_all.pack(side="left")
+
+        lbl_check_status = ctk.CTkLabel(
+            top_bar,
+            text="Нажмите кнопку, чтобы проверить доступность моделей",
+            font=self.font(size=11),
+            text_color=COLOR["text_muted"]
+        )
+        lbl_check_status.pack(side="left", padx=14)
+
+        # Scrollable models frame
+        scroll_frame = ctk.CTkScrollableFrame(dialog, fg_color=COLOR["bg"], corner_radius=10)
+        scroll_frame.pack(fill="both", expand=True, padx=18, pady=8)
+
+        model_badges = {}
+        model_test_btns = {}
+
+        def get_auth_account():
+            target_acc = active_acc
+            if not target_acc:
+                accs = export_google_accounts()
+                if accs:
+                    target_acc = accs[0]
+            if not target_acc:
+                return None
+            try:
+                import google_health_auth
+                node_exe = get_node_executable()
+                cli_js = get_cli_js()
+                refreshed = google_health_auth.refresh_google_health_account(
+                    target_acc, run_silent_cmd, node_exe, cli_js
+                )
+                return refreshed
+            except Exception:
+                return target_acc
+
+        def apply_result(m_id, res):
+            badge = model_badges.get(m_id)
+            btn = model_test_btns.get(m_id)
+            if btn:
+                btn.configure(state="normal", text="🩺 Тест")
+            if not badge:
+                return
+            status = res.get("status", "")
+            badge_text = res.get("badge", "Готово")
+
+            if res.get("ok"):
+                fg = ("#dcfce7", "#14532d")
+                txt_col = "#16a34a"
+            elif status == "rate_limited":
+                fg = ("#fef3c7", "#78350f")
+                txt_col = "#d97706"
+            else:
+                fg = ("#fee2e2", "#7f1d1d")
+                txt_col = "#ef4444"
+
+            badge.configure(text=badge_text, text_color=txt_col, fg_color=fg)
+
+        def check_single_model(m_id):
+            badge = model_badges.get(m_id)
+            btn = model_test_btns.get(m_id)
+            if badge:
+                badge.configure(text="⏳ Проверка...", fg_color="#0284c7", text_color="#ffffff")
+            if btn:
+                btn.configure(state="disabled", text="⏳...")
+
+            def _worker():
+                acc = get_auth_account()
+                if not acc:
+                    res = {"ok": False, "status": "no_auth", "badge": "🔴 Нет аккаунта", "color": "#ef4444"}
+                else:
+                    res = health_checker.test_antigravity_model(acc, m_id, timeout=8, proxy_url="http://127.0.0.1:51180")
+                dialog.after(0, lambda m=m_id, r=res: apply_result(m, r))
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        def check_all_models():
+            btn_check_all.configure(state="disabled", text="⏳ Проверка моделей...")
+            lbl_check_status.configure(text="Выполняется тестирование моделей через Google CloudCode API...")
+            for b in model_badges.values():
+                b.configure(text="⏳ Ожидание...", fg_color=COLOR["subbox_bg"], text_color=COLOR["text_muted"])
+            for btn in model_test_btns.values():
+                btn.configure(state="disabled")
+
+            def _worker_all():
+                acc = get_auth_account()
+                if not acc:
+                    dialog.after(0, lambda: lbl_check_status.configure(text="❌ Ошибка: нет авторизованного аккаунта Google"))
+                    dialog.after(0, lambda: btn_check_all.configure(state="normal", text="🩺 Проверить доступность всех моделей"))
+                    return
+
+                import concurrent.futures
+                results_summary = {"ok": 0, "rate_limit": 0, "error": 0}
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                    futures = {
+                        executor.submit(health_checker.test_antigravity_model, acc, m, 8, "http://127.0.0.1:51180"): m
+                        for m in model_lines
+                    }
+                    for future in concurrent.futures.as_completed(futures):
+                        m = futures[future]
+                        try:
+                            res = future.result()
+                        except Exception as e:
+                            res = {"ok": False, "status": "error", "badge": f"🔴 Ошибка", "color": "#ef4444"}
+                        if res.get("ok"):
+                            results_summary["ok"] += 1
+                        elif res.get("status") == "rate_limited":
+                            results_summary["rate_limit"] += 1
+                        else:
+                            results_summary["error"] += 1
+                        dialog.after(0, lambda mid=m, r=res: apply_result(mid, r))
+
+                def _finish():
+                    btn_check_all.configure(state="normal", text="🔄 Проверить все заново")
+                    lbl_check_status.configure(
+                        text=f"Тест завершён: 🟢 Работают: {results_summary['ok']} | 🟡 Лимит 429: {results_summary['rate_limit']} | 🔴 Ошибка: {results_summary['error']}"
+                    )
+                    for btn in model_test_btns.values():
+                        btn.configure(state="normal", text="🩺 Тест")
+
+                dialog.after(0, _finish)
+
+            threading.Thread(target=_worker_all, daemon=True).start()
+
+        btn_check_all.configure(command=check_all_models)
+
+        for m_id in model_lines:
+            row_frame = ctk.CTkFrame(
+                scroll_frame,
+                fg_color=COLOR["card_bg"],
+                corner_radius=10,
+                border_width=1,
+                border_color=COLOR["border"]
+            )
+            row_frame.pack(fill="x", padx=4, pady=4)
+            row_frame.grid_columnconfigure(1, weight=1)
+
+            # Determine icon and display name
+            low_id = m_id.lower()
+            if "claude" in low_id:
+                icon = "🧠"
+            elif "gpt-oss" in low_id:
+                icon = "🤖"
+            elif "image" in low_id:
+                icon = "🎨"
+            else:
+                icon = "✨"
+
+            clean_id = m_id.replace("google/", "")
+            mapping = health_checker.ANTIGRAVITY_MODEL_INTERNAL_MAP.get(clean_id)
+            if mapping:
+                display_name = mapping[0]
+            else:
+                display_name = clean_id.replace("antigravity-", "").replace("-", " ").title()
+
+            icon_lbl = ctk.CTkLabel(row_frame, text=icon, font=self.font(size=18))
+            icon_lbl.grid(row=0, column=0, rowspan=2, padx=(12, 10), pady=8)
+
+            title_lbl = ctk.CTkLabel(
+                row_frame,
+                text=display_name,
+                font=self.font(size=13, weight="bold"),
+                text_color=COLOR["text_primary"]
+            )
+            title_lbl.grid(row=0, column=1, sticky="w", pady=(8, 0))
+
+            id_lbl = ctk.CTkLabel(
+                row_frame,
+                text=m_id,
+                font=self.font(size=11),
+                text_color=COLOR["text_muted"]
+            )
+            id_lbl.grid(row=1, column=1, sticky="w", pady=(0, 8))
+
+            badge = ctk.CTkLabel(
+                row_frame,
+                text="⚪ Не проверена",
+                font=self.font(size=11, weight="bold"),
+                fg_color=COLOR["subbox_bg"],
+                text_color=COLOR["text_muted"],
+                corner_radius=6,
+                padx=10,
+                pady=4
+            )
+            badge.grid(row=0, column=2, rowspan=2, padx=8, pady=8)
+            model_badges[m_id] = badge
+
+            btn_test = ctk.CTkButton(
+                row_frame,
+                text="🩺 Тест",
+                font=self.font(size=11, weight="bold"),
+                fg_color=COLOR["subbox_bg"],
+                hover_color=COLOR["border"],
+                text_color=COLOR["text_primary"],
+                width=65,
+                height=28,
+                corner_radius=6,
+                command=lambda mid=m_id: check_single_model(mid)
+            )
+            btn_test.grid(row=0, column=3, rowspan=2, padx=(0, 12), pady=8)
+            model_test_btns[m_id] = btn_test
+
+        # Footer
+        footer = ctk.CTkFrame(dialog, fg_color="transparent")
+        footer.pack(fill="x", padx=18, pady=(4, 16))
+
+        ctk.CTkLabel(
+            footer,
+            text=f"Всего моделей: {len(model_lines)}",
+            font=self.font(size=11),
+            text_color=COLOR["text_muted"]
+        ).pack(side="left")
+
+        ctk.CTkButton(
+            footer,
+            text="Закрыть",
+            font=self.font(size=12, weight="bold"),
+            width=90,
+            command=dialog.destroy
+        ).pack(side="right")
+
     def create_flash_banner(self):
         self.flash_banner = ctk.CTkFrame(
             self.content_area,
