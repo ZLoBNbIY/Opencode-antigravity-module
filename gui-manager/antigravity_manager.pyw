@@ -723,25 +723,82 @@ def import_google_account(account_dict: dict) -> bool:
 
 
 # =========================================================================
-# DUAL-THEME COLOR PALETTE (Tuple format: (Light, Dark))
-# CustomTkinter automatically applies the correct element on appearance change
+# DEEP CYBER GLASS THEME PALETTE (Tuple format: (Light, Dark))
+# Dark sapphire glass, luminous cyan borders, high-contrast typography
 # =========================================================================
 COLOR = {
-    "bg": ("#f1f5f9", "#0f172a"),
-    "sidebar_bg": ("#ffffff", "#1e293b"),
-    "card_bg": ("#ffffff", "#1e293b"),
-    "subbox_bg": ("#f8fafc", "#0f172a"),
-    "border": ("#e2e8f0", "#334155"),
+    "bg": ("#f1f5f9", "#080c16"),
+    "sidebar_bg": ("#ffffff", "#0c101d"),
+    "card_bg": ("#ffffff", "#101728"),
+    "card_active_bg": ("#f0fdf4", "#131f36"),
+    "subbox_bg": ("#f8fafc", "#090d18"),
+    "border": ("#e2e8f0", "#182236"),
     "border_active": ("#0284c7", "#38bdf8"),
     "text_primary": ("#0f172a", "#f8fafc"),
-    "text_secondary": ("#475569", "#94a3b8"),
-    "text_muted": ("#64748b", "#64748b"),
-    "bar_bg": ("#e2e8f0", "#334155"),
-    "statusbar_bg": ("#ffffff", "#1e293b"),
-    "nav_active_bg": ("#e0f2fe", "#0284c7"),
-    "nav_active_text": ("#0369a1", "#ffffff"),
-    "nav_idle_text": ("#475569", "#cbd5e1"),
+    "text_secondary": ("#334155", "#cbd5e1"),
+    "text_muted": ("#64748b", "#94a3b8"),
+    "bar_bg": ("#e2e8f0", "#1e293b"),
+    "statusbar_bg": ("#ffffff", "#0c101d"),
+    "nav_active_bg": ("#e0f2fe", "#16233a"),
+    "nav_active_text": ("#0284c7", "#38bdf8"),
+    "nav_idle_text": ("#475569", "#94a3b8"),
+    "accent_cyan": "#38bdf8",
+    "accent_emerald": "#34d399",
 }
+
+
+def apply_windows_acrylic_effect(window):
+    """Enables Windows 11 DWM Acrylic/Mica backdrop blur and immersive dark titlebar."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+        if not hwnd:
+            hwnd = window.winfo_id()
+
+        # DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+        dark_mode = ctypes.c_int(1)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd, 20, ctypes.byref(dark_mode), ctypes.sizeof(dark_mode)
+        )
+
+        # DWMWA_SYSTEMBACKDROP_TYPE = 38 (Windows 11 22H2+: 3 = Acrylic, 2 = Mica)
+        backdrop = ctypes.c_int(3)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd, 38, ctypes.byref(backdrop), ctypes.sizeof(backdrop)
+        )
+
+        # DWMWA_BORDER_COLOR = 34 (Subtle cyber cyan border: 0x00382218 in BGR)
+        border_col = ctypes.c_int(0x00382218)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd, 34, ctypes.byref(border_col), ctypes.sizeof(border_col)
+        )
+    except Exception:
+        pass
+
+
+def create_cyber_switch(master, text="", variable=None, command=None, font=None, **kwargs):
+    """Creates a modern pill-shaped switch with glowing cyber neon styling."""
+    return ctk.CTkSwitch(
+        master,
+        text=text,
+        variable=variable,
+        command=command,
+        font=font,
+        width=46,
+        height=24,
+        switch_width=18,
+        switch_height=18,
+        corner_radius=12,
+        border_width=1,
+        fg_color=("#cbd5e1", "#1e293b"),
+        progress_color=("#0284c7", "#0284c7"),
+        button_color=("#ffffff", "#f8fafc"),
+        button_hover_color=("#f1f5f9", "#ffffff"),
+        border_color=("#94a3b8", "#334155"),
+        **kwargs
+    )
 
 
 class AntigravityManagerApp(ctk.CTk):
@@ -769,6 +826,9 @@ class AntigravityManagerApp(ctk.CTk):
                 self.iconbitmap(default=str(icon_file))
             except Exception:
                 print("Could not set Antigravity Hub window icon")
+
+        # Windows 11 / 10 DWM Acrylic / Mica Backdrop Effect
+        self.after(50, lambda: apply_windows_acrylic_effect(self))
 
         # State
         self.accounts_data = []
@@ -1889,7 +1949,7 @@ class AntigravityManagerApp(ctk.CTk):
 
         card = ctk.CTkFrame(
             parent,
-            fg_color=COLOR["card_bg"],
+            fg_color=COLOR["card_active_bg"] if is_active else COLOR["card_bg"],
             corner_radius=16,
             border_width=2 if is_active else 1,
             border_color=COLOR["border_active"] if is_active else COLOR["border"],
@@ -2098,7 +2158,7 @@ class AntigravityManagerApp(ctk.CTk):
 
     def _render_compact_subrow(self, parent, label, pct, reset_iso):
         rem = round(float(pct), 1) if pct is not None else None
-        color = ("#16a34a" if rem > 50 else ("#f59e0b" if rem > 20 else "#ef4444")) if rem is not None else COLOR["text_muted"]
+        color = (COLOR["accent_emerald"] if rem > 50 else ("#f59e0b" if rem > 20 else "#ef4444")) if rem is not None else COLOR["text_muted"]
 
         row = ctk.CTkFrame(parent, fg_color="transparent")
         row.pack(fill="x", pady=(3, 0))
@@ -2184,7 +2244,7 @@ class AntigravityManagerApp(ctk.CTk):
 
         card = ctk.CTkFrame(
             parent,
-            fg_color=COLOR["card_bg"],
+            fg_color=COLOR["card_active_bg"] if is_active else COLOR["card_bg"],
             corner_radius=16,
             border_width=2 if is_active else 1,
             border_color="#10a37f" if is_active else COLOR["border"],
@@ -2369,7 +2429,7 @@ class AntigravityManagerApp(ctk.CTk):
         c2.pack(fill="x", pady=6)
         ctk.CTkLabel(c2, text="Мгновенное переключение при Rate Limit (429)", font=self.font(size=14, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w", padx=16, pady=(12, 4))
         self.rate_limit_var = tk.BooleanVar(value=self.config_data.get("switch_on_first_rate_limit", True))
-        ctk.CTkSwitch(c2, text="Включено", variable=self.rate_limit_var).pack(anchor="w", padx=16, pady=(0, 12))
+        create_cyber_switch(c2, text="Включено", variable=self.rate_limit_var, font=self.font(size=12)).pack(anchor="w", padx=16, pady=(0, 12))
 
         close_card = ctk.CTkFrame(self.settings_frame, fg_color=COLOR["card_bg"], corner_radius=12, border_width=1, border_color=COLOR["border"])
         close_card.pack(fill="x", pady=6)
@@ -2382,12 +2442,12 @@ class AntigravityManagerApp(ctk.CTk):
         self.close_choice_remember_var = tk.BooleanVar(
             value=self.config_data.get("close_choice_remembered", False)
         )
-        ctk.CTkCheckBox(
+        create_cyber_switch(
             close_card,
             text="Запоминать выбранное действие (свернуть в трей / закрыть приложение)",
             variable=self.close_choice_remember_var,
             command=self.on_close_choice_remember_changed,
-            font=self.font(size=11),
+            font=self.font(size=12),
         ).pack(anchor="w", padx=16, pady=(0, 12))
 
         # 3. DNS Configuration (Cockpit / Bezmezhau layout: Standard DNS, DoT, DoH)
