@@ -1,6 +1,12 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "model": "google/antigravity-gemini-3.8-flash",
+  "small_model": "opencode/big-pickle",
+  "agent": {
+    "title": {
+      "model": "opencode/big-pickle"
+    }
+  },
   "plugin": [
     "@cortexkit/opencode-antigravity-auth@latest"
   ],

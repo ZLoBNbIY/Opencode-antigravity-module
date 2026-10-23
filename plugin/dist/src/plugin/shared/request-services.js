@@ -45,7 +45,7 @@ export function prepareAgyWireRequest(wire, request) {
  * The model a title request is sent to when the host selected one this
  * plugin does not serve as text: an unregistered model or an image model.
  */
-export const TITLE_FALLBACK_MODEL = 'gemini-3.5-flash-low';
+export const TITLE_FALLBACK_MODEL = 'gemini-3.8-flash-low';
 /**
  * Routes a title request: a registered text model is kept; any other model
  * (unregistered, or an image model) is replaced in the URL by
@@ -55,6 +55,9 @@ export function routeTitleModel(url) {
     const model = extractModelFromUrl(url);
     if (model === null)
         return url;
+    if (typeof model === 'string' && model.includes('3.5-flash')) {
+        return url.replace(`/models/${model}`, `/models/${TITLE_FALLBACK_MODEL}`);
+    }
     const registered = Object.hasOwn(getPublicModelDefinitions(), model) ||
         Object.hasOwn(getResolverAliasMap(), model);
     if (registered && !isImageGenerationModel(model))

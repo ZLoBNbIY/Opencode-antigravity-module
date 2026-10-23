@@ -520,6 +520,26 @@ for (const basePath of targetPaths) {
       changed = true;
     }
 
+    // Patch Title Fallback Model and 3.5-flash routing
+    const fallbackRegex = /(var|const|export const)\s+TITLE_FALLBACK_MODEL\s*=\s*['"]gemini-3\.5-flash-low['"];?/;
+    if (fallbackRegex.test(content)) {
+      content = content.replace(fallbackRegex, `$1 TITLE_FALLBACK_MODEL = "gemini-3.8-flash-low";`);
+      changed = true;
+      console.log(`✓ Patched TITLE_FALLBACK_MODEL in ${file} (switched to gemini-3.8-flash-low)`);
+    }
+
+    const routeTarget = 'const model = extractModelFromUrl(url);\n  if (model === null) return url;';
+    const routeReplacement = `const model = extractModelFromUrl(url);
+  if (model === null) return url;
+  if (typeof model === "string" && model.includes("3.5-flash")) {
+    return url.replace(\`/models/\${model}\`, \`/models/\${TITLE_FALLBACK_MODEL}\`);
+  }`;
+    if (content.includes(routeTarget) && !content.includes('model.includes("3.5-flash")')) {
+      content = content.replace(routeTarget, routeReplacement);
+      changed = true;
+      console.log(`✓ Patched routeTitleModel in ${file} (auto-redirecting 3.5-flash titles)`);
+    }
+
     if (changed) {
       fs.writeFileSync(filePath, content, 'utf8');
       console.log(`✓ Successfully updated ${file}`);

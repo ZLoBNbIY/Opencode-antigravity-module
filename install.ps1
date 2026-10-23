@@ -275,6 +275,27 @@ if (Test-Path -LiteralPath $OpencodeConfigFile) {
             $modified = $true
         }
 
+        # Бесплатная встроенная модель OpenCode для именования сессий (защита от устаревшего Gemini 3.5 Flash)
+        if (-not $cfg.small_model -or $cfg.small_model -like "*3.5*") {
+            $cfg | Add-Member -MemberType NoteProperty -Name "small_model" -Value "opencode/big-pickle" -Force
+            $modified = $true
+        }
+        if (-not $cfg.agent) {
+            $cfg | Add-Member -MemberType NoteProperty -Name "agent" -Value ([PSCustomObject]@{
+                title = [PSCustomObject]@{ model = "opencode/big-pickle" }
+            }) -Force
+            $modified = $true
+        } elseif (-not $cfg.agent.title -or $cfg.agent.title.model -like "*3.5*") {
+            if (-not $cfg.agent.title) {
+                $cfg.agent | Add-Member -MemberType NoteProperty -Name "title" -Value ([PSCustomObject]@{
+                    model = "opencode/big-pickle"
+                }) -Force
+            } else {
+                $cfg.agent.title.model = "opencode/big-pickle"
+            }
+            $modified = $true
+        }
+
         if ($modified) {
             $cfg | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $OpencodeConfigFile -Encoding UTF8
             Write-Success "Плагин Antigravity добавлен в существующий opencode.json"

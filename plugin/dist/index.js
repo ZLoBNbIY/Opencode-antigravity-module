@@ -43474,10 +43474,13 @@ function prepareAgyWireRequest(wire, request) {
     request.options
   );
 }
-var TITLE_FALLBACK_MODEL = "gemini-3.5-flash-low";
+var TITLE_FALLBACK_MODEL = "gemini-3.8-flash-low";
 function routeTitleModel(url) {
   const model = extractModelFromUrl(url);
   if (model === null) return url;
+  if (typeof model === "string" && model.includes("3.5-flash")) {
+    return url.replace(`/models/${model}`, `/models/${TITLE_FALLBACK_MODEL}`);
+  }
   const registered = Object.hasOwn(getPublicModelDefinitions(), model) || Object.hasOwn(getResolverAliasMap(), model);
   if (registered && !isImageGenerationModel(model)) return url;
   return url.replace(`/models/${model}`, `/models/${TITLE_FALLBACK_MODEL}`);
