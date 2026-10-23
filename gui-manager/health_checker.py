@@ -316,6 +316,88 @@ def test_antigravity_model(account: dict, model_id: str, timeout=6, proxy_url="h
         try:
             with opener.open(req, timeout=timeout) as resp:
                 elapsed = round((time.perf_counter() - t0) * 1000)
+                raw_body = resp.read().decode("utf-8", errors="ignore")
+
+                extracted_texts = []
+                has_candidates = False
+                has_error = False
+                error_message = ""
+
+                for line in raw_body.splitlines():
+                    line = line.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    json_str = line[5:].strip()
+                    if not json_str:
+                        continue
+                    try:
+                        chunk = json.loads(json_str)
+                        if "error" in chunk:
+                            has_error = True
+                            error_message = chunk.get("error", {}).get("message", "API Error")
+                        resp_data = chunk.get("response", chunk)
+                        candidates = resp_data.get("candidates", [])
+                        if candidates:
+                            has_candidates = True
+                            for cand in candidates:
+                                parts = cand.get("content", {}).get("parts", [])
+                                for part in parts:
+                                    txt = part.get("text", "")
+                                    if txt:
+                                        extracted_texts.append(txt)
+                    except Exception:
+                        pass
+
+                full_text = " ".join(extracted_texts).lower()
+
+                # Check if region is blocked inside SSE stream body
+                if "user location is not supported" in full_text or "location is not supported" in error_message.lower():
+                    continue
+
+                # Detect deprecated / disabled models returned by Google with 200 OK
+                deprecation_phrases = [
+                    "is no longer available",
+                    "no longer available",
+                    "please switch to",
+                    "is not available",
+                    "deprecated",
+                    "discontinued",
+                    "is absent from",
+                    "restricted to",
+                    "unsupported model",
+                ]
+                if any(phrase in full_text for phrase in deprecation_phrases):
+                    return {
+                        "ok": False,
+                        "status": "deprecated",
+                        "latency_ms": elapsed,
+                        "badge": "🔴 Отключена Google",
+                        "color": "#ef4444",
+                        "display_name": display_name,
+                    }
+
+                if has_error:
+                    last_res = {
+                        "ok": False,
+                        "status": "api_error",
+                        "latency_ms": elapsed,
+                        "badge": f"🔴 Ошибка API: {error_message[:24]}" if error_message else "🔴 Ошибка API",
+                        "color": "#ef4444",
+                        "display_name": display_name,
+                    }
+                    continue
+
+                if not has_candidates and not extracted_texts:
+                    last_res = {
+                        "ok": False,
+                        "status": "empty_response",
+                        "latency_ms": elapsed,
+                        "badge": "🔴 Нет ответа модели",
+                        "color": "#ef4444",
+                        "display_name": display_name,
+                    }
+                    continue
+
                 return {
                     "ok": True,
                     "status": "active",
