@@ -20,8 +20,8 @@ def fix_models_visibility():
         rowid, val_str = row
         data = json.loads(val_str)
 
-        # 1. Remove discontinued models (3.7, 3.6, 3.1)
-        deprecated_versions = ("3.7", "3.6", "3.1")
+        # 1. Remove discontinued models (3.7, 3.6, 3.5, 3.1)
+        deprecated_versions = ("3.7", "3.6", "3.5", "3.1")
         def is_dep(mid):
             return any(v in mid for v in deprecated_versions)
 
@@ -31,7 +31,6 @@ def fix_models_visibility():
         to_show = [
             "antigravity-gemini-4-argon",
             "antigravity-gemini-3.8-flash",
-            "antigravity-gemini-3.5-flash",
             "antigravity-claude-opus-5-5",
             "antigravity-claude-opus-5-5-thinking",
             "antigravity-claude-sonnet-5-5",

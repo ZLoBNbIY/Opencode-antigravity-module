@@ -1483,7 +1483,11 @@ class AntigravityManagerApp(ctk.CTk):
             messagebox.showerror("Модели Antigravity в OpenCode", error, parent=self)
             return
 
-        model_lines = [line.strip() for line in output.splitlines() if line.strip()]
+        deprecated_versions = ("3.7", "3.6", "3.5", "3.1")
+        model_lines = [
+            line.strip() for line in output.splitlines()
+            if line.strip() and not any(v in line for v in deprecated_versions)
+        ]
 
         dialog = ctk.CTkToplevel(self)
         dialog.title("Модели Antigravity, доступные в OpenCode")

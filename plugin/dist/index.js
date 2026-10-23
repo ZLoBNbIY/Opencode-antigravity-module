@@ -17625,7 +17625,6 @@ var QUOTA_GROUP_BY_MODEL_ID = {
 var ANTIGRAVITY_OPENCODE_MODEL_IDS = [
   "antigravity-gemini-4-argon",
   "antigravity-gemini-3.8-flash",
-  "antigravity-gemini-3.5-flash",
   "antigravity-claude-opus-5-5",
   "antigravity-claude-opus-5-5-thinking",
   "antigravity-claude-sonnet-5-5",
@@ -17634,7 +17633,6 @@ var ANTIGRAVITY_OPENCODE_MODEL_IDS = [
   "antigravity-claude-opus-4-6-thinking",
   "antigravity-claude-sonnet-4-6",
   "antigravity-claude-sonnet-4-6-thinking",
-  "antigravity-gemini-3.1-flash-image",
   "antigravity-gpt-oss-120b-medium"
 ];
 
@@ -17723,7 +17721,7 @@ function ensureDynamicModelDefinition(id) {
   return null;
 }
 
-var DEPRECATED_MODEL_VERSIONS = ["3.7", "3.6", "3.1"];
+var DEPRECATED_MODEL_VERSIONS = ["3.7", "3.6", "3.5", "3.1"];
 function isDeprecatedModel(id) {
   return DEPRECATED_MODEL_VERSIONS.some((v) => id.includes(v));
 }

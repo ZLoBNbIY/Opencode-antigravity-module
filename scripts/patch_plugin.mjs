@@ -326,6 +326,25 @@ for (const basePath of targetPaths) {
       cliChanged = true;
     }
 
+    const cliDepVersionsTarget = 'var DEPRECATED_MODEL_VERSIONS = ["3.7", "3.6", "3.1"];';
+    const cliDepVersionsRepl = 'var DEPRECATED_MODEL_VERSIONS = ["3.7", "3.6", "3.5", "3.1"];';
+    if (cliContent.includes(cliDepVersionsTarget)) {
+      cliContent = cliContent.replace(cliDepVersionsTarget, cliDepVersionsRepl);
+      cliChanged = true;
+      console.log('✓ Patched DEPRECATED_MODEL_VERSIONS in dist/cli.js');
+    }
+
+    if (cliContent.includes('  "antigravity-gemini-3.5-flash",\n')) {
+      cliContent = cliContent.replace('  "antigravity-gemini-3.5-flash",\n', '');
+      cliChanged = true;
+      console.log('✓ Removed antigravity-gemini-3.5-flash from dist/cli.js');
+    }
+    if (cliContent.includes('  "antigravity-gemini-3.1-flash-image",\n')) {
+      cliContent = cliContent.replace('  "antigravity-gemini-3.1-flash-image",\n', '');
+      cliChanged = true;
+      console.log('✓ Removed antigravity-gemini-3.1-flash-image from dist/cli.js');
+    }
+
     if (cliChanged) {
       fs.writeFileSync(cliPath, cliContent, 'utf8');
       console.log('✓ Updated dist/cli.js');
@@ -610,6 +629,25 @@ for (const basePath of targetPaths) {
       content = isCRLF ? normReplaced.replace(/\n/g, '\r\n') : normReplaced;
       changed = true;
       console.log(`✓ Patched dynamic active account sync in ${file}`);
+    }
+
+    const depVersionsTarget = 'var DEPRECATED_MODEL_VERSIONS = ["3.7", "3.6", "3.1"];';
+    const depVersionsRepl = 'var DEPRECATED_MODEL_VERSIONS = ["3.7", "3.6", "3.5", "3.1"];';
+    if (content.includes(depVersionsTarget)) {
+      content = content.replace(depVersionsTarget, depVersionsRepl);
+      changed = true;
+      console.log(`✓ Patched DEPRECATED_MODEL_VERSIONS in ${file}`);
+    }
+
+    if (content.includes('  "antigravity-gemini-3.5-flash",\n')) {
+      content = content.replace('  "antigravity-gemini-3.5-flash",\n', '');
+      changed = true;
+      console.log(`✓ Removed antigravity-gemini-3.5-flash from ${file}`);
+    }
+    if (content.includes('  "antigravity-gemini-3.1-flash-image",\n')) {
+      content = content.replace('  "antigravity-gemini-3.1-flash-image",\n', '');
+      changed = true;
+      console.log(`✓ Removed antigravity-gemini-3.1-flash-image from ${file}`);
     }
 
     if (changed) {

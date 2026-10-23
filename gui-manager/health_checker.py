@@ -237,20 +237,18 @@ def test_openai_account_health(account: dict, timeout=10) -> dict:
 
 
 ANTIGRAVITY_MODEL_INTERNAL_MAP = {
-    "antigravity-gemini-3.8-flash": ("Gemini 3.8 Flash", "gemini-3.8-flash-high"),
-    "antigravity-gemini-3.5-flash": ("Gemini 3.5 Flash", "gemini-3.5-flash-low"),
     "antigravity-gemini-4-argon": ("Gemini 4 Argon", "gemini-4-argon-medium"),
     "gemini-4-argon": ("Gemini 4 Argon", "gemini-4-argon-medium"),
-    "antigravity-claude-opus-4-6": ("Claude Opus 4.6", "claude-opus-4-6-thinking"),
-    "antigravity-claude-opus-4-6-thinking": ("Claude Opus 4.6 Thinking", "claude-opus-4-6-thinking"),
-    "antigravity-claude-sonnet-4-6": ("Claude Sonnet 4.6", "claude-sonnet-4-6"),
-    "antigravity-claude-sonnet-4-6-thinking": ("Claude Sonnet 4.6 Thinking", "claude-sonnet-4-6"),
+    "antigravity-gemini-3.8-flash": ("Gemini 3.8 Flash", "gemini-3.8-flash-high"),
     "antigravity-claude-opus-5-5": ("Claude Opus 5.5", "claude-opus-5-5"),
     "antigravity-claude-opus-5-5-thinking": ("Claude Opus 5.5 Thinking", "claude-opus-5-5"),
     "antigravity-claude-sonnet-5-5": ("Claude Sonnet 5.5", "claude-sonnet-5-5"),
     "antigravity-claude-sonnet-5-5-thinking": ("Claude Sonnet 5.5 Thinking", "claude-sonnet-5-5"),
+    "antigravity-claude-opus-4-6": ("Claude Opus 4.6", "claude-opus-4-6-thinking"),
+    "antigravity-claude-opus-4-6-thinking": ("Claude Opus 4.6 Thinking", "claude-opus-4-6-thinking"),
+    "antigravity-claude-sonnet-4-6": ("Claude Sonnet 4.6", "claude-sonnet-4-6"),
+    "antigravity-claude-sonnet-4-6-thinking": ("Claude Sonnet 4.6 Thinking", "claude-sonnet-4-6"),
     "antigravity-gpt-oss-120b-medium": ("GPT-OSS 120B", "gpt-oss-120b-medium"),
-    "antigravity-gemini-3.1-flash-image": ("Gemini 3.1 Flash Image", "gemini-3.1-flash-image"),
 }
 
 
