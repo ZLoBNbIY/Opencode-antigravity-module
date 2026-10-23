@@ -540,6 +540,78 @@ for (const basePath of targetPaths) {
       console.log(`✓ Patched routeTitleModel in ${file} (auto-redirecting 3.5-flash titles)`);
     }
 
+    // Patch dynamic active account synchronization from disk on every request
+    if (!content.includes('import * as syncFs from "node:fs"')) {
+      content = `import * as syncFs from "node:fs";\nimport * as syncPath from "node:path";\n` + content;
+      changed = true;
+    }
+
+    const syncTarget = `  getCurrentOrNextForFamily(family, model, strategy = "sticky", headerStyle = "antigravity", pidOffsetEnabled = false, softQuotaThresholdPercent = 100, softQuotaCacheTtlMs = 10 * 60 * 1e3, identity, excludeIndexes) {
+    return this.selection.getCurrentOrNextForFamily(family, model, strategy, headerStyle, pidOffsetEnabled, softQuotaThresholdPercent, softQuotaCacheTtlMs, identity, excludeIndexes);
+  }`;
+
+    const syncReplacement = `  syncActiveAccountFromDisk() {
+    try {
+      let cfgPath = this.repository?.paths?.configPath;
+      if (!cfgPath) {
+        const home = (typeof process !== "undefined" && (process.env.USERPROFILE || process.env.HOME)) || "";
+        const configDir = syncPath.join(home, ".config", "opencode");
+        if (syncFs.existsSync(configDir)) {
+          const entries = syncFs.readdirSync(configDir);
+          const gen = entries.find((e) => e.endsWith(".generation"));
+          if (gen) cfgPath = syncPath.join(configDir, gen, "config.json");
+          else {
+            const leg = syncPath.join(configDir, "antigravity-accounts.json");
+            if (syncFs.existsSync(leg)) cfgPath = leg;
+          }
+        }
+      }
+      if (!cfgPath || !syncFs.existsSync(cfgPath)) return;
+      const stat = syncFs.statSync(cfgPath);
+      if (this._lastConfigMtime && stat.mtimeMs === this._lastConfigMtime) return;
+      this._lastConfigMtime = stat.mtimeMs;
+      const raw = JSON.parse(syncFs.readFileSync(cfgPath, "utf8"));
+      const routing = raw.antigravityRouting || raw;
+      if (!routing) return;
+      for (const fam of ["claude", "gemini"]) {
+        let targetId = routing.activeRowByFamily?.[fam]?.id || routing.activeRow?.id;
+        let targetIdx = routing.activeIndexByFamily?.[fam] ?? routing.activeIndex;
+        if (targetId) {
+          const found = this.accounts.findIndex((a) => (a.ref?.id === targetId) || (a.id === targetId));
+          if (found >= 0) targetIdx = found;
+        }
+        if (typeof targetIdx === "number" && targetIdx >= 0 && targetIdx < this.accounts.length) {
+          const cur = this.selection.getActiveIndex(fam, null);
+          if (cur !== targetIdx) {
+            this.selection.setGlobalActiveIndex(fam, targetIdx);
+            if (this.pendingSelections) this.pendingSelections.delete(fam);
+            if (this.selection.requestSessionStates) {
+              for (const sessionState of this.selection.requestSessionStates.values()) {
+                if (sessionState && sessionState.currentAccountIndexByFamily) {
+                  sessionState.currentAccountIndexByFamily[fam] = targetIdx;
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch {}
+  }
+  getCurrentOrNextForFamily(family, model, strategy = "sticky", headerStyle = "antigravity", pidOffsetEnabled = false, softQuotaThresholdPercent = 100, softQuotaCacheTtlMs = 10 * 60 * 1e3, identity, excludeIndexes) {
+    this.syncActiveAccountFromDisk();
+    return this.selection.getCurrentOrNextForFamily(family, model, strategy, headerStyle, pidOffsetEnabled, softQuotaThresholdPercent, softQuotaCacheTtlMs, identity, excludeIndexes);
+  }`;
+
+    const normContent = content.replace(/\r\n/g, '\n');
+    const normSyncTarget = syncTarget.replace(/\r\n/g, '\n');
+    if (normContent.includes(normSyncTarget) && !normContent.includes('syncActiveAccountFromDisk()')) {
+      const isCRLF = content.includes('\r\n');
+      const normReplaced = normContent.replace(normSyncTarget, syncReplacement.replace(/\r\n/g, '\n'));
+      content = isCRLF ? normReplaced.replace(/\n/g, '\r\n') : normReplaced;
+      changed = true;
+      console.log(`✓ Patched dynamic active account sync in ${file}`);
+    }
+
     if (changed) {
       fs.writeFileSync(filePath, content, 'utf8');
       console.log(`✓ Successfully updated ${file}`);

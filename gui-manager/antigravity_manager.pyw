@@ -26,6 +26,97 @@ from tkinter import messagebox, filedialog
 import shutil
 import customtkinter as ctk
 
+
+def _patch_customtkinter_scrollable_frame():
+    """
+    Fixes mouse wheel scrolling in CTkScrollableFrame on Windows, Linux, and macOS.
+    CustomTkinter's default _check_if_valid_scroll checks event.widget, which on Windows
+    is typically the root window or the focused widget rather than the widget under the pointer.
+    This patch detects whether the mouse pointer is actually over the scrollable frame
+    (and handles nested scrollable frames cleanly).
+    """
+    def _is_active_scroll_target(self, event):
+        try:
+            if not hasattr(event, "x_root") or not hasattr(event, "y_root"):
+                return False
+            c = self._parent_canvas
+            if not c.winfo_ismapped():
+                return False
+            rx = c.winfo_rootx()
+            ry = c.winfo_rooty()
+            rw = c.winfo_width()
+            rh = c.winfo_height()
+            if not (rx <= event.x_root <= rx + rw and ry <= event.y_root <= ry + rh):
+                return False
+
+            # If a descendant CTkScrollableFrame is also mapped and under the cursor, let the inner one scroll
+            def has_child_target(widget):
+                for child in widget.winfo_children():
+                    if isinstance(child, ctk.CTkScrollableFrame):
+                        cc = child._parent_canvas
+                        if cc.winfo_ismapped():
+                            crx = cc.winfo_rootx()
+                            cry = cc.winfo_rooty()
+                            crw = cc.winfo_width()
+                            crh = cc.winfo_height()
+                            if crx <= event.x_root <= crx + crw and cry <= event.y_root <= cry + crh:
+                                return True
+                    if has_child_target(child):
+                        return True
+                return False
+
+            return not has_child_target(self)
+        except Exception:
+            return False
+
+    def _mouse_wheel_all(self, event):
+        if not _is_active_scroll_target(self, event):
+            if not self._check_if_valid_scroll(event.widget):
+                return
+
+        if sys.platform.startswith("win"):
+            # 120 / 3 = 40 pixels per notch for a responsive, comfortable scroll speed
+            delta = int(event.delta / 3) if event.delta != 0 else 0
+            if delta == 0 and event.delta != 0:
+                delta = 1 if event.delta > 0 else -1
+            if self._shift_pressed:
+                if self._parent_canvas.xview() != (0.0, 1.0):
+                    self._parent_canvas.xview("scroll", -delta, "units")
+            else:
+                if self._parent_canvas.yview() != (0.0, 1.0):
+                    self._parent_canvas.yview("scroll", -delta, "units")
+        elif sys.platform == "darwin":
+            if self._shift_pressed:
+                if self._parent_canvas.xview() != (0.0, 1.0):
+                    self._parent_canvas.xview("scroll", -event.delta, "units")
+            else:
+                if self._parent_canvas.yview() != (0.0, 1.0):
+                    self._parent_canvas.yview("scroll", -event.delta, "units")
+        else:
+            step = 3
+            if self._shift_pressed:
+                if self._parent_canvas.xview() != (0.0, 1.0):
+                    self._parent_canvas.xview_scroll(-step if event.num == 4 else step, "units")
+            else:
+                if self._parent_canvas.yview() != (0.0, 1.0):
+                    self._parent_canvas.yview_scroll(-step if event.num == 4 else step, "units")
+
+    orig_check = ctk.CTkScrollableFrame._check_if_valid_scroll
+
+    def _safe_check_if_valid_scroll(self, widget):
+        if widget is None:
+            return False
+        try:
+            return orig_check(self, widget)
+        except Exception:
+            return False
+
+    ctk.CTkScrollableFrame._check_if_valid_scroll = _safe_check_if_valid_scroll
+    ctk.CTkScrollableFrame._mouse_wheel_all = _mouse_wheel_all
+
+
+_patch_customtkinter_scrollable_frame()
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import openai_manager
 import win_tray

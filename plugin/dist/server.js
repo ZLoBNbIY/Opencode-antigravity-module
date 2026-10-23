@@ -1,3 +1,5 @@
+import * as syncFs from "node:fs";
+import * as syncPath from "node:path";
 if (process.platform === "win32") {
   const __probe = await (await import("node:fs/promises")).open((await import("node:url")).fileURLToPath(import.meta.url), "r");
   const __proto = Object.getPrototypeOf(__probe);
@@ -21146,7 +21148,55 @@ var AccountManager = class _AccountManager {
   markToastShown(accountIndex) {
     this.selection.markToastShown(accountIndex);
   }
+  syncActiveAccountFromDisk() {
+    try {
+      let cfgPath = this.repository?.paths?.configPath;
+      if (!cfgPath) {
+        const home = (typeof process !== "undefined" && (process.env.USERPROFILE || process.env.HOME)) || "";
+        const configDir = syncPath.join(home, ".config", "opencode");
+        if (syncFs.existsSync(configDir)) {
+          const entries = syncFs.readdirSync(configDir);
+          const gen = entries.find((e) => e.endsWith(".generation"));
+          if (gen) cfgPath = syncPath.join(configDir, gen, "config.json");
+          else {
+            const leg = syncPath.join(configDir, "antigravity-accounts.json");
+            if (syncFs.existsSync(leg)) cfgPath = leg;
+          }
+        }
+      }
+      if (!cfgPath || !syncFs.existsSync(cfgPath)) return;
+      const stat = syncFs.statSync(cfgPath);
+      if (this._lastConfigMtime && stat.mtimeMs === this._lastConfigMtime) return;
+      this._lastConfigMtime = stat.mtimeMs;
+      const raw = JSON.parse(syncFs.readFileSync(cfgPath, "utf8"));
+      const routing = raw.antigravityRouting || raw;
+      if (!routing) return;
+      for (const fam of ["claude", "gemini"]) {
+        let targetId = routing.activeRowByFamily?.[fam]?.id || routing.activeRow?.id;
+        let targetIdx = routing.activeIndexByFamily?.[fam] ?? routing.activeIndex;
+        if (targetId) {
+          const found = this.accounts.findIndex((a) => (a.ref?.id === targetId) || (a.id === targetId));
+          if (found >= 0) targetIdx = found;
+        }
+        if (typeof targetIdx === "number" && targetIdx >= 0 && targetIdx < this.accounts.length) {
+          const cur = this.selection.getActiveIndex(fam, null);
+          if (cur !== targetIdx) {
+            this.selection.setGlobalActiveIndex(fam, targetIdx);
+            if (this.pendingSelections) this.pendingSelections.delete(fam);
+            if (this.selection.requestSessionStates) {
+              for (const sessionState of this.selection.requestSessionStates.values()) {
+                if (sessionState && sessionState.currentAccountIndexByFamily) {
+                  sessionState.currentAccountIndexByFamily[fam] = targetIdx;
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch {}
+  }
   getCurrentOrNextForFamily(family, model, strategy = "sticky", headerStyle = "antigravity", pidOffsetEnabled = false, softQuotaThresholdPercent = 100, softQuotaCacheTtlMs = 10 * 60 * 1e3, identity, excludeIndexes) {
+    this.syncActiveAccountFromDisk();
     return this.selection.getCurrentOrNextForFamily(family, model, strategy, headerStyle, pidOffsetEnabled, softQuotaThresholdPercent, softQuotaCacheTtlMs, identity, excludeIndexes);
   }
   getNextForFamily(family, model, headerStyle = "antigravity", softQuotaThresholdPercent = 100, softQuotaCacheTtlMs = 10 * 60 * 1e3, identity, excludeIndexes) {
