@@ -1351,6 +1351,68 @@ class AntigravityManagerApp(ctk.CTk):
                 hover_color="#0e8a6c",
             )
 
+    def show_google_models_action(self):
+        """Show models currently registered for the Google provider in OpenCode."""
+        if getattr(self, "google_models_loading", False):
+            return
+        self.google_models_loading = True
+        self.btn_google_models.configure(state="disabled", text="⏳ Загружаю...")
+
+        def _load():
+            try:
+                desktop_exe = Path(get_opencode_exe())
+                cli_candidates = [desktop_exe.parent / "resources" / "opencode-cli.exe"]
+                path_cli = shutil.which("opencode-cli") or shutil.which("opencode")
+                if path_cli:
+                    cli_candidates.append(Path(path_cli))
+                exe = next((str(candidate) for candidate in cli_candidates if candidate.is_file()), None)
+                if not exe:
+                    raise RuntimeError("Не найден CLI OpenCode (opencode-cli.exe).")
+                result = run_silent_cmd([exe, "models"], timeout=45)
+                output = (result.stdout or "").strip()
+                error = (result.stderr or "").strip()
+                if result.returncode != 0:
+                    detail = error or output or f"OpenCode завершился с кодом {result.returncode}."
+                    raise RuntimeError(detail[:3000])
+                antigravity_models = sorted({line.strip() for line in output.splitlines()
+                                             if ("antigravity" in line.strip().lower() or "argon" in line.strip().lower())})
+                if not antigravity_models:
+                    output = "OpenCode не вывел модели Antigravity. Проверьте, что Antigravity-плагин загружен."
+                else:
+                    output = "\n".join(antigravity_models)
+                self.after(0, lambda: self._show_google_models_result(output, None))
+            except Exception as exc:
+                self.after(0, lambda message=str(exc): self._show_google_models_result("", message))
+
+        threading.Thread(target=_load, name="hub-google-model-list", daemon=True).start()
+
+    def _show_google_models_result(self, output, error):
+        self.google_models_loading = False
+        self.btn_google_models.configure(state="normal", text="📋 Модели")
+        if error:
+            messagebox.showerror("Модели Antigravity в OpenCode", error, parent=self)
+            return
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Модели Antigravity, доступные в OpenCode")
+        dialog.geometry("640x480")
+        dialog.transient(self)
+        dialog.grab_set()
+        ctk.CTkLabel(
+            dialog,
+            text="Список моделей Antigravity, возвращаемых OpenCode для текущей конфигурации. "
+                 "Он не проверяет доступность каждой модели для вашей учётной записи.\n\n"
+                 "Список может включать уже отключённые модели: их ID по-прежнему видны "
+                 "при сканировании, но сами модели могут быть недоступны для использования.",
+            justify="left",
+            anchor="w",
+            wraplength=600,
+        ).pack(fill="x", padx=16, pady=(16, 8))
+        textbox = ctk.CTkTextbox(dialog, wrap="none")
+        textbox.pack(fill="both", expand=True, padx=16, pady=8)
+        textbox.insert("1.0", output)
+        textbox.configure(state="disabled")
+        ctk.CTkButton(dialog, text="Закрыть", command=dialog.destroy).pack(anchor="e", padx=16, pady=(4, 16))
     def create_flash_banner(self):
         self.flash_banner = ctk.CTkFrame(
             self.content_area,

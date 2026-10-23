@@ -29,12 +29,18 @@ def fix_models_visibility():
 
         # 2. Models that should be immediately visible in the quick dropdown
         to_show = [
+            "antigravity-gemini-4-argon",
+            "antigravity-gemini-3.8-flash",
+            "antigravity-gemini-3.5-flash",
+            "antigravity-claude-opus-5-5",
+            "antigravity-claude-opus-5-5-thinking",
+            "antigravity-claude-sonnet-5-5",
+            "antigravity-claude-sonnet-5-5-thinking",
             "antigravity-claude-opus-4-6",
             "antigravity-claude-opus-4-6-thinking",
             "antigravity-claude-sonnet-4-6",
             "antigravity-claude-sonnet-4-6-thinking",
-            "antigravity-gemini-3.8-flash",
-            "antigravity-gemini-3.5-flash"
+            "antigravity-gpt-oss-120b-medium"
         ]
 
         existing_keys = {f"{m.get('providerID')}:{m.get('modelID')}" for m in user_models}
@@ -51,11 +57,18 @@ def fix_models_visibility():
 
         data["user"] = user_models
 
-        # 3. Clean recent & ensure Claude Opus/Sonnet and Gemini 3.8 are at top
+        # 3. Clean recent & ensure Gemini 4 Argon, Claude Opus/Sonnet 5.5 and Gemini 3.8 are at top
         if "recent" in data:
             data["recent"] = [m for m in data["recent"] if not is_dep(m.get("modelID", ""))]
             recent_keys = {f"{m.get('providerID')}:{m.get('modelID')}" for m in data["recent"]}
-            for m_id in ["antigravity-claude-opus-4-6", "antigravity-claude-sonnet-4-6", "antigravity-gemini-3.8-flash"]:
+            for m_id in [
+                "antigravity-gemini-4-argon",
+                "antigravity-claude-sonnet-5-5",
+                "antigravity-claude-opus-5-5",
+                "antigravity-claude-opus-4-6",
+                "antigravity-claude-sonnet-4-6",
+                "antigravity-gemini-3.8-flash"
+            ]:
                 k = f"google:{m_id}"
                 if k not in recent_keys:
                     data["recent"].insert(0, {"providerID": "google", "modelID": m_id})
