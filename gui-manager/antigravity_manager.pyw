@@ -1372,7 +1372,7 @@ class AntigravityManagerApp(ctk.CTk):
                     detail = error or output or f"OpenCode завершился с кодом {result.returncode}."
                     raise RuntimeError(detail[:3000])
                 antigravity_models = sorted({line.strip() for line in output.splitlines()
-                                             if "antigravity" in line.strip().lower()})
+                                             if ("antigravity" in line.strip().lower() or "argon" in line.strip().lower())})
                 if not antigravity_models:
                     output = "OpenCode не вывел модели Antigravity. Проверьте, что Antigravity-плагин загружен."
                 else:

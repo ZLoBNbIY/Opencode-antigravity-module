@@ -17298,6 +17298,49 @@ function defineModel(id, model) {
   };
 }
 var ALL_MODEL_DEFINITIONS = {
+  "antigravity-gemini-4-argon": defineModel("antigravity-gemini-4-argon", {
+    name: "Gemini 4 Argon (Antigravity)",
+    reasoning: true,
+    limit: { context: 1048576, output: 65536 },
+    modalities: DEFAULT_MODALITIES,
+    variants: {
+      low: { thinkingLevel: "low" },
+      medium: { thinkingLevel: "medium" },
+      high: { thinkingLevel: "high" }
+    }
+  }),
+  "antigravity-claude-sonnet-5-5": defineModel("antigravity-claude-sonnet-5-5", {
+    name: "Claude Sonnet 5.5 (Antigravity)",
+    reasoning: true,
+    limit: { context: 25e4, output: 64e3 },
+    modalities: DEFAULT_MODALITIES
+  }),
+  "antigravity-claude-sonnet-5-5-thinking": defineModel("antigravity-claude-sonnet-5-5-thinking", {
+    name: "Claude Sonnet 5.5 Thinking (Antigravity)",
+    reasoning: true,
+    limit: { context: 25e4, output: 64e3 },
+    modalities: DEFAULT_MODALITIES,
+    variants: {
+      low: { disabled: true },
+      high: { disabled: true }
+    }
+  }),
+  "antigravity-claude-opus-5-5": defineModel("antigravity-claude-opus-5-5", {
+    name: "Claude Opus 5.5 (Antigravity)",
+    reasoning: true,
+    limit: { context: 25e4, output: 64e3 },
+    modalities: DEFAULT_MODALITIES
+  }),
+  "antigravity-claude-opus-5-5-thinking": defineModel("antigravity-claude-opus-5-5-thinking", {
+    name: "Claude Opus 5.5 Thinking (Antigravity)",
+    reasoning: true,
+    limit: { context: 25e4, output: 64e3 },
+    modalities: DEFAULT_MODALITIES,
+    variants: {
+      low: { disabled: true },
+      high: { disabled: true }
+    }
+  }),
   "antigravity-gemini-3.1-pro": defineModel("antigravity-gemini-3.1-pro", {
     name: "Gemini 3.1 Pro (Antigravity)",
     reasoning: true,
@@ -17468,6 +17511,22 @@ var RESOLVER_ALIASES = {
   "gemini-3.8-flash-low": "gemini-3.8-flash",
   "gemini-3.8-flash-medium": "gemini-3.8-flash",
   "gemini-3.8-flash-high": "gemini-3.8-flash",
+  "gemini-4-argon-low": "gemini-4-argon",
+  "gemini-4-argon-medium": "gemini-4-argon",
+  "gemini-4-argon-high": "gemini-4-argon",
+  "gemini-claude-opus-5-5-thinking-low": "claude-opus-5-5-thinking",
+  "gemini-claude-opus-5-5-thinking-medium": "claude-opus-5-5-thinking",
+  "gemini-claude-opus-5-5-thinking-high": "claude-opus-5-5-thinking",
+  "claude-opus-5-5": "claude-opus-5-5-thinking",
+  "gemini-claude-opus-5-5": "claude-opus-5-5-thinking",
+  "gemini-claude-sonnet-5-5-thinking-low": "claude-sonnet-5-5",
+  "gemini-claude-sonnet-5-5-thinking-medium": "claude-sonnet-5-5",
+  "gemini-claude-sonnet-5-5-thinking-high": "claude-sonnet-5-5",
+  "gemini-claude-sonnet-5-5": "claude-sonnet-5-5",
+  "claude-sonnet-5-5-thinking": "claude-sonnet-5-5",
+  "claude-sonnet-5-5-thinking-low": "claude-sonnet-5-5",
+  "claude-sonnet-5-5-thinking-medium": "claude-sonnet-5-5",
+  "claude-sonnet-5-5-thinking-high": "claude-sonnet-5-5",
   "gemini-claude-opus-4-6-thinking-low": "claude-opus-4-6-thinking",
   "gemini-claude-opus-4-6-thinking-medium": "claude-opus-4-6-thinking",
   "gemini-claude-opus-4-6-thinking-high": "claude-opus-4-6-thinking",
@@ -17518,7 +17577,23 @@ var GEMINI_38_FLASH_ROUTES = {
     high: "gemini-3.8-flash-tiered"
   }
 };
+var GEMINI_4_ARGON_ROUTES = {
+  defaultModel: "gemini-4-argon-medium",
+  byTier: {
+    low: "gemini-4-argon-low",
+    medium: "gemini-4-argon-medium",
+    high: "gemini-4-argon-high"
+  }
+};
 var QUOTA_GROUP_BY_MODEL_ID = {
+  "gemini-4-argon": "gemini",
+  "gemini-4-argon-low": "gemini",
+  "gemini-4-argon-medium": "gemini",
+  "gemini-4-argon-high": "gemini",
+  "claude-opus-5-5-thinking": "non-gemini",
+  "claude-opus-5-5": "non-gemini",
+  "claude-sonnet-5-5-thinking": "non-gemini",
+  "claude-sonnet-5-5": "non-gemini",
   "claude-opus-4-6-thinking": "non-gemini",
   "claude-opus-4-6": "non-gemini",
   "claude-sonnet-4-6-thinking": "non-gemini",
@@ -17548,8 +17623,13 @@ var QUOTA_GROUP_BY_MODEL_ID = {
   "gpt-oss-120b-medium": "non-gemini"
 };
 var ANTIGRAVITY_OPENCODE_MODEL_IDS = [
+  "antigravity-gemini-4-argon",
   "antigravity-gemini-3.8-flash",
   "antigravity-gemini-3.5-flash",
+  "antigravity-claude-opus-5-5",
+  "antigravity-claude-opus-5-5-thinking",
+  "antigravity-claude-sonnet-5-5",
+  "antigravity-claude-sonnet-5-5-thinking",
   "antigravity-claude-opus-4-6",
   "antigravity-claude-opus-4-6-thinking",
   "antigravity-claude-sonnet-4-6",
@@ -17594,6 +17674,20 @@ function saveDynamicModelsCache(modelIds) {
 }
 function ensureDynamicModelDefinition(id) {
   if (ALL_MODEL_DEFINITIONS[id]) return ALL_MODEL_DEFINITIONS[id];
+  if (id === "antigravity-gemini-4-argon" || id.startsWith("antigravity-gemini-4-argon-")) {
+    ALL_MODEL_DEFINITIONS[id] = defineModel(id, {
+      name: "Gemini 4 Argon (Antigravity)",
+      reasoning: true,
+      limit: { context: 1048576, output: 65536 },
+      modalities: DEFAULT_MODALITIES,
+      variants: {
+        low: { thinkingLevel: "low" },
+        medium: { thinkingLevel: "medium" },
+        high: { thinkingLevel: "high" }
+      }
+    });
+    return ALL_MODEL_DEFINITIONS[id];
+  }
   const match = id.match(/^antigravity-gemini-(\d+(?:\.\d+)?)-(flash|pro)/i);
   if (match) {
     const ver = match[1];
@@ -24987,6 +25081,39 @@ function resolveModelWithTier(requestedModel, options = {}) {
       explicitQuota
     };
   }
+  const isGemini4Argon = /^gemini-4-argon/i.test(baseName) || baseName === "argon";
+  if (isGemini4Argon && quotaPreference === "antigravity") {
+    return {
+      actualModel: getGemini4ArgonAntigravityModel(tier ?? "medium"),
+      thinkingBudget: getAgyGeminiFlashThinkingBudget(tier, -1),
+      tier: tier ?? "medium",
+      isThinkingModel: true,
+      quotaPreference,
+      explicitQuota
+    };
+  }
+  const isClaude55Opus = /^claude-opus-5-5/i.test(baseName);
+  if (isClaude55Opus && quotaPreference === "antigravity") {
+    return {
+      actualModel: "claude-opus-5-5-thinking",
+      thinkingBudget: 1024,
+      tier: tier ?? "medium",
+      isThinkingModel: true,
+      quotaPreference,
+      explicitQuota
+    };
+  }
+  const isClaude55Sonnet = /^claude-sonnet-5-5/i.test(baseName);
+  if (isClaude55Sonnet && quotaPreference === "antigravity") {
+    return {
+      actualModel: "claude-sonnet-5-5",
+      thinkingBudget: 1024,
+      tier: tier ?? "medium",
+      isThinkingModel: true,
+      quotaPreference,
+      explicitQuota
+    };
+  }
   const isGenericGemini = /^gemini-(\d+(?:\.\d+)?)-(flash|pro)/i.test(baseName);
   if (isGenericGemini && quotaPreference === "antigravity") {
     const matchGen = baseName.match(/^gemini-(\d+(?:\.\d+)?)-(flash|pro)/i);
@@ -25095,7 +25222,10 @@ function resolveModelForHeaderStyle(requestedModel, headerStyle) {
     const hasTierSuffix = /-(minimal|low|medium|high)$/i.test(transformedModel);
     const isImageModel = IMAGE_GENERATION_MODELS.test(transformedModel);
     const isGemini35Flash = isGemini35FlashModel(transformedModel.replace(TIER_REGEX, ""));
-    if ((isGemini3Pro || isGemini3Flash) && !isGemini35Flash && !hasTierSuffix && !isImageModel) {
+    const isGemini4ArgonModel = /^gemini-4-argon/i.test(transformedModel);
+    if (isGemini4ArgonModel && !hasTierSuffix) {
+      transformedModel = `${transformedModel}-medium`;
+    } else if ((isGemini3Pro || isGemini3Flash) && !isGemini35Flash && !hasTierSuffix && !isImageModel) {
       const defaultTier = isGemini3Pro ? "low" : "medium";
       transformedModel = `${transformedModel}-${defaultTier}`;
     }
@@ -44319,7 +44449,19 @@ async function runDynamicModelCatalogSync(context, catalog, runtime) {
     newModelIds.push(id);
   }
 
+  // Argon model
+  ensureDynamicModelDefinition("antigravity-gemini-4-argon");
+  newModelIds.unshift("antigravity-gemini-4-argon");
+
   // Claude models
+  if (modelEntries.some(([k]) => k.includes("claude-sonnet-5-5") || k.includes("claude-sonnet-5"))) {
+    newModelIds.push("antigravity-claude-sonnet-5-5");
+    newModelIds.push("antigravity-claude-sonnet-5-5-thinking");
+  }
+  if (modelEntries.some(([k]) => k.includes("claude-opus-5-5") || k.includes("claude-opus-5"))) {
+    newModelIds.push("antigravity-claude-opus-5-5");
+    newModelIds.push("antigravity-claude-opus-5-5-thinking");
+  }
   if (modelEntries.some(([k]) => k.includes("claude-sonnet-4-6"))) {
     newModelIds.push("antigravity-claude-sonnet-4-6");
     newModelIds.push("antigravity-claude-sonnet-4-6-thinking");
