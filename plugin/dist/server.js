@@ -17688,6 +17688,32 @@ function ensureDynamicModelDefinition(id) {
     });
     return ALL_MODEL_DEFINITIONS[id];
   }
+  if (id === "antigravity-claude-opus-5-5" || id === "antigravity-claude-opus-5-5-thinking") {
+    ALL_MODEL_DEFINITIONS[id] = defineModel(id, {
+      name: id.includes("thinking") ? "Claude Opus 5.5 Thinking (Antigravity)" : "Claude Opus 5.5 (Antigravity)",
+      reasoning: true,
+      limit: { context: 25e4, output: 64e3 },
+      modalities: DEFAULT_MODALITIES,
+      variants: {
+        low: { disabled: true },
+        high: { disabled: true }
+      }
+    });
+    return ALL_MODEL_DEFINITIONS[id];
+  }
+  if (id === "antigravity-claude-sonnet-5-5" || id === "antigravity-claude-sonnet-5-5-thinking") {
+    ALL_MODEL_DEFINITIONS[id] = defineModel(id, {
+      name: id.includes("thinking") ? "Claude Sonnet 5.5 Thinking (Antigravity)" : "Claude Sonnet 5.5 (Antigravity)",
+      reasoning: true,
+      limit: { context: 25e4, output: 64e3 },
+      modalities: DEFAULT_MODALITIES,
+      variants: {
+        low: { disabled: true },
+        high: { disabled: true }
+      }
+    });
+    return ALL_MODEL_DEFINITIONS[id];
+  }
   const match = id.match(/^antigravity-gemini-(\d+(?:\.\d+)?)-(flash|pro)/i);
   if (match) {
     const ver = match[1];
@@ -17722,7 +17748,8 @@ try {
     for (const mId of filtered) {
       ensureDynamicModelDefinition(mId);
     }
-    ANTIGRAVITY_OPENCODE_MODEL_IDS = [...filtered];
+    const merged = [...new Set([...ANTIGRAVITY_OPENCODE_MODEL_IDS, ...filtered])];
+    ANTIGRAVITY_OPENCODE_MODEL_IDS = [...merged];
   }
 } catch {}
 
@@ -44453,15 +44480,15 @@ async function runDynamicModelCatalogSync(context, catalog, runtime) {
   ensureDynamicModelDefinition("antigravity-gemini-4-argon");
   newModelIds.unshift("antigravity-gemini-4-argon");
 
-  // Claude models
-  if (modelEntries.some(([k]) => k.includes("claude-sonnet-5-5") || k.includes("claude-sonnet-5"))) {
-    newModelIds.push("antigravity-claude-sonnet-5-5");
-    newModelIds.push("antigravity-claude-sonnet-5-5-thinking");
-  }
-  if (modelEntries.some(([k]) => k.includes("claude-opus-5-5") || k.includes("claude-opus-5"))) {
-    newModelIds.push("antigravity-claude-opus-5-5");
-    newModelIds.push("antigravity-claude-opus-5-5-thinking");
-  }
+  // Claude models 5.5
+  ensureDynamicModelDefinition("antigravity-claude-opus-5-5");
+  ensureDynamicModelDefinition("antigravity-claude-opus-5-5-thinking");
+  ensureDynamicModelDefinition("antigravity-claude-sonnet-5-5");
+  ensureDynamicModelDefinition("antigravity-claude-sonnet-5-5-thinking");
+  newModelIds.push("antigravity-claude-opus-5-5");
+  newModelIds.push("antigravity-claude-opus-5-5-thinking");
+  newModelIds.push("antigravity-claude-sonnet-5-5");
+  newModelIds.push("antigravity-claude-sonnet-5-5-thinking");
   if (modelEntries.some(([k]) => k.includes("claude-sonnet-4-6"))) {
     newModelIds.push("antigravity-claude-sonnet-4-6");
     newModelIds.push("antigravity-claude-sonnet-4-6-thinking");

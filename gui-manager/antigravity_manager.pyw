@@ -1365,7 +1365,9 @@ class AntigravityManagerApp(ctk.CTk):
                 exe = next((str(candidate) for candidate in cli_candidates if candidate.is_file()), None)
                 if not exe:
                     raise RuntimeError("Не найден CLI OpenCode (opencode-cli.exe).")
-                result = run_silent_cmd([exe, "models"], timeout=45)
+                result = run_silent_cmd([exe, "models", "--standalone"], timeout=45)
+                if result.returncode != 0:
+                    result = run_silent_cmd([exe, "models"], timeout=45)
                 output = (result.stdout or "").strip()
                 error = (result.stderr or "").strip()
                 if result.returncode != 0:
