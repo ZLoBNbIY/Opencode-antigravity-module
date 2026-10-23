@@ -146,6 +146,81 @@ class MwapiManagerTests(unittest.TestCase):
             mwapi_manager.fetch_balance("expired-token")
         self.assertIn("недействителен", str(ctx.exception))
 
+    def test_parse_usage_data_with_full_payload(self):
+        payload = {
+            "isValid": True,
+            "mode": "quota_limited",
+            "status": "active",
+            "quota": {
+                "limit": 100.0,
+                "remaining": 16.2589,
+                "unit": "USD",
+                "used": 83.7411,
+            },
+            "remaining": 16.2589,
+            "usage": {
+                "today": {
+                    "requests": 5,
+                    "actual_cost": 0.42,
+                    "total_tokens": 12000,
+                },
+                "total": {
+                    "requests": 122,
+                    "actual_cost": 83.7411,
+                    "total_tokens": 8199943,
+                },
+            },
+        }
+
+        parsed = mwapi_manager.parse_usage_data(payload)
+        self.assertEqual(parsed["limit"], 100.0)
+        self.assertAlmostEqual(parsed["used"], 83.7411)
+        self.assertAlmostEqual(parsed["remaining"], 16.2589)
+        self.assertAlmostEqual(parsed["used_pct"], 83.7411, places=3)
+        self.assertAlmostEqual(parsed["rem_pct"], 16.2589, places=3)
+        self.assertEqual(parsed["unit"], "USD")
+        self.assertEqual(parsed["status"], "active")
+        self.assertEqual(parsed["mode"], "quota_limited")
+        self.assertEqual(parsed["total_requests"], 122)
+        self.assertEqual(parsed["today_requests"], 5)
+        self.assertEqual(parsed["total_tokens"], 8199943)
+
+    def test_parse_usage_data_missing_fields_calculates_sensible_defaults(self):
+        # Only limit and remaining
+        parsed = mwapi_manager.parse_usage_data({"quota": {"limit": 50, "remaining": 20}})
+        self.assertEqual(parsed["limit"], 50.0)
+        self.assertEqual(parsed["remaining"], 20.0)
+        self.assertEqual(parsed["used"], 30.0)
+        self.assertAlmostEqual(parsed["rem_pct"], 40.0)
+        self.assertAlmostEqual(parsed["used_pct"], 60.0)
+
+        # Empty payload
+        empty = mwapi_manager.parse_usage_data({})
+        self.assertIsNone(empty["limit"])
+        self.assertIsNone(empty["used"])
+        self.assertIsNone(empty["remaining"])
+        self.assertIsNone(empty["rem_pct"])
+
+    @patch("mwapi_manager._request_with_fallback")
+    def test_fetch_usage_fetches_and_parses_json(self, mock_request):
+        mock_request.return_value = json.dumps({
+            "quota": {"limit": 100, "used": 25, "remaining": 75, "unit": "USD"},
+            "usage": {"total": {"requests": 10, "total_tokens": 50000}},
+            "status": "active",
+        }).encode("utf-8")
+
+        res = mwapi_manager.fetch_usage("sk-test-key")
+        self.assertEqual(res["limit"], 100.0)
+        self.assertEqual(res["used"], 25.0)
+        self.assertEqual(res["remaining"], 75.0)
+        self.assertEqual(res["rem_pct"], 75.0)
+        self.assertEqual(res["used_pct"], 25.0)
+        self.assertEqual(res["total_requests"], 10)
+
+    def test_fetch_usage_requires_api_key(self):
+        with self.assertRaises(ValueError):
+            mwapi_manager.fetch_usage("")
+
 
 if __name__ == "__main__":
     unittest.main()

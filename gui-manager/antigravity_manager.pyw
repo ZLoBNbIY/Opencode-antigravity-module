@@ -1177,6 +1177,8 @@ class AntigravityManagerApp(ctk.CTk):
             self.settings_frame.pack_forget()
             self.system_frame.pack_forget()
             self.mwapi_view.pack(fill="both", expand=True, padx=24, pady=16)
+            if hasattr(self.mwapi_view, "on_show"):
+                self.mwapi_view.on_show()
         elif target_nav == "settings":
             self.top_action_bar.pack_forget()
             self.accounts_container.pack_forget()

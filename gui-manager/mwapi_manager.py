@@ -14,6 +14,7 @@ import openai_manager
 
 API_BASE_URL = "https://api.mwapi.dev/v1"
 API_MODELS_URL = "https://api.mwapi.dev/v1/models"
+API_USAGE_URL = "https://api.mwapi.dev/v1/usage"
 PROFILE_URL = "https://api.mwapi.dev/api/v1/user/profile"
 PROVIDER_ID = "mwapi"
 SECRET_PURPOSE = "mwapi-api-key"
@@ -130,6 +131,114 @@ def fetch_models(api_key: str, timeout: int = 20) -> list[dict]:
         })
 
     return sorted(models, key=lambda m: m["id"].lower())
+
+
+def parse_usage_data(payload: dict) -> dict:
+    """Parse and normalize usage and quota data from MWAPI."""
+    if not isinstance(payload, dict):
+        return {}
+
+    quota = payload.get("quota") if isinstance(payload.get("quota"), dict) else {}
+    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+    usage_total = usage.get("total") if isinstance(usage.get("total"), dict) else {}
+    usage_today = usage.get("today") if isinstance(usage.get("today"), dict) else {}
+
+    limit = quota.get("limit")
+    if limit is not None:
+        try:
+            limit = float(limit)
+        except (ValueError, TypeError):
+            limit = None
+
+    used = quota.get("used")
+    if used is None:
+        used = usage_total.get("actual_cost") if usage_total.get("actual_cost") is not None else usage_total.get("cost")
+    if used is not None:
+        try:
+            used = float(used)
+        except (ValueError, TypeError):
+            used = None
+
+    remaining = quota.get("remaining")
+    if remaining is None:
+        remaining = payload.get("remaining")
+    if remaining is not None:
+        try:
+            remaining = float(remaining)
+        except (ValueError, TypeError):
+            remaining = None
+
+    if limit is not None and limit > 0:
+        if used is None and remaining is not None:
+            used = max(0.0, limit - remaining)
+        elif remaining is None and used is not None:
+            remaining = max(0.0, limit - used)
+
+    used_pct = None
+    rem_pct = None
+    if limit is not None and limit > 0:
+        if used is not None:
+            used_pct = min(100.0, max(0.0, (used / limit) * 100.0))
+        if remaining is not None:
+            rem_pct = min(100.0, max(0.0, (remaining / limit) * 100.0))
+
+    unit = quota.get("unit") or payload.get("unit") or "USD"
+    status = payload.get("status", "active")
+    mode = payload.get("mode", "")
+
+    total_tokens = usage_total.get("total_tokens", 0)
+    total_requests = usage_total.get("requests", 0)
+    today_requests = usage_today.get("requests", 0)
+    today_cost = usage_today.get("actual_cost", usage_today.get("cost", 0))
+
+    return {
+        "limit": limit,
+        "used": used,
+        "remaining": remaining,
+        "used_pct": used_pct,
+        "rem_pct": rem_pct,
+        "unit": unit,
+        "status": status,
+        "mode": mode,
+        "total_requests": total_requests,
+        "today_requests": today_requests,
+        "total_tokens": total_tokens,
+        "today_cost": today_cost,
+        "raw": payload,
+    }
+
+
+def fetch_usage(api_key: str, timeout: int = 20) -> dict:
+    """Fetch quota and usage statistics from MWAPI."""
+    if not api_key or not api_key.strip():
+        raise ValueError("API-ключ MWAPI не указан.")
+
+    request = urllib.request.Request(
+        API_USAGE_URL,
+        headers={
+            "Authorization": f"Bearer {api_key.strip()}",
+            "User-Agent": "Antigravity-Hub",
+            "Accept": "application/json",
+        },
+    )
+
+    try:
+        raw_data = _request_with_fallback(request, timeout=timeout)
+        payload = json.loads(raw_data.decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        if error.code == 401:
+            raise ValueError("MWAPI отклонил API-ключ (401). Проверьте ключ в кабинете https://api.mwapi.dev/dashboard.") from None
+        if error.code == 403:
+            raise ValueError("MWAPI вернул 403: доступ запрещён. Проверьте права токена в MWAPI.") from None
+        if error.code == 429:
+            raise ValueError("MWAPI вернул 429: превышен лимит запросов.") from None
+        raise ValueError(f"MWAPI вернул HTTP {error.code} при получении лимитов.") from None
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise ValueError("Не удалось подключиться к https://api.mwapi.dev для проверки лимитов.") from None
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise ValueError("MWAPI вернул некорректный ответ данных о лимитах.") from None
+
+    return parse_usage_data(payload)
 
 
 def save_api_key(api_key: str):
