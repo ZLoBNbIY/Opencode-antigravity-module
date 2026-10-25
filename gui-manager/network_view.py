@@ -129,8 +129,16 @@ class NetworkView(ctk.CTkScrollableFrame):
         self.vless_route_all_var = tk.BooleanVar(value=self.app.config_data.get("vless_route_all", True))
         create_cyber_switch(
             opts_box,
-            text="Маршрутизировать весь трафик OpenCode через VLESS (Google, OpenAI, Claude, Web)",
+            text="Маршрутизировать весь трафик OpenCode через VLESS",
             variable=self.vless_route_all_var,
+            font=app.font(12)
+        ).pack(side="left", padx=(0, 20))
+
+        self.vless_kill_switch_var = tk.BooleanVar(value=self.app.config_data.get("vless_kill_switch", True))
+        create_cyber_switch(
+            opts_box,
+            text="🛡️ Kill Switch (Защита от бана: блокировать OpenCode если VLESS оффлайн)",
+            variable=self.vless_kill_switch_var,
             font=app.font(12)
         ).pack(side="left")
 

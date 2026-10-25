@@ -166,7 +166,7 @@ class ClaudeAccountManager:
                     "anthropic-version": "2023-06-01",
                 }
                 req = urllib.request.Request("https://api.anthropic.com/v1/models", headers=headers)
-                with opener.open(req) as resp:
+                with opener.open(req, timeout=10) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                 email = custom_name or "claude-code@anthropic"
                 account_data = {
@@ -209,11 +209,20 @@ class ClaudeAccountManager:
             except urllib.error.HTTPError as e:
                 return False, f"Ошибка авторизации Anthropic API ({e.code}): недействительный токен.", None
             except Exception as e:
-                return False, f"Ошибка подключения к api.anthropic.com: {e}", None
+                return False, f"Ошибка подключения к api.anthropic.com (таймаут или сеть): {e}", None
 
         # Case B: claude.ai Web Session (sessionKey cookie: sk-ant-sid...)
         if not session_key.startswith("sk-ant-"):
-            session_key = f"sk-ant-{session_key}" if not session_key.startswith("sid01-") else f"sk-ant-{session_key}"
+            if not session_key.startswith("sid01-"):
+                return False, (
+                    "Введённое значение не является sessionKey или токеном Claude!\n\n"
+                    "• Для сессии claude.ai: cookie в первой колонке называется 'sessionKey', "
+                    "а её значение начинается с 'sk-ant-sid01-...'.\n"
+                    "• Для Claude Code CLI: токен начинается с 'sk-ant-api...'.\n\n"
+                    "Вы скопировали значение другой куки (например, __cf_bm). "
+                    "В таблице Cookies найдите именно строку 'sessionKey'."
+                ), None
+            session_key = f"sk-ant-{session_key}"
 
         headers = {
             "User-Agent": USER_AGENT,
@@ -223,7 +232,7 @@ class ClaudeAccountManager:
 
         try:
             req = urllib.request.Request("https://claude.ai/api/organizations", headers=headers)
-            with opener.open(req) as resp:
+            with opener.open(req, timeout=10) as resp:
                 orgs = json.loads(resp.read().decode("utf-8"))
 
             if not orgs or not isinstance(orgs, list):
@@ -237,7 +246,7 @@ class ClaudeAccountManager:
             email = "claude.user@anthropic"
             try:
                 prof_req = urllib.request.Request("https://claude.ai/api/auth/current_user", headers=headers)
-                with opener.open(prof_req) as resp:
+                with opener.open(prof_req, timeout=10) as resp:
                     u_data = json.loads(resp.read().decode("utf-8"))
                     email = u_data.get("email_address") or u_data.get("email") or email
             except Exception:

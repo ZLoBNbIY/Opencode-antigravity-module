@@ -29,90 +29,57 @@ import customtkinter as ctk
 
 def _patch_customtkinter_scrollable_frame():
     """
-    Fixes mouse wheel scrolling in CTkScrollableFrame on Windows, Linux, and macOS.
-    CustomTkinter's default _check_if_valid_scroll checks event.widget, which on Windows
-    is typically the root window or the focused widget rather than the widget under the pointer.
-    This patch detects whether the mouse pointer is actually over the scrollable frame
-    (and handles nested scrollable frames cleanly).
+    Rock-solid mouse wheel scrolling patch for CTkScrollableFrame on Windows, Linux, and macOS.
+    Determines whether the pointer is over the scrollable canvas using direct geometry checks.
     """
-    def _is_active_scroll_target(self, event):
+    def _is_mouse_over(self, event):
         try:
-            if not hasattr(event, "x_root") or not hasattr(event, "y_root"):
+            if not self.winfo_ismapped():
                 return False
             c = self._parent_canvas
             if not c.winfo_ismapped():
                 return False
+            x, y = event.x_root, event.y_root
             rx = c.winfo_rootx()
             ry = c.winfo_rooty()
             rw = c.winfo_width()
             rh = c.winfo_height()
-            if not (rx <= event.x_root <= rx + rw and ry <= event.y_root <= ry + rh):
-                return False
-
-            # If a descendant CTkScrollableFrame is also mapped and under the cursor, let the inner one scroll
-            def has_child_target(widget):
-                for child in widget.winfo_children():
-                    if isinstance(child, ctk.CTkScrollableFrame):
-                        cc = child._parent_canvas
-                        if cc.winfo_ismapped():
-                            crx = cc.winfo_rootx()
-                            cry = cc.winfo_rooty()
-                            crw = cc.winfo_width()
-                            crh = cc.winfo_height()
-                            if crx <= event.x_root <= crx + crw and cry <= event.y_root <= cry + crh:
-                                return True
-                    if has_child_target(child):
-                        return True
-                return False
-
-            return not has_child_target(self)
+            return (rx <= x <= rx + rw) and (ry <= y <= ry + rh)
         except Exception:
             return False
 
     def _mouse_wheel_all(self, event):
-        if not _is_active_scroll_target(self, event):
-            if not self._check_if_valid_scroll(event.widget):
-                return
+        if not _is_mouse_over(self, event):
+            return
 
         if sys.platform.startswith("win"):
-            # 120 / 3 = 40 pixels per notch for a responsive, comfortable scroll speed
-            delta = int(event.delta / 3) if event.delta != 0 else 0
-            if delta == 0 and event.delta != 0:
-                delta = 1 if event.delta > 0 else -1
-            if self._shift_pressed:
-                if self._parent_canvas.xview() != (0.0, 1.0):
+            delta = int(event.delta / 3) if event.delta != 0 else (1 if event.delta > 0 else -1)
+            try:
+                if getattr(self, "_shift_pressed", False):
                     self._parent_canvas.xview("scroll", -delta, "units")
-            else:
-                if self._parent_canvas.yview() != (0.0, 1.0):
+                else:
                     self._parent_canvas.yview("scroll", -delta, "units")
+            except Exception:
+                pass
         elif sys.platform == "darwin":
-            if self._shift_pressed:
-                if self._parent_canvas.xview() != (0.0, 1.0):
-                    self._parent_canvas.xview("scroll", -event.delta, "units")
-            else:
-                if self._parent_canvas.yview() != (0.0, 1.0):
-                    self._parent_canvas.yview("scroll", -event.delta, "units")
+            try:
+                delta = int(event.delta)
+                if getattr(self, "_shift_pressed", False):
+                    self._parent_canvas.xview("scroll", -delta, "units")
+                else:
+                    self._parent_canvas.yview("scroll", -delta, "units")
+            except Exception:
+                pass
         else:
-            step = 3
-            if self._shift_pressed:
-                if self._parent_canvas.xview() != (0.0, 1.0):
-                    self._parent_canvas.xview_scroll(-step if event.num == 4 else step, "units")
-            else:
-                if self._parent_canvas.yview() != (0.0, 1.0):
-                    self._parent_canvas.yview_scroll(-step if event.num == 4 else step, "units")
+            try:
+                step = 3
+                direction = -step if getattr(event, "num", None) == 4 else step
+                self._parent_canvas.yview_scroll(direction, "units")
+            except Exception:
+                pass
 
-    orig_check = ctk.CTkScrollableFrame._check_if_valid_scroll
-
-    def _safe_check_if_valid_scroll(self, widget):
-        if widget is None:
-            return False
-        try:
-            return orig_check(self, widget)
-        except Exception:
-            return False
-
-    ctk.CTkScrollableFrame._check_if_valid_scroll = _safe_check_if_valid_scroll
     ctk.CTkScrollableFrame._mouse_wheel_all = _mouse_wheel_all
+    ctk.CTkScrollableFrame._check_if_valid_scroll = lambda self, widget: True
 
 
 _patch_customtkinter_scrollable_frame()
@@ -273,6 +240,7 @@ DEFAULT_CONFIG = {
     "vless_url": "",
     "vless_route_all": True,
     "vless_core_path": None,
+    "vless_kill_switch": True,
     "providers_visibility": {
         "antigravity": True,
         "openai": True,
@@ -3779,12 +3747,29 @@ class AntigravityManagerApp(ctk.CTk):
         vless_enabled = self.config_data.get("vless_enabled", False)
         vless_url = (self.config_data.get("vless_url") or "").strip()
         vless_route_all = self.config_data.get("vless_route_all", True)
+        kill_switch = self.config_data.get("vless_kill_switch", True)
 
-        if vless_enabled and vless_url:
+        if vless_enabled:
+            if not vless_url:
+                raise RuntimeError("Включен VLESS-туннель, но строка подключения (vless://) не заполнена.")
+
             # Auto-start VLESS tunnel if not running
             if not vless_service.is_running():
                 custom_core = self.config_data.get("vless_core_path")
-                vless_service.start_tunnel(vless_url, custom_core_path=custom_core)
+                ok, msg = vless_service.start_tunnel(vless_url, custom_core_path=custom_core)
+                if not ok:
+                    raise RuntimeError(f"Не удалось запустить процесс VLESS: {msg}")
+
+            # Mandatory live connectivity probe (Kill Switch verification)
+            if kill_switch:
+                self.set_status("🛡️ Проверка работоспособности VLESS перед запуском...")
+                probe = vless_service.test_connection(timeout=5)
+                if not probe.get("ok"):
+                    raise RuntimeError(
+                        f"VLESS-туннель не отвечает или не может связаться с сервером ({probe.get('message')}).\n\n"
+                        "Прямой запуск OpenCode отменён функцией Kill Switch, чтобы ваш реальный IP "
+                        "не попал на серверы Google/Claude/OpenAI и аккаунты не получили бан."
+                    )
 
             vless_http = f"http://127.0.0.1:{DEFAULT_HTTP_PORT}"
             for var in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
@@ -3823,6 +3808,20 @@ class AntigravityManagerApp(ctk.CTk):
         self.set_status("Перезапуск OpenCode...")
 
         def _do_restart():
+            try:
+                launch_env = self.prepare_opencode_launch_env()
+            except RuntimeError as err:
+                def _show_warn():
+                    self.set_status("⚠️ Запуск OpenCode заблокирован: VLESS не работает")
+                    messagebox.showerror(
+                        "Защита от бана (Kill Switch)",
+                        f"⛔ Запуск OpenCode отменён для защиты аккаунта!\n\n"
+                        f"{err}\n\n"
+                        "Проверьте настройки VLESS в разделе «Сеть, DNS & VLESS»."
+                    )
+                self.after(0, _show_warn)
+                return
+
             run_silent_cmd(["taskkill", "/f", "/im", "OpenCode.exe"], timeout=5)
             run_silent_cmd(["taskkill", "/f", "/im", "opencode-cli.exe"], timeout=5)
             time.sleep(1)
@@ -3830,7 +3829,6 @@ class AntigravityManagerApp(ctk.CTk):
             time.sleep(1)
             exe = get_opencode_exe()
             if os.path.exists(exe):
-                launch_env = self.prepare_opencode_launch_env()
                 subprocess.Popen([exe], cwd=os.path.dirname(exe), env=launch_env)
             time.sleep(2)
             self.after(0, self.update_opencode_status)
@@ -3849,9 +3847,18 @@ class AntigravityManagerApp(ctk.CTk):
         cleanup_opencode_locks()
         exe = get_opencode_exe()
         if os.path.exists(exe):
-            launch_env = self.prepare_opencode_launch_env()
-            subprocess.Popen([exe], cwd=os.path.dirname(exe), env=launch_env)
-            self.set_status("OpenCode запущен")
+            try:
+                launch_env = self.prepare_opencode_launch_env()
+                subprocess.Popen([exe], cwd=os.path.dirname(exe), env=launch_env)
+                self.set_status("OpenCode запущен")
+            except RuntimeError as err:
+                self.set_status("⚠️ Запуск OpenCode заблокирован: VLESS не работает")
+                messagebox.showerror(
+                    "Защита от бана (Kill Switch)",
+                    f"⛔ Запуск OpenCode отменён для защиты аккаунта!\n\n"
+                    f"{err}\n\n"
+                    "Проверьте настройки VLESS в разделе «Сеть, DNS & VLESS»."
+                )
         self.after(2000, self.update_opencode_status)
 
 
