@@ -3742,41 +3742,57 @@ class AntigravityManagerApp(ctk.CTk):
 
         threading.Thread(target=_check, daemon=True).start()
 
+    def check_claude_tunnel_risk(self) -> bool:
+        """
+        Specialized Kill Switch for Anthropic Claude (Claude Pro / Team / Claude Code).
+        Warns the user about high risk of account ban if Claude is active without VLESS.
+        If user accepts risk, returns True. If user cancels, returns False.
+        """
+        active_claude = claude_service.get_active_account()
+        if not active_claude:
+            # No Claude account active - proceed without Anthropic warning
+            return True
+
+        # Check if VLESS tunnel is actively listening and reachable
+        tunnel_alive = vless_service.is_running()
+        if tunnel_alive:
+            probe = vless_service.test_connection(timeout=3)
+            tunnel_alive = probe.get("ok", False)
+
+        if tunnel_alive:
+            # Tunnel is up and working - traffic will automatically route safely!
+            return True
+
+        # Tunnel is NOT working, but Claude account is connected!
+        email = active_claude.get("email", "")
+        answer = messagebox.askyesno(
+            "⚠️ Риск блокировки аккаунта Claude",
+            f"У вас подключён аккаунт Anthropic Claude ({email}).\n\n"
+            "ВНИМАНИЕ: VLESS-туннель сейчас отключен или недоступен!\n"
+            "Сервисы Anthropic строго блокируют запросы из неподдерживаемых регионов (РФ и др.). "
+            "Прямой запуск без туннеля с высокой вероятностью приведёт к перманентной блокировке "
+            "вашей подписки Claude на стороне Anthropic!\n\n"
+            "Запустить OpenCode напрямую без туннеля на свой страх и риск?\n\n"
+            "• Нажмите «Да» — продолжить запуск напрямую.\n"
+            "• Нажмите «Нет» — отменить запуск и включить туннель в разделе «Сеть, DNS & VLESS».",
+            icon="warning",
+            default="no",
+        )
+        return answer
+
     def prepare_opencode_launch_env(self):
         launch_env = os.environ.copy()
         vless_enabled = self.config_data.get("vless_enabled", False)
         vless_url = (self.config_data.get("vless_url") or "").strip()
         vless_route_all = self.config_data.get("vless_route_all", True)
-        kill_switch = self.config_data.get("vless_kill_switch", True)
 
-        if vless_enabled:
-            if not vless_url:
-                raise RuntimeError("Включен VLESS-туннель, но строка подключения (vless://) не заполнена.")
-
-            # Auto-start VLESS tunnel if not running
-            if not vless_service.is_running():
-                custom_core = self.config_data.get("vless_core_path")
-                ok, msg = vless_service.start_tunnel(vless_url, custom_core_path=custom_core)
-                if not ok:
-                    raise RuntimeError(f"Не удалось запустить процесс VLESS: {msg}")
-
-            # Mandatory live connectivity probe (Kill Switch verification)
-            if kill_switch:
-                self.set_status("🛡️ Проверка работоспособности VLESS перед запуском...")
-                probe = vless_service.test_connection(timeout=5)
-                if not probe.get("ok"):
-                    raise RuntimeError(
-                        f"VLESS-туннель не отвечает или не может связаться с сервером ({probe.get('message')}).\n\n"
-                        "Прямой запуск OpenCode отменён функцией Kill Switch, чтобы ваш реальный IP "
-                        "не попал на серверы Google/Claude/OpenAI и аккаунты не получили бан."
-                    )
-
+        # If VLESS is running and functional, automatically route through it
+        if vless_service.is_running():
             vless_http = f"http://127.0.0.1:{DEFAULT_HTTP_PORT}"
             for var in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
                 launch_env[var] = vless_http
 
             if vless_route_all:
-                # Route ALL OpenCode traffic through VLESS (including Google, Claude, OpenAI, Web fetch)
                 no_proxy_rules = "localhost,127.0.0.1"
             else:
                 no_proxy_rules = "googleapis.com,.googleapis.com,google.com,.google.com,cloudcode-pa.googleapis.com,localhost,127.0.0.1"
@@ -3784,6 +3800,19 @@ class AntigravityManagerApp(ctk.CTk):
             launch_env["NO_PROXY"] = no_proxy_rules
             launch_env["no_proxy"] = no_proxy_rules
             return launch_env
+
+        if vless_enabled and vless_url:
+            # Auto-start VLESS tunnel if configured
+            custom_core = self.config_data.get("vless_core_path")
+            ok, msg = vless_service.start_tunnel(vless_url, custom_core_path=custom_core)
+            if ok and vless_service.is_running():
+                vless_http = f"http://127.0.0.1:{DEFAULT_HTTP_PORT}"
+                for var in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
+                    launch_env[var] = vless_http
+                no_proxy_rules = "localhost,127.0.0.1" if vless_route_all else "googleapis.com,.googleapis.com,google.com,.google.com,cloudcode-pa.googleapis.com,localhost,127.0.0.1"
+                launch_env["NO_PROXY"] = no_proxy_rules
+                launch_env["no_proxy"] = no_proxy_rules
+                return launch_env
 
         # Fallback to custom DNS / local proxy
         dns_active = self.config_data.get("dns_mode") in ("standard", "dot", "doh")
@@ -3805,23 +3834,14 @@ class AntigravityManagerApp(ctk.CTk):
         return launch_env
 
     def restart_opencode_action(self):
+        # Specific Kill Switch check for Claude
+        if not self.check_claude_tunnel_risk():
+            self.set_status("⚠️ Запуск OpenCode отменён: защита от бана Claude")
+            return
+
         self.set_status("Перезапуск OpenCode...")
 
         def _do_restart():
-            try:
-                launch_env = self.prepare_opencode_launch_env()
-            except RuntimeError as err:
-                def _show_warn():
-                    self.set_status("⚠️ Запуск OpenCode заблокирован: VLESS не работает")
-                    messagebox.showerror(
-                        "Защита от бана (Kill Switch)",
-                        f"⛔ Запуск OpenCode отменён для защиты аккаунта!\n\n"
-                        f"{err}\n\n"
-                        "Проверьте настройки VLESS в разделе «Сеть, DNS & VLESS»."
-                    )
-                self.after(0, _show_warn)
-                return
-
             run_silent_cmd(["taskkill", "/f", "/im", "OpenCode.exe"], timeout=5)
             run_silent_cmd(["taskkill", "/f", "/im", "opencode-cli.exe"], timeout=5)
             time.sleep(1)
@@ -3829,6 +3849,7 @@ class AntigravityManagerApp(ctk.CTk):
             time.sleep(1)
             exe = get_opencode_exe()
             if os.path.exists(exe):
+                launch_env = self.prepare_opencode_launch_env()
                 subprocess.Popen([exe], cwd=os.path.dirname(exe), env=launch_env)
             time.sleep(2)
             self.after(0, self.update_opencode_status)
@@ -3844,21 +3865,17 @@ class AntigravityManagerApp(ctk.CTk):
         self.set_status("OpenCode остановлен")
 
     def start_opencode_action(self):
+        # Specific Kill Switch check for Claude
+        if not self.check_claude_tunnel_risk():
+            self.set_status("⚠️ Запуск OpenCode отменён: защита от бана Claude")
+            return
+
         cleanup_opencode_locks()
         exe = get_opencode_exe()
         if os.path.exists(exe):
-            try:
-                launch_env = self.prepare_opencode_launch_env()
-                subprocess.Popen([exe], cwd=os.path.dirname(exe), env=launch_env)
-                self.set_status("OpenCode запущен")
-            except RuntimeError as err:
-                self.set_status("⚠️ Запуск OpenCode заблокирован: VLESS не работает")
-                messagebox.showerror(
-                    "Защита от бана (Kill Switch)",
-                    f"⛔ Запуск OpenCode отменён для защиты аккаунта!\n\n"
-                    f"{err}\n\n"
-                    "Проверьте настройки VLESS в разделе «Сеть, DNS & VLESS»."
-                )
+            launch_env = self.prepare_opencode_launch_env()
+            subprocess.Popen([exe], cwd=os.path.dirname(exe), env=launch_env)
+            self.set_status("OpenCode запущен")
         self.after(2000, self.update_opencode_status)
 
 
