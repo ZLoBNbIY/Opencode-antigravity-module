@@ -49,6 +49,11 @@ def resolve_target(host: str) -> str:
     if host.replace(".", "").isdigit() or ":" in host:
         return host
 
+    # Do not route non-AI hosts like GitHub through SmartDNS (they fail on SmartDNS)
+    host_lower = host.lower()
+    if any(h in host_lower for h in ("github.com", "githubusercontent.com", "github.io", "npm")):
+        return host
+
     now = time.time()
     with _cache_lock:
         if host in _dns_cache:

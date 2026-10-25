@@ -129,6 +129,17 @@ import local_proxy
 import hub_restart
 from openrouter_view import OpenRouterView
 from mwapi_view import MwapiView
+from network_view import NetworkView
+from deepseek_view import DeepSeekView
+from vless_manager import vless_service, DEFAULT_HTTP_PORT
+
+AVAILABLE_PROVIDERS = [
+    ("antigravity", "🚀  Antigravity (Google)", "google", "Google Gemini & Claude через Google Cloud Code"),
+    ("openai", "🟢  ChatGPT (OpenAI)", "openai", "Аккаунты ChatGPT (OpenAI)"),
+    ("openrouter", "🟣  OpenRouter Free", "openrouter", "Бесплатные модели OpenRouter"),
+    ("mwapi", "🌐  MWAPI (Cloud Code)", "mwapi", "Cloud Code MWAPI модели"),
+    ("deepseek", "🐋  DeepSeek Web", "deepseek", "Подключение DeepSeek через веб-сессию"),
+]
 
 # Keep the Windows mutex handle alive for the lifetime of this process.
 _SINGLE_INSTANCE_MUTEX = None
@@ -256,6 +267,17 @@ DEFAULT_CONFIG = {
     "quota_style_fallback": True,
     "debug": False,
     "theme_mode": "dark",
+    "vless_enabled": False,
+    "vless_url": "",
+    "vless_route_all": True,
+    "vless_core_path": None,
+    "providers_visibility": {
+        "antigravity": True,
+        "openai": True,
+        "openrouter": True,
+        "mwapi": True,
+        "deepseek": False,
+    },
 }
 
 def run_silent_cmd(cmd, timeout=30):
@@ -744,6 +766,7 @@ COLOR = {
     "nav_idle_text": ("#475569", "#94a3b8"),
     "accent_cyan": "#38bdf8",
     "accent_emerald": "#34d399",
+    "accent_purple": "#c084fc",
 }
 
 
@@ -1051,6 +1074,10 @@ class AntigravityManagerApp(ctk.CTk):
                 self.tray.remove()
         except Exception:
             pass
+        try:
+            vless_service.stop_tunnel()
+        except Exception:
+            pass
         self.destroy()
 
     # --- Auto-Updater ---
@@ -1215,7 +1242,7 @@ class AntigravityManagerApp(ctk.CTk):
         )
         self.sidebar.grid(row=0, column=0, sticky="nsew")
         self.sidebar.grid_propagate(False)
-        self.sidebar.grid_rowconfigure(6, weight=1)
+        self.sidebar.grid_rowconfigure(8, weight=1)
 
         # Brand / Logo Header
         logo_box = ctk.CTkFrame(self.sidebar, fg_color="transparent")
@@ -1243,37 +1270,15 @@ class AntigravityManagerApp(ctk.CTk):
 
         # Nav Buttons Container
         self.nav_btns = {}
-        nav_items = [
-            ("antigravity", "🚀  Antigravity (Google)", "google"),
-            ("openai", "🟢  ChatGPT (OpenAI)", "openai"),
-            ("openrouter", "🟣  OpenRouter Free", "openrouter"),
-            ("mwapi", "🌐  MWAPI (Cloud Code)", "mwapi"),
-            ("settings", "⚙️  Настройки", "settings"),
-            ("system", "🛠  OpenCode & Диагностика", "system"),
-        ]
+        self.nav_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        self.nav_frame.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
+        self.sidebar.grid_rowconfigure(2, weight=1)
 
-        for idx, (key, label, _) in enumerate(nav_items, start=1):
-            is_active = (key == self.current_nav)
-            btn = ctk.CTkButton(
-                self.sidebar,
-                text=label,
-                font=self.font(size=13, weight="bold"),
-                anchor="w",
-                height=42,
-                corner_radius=10,
-                border_width=1 if is_active else 0,
-                border_color="#1e3a5f" if is_active else COLOR["border"],
-                fg_color=COLOR["nav_active_bg"] if is_active else "transparent",
-                text_color=COLOR["nav_active_text"] if is_active else COLOR["nav_idle_text"],
-                hover_color=("#e2e8f0", "#16233a"),
-                command=lambda k=key: self.switch_nav(k),
-            )
-            btn.grid(row=idx, column=0, padx=12, pady=3, sticky="ew")
-            self.nav_btns[key] = btn
+        self.rebuild_sidebar_nav()
 
         # Sidebar Footer: Theme Toggle + OpenCode status
         footer_box = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        footer_box.grid(row=8, column=0, padx=14, pady=16, sticky="ew")
+        footer_box.grid(row=3, column=0, padx=14, pady=16, sticky="ew")
 
         # Theme toggle button
         theme_txt = "☀️  Светлая тема" if self.current_theme == "dark" else "🌙  Тёмная тема"
@@ -1317,10 +1322,54 @@ class AntigravityManagerApp(ctk.CTk):
             command=self.restart_opencode_action,
         ).pack(fill="x")
 
+    def rebuild_sidebar_nav(self):
+        for btn in self.nav_btns.values():
+            btn.destroy()
+        self.nav_btns.clear()
+
+        vis = self.config_data.get("providers_visibility", {})
+        nav_items = []
+        for key, label, _, _ in AVAILABLE_PROVIDERS:
+            is_vis = vis.get(key, (key != "deepseek"))
+            if is_vis:
+                nav_items.append((key, label))
+
+        # Core non-provider tools
+        nav_items.append(("network", "🌐  Сеть, DNS & VLESS"))
+        nav_items.append(("settings", "⚙️  Настройки"))
+        nav_items.append(("system", "🛠  OpenCode & Диагностика"))
+
+        for key, label in nav_items:
+            is_active = (key == self.current_nav)
+            btn = ctk.CTkButton(
+                self.nav_frame,
+                text=label,
+                font=self.font(size=13, weight="bold"),
+                anchor="w",
+                height=42,
+                corner_radius=10,
+                border_width=1 if is_active else 0,
+                border_color="#1e3a5f" if is_active else COLOR["border"],
+                fg_color=COLOR["nav_active_bg"] if is_active else "transparent",
+                text_color=COLOR["nav_active_text"] if is_active else COLOR["nav_idle_text"],
+                hover_color=("#e2e8f0", "#16233a"),
+                command=lambda k=key: self.switch_nav(k),
+            )
+            btn.pack(fill="x", padx=12, pady=3)
+            self.nav_btns[key] = btn
+
+        if self.current_nav not in self.nav_btns:
+            first_key = nav_items[0][0] if nav_items else "settings"
+            self.switch_nav(first_key)
+
     def switch_nav(self, target_nav):
         self.current_nav = target_nav
         self.openrouter_view.pack_forget()
         self.mwapi_view.pack_forget()
+        if hasattr(self, "network_view"):
+            self.network_view.pack_forget()
+        if hasattr(self, "deepseek_view"):
+            self.deepseek_view.pack_forget()
         for key, btn in self.nav_btns.items():
             if key == target_nav:
                 btn.configure(
@@ -1359,6 +1408,24 @@ class AntigravityManagerApp(ctk.CTk):
             self.mwapi_view.pack(fill="both", expand=True, padx=24, pady=16)
             if hasattr(self.mwapi_view, "on_show"):
                 self.mwapi_view.on_show()
+        elif target_nav == "deepseek":
+            self.top_action_bar.pack_forget()
+            self.accounts_container.pack_forget()
+            self.settings_frame.pack_forget()
+            self.system_frame.pack_forget()
+            self.deepseek_view.pack(fill="both", expand=True, padx=24, pady=16)
+            if hasattr(self.deepseek_view, "update_status"):
+                self.deepseek_view.update_status()
+        elif target_nav == "network":
+            self.top_action_bar.pack_forget()
+            self.accounts_container.pack_forget()
+            self.settings_frame.pack_forget()
+            self.system_frame.pack_forget()
+            self.network_view.pack(fill="both", expand=True, padx=24, pady=16)
+            if hasattr(self.network_view, "update_core_status"):
+                self.network_view.update_core_status()
+            if hasattr(self.network_view, "update_vless_status"):
+                self.network_view.update_vless_status()
         elif target_nav == "settings":
             self.top_action_bar.pack_forget()
             self.accounts_container.pack_forget()
@@ -1368,6 +1435,7 @@ class AntigravityManagerApp(ctk.CTk):
             self.top_action_bar.pack_forget()
             self.accounts_container.pack_forget()
             self.settings_frame.pack_forget()
+            self.system_frame.pack_forget()
             self.system_frame.pack(fill="both", expand=True, padx=24, pady=16)
 
     # =========================================================================
@@ -1396,6 +1464,8 @@ class AntigravityManagerApp(ctk.CTk):
         self.create_system_view()
         self.openrouter_view = OpenRouterView(self.content_area, self, COLOR)
         self.mwapi_view = MwapiView(self.content_area, self, COLOR)
+        self.network_view = NetworkView(self.content_area, self, COLOR)
+        self.deepseek_view = DeepSeekView(self.content_area, self, COLOR)
         self.create_statusbar()
 
     def create_action_bar(self):
@@ -1707,7 +1777,8 @@ class AntigravityManagerApp(ctk.CTk):
                 if not acc:
                     res = {"ok": False, "status": "no_auth", "badge": "🔴 Нет аккаунта", "color": "#ef4444"}
                 else:
-                    res = health_checker.test_antigravity_model(acc, m_id, timeout=8, proxy_url="http://127.0.0.1:51180")
+                    active_proxy = f"http://127.0.0.1:{DEFAULT_HTTP_PORT}" if (self.config_data.get("vless_enabled") and self.config_data.get("vless_url")) else "http://127.0.0.1:51180"
+                    res = health_checker.test_antigravity_model(acc, m_id, timeout=8, proxy_url=active_proxy)
                 dialog.after(0, lambda m=m_id, r=res: apply_result(m, r))
 
             threading.Thread(target=_worker, daemon=True).start()
@@ -1729,10 +1800,11 @@ class AntigravityManagerApp(ctk.CTk):
 
                 import concurrent.futures
                 results_summary = {"ok": 0, "rate_limit": 0, "error": 0}
+                active_proxy = f"http://127.0.0.1:{DEFAULT_HTTP_PORT}" if (self.config_data.get("vless_enabled") and self.config_data.get("vless_url")) else "http://127.0.0.1:51180"
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
                     futures = {
-                        executor.submit(health_checker.test_antigravity_model, acc, m, 8, "http://127.0.0.1:51180"): m
+                        executor.submit(health_checker.test_antigravity_model, acc, m, 8, active_proxy): m
                         for m in model_lines
                     }
                     for future in concurrent.futures.as_completed(futures):
@@ -2075,49 +2147,76 @@ class AntigravityManagerApp(ctk.CTk):
         )
         pro_badge.pack(side="left")
 
-        # 2. Sleek Full-Width Quotas Container (Gemini & Claude)
+        # 2. Sleek Full-Width Quotas Container (Gemini & Claude with 5h & Weekly windows)
         quotas_container = ctk.CTkFrame(card, fg_color="transparent")
-        quotas_container.pack(fill="x", padx=16, pady=(6, 10))
+        quotas_container.pack(fill="x", padx=16, pady=(4, 8))
 
-        def extract_quota(group_info):
+        def extract_quota_windows(group_info):
             if not group_info:
-                return 100.0, ""
+                return (100.0, ""), (100.0, "")
             windows = group_info.get("windows", [])
-            w5h = next((w for w in windows if "5" in str(w.get("window", "")).lower()), None)
+            w5h = None
+            w_weekly = None
+            for w in windows:
+                w_name = str(w.get("window", "")).strip().lower()
+                if "5" in w_name:
+                    w5h = w
+                elif any(k in w_name for k in ("week", "7d")):
+                    w_weekly = w
+
             if w5h:
-                return round(float(w5h.get("remainingPercent", 100.0)), 1), self.format_compact_reset(w5h.get("resetTime", ""))
-            pct = round(float(group_info.get("remainingPercent", 100.0)), 1)
-            reset = self.format_compact_reset(group_info.get("resetTime", ""))
-            return pct, reset
+                pct_5h = round(float(w5h.get("remainingPercent", 100.0)), 1)
+                reset_5h = self.format_compact_reset(w5h.get("resetTime", ""))
+            else:
+                pct_5h = round(float(group_info.get("remainingPercent", 100.0)), 1)
+                reset_5h = self.format_compact_reset(group_info.get("resetTime", ""))
 
-        gemini_pct, gemini_reset = extract_quota(gemini_group)
-        claude_pct, claude_reset = extract_quota(nongemini_group)
+            if w_weekly:
+                pct_wk = round(float(w_weekly.get("remainingPercent", 100.0)), 1)
+                reset_wk = self.format_compact_reset(w_weekly.get("resetTime", ""))
+            else:
+                pct_wk = round(float(group_info.get("remainingPercent", 100.0)), 1)
+                reset_wk = self.format_compact_reset(group_info.get("resetTime", ""))
 
-        # Gemini 3.8 Flash row
-        gemini_row = ctk.CTkFrame(quotas_container, fg_color="transparent")
-        gemini_row.pack(fill="x", pady=(2, 3))
-        ctk.CTkLabel(gemini_row, text="Gemini 3.8 Flash", font=self.font(size=12, weight="bold"), text_color=COLOR["text_secondary"]).pack(side="left")
-        g_reset_str = f"({gemini_reset})" if gemini_reset else ""
-        g_col = COLOR["accent_cyan"] if gemini_pct > 20 else "#ef4444"
-        ctk.CTkLabel(gemini_row, text=f"{int(gemini_pct)}% {g_reset_str}", font=self.font(size=11, weight="bold"), text_color=g_col).pack(side="right")
+            return (pct_5h, reset_5h), (pct_wk, reset_wk)
 
-        g_bar = ctk.CTkProgressBar(quotas_container, height=7, corner_radius=4)
-        g_bar.pack(fill="x", pady=(0, 8))
-        g_bar.set(max(0.0, min(1.0, gemini_pct / 100.0)))
-        g_bar.configure(progress_color=COLOR["accent_cyan"], fg_color=COLOR["bar_bg"])
+        def render_model_quota(container, model_title, q_5h, q_weekly, is_last=False):
+            pct_5h, reset_5h = q_5h
+            pct_wk, reset_wk = q_weekly
 
-        # Claude Sonnet 4.6 / 5.5 row
-        claude_row = ctk.CTkFrame(quotas_container, fg_color="transparent")
-        claude_row.pack(fill="x", pady=(2, 3))
-        ctk.CTkLabel(claude_row, text="Claude Sonnet 4.6 / 5.5", font=self.font(size=12, weight="bold"), text_color=COLOR["text_secondary"]).pack(side="left")
-        c_reset_str = f"({claude_reset})" if claude_reset else ""
-        c_col = COLOR["accent_emerald"] if claude_pct > 20 else "#ef4444"
-        ctk.CTkLabel(claude_row, text=f"{int(claude_pct)}% {c_reset_str}", font=self.font(size=11, weight="bold"), text_color=c_col).pack(side="right")
+            # Model title
+            t_row = ctk.CTkFrame(container, fg_color="transparent")
+            t_row.pack(fill="x", pady=(2, 1))
+            ctk.CTkLabel(t_row, text=model_title, font=self.font(size=12, weight="bold"), text_color=COLOR["text_primary"]).pack(side="left")
 
-        c_bar = ctk.CTkProgressBar(quotas_container, height=7, corner_radius=4)
-        c_bar.pack(fill="x", pady=(0, 4))
-        c_bar.set(max(0.0, min(1.0, claude_pct / 100.0)))
-        c_bar.configure(progress_color=COLOR["accent_emerald"], fg_color=COLOR["bar_bg"])
+            # 5-hour limit (Cyan / #38bdf8)
+            r5_row = ctk.CTkFrame(container, fg_color="transparent")
+            r5_row.pack(fill="x", pady=(1, 1))
+            col_5h = "#ef4444" if pct_5h <= 20 else COLOR["accent_cyan"]
+            reset_str_5h = f" ({reset_5h})" if reset_5h else ""
+            ctk.CTkLabel(r5_row, text="⚡ 5 часов:", font=self.font(size=10, weight="bold"), text_color=COLOR["text_secondary"]).pack(side="left")
+            ctk.CTkLabel(r5_row, text=f"{int(pct_5h)}%{reset_str_5h}", font=self.font(size=10, weight="bold"), text_color=col_5h).pack(side="right")
+
+            b_5h = ctk.CTkProgressBar(container, height=5, corner_radius=3)
+            b_5h.pack(fill="x", pady=(1, 3))
+            b_5h.set(max(0.0, min(1.0, pct_5h / 100.0)))
+            b_5h.configure(progress_color=col_5h, fg_color=COLOR["bar_bg"])
+
+            # Weekly limit (Purple / #c084fc)
+            rwk_row = ctk.CTkFrame(container, fg_color="transparent")
+            rwk_row.pack(fill="x", pady=(1, 1))
+            col_wk = "#ef4444" if pct_wk <= 20 else COLOR["accent_purple"]
+            reset_str_wk = f" ({reset_wk})" if reset_wk else ""
+            ctk.CTkLabel(rwk_row, text="📅 Неделя:", font=self.font(size=10, weight="bold"), text_color=COLOR["text_secondary"]).pack(side="left")
+            ctk.CTkLabel(rwk_row, text=f"{int(pct_wk)}%{reset_str_wk}", font=self.font(size=10, weight="bold"), text_color=col_wk).pack(side="right")
+
+            b_wk = ctk.CTkProgressBar(container, height=5, corner_radius=3)
+            b_wk.pack(fill="x", pady=(1, 2 if is_last else 6))
+            b_wk.set(max(0.0, min(1.0, pct_wk / 100.0)))
+            b_wk.configure(progress_color=col_wk, fg_color=COLOR["bar_bg"])
+
+        render_model_quota(quotas_container, "Gemini 3.8 Flash", *extract_quota_windows(gemini_group))
+        render_model_quota(quotas_container, "Claude Sonnet 4.6 / 5.5", *extract_quota_windows(nongemini_group), is_last=True)
 
         # 3. Card Footer with Action Buttons & Cyber Switch
         divider = ctk.CTkFrame(card, height=1, fg_color=COLOR["border"])
@@ -2592,167 +2691,56 @@ class AntigravityManagerApp(ctk.CTk):
             font=self.font(size=12),
         ).pack(anchor="w", padx=16, pady=(0, 12))
 
-        # 3. DNS Configuration (Cockpit / Bezmezhau layout: Standard DNS, DoT, DoH)
-        c3 = ctk.CTkFrame(self.settings_frame, fg_color=COLOR["card_bg"], corner_radius=12, border_width=1, border_color=COLOR["border"])
-        c3.pack(fill="x", pady=6)
-        ctk.CTkLabel(c3, text="🌐 DNS-серверы и маршрутизация", font=self.font(size=14, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w", padx=16, pady=(12, 4))
+        # 3. Network & DNS Section Link Card
+        c_net = ctk.CTkFrame(self.settings_frame, fg_color=COLOR["card_bg"], corner_radius=12, border_width=1, border_color=COLOR["border"])
+        c_net.pack(fill="x", pady=6)
+        ctk.CTkLabel(c_net, text="🌐 Сеть, DNS и VLESS-маршрутизация", font=self.font(size=14, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w", padx=16, pady=(12, 4))
         ctk.CTkLabel(
-            c3,
-            text="DNS применяется внутри сетевых компонентов Antigravity Hub/OpenCode; системный DNS Windows не меняется.",
+            c_net,
+            text="Управление VLESS-туннелями (Reality / TLS), маршрутизацией всего трафика OpenCode и кастомными DNS (DoH / DoT / Обычный DNS) вынесено в отдельный раздел меню.",
+            font=self.font(size=11),
+            text_color=COLOR["text_secondary"]
+        ).pack(anchor="w", padx=16, pady=(0, 10))
+        ctk.CTkButton(
+            c_net,
+            text="Перейти в раздел «Сеть, DNS & VLESS» →",
+            font=self.font(size=12, weight="bold"),
+            fg_color="#0284c7",
+            hover_color="#0369a1",
+            height=34,
+            command=lambda: self.switch_nav("network")
+        ).pack(anchor="w", padx=16, pady=(0, 12))
+
+        # 4. Providers Visibility Card
+        p_card = ctk.CTkFrame(self.settings_frame, fg_color=COLOR["card_bg"], corner_radius=12, border_width=1, border_color=COLOR["border"])
+        p_card.pack(fill="x", pady=6)
+        ctk.CTkLabel(p_card, text="🧩 Провайдеры моделей в боковом меню", font=self.font(size=14, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w", padx=16, pady=(12, 4))
+        ctk.CTkLabel(
+            p_card,
+            text="Включение и скрытие провайдеров, которые можно подключить через Antigravity Hub. Отключенные провайдеры скрываются из бокового меню Hub.",
             font=self.font(size=11),
             text_color=COLOR["text_secondary"]
         ).pack(anchor="w", padx=16, pady=(0, 10))
 
-        dns_notice = ctk.CTkFrame(c3, fg_color=COLOR["subbox_bg"], corner_radius=8, border_width=1, border_color=COLOR["border"])
-        dns_notice.pack(fill="x", padx=16, pady=(0, 10))
-        ctk.CTkLabel(
-            dns_notice,
-            text=(
-                "Как работают DNS и туннель\n"
-                "• Выбранный протокол (Обычный DNS / DoT / DoH) используется для DNS-запросов, которые выполняют плагин и встроенный туннель.\n"
-                "• Локальный адрес http://127.0.0.1:51180 Hub настраивает как прокси OpenCode. Запросы через него разрешаются DNS-сервером, выбранным выше.\n"
-                "• Важно: OpenCode может применять переменные прокси ко всему своему HTTPS-трафику, а не только к OpenAI. Поэтому через туннель могут идти запросы и других сервисов.\n"
-                "• Кнопки «Проверить доступность» проверяют DNS-резолвер, но не гарантируют успешную авторизацию, доступность модели или наличие квоты. После изменения настроек перезапустите OpenCode из Hub."
-            ),
-            font=self.font(size=11),
-            text_color=COLOR["text_secondary"],
-            justify="left",
-            anchor="w",
-            wraplength=980
-        ).pack(fill="x", padx=12, pady=10)
+        vis = self.config_data.get("providers_visibility", {})
+        self.provider_visibility_vars = {}
+        for key, label, _, desc in AVAILABLE_PROVIDERS:
+            is_checked = vis.get(key, (key != "deepseek"))
+            var = tk.BooleanVar(value=is_checked)
+            self.provider_visibility_vars[key] = var
 
-        # DNS Mode Selector (Standard / DoT / DoH / System)
-        mode_row = ctk.CTkFrame(c3, fg_color="transparent")
-        mode_row.pack(fill="x", padx=16, pady=(0, 10))
-        ctk.CTkLabel(mode_row, text="Активный протокол:", font=self.font(size=12, weight="bold"), text_color=COLOR["text_primary"]).pack(side="left", padx=(0, 10))
+            row = ctk.CTkFrame(p_card, fg_color="transparent")
+            row.pack(fill="x", padx=16, pady=(3, 6))
 
-        dns_mode_labels = {"standard": "Обычный DNS", "dot": "DNS-over-TLS (DoT)", "doh": "DNS-over-HTTPS (DoH)", "system": "Системный DNS"}
-        self.dns_mode_var = tk.StringVar(value=dns_mode_labels.get(self.config_data.get("dns_mode", "standard"), "Обычный DNS"))
-        self.dns_mode_seg = ctk.CTkSegmentedButton(
-            mode_row,
-            values=["Обычный DNS", "DNS-over-TLS (DoT)", "DNS-over-HTTPS (DoH)", "Системный DNS"],
-            variable=self.dns_mode_var,
-            font=self.font(size=11, weight="bold"),
-            command=self.on_dns_mode_change,
-        )
-        self.dns_mode_seg.pack(side="left")
+            create_cyber_switch(
+                row,
+                text=label,
+                variable=var,
+                command=lambda k=key, v=var: self.on_toggle_provider_visibility(k, v),
+                font=self.font(size=12, weight="bold")
+            ).pack(side="left")
 
-        # Three side-by-side DNS Blocks (Like the user's screenshot)
-        dns_blocks_container = ctk.CTkFrame(c3, fg_color="transparent")
-        dns_blocks_container.pack(fill="x", padx=16, pady=(0, 12))
-        dns_blocks_container.grid_columnconfigure(0, weight=1, uniform="dns_col")
-        dns_blocks_container.grid_columnconfigure(1, weight=1, uniform="dns_col")
-        dns_blocks_container.grid_columnconfigure(2, weight=1, uniform="dns_col")
-
-        # --- BLOCK 1: Standard DNS ---
-        b1 = ctk.CTkFrame(dns_blocks_container, fg_color=COLOR["subbox_bg"], corner_radius=10, border_width=1, border_color=COLOR["border"])
-        b1.grid(row=0, column=0, sticky="nsew", padx=(0, 6), pady=4)
-
-        b1_hdr = ctk.CTkFrame(b1, fg_color="transparent")
-        b1_hdr.pack(fill="x", padx=12, pady=(10, 4))
-        ctk.CTkLabel(b1_hdr, text="Обычный DNS", font=self.font(size=12, weight="bold"), text_color=COLOR["text_primary"]).pack(side="left")
-
-        ctk.CTkLabel(b1, text="Основной DNS (Primary):", font=self.font(size=10), text_color=COLOR["text_secondary"]).pack(anchor="w", padx=12, pady=(2, 0))
-        self.dns_primary_entry = ctk.CTkEntry(b1, font=self.font(size=11), height=28, fg_color=COLOR["card_bg"], border_color=COLOR["border"], text_color=COLOR["text_primary"])
-        self.dns_primary_entry.pack(fill="x", padx=12, pady=(2, 6))
-        current_dns_list = self.config_data.get("custom_dns", ["143.20.64.55", "31.58.216.201"])
-        self.dns_primary_entry.insert(0, current_dns_list[0] if len(current_dns_list) > 0 else "143.20.64.55")
-
-        ctk.CTkLabel(b1, text="Дополнительный DNS (Secondary):", font=self.font(size=10), text_color=COLOR["text_secondary"]).pack(anchor="w", padx=12, pady=(2, 0))
-        self.dns_secondary_entry = ctk.CTkEntry(b1, font=self.font(size=11), height=28, fg_color=COLOR["card_bg"], border_color=COLOR["border"], text_color=COLOR["text_primary"])
-        self.dns_secondary_entry.pack(fill="x", padx=12, pady=(2, 6))
-        self.dns_secondary_entry.insert(0, current_dns_list[1] if len(current_dns_list) > 1 else "31.58.216.201")
-
-        b1_btn_row = ctk.CTkFrame(b1, fg_color="transparent")
-        b1_btn_row.pack(fill="x", padx=12, pady=(4, 10))
-        self.btn_test_std_dns = ctk.CTkButton(
-            b1_btn_row,
-            text="🩺 Проверить доступность",
-            font=self.font(size=11, weight="bold"),
-            fg_color="#0284c7",
-            hover_color="#0369a1",
-            height=26,
-            command=self.test_standard_dns_action,
-        )
-        self.btn_test_std_dns.pack(fill="x")
-        self.lbl_test_std_dns = ctk.CTkLabel(b1, text="", font=self.font(size=10), text_color="#16a34a")
-        self.lbl_test_std_dns.pack(anchor="w", padx=12, pady=(0, 6))
-
-        # --- BLOCK 2: DNS-over-TLS (DoT) ---
-        b2 = ctk.CTkFrame(dns_blocks_container, fg_color=COLOR["subbox_bg"], corner_radius=10, border_width=1, border_color=COLOR["border"])
-        b2.grid(row=0, column=1, sticky="nsew", padx=6, pady=4)
-
-        b2_hdr = ctk.CTkFrame(b2, fg_color="transparent")
-        b2_hdr.pack(fill="x", padx=12, pady=(10, 4))
-        ctk.CTkLabel(b2_hdr, text="DNS-over-TLS (DoT)", font=self.font(size=12, weight="bold"), text_color=COLOR["text_primary"]).pack(side="left")
-
-        ctk.CTkLabel(b2, text="Имя хоста DoT (порт 853):", font=self.font(size=10), text_color=COLOR["text_secondary"]).pack(anchor="w", padx=12, pady=(2, 0))
-        self.dot_host_entry = ctk.CTkEntry(b2, font=self.font(size=11), height=28, fg_color=COLOR["card_bg"], border_color=COLOR["border"], text_color=COLOR["text_primary"])
-        self.dot_host_entry.pack(fill="x", padx=12, pady=(2, 6))
-        self.dot_host_entry.insert(0, self.config_data.get("dot_host", "dns.bezmezhau.com"))
-
-        ctk.CTkLabel(b2, text="Для защищённого TLS-резолвинга\nбез перехвата провайдером.", font=self.font(size=10), text_color=COLOR["text_muted"], justify="left").pack(anchor="w", padx=12, pady=(2, 6))
-
-        b2_btn_row = ctk.CTkFrame(b2, fg_color="transparent")
-        b2_btn_row.pack(fill="x", padx=12, pady=(4, 10))
-        self.btn_test_dot = ctk.CTkButton(
-            b2_btn_row,
-            text="🩺 Проверить доступность",
-            font=self.font(size=11, weight="bold"),
-            fg_color="#0284c7",
-            hover_color="#0369a1",
-            height=26,
-            command=self.test_dot_action,
-        )
-        self.btn_test_dot.pack(fill="x")
-        self.lbl_test_dot = ctk.CTkLabel(b2, text="", font=self.font(size=10), text_color="#16a34a")
-        self.lbl_test_dot.pack(anchor="w", padx=12, pady=(0, 6))
-
-        # --- BLOCK 3: DNS-over-HTTPS (DoH) ---
-        b3 = ctk.CTkFrame(dns_blocks_container, fg_color=COLOR["subbox_bg"], corner_radius=10, border_width=1, border_color=COLOR["border"])
-        b3.grid(row=0, column=2, sticky="nsew", padx=(6, 0), pady=4)
-
-        b3_hdr = ctk.CTkFrame(b3, fg_color="transparent")
-        b3_hdr.pack(fill="x", padx=12, pady=(10, 4))
-        ctk.CTkLabel(b3_hdr, text="DNS-over-HTTPS (DoH)", font=self.font(size=12, weight="bold"), text_color=COLOR["text_primary"]).pack(side="left")
-
-        ctk.CTkLabel(b3, text="URL эндпоинта DoH:", font=self.font(size=10), text_color=COLOR["text_secondary"]).pack(anchor="w", padx=12, pady=(2, 0))
-        self.doh_url_entry = ctk.CTkEntry(b3, font=self.font(size=11), height=28, fg_color=COLOR["card_bg"], border_color=COLOR["border"], text_color=COLOR["text_primary"])
-        self.doh_url_entry.pack(fill="x", padx=12, pady=(2, 6))
-        self.doh_url_entry.insert(0, self.config_data.get("doh_url", "https://dns.bezmezhau.com/dns-query"))
-
-        ctk.CTkLabel(b3, text="Стандарт RFC 8484 по HTTPS.\nМаксимальная скрытность.", font=self.font(size=10), text_color=COLOR["text_muted"], justify="left").pack(anchor="w", padx=12, pady=(2, 6))
-
-        b3_btn_row = ctk.CTkFrame(b3, fg_color="transparent")
-        b3_btn_row.pack(fill="x", padx=12, pady=(4, 10))
-        self.btn_test_doh = ctk.CTkButton(
-            b3_btn_row,
-            text="🩺 Проверить доступность",
-            font=self.font(size=11, weight="bold"),
-            fg_color="#0284c7",
-            hover_color="#0369a1",
-            height=26,
-            command=self.test_doh_action,
-        )
-        self.btn_test_doh.pack(fill="x")
-        self.lbl_test_doh = ctk.CTkLabel(b3, text="", font=self.font(size=10), text_color="#16a34a")
-        self.lbl_test_doh.pack(anchor="w", padx=12, pady=(0, 6))
-
-        # Proxy Row
-        proxy_row = ctk.CTkFrame(c3, fg_color="transparent")
-        proxy_row.pack(fill="x", padx=16, pady=(0, 14))
-        ctk.CTkLabel(proxy_row, text="Прокси для Antigravity (необязательно):", font=self.font(size=11, weight="bold"), text_color=COLOR["text_primary"], width=250, anchor="w").pack(side="left")
-        self.proxy_entry = ctk.CTkEntry(
-            proxy_row,
-            placeholder_text="Оставьте пустым для встроенного туннеля OpenCode",
-            font=self.font(size=11),
-            height=30,
-            fg_color=COLOR["subbox_bg"],
-            border_color=COLOR["border"],
-            text_color=COLOR["text_primary"]
-        )
-        self.proxy_entry.pack(side="left", fill="x", expand=True)
-        self.proxy_entry.insert(0, self.config_data.get("proxy", "") or "")
+            ctk.CTkLabel(row, text=f"— {desc}", font=self.font(size=11), text_color=COLOR["text_secondary"]).pack(side="left", padx=(10, 0))
 
         ctk.CTkButton(
             self.settings_frame,
@@ -2763,6 +2751,13 @@ class AntigravityManagerApp(ctk.CTk):
             height=36,
             command=self.save_settings_action,
         ).pack(anchor="w", pady=12)
+
+    def on_toggle_provider_visibility(self, key, var):
+        if "providers_visibility" not in self.config_data:
+            self.config_data["providers_visibility"] = {}
+        self.config_data["providers_visibility"][key] = var.get()
+        self.save_config()
+        self.rebuild_sidebar_nav()
 
     def on_strategy_change(self, val):
         self.update_strategy_description(val)
@@ -2775,57 +2770,6 @@ class AntigravityManagerApp(ctk.CTk):
         }
         self.strategy_desc.configure(text=descs.get(strat, ""))
 
-    def on_dns_mode_change(self, val):
-        pass
-
-    def test_standard_dns_action(self):
-        p_ip = self.dns_primary_entry.get().strip()
-        self.btn_test_std_dns.configure(state="disabled", text="⏳ Проверка...")
-
-        def _test():
-            res = dns_tester.test_standard_dns(p_ip or "143.20.64.55")
-            def _update():
-                self.btn_test_std_dns.configure(state="normal", text="🩺 Проверить доступность")
-                if res.get("ok"):
-                    self.lbl_test_std_dns.configure(text=f"✅ {res.get('message')}", text_color="#16a34a")
-                else:
-                    self.lbl_test_std_dns.configure(text=f"❌ {res.get('message')}", text_color="#ef4444")
-            self.after(0, _update)
-
-        threading.Thread(target=_test, daemon=True).start()
-
-    def test_dot_action(self):
-        host = self.dot_host_entry.get().strip()
-        self.btn_test_dot.configure(state="disabled", text="⏳ Проверка...")
-
-        def _test():
-            res = dns_tester.test_dot_endpoint(host or "dns.bezmezhau.com")
-            def _update():
-                self.btn_test_dot.configure(state="normal", text="🩺 Проверить доступность")
-                if res.get("ok"):
-                    self.lbl_test_dot.configure(text=f"✅ {res.get('message')}", text_color="#16a34a")
-                else:
-                    self.lbl_test_dot.configure(text=f"❌ {res.get('message')}", text_color="#ef4444")
-            self.after(0, _update)
-
-        threading.Thread(target=_test, daemon=True).start()
-
-    def test_doh_action(self):
-        url = self.doh_url_entry.get().strip()
-        self.btn_test_doh.configure(state="disabled", text="⏳ Проверка...")
-
-        def _test():
-            res = dns_tester.test_doh_endpoint(url or "https://dns.bezmezhau.com/dns-query")
-            def _update():
-                self.btn_test_doh.configure(state="normal", text="🩺 Проверить доступность")
-                if res.get("ok"):
-                    self.lbl_test_doh.configure(text=f"✅ {res.get('message')}", text_color="#16a34a")
-                else:
-                    self.lbl_test_doh.configure(text=f"❌ {res.get('message')}", text_color="#ef4444")
-            self.after(0, _update)
-
-        threading.Thread(target=_test, daemon=True).start()
-
     def on_close_choice_remember_changed(self):
         enabled = self.close_choice_remember_var.get()
         self.config_data["close_choice_remembered"] = enabled
@@ -2837,79 +2781,9 @@ class AntigravityManagerApp(ctk.CTk):
         self.config_data["account_selection_strategy"] = self.strategy_var.get()
         self.config_data["switch_on_first_rate_limit"] = self.rate_limit_var.get()
 
-        # Save DNS Mode
-        selected_mode = self.dns_mode_var.get()
-        if "DoT" in selected_mode:
-            self.config_data["dns_mode"] = "dot"
-        elif "DoH" in selected_mode:
-            self.config_data["dns_mode"] = "doh"
-        elif "Системный" in selected_mode:
-            self.config_data["dns_mode"] = "system"
-        else:
-            self.config_data["dns_mode"] = "standard"
-
-        # Save Standard DNS
-        p_ip = self.dns_primary_entry.get().strip()
-        s_ip = self.dns_secondary_entry.get().strip()
-        dns_list = []
-        if p_ip: dns_list.append(p_ip)
-        if s_ip: dns_list.append(s_ip)
-        if dns_list:
-            self.config_data["custom_dns"] = dns_list
-        else:
-            self.config_data.pop("custom_dns", None)
-
-        # Save DoT Host
-        dot_val = self.dot_host_entry.get().strip()
-        if dot_val:
-            self.config_data["dot_host"] = dot_val
-        else:
-            self.config_data.pop("dot_host", None)
-
-        # Save DoH URL
-        doh_val = self.doh_url_entry.get().strip()
-        if doh_val:
-            self.config_data["doh_url"] = doh_val
-        else:
-            self.config_data.pop("doh_url", None)
-
-        # Save Proxy for Antigravity:
-        # Antigravity uses its own direct transport with custom DNS (DoH/DoT/Standard).
-        # We only save proxy to antigravity.json if the user explicitly provided an external proxy.
-        user_proxy = self.proxy_entry.get().strip()
-        if user_proxy and user_proxy != "http://127.0.0.1:51180":
-            self.config_data["proxy"] = user_proxy
-        else:
-            self.config_data.pop("proxy", None)
-
-        # Synchronize proxy to opencode.json strictly for OpenAI provider:
-        # OpenAI/ChatGPT will use http://127.0.0.1:51180 (or user proxy), while Antigravity stays on direct DNS.
-        try:
-            opencode_cfg_path = Path.home() / ".config" / "opencode" / "opencode.json"
-            if opencode_cfg_path.exists():
-                oc_data = json.loads(opencode_cfg_path.read_text(encoding="utf-8"))
-                dns_active = self.config_data.get("dns_mode") in ("standard", "dot", "doh")
-                effective_openai_proxy = user_proxy if (user_proxy and user_proxy != "http://127.0.0.1:51180") else ("http://127.0.0.1:51180" if dns_active else None)
-
-                if effective_openai_proxy:
-                    if "provider" not in oc_data:
-                        oc_data["provider"] = {}
-                    if "openai" not in oc_data["provider"]:
-                        oc_data["provider"]["openai"] = {}
-                    if "options" not in oc_data["provider"]["openai"]:
-                        oc_data["provider"]["openai"]["options"] = {}
-                    oc_data["provider"]["openai"]["options"]["proxy"] = effective_openai_proxy
-                else:
-                    if "provider" in oc_data and "openai" in oc_data["provider"]:
-                        if "options" in oc_data["provider"]["openai"]:
-                            oc_data["provider"]["openai"]["options"].pop("proxy", None)
-                opencode_cfg_path.write_text(json.dumps(oc_data, indent=4, ensure_ascii=False), encoding="utf-8")
-        except Exception as e:
-            print(f"Warning: Failed to sync proxy to opencode.json: {e}")
-
         ok, msg = self.save_config()
         if ok:
-            messagebox.showinfo("Успешно", "Настройки сохранены!\n\n• Antigravity (Google/Claude) работает напрямую через указанный DNS.\n• OpenAI/ChatGPT изолированно направляется через локальный туннель.")
+            messagebox.showinfo("Успешно", "Настройки сохранены!")
         else:
             messagebox.showerror("Ошибка", msg)
 
@@ -3444,6 +3318,51 @@ class AntigravityManagerApp(ctk.CTk):
 
         threading.Thread(target=_check, daemon=True).start()
 
+    def prepare_opencode_launch_env(self):
+        launch_env = os.environ.copy()
+        vless_enabled = self.config_data.get("vless_enabled", False)
+        vless_url = (self.config_data.get("vless_url") or "").strip()
+        vless_route_all = self.config_data.get("vless_route_all", True)
+
+        if vless_enabled and vless_url:
+            # Auto-start VLESS tunnel if not running
+            if not vless_service.is_running():
+                custom_core = self.config_data.get("vless_core_path")
+                vless_service.start_tunnel(vless_url, custom_core_path=custom_core)
+
+            vless_http = f"http://127.0.0.1:{DEFAULT_HTTP_PORT}"
+            for var in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
+                launch_env[var] = vless_http
+
+            if vless_route_all:
+                # Route ALL OpenCode traffic through VLESS (including Google, Claude, OpenAI, Web fetch)
+                no_proxy_rules = "localhost,127.0.0.1"
+            else:
+                no_proxy_rules = "googleapis.com,.googleapis.com,google.com,.google.com,cloudcode-pa.googleapis.com,localhost,127.0.0.1"
+
+            launch_env["NO_PROXY"] = no_proxy_rules
+            launch_env["no_proxy"] = no_proxy_rules
+            return launch_env
+
+        # Fallback to custom DNS / local proxy
+        dns_active = self.config_data.get("dns_mode") in ("standard", "dot", "doh")
+        tunnel_url = "http://127.0.0.1:51180" if dns_active else None
+        user_proxy = self.config_data.get("proxy")
+        effective_proxy = user_proxy if (user_proxy and user_proxy != "http://127.0.0.1:51180") else tunnel_url
+
+        if effective_proxy:
+            for var in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
+                launch_env[var] = effective_proxy
+            # Exclude Google / Gemini and localhost so Gemini uses direct SmartDNS transport and never connects to 51180
+            no_proxy_rules = "googleapis.com,.googleapis.com,google.com,.google.com,cloudcode-pa.googleapis.com,localhost,127.0.0.1"
+            launch_env["NO_PROXY"] = no_proxy_rules
+            launch_env["no_proxy"] = no_proxy_rules
+        else:
+            for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
+                launch_env.pop(var, None)
+
+        return launch_env
+
     def restart_opencode_action(self):
         self.set_status("Перезапуск OpenCode...")
 
@@ -3455,26 +3374,7 @@ class AntigravityManagerApp(ctk.CTk):
             time.sleep(1)
             exe = get_opencode_exe()
             if os.path.exists(exe):
-                launch_env = os.environ.copy()
-                dns_active = self.config_data.get("dns_mode") in ("standard", "dot", "doh")
-                tunnel_url = "http://127.0.0.1:51180" if dns_active else None
-                user_proxy = self.config_data.get("proxy")
-                effective_proxy = user_proxy if (user_proxy and user_proxy != "http://127.0.0.1:51180") else tunnel_url
-
-                if effective_proxy:
-                    launch_env["HTTPS_PROXY"] = effective_proxy
-                    launch_env["HTTP_PROXY"] = effective_proxy
-                    launch_env["ALL_PROXY"] = effective_proxy
-                    launch_env["https_proxy"] = effective_proxy
-                    launch_env["http_proxy"] = effective_proxy
-                    launch_env["all_proxy"] = effective_proxy
-                    # Exclude Google / Gemini and localhost so Gemini uses direct SmartDNS transport and never connects to 51180
-                    no_proxy_rules = "googleapis.com,.googleapis.com,google.com,.google.com,cloudcode-pa.googleapis.com,localhost,127.0.0.1"
-                    launch_env["NO_PROXY"] = no_proxy_rules
-                    launch_env["no_proxy"] = no_proxy_rules
-                else:
-                    for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
-                        launch_env.pop(var, None)
+                launch_env = self.prepare_opencode_launch_env()
                 subprocess.Popen([exe], cwd=os.path.dirname(exe), env=launch_env)
             time.sleep(2)
             self.after(0, self.update_opencode_status)
@@ -3493,26 +3393,7 @@ class AntigravityManagerApp(ctk.CTk):
         cleanup_opencode_locks()
         exe = get_opencode_exe()
         if os.path.exists(exe):
-            launch_env = os.environ.copy()
-            dns_active = self.config_data.get("dns_mode") in ("standard", "dot", "doh")
-            tunnel_url = "http://127.0.0.1:51180" if dns_active else None
-            user_proxy = self.config_data.get("proxy")
-            effective_proxy = user_proxy if (user_proxy and user_proxy != "http://127.0.0.1:51180") else tunnel_url
-
-            if effective_proxy:
-                launch_env["HTTPS_PROXY"] = effective_proxy
-                launch_env["HTTP_PROXY"] = effective_proxy
-                launch_env["ALL_PROXY"] = effective_proxy
-                launch_env["https_proxy"] = effective_proxy
-                launch_env["http_proxy"] = effective_proxy
-                launch_env["all_proxy"] = effective_proxy
-                # Exclude Google / Gemini and localhost so Gemini uses direct SmartDNS transport and never connects to 51180
-                no_proxy_rules = "googleapis.com,.googleapis.com,google.com,.google.com,cloudcode-pa.googleapis.com,localhost,127.0.0.1"
-                launch_env["NO_PROXY"] = no_proxy_rules
-                launch_env["no_proxy"] = no_proxy_rules
-            else:
-                for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
-                    launch_env.pop(var, None)
+            launch_env = self.prepare_opencode_launch_env()
             subprocess.Popen([exe], cwd=os.path.dirname(exe), env=launch_env)
             self.set_status("OpenCode запущен")
         self.after(2000, self.update_opencode_status)

@@ -384,7 +384,7 @@ def remove_openai_account(account_id: str) -> bool:
 
 def _get_http_opener(timeout: int = 15):
     """
-    Returns a urllib opener configured with proxy (local SmartDNS tunnel 51180 or custom proxy)
+    Returns a urllib opener configured with proxy (VLESS tunnel 10809, local SmartDNS tunnel 51180 or custom proxy)
     to bypass geo-restrictions and Cloudflare blocks.
     """
     proxy_url = None
@@ -394,7 +394,10 @@ def _get_http_opener(timeout: int = 15):
             if cfg_file.exists():
                 with open(cfg_file, "r", encoding="utf-8") as f:
                     cfg = json.load(f)
-                    proxy_url = cfg.get("proxy")
+                    if cfg.get("vless_enabled") and cfg.get("vless_url"):
+                        proxy_url = "http://127.0.0.1:10809"
+                    else:
+                        proxy_url = cfg.get("proxy")
     except Exception:
         pass
 

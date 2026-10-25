@@ -45,7 +45,7 @@ def get_local_commit_sha(repo_dir: Path) -> str:
 
     return ""
 
-def check_for_updates(repo_dir: Path, timeout=6) -> dict:
+def check_for_updates(repo_dir: Path, timeout=12) -> dict:
     """
     Checks GitHub API for the latest commit on branch V2.
     Returns:
@@ -67,40 +67,61 @@ def check_for_updates(repo_dir: Path, timeout=6) -> dict:
     }
     ctx = ssl.create_default_context()
 
+    # Build openers to try: direct bypass first, or VLESS if active
+    openers = [("direct", urllib.request.build_opener(urllib.request.ProxyHandler({})))]
+
     try:
-        req = urllib.request.Request(GITHUB_COMMITS_API, headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            remote_sha = data.get("sha", "")
-            commit_info = data.get("commit", {})
-            msg = commit_info.get("message", "").split("\n")[0]
-            date_str = commit_info.get("author", {}).get("date", "")
-            author = commit_info.get("author", {}).get("name", "Author")
+        cfg_file = Path.home() / ".config" / "opencode" / "antigravity.json"
+        if cfg_file.exists():
+            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+            if cfg.get("vless_enabled") and cfg.get("vless_url"):
+                vless_handler = urllib.request.ProxyHandler({"http": "http://127.0.0.1:10809", "https": "http://127.0.0.1:10809"})
+                openers.insert(0, ("vless", urllib.request.build_opener(vless_handler)))
+            elif cfg.get("proxy") and cfg.get("proxy") != "http://127.0.0.1:51180":
+                p_handler = urllib.request.ProxyHandler({"http": cfg.get("proxy"), "https": cfg.get("proxy")})
+                openers.insert(0, ("custom_proxy", urllib.request.build_opener(p_handler)))
+    except Exception:
+        pass
 
-            if not remote_sha:
-                return {"has_update": False, "error": "Не удалось определить remote sha"}
+    last_err = None
+    for label, opener in openers:
+        try:
+            req = urllib.request.Request(GITHUB_COMMITS_API, headers=headers)
+            with opener.open(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                remote_sha = data.get("sha", "")
+                commit_info = data.get("commit", {})
+                msg = commit_info.get("message", "").split("\n")[0]
+                date_str = commit_info.get("author", {}).get("date", "")
+                author = commit_info.get("author", {}).get("name", "Author")
 
-            has_update = bool(local_sha and remote_sha and not local_sha.startswith(remote_sha[:7]))
+                if not remote_sha:
+                    return {"has_update": False, "error": "Не удалось определить remote sha"}
 
-            return {
-                "has_update": has_update,
-                "local_sha": local_sha[:7] if local_sha else "unknown",
-                "remote_sha": remote_sha[:7],
-                "message": msg,
-                "date": date_str,
-                "author": author,
-                "error": None,
-            }
-    except Exception as e:
-        return {
-            "has_update": False,
-            "local_sha": local_sha[:7] if local_sha else "unknown",
-            "remote_sha": "",
-            "message": "",
-            "date": "",
-            "author": "",
-            "error": str(e),
-        }
+                has_update = bool(local_sha and remote_sha and not local_sha.startswith(remote_sha[:7]))
+
+                return {
+                    "has_update": has_update,
+                    "local_sha": local_sha[:7] if local_sha else "unknown",
+                    "remote_sha": remote_sha[:7],
+                    "message": msg,
+                    "date": date_str,
+                    "author": author,
+                    "error": None,
+                }
+        except Exception as e:
+            last_err = e
+            continue
+
+    return {
+        "has_update": False,
+        "local_sha": local_sha[:7] if local_sha else "unknown",
+        "remote_sha": "",
+        "message": "",
+        "date": "",
+        "author": "",
+        "error": str(last_err) if last_err else "Неизвестная ошибка проверки обновлений",
+    }
 
 def apply_update_git(repo_dir: Path) -> tuple[bool, str]:
     """Pull updates while preserving local edits, then re-apply bundled patches."""
