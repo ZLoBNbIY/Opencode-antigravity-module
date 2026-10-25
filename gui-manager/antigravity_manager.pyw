@@ -767,6 +767,10 @@ COLOR = {
     "accent_cyan": "#38bdf8",
     "accent_emerald": "#34d399",
     "accent_purple": "#c084fc",
+    "quota_5h": ("#059669", "#10b981"),
+    "quota_5h_bg": ("#dcfce7", "#064e3b"),
+    "quota_weekly": ("#d97706", "#f59e0b"),
+    "quota_weekly_bg": ("#fef3c7", "#78350f"),
 }
 
 
@@ -2186,32 +2190,54 @@ class AntigravityManagerApp(ctk.CTk):
 
             # Model title
             t_row = ctk.CTkFrame(container, fg_color="transparent")
-            t_row.pack(fill="x", pady=(2, 1))
+            t_row.pack(fill="x", pady=(2, 2))
             ctk.CTkLabel(t_row, text=model_title, font=self.font(size=12, weight="bold"), text_color=COLOR["text_primary"]).pack(side="left")
 
-            # 5-hour limit (Cyan / #38bdf8)
+            # 5-hour limit (Emerald Green #10b981)
             r5_row = ctk.CTkFrame(container, fg_color="transparent")
-            r5_row.pack(fill="x", pady=(1, 1))
-            col_5h = "#ef4444" if pct_5h <= 20 else COLOR["accent_cyan"]
+            r5_row.pack(fill="x", pady=(2, 1))
+            col_5h = "#ef4444" if pct_5h <= 20 else "#10b981"
             reset_str_5h = f" ({reset_5h})" if reset_5h else ""
-            ctk.CTkLabel(r5_row, text="⚡ 5 часов:", font=self.font(size=10, weight="bold"), text_color=COLOR["text_secondary"]).pack(side="left")
-            ctk.CTkLabel(r5_row, text=f"{int(pct_5h)}%{reset_str_5h}", font=self.font(size=10, weight="bold"), text_color=col_5h).pack(side="right")
 
-            b_5h = ctk.CTkProgressBar(container, height=5, corner_radius=3)
-            b_5h.pack(fill="x", pady=(1, 3))
+            b5_lbl = ctk.CTkLabel(
+                r5_row,
+                text="⚡ 5 часов",
+                font=self.font(size=10, weight="bold"),
+                fg_color=("#dcfce7", "#064e3b"),
+                text_color=col_5h,
+                corner_radius=6,
+                padx=6,
+                pady=1
+            )
+            b5_lbl.pack(side="left")
+            ctk.CTkLabel(r5_row, text=f"{int(pct_5h)}%{reset_str_5h}", font=self.font(size=11, weight="bold"), text_color=col_5h).pack(side="right")
+
+            b_5h = ctk.CTkProgressBar(container, height=6, corner_radius=3)
+            b_5h.pack(fill="x", pady=(2, 4))
             b_5h.set(max(0.0, min(1.0, pct_5h / 100.0)))
             b_5h.configure(progress_color=col_5h, fg_color=COLOR["bar_bg"])
 
-            # Weekly limit (Purple / #c084fc)
+            # Weekly limit (Amber Orange #f59e0b)
             rwk_row = ctk.CTkFrame(container, fg_color="transparent")
-            rwk_row.pack(fill="x", pady=(1, 1))
-            col_wk = "#ef4444" if pct_wk <= 20 else COLOR["accent_purple"]
+            rwk_row.pack(fill="x", pady=(2, 1))
+            col_wk = "#ef4444" if pct_wk <= 20 else "#f59e0b"
             reset_str_wk = f" ({reset_wk})" if reset_wk else ""
-            ctk.CTkLabel(rwk_row, text="📅 Неделя:", font=self.font(size=10, weight="bold"), text_color=COLOR["text_secondary"]).pack(side="left")
-            ctk.CTkLabel(rwk_row, text=f"{int(pct_wk)}%{reset_str_wk}", font=self.font(size=10, weight="bold"), text_color=col_wk).pack(side="right")
 
-            b_wk = ctk.CTkProgressBar(container, height=5, corner_radius=3)
-            b_wk.pack(fill="x", pady=(1, 2 if is_last else 6))
+            bwk_lbl = ctk.CTkLabel(
+                rwk_row,
+                text="📅 Неделя",
+                font=self.font(size=10, weight="bold"),
+                fg_color=("#fef3c7", "#78350f"),
+                text_color=col_wk,
+                corner_radius=6,
+                padx=6,
+                pady=1
+            )
+            bwk_lbl.pack(side="left")
+            ctk.CTkLabel(rwk_row, text=f"{int(pct_wk)}%{reset_str_wk}", font=self.font(size=11, weight="bold"), text_color=col_wk).pack(side="right")
+
+            b_wk = ctk.CTkProgressBar(container, height=6, corner_radius=3)
+            b_wk.pack(fill="x", pady=(2, 2 if is_last else 6))
             b_wk.set(max(0.0, min(1.0, pct_wk / 100.0)))
             b_wk.configure(progress_color=col_wk, fg_color=COLOR["bar_bg"])
 
