@@ -132,10 +132,12 @@ from mwapi_view import MwapiView
 from network_view import NetworkView
 from deepseek_view import DeepSeekView
 from vless_manager import vless_service, DEFAULT_HTTP_PORT
+from claude_manager import claude_service, CLAUDE_MODELS
 
 AVAILABLE_PROVIDERS = [
     ("antigravity", "🚀  Antigravity (Google)", "google", "Google Gemini & Claude через Google Cloud Code"),
     ("openai", "🟢  ChatGPT (OpenAI)", "openai", "Аккаунты ChatGPT (OpenAI)"),
+    ("claude", "🟠  Claude (Anthropic Pro)", "claude", "Подписка Claude Pro / Team без покупки API-токенов"),
     ("openrouter", "🟣  OpenRouter Free", "openrouter", "Бесплатные модели OpenRouter"),
     ("mwapi", "🌐  MWAPI (Cloud Code)", "mwapi", "Cloud Code MWAPI модели"),
     ("deepseek", "🐋  DeepSeek Web", "deepseek", "Подключение DeepSeek через веб-сессию"),
@@ -274,6 +276,7 @@ DEFAULT_CONFIG = {
     "providers_visibility": {
         "antigravity": True,
         "openai": True,
+        "claude": True,
         "openrouter": True,
         "mwapi": True,
         "deepseek": False,
@@ -873,6 +876,7 @@ class AntigravityManagerApp(ctk.CTk):
         # State
         self.accounts_data = []
         self.openai_accounts_data = []
+        self.claude_accounts_data = []
         self.current_nav = "antigravity"
         self.current_provider_view = "google"
         self.is_loading = False
@@ -1390,8 +1394,13 @@ class AntigravityManagerApp(ctk.CTk):
                 )
 
         # Toggle views
-        if target_nav in ("antigravity", "openai"):
-            self.current_provider_view = "google" if target_nav == "antigravity" else "openai"
+        if target_nav in ("antigravity", "openai", "claude"):
+            if target_nav == "antigravity":
+                self.current_provider_view = "google"
+            elif target_nav == "openai":
+                self.current_provider_view = "openai"
+            else:
+                self.current_provider_view = "claude"
             self.top_action_bar.pack(fill="x", padx=24, pady=(16, 0))
             self.accounts_container.pack(fill="both", expand=True, padx=24, pady=(12, 16))
             self.settings_frame.pack_forget()
@@ -1597,13 +1606,21 @@ class AntigravityManagerApp(ctk.CTk):
                 fg_color="#0284c7",
                 hover_color="#0369a1",
             )
-        else:
+        elif self.current_provider_view == "openai":
             self.btn_google_models.pack_forget()
             self.btn_add_account.configure(
                 text="➕ Добавить",
                 command=self.add_openai_account_action,
                 fg_color="#10a37f",
                 hover_color="#0e8a6c",
+            )
+        elif self.current_provider_view == "claude":
+            self.btn_google_models.pack_forget()
+            self.btn_add_account.configure(
+                text="➕ Добавить Claude",
+                command=self.add_claude_account_action,
+                fg_color="#d97706",
+                hover_color="#b45309",
             )
 
     def show_google_models_action(self):
@@ -1983,8 +2000,10 @@ class AntigravityManagerApp(ctk.CTk):
 
         if self.current_provider_view == "google":
             self.render_google_grid()
-        else:
+        elif self.current_provider_view == "openai":
             self.render_openai_grid()
+        elif self.current_provider_view == "claude":
+            self.render_claude_grid()
 
     def render_google_grid(self):
         data = self.accounts_data
@@ -2035,6 +2054,31 @@ class AntigravityManagerApp(ctk.CTk):
             col = idx % 2
             is_active = acc.get("is_active", False)
             card = self.create_compact_openai_card(grid_frame, acc, is_active=is_active)
+            card.grid(row=row, column=col, padx=8, pady=8, sticky="nsew")
+
+    def render_claude_grid(self):
+        data = self.claude_accounts_data
+        if self.search_query:
+            data = [a for a in data if self.search_query in a.get("email", "").lower()]
+
+        total = len(self.claude_accounts_data)
+        self.lbl_count_pill.configure(text=f"Все ({total})")
+
+        if not data:
+            self._render_empty_state("Claude (Anthropic Pro)")
+            return
+
+        grid_frame = ctk.CTkFrame(self.accounts_container, fg_color="transparent")
+        grid_frame.pack(fill="both", expand=True)
+
+        for col in range(2):
+            grid_frame.grid_columnconfigure(col, weight=1, uniform="card_col")
+
+        for idx, acc in enumerate(data):
+            row = idx // 2
+            col = idx % 2
+            is_active = acc.get("active", False)
+            card = self.create_compact_claude_card(grid_frame, acc, is_active=is_active)
             card.grid(row=row, column=col, padx=8, pady=8, sticky="nsew")
 
     def _render_empty_state(self, title):
@@ -2651,6 +2695,206 @@ class AntigravityManagerApp(ctk.CTk):
         return card
 
     # =========================================================================
+    # COMPACT CLAUDE PRO CARD
+    # =========================================================================
+    def create_compact_claude_card(self, parent, acc, is_active=False):
+        email = acc.get("email", "unknown@claude.ai")
+        org_id = acc.get("org_id", "")
+        short_id = org_id[:8] if org_id else "claude"
+        plan_type = (acc.get("plan") or "pro").upper()
+
+        card = ctk.CTkFrame(
+            parent,
+            fg_color=COLOR["card_active_bg"] if is_active else COLOR["card_bg"],
+            corner_radius=16,
+            border_width=2 if is_active else 1,
+            border_color="#d97706" if is_active else COLOR["border"],
+        )
+
+        # 1. Top Header Row
+        header = ctk.CTkFrame(card, fg_color="transparent")
+        header.pack(fill="x", padx=16, pady=(16, 6))
+        header.grid_columnconfigure(0, weight=1)
+
+        title_box = ctk.CTkFrame(header, fg_color="transparent")
+        title_box.grid(row=0, column=0, sticky="w")
+
+        prefix = "⭐ " if is_active else ""
+        short_email = email if len(email) <= 26 else f"{email[:23]}..."
+        ctk.CTkLabel(
+            title_box,
+            text=f"{prefix}{short_email}",
+            font=self.font(size=14, weight="bold"),
+            text_color=COLOR["text_primary"],
+        ).pack(anchor="w")
+
+        ctk.CTkLabel(
+            title_box,
+            text=f"Claude Subscription • ID: {short_id}",
+            font=self.font(size=11),
+            text_color=COLOR["text_muted"],
+        ).pack(anchor="w", pady=(1, 0))
+
+        badges_box = ctk.CTkFrame(header, fg_color="transparent")
+        badges_box.grid(row=0, column=1, sticky="e")
+
+        if is_active:
+            ctk.CTkLabel(
+                badges_box,
+                text="● Активен",
+                font=self.font(size=11, weight="bold"),
+                fg_color="#d97706",
+                text_color="#ffffff",
+                corner_radius=10,
+                padx=9,
+                pady=2,
+            ).pack(side="left", padx=(0, 6))
+        else:
+            ctk.CTkLabel(
+                badges_box,
+                text="В пуле",
+                font=self.font(size=11, weight="bold"),
+                fg_color=COLOR["subbox_bg"],
+                text_color=COLOR["text_muted"],
+                corner_radius=10,
+                padx=8,
+                pady=2,
+            ).pack(side="left", padx=(0, 6))
+
+        ctk.CTkLabel(
+            badges_box,
+            text=plan_type,
+            font=self.font(size=11, weight="bold"),
+            fg_color="#d97706",
+            text_color="#ffffff",
+            corner_radius=10,
+            padx=7,
+            pady=2,
+        ).pack(side="left")
+
+        # 2. Sleek Full-Width Quotas Container (Claude 3.7 / 3.5 Sonnet & Opus)
+        quotas_container = ctk.CTkFrame(card, fg_color="transparent")
+        quotas_container.pack(fill="x", padx=16, pady=(4, 8))
+
+        t_row = ctk.CTkFrame(quotas_container, fg_color="transparent")
+        t_row.pack(fill="x", pady=(2, 2))
+        ctk.CTkLabel(t_row, text="Claude 3.7 / 3.5 Sonnet & Opus", font=self.font(size=12, weight="bold"), text_color=COLOR["text_primary"]).pack(side="left")
+
+        # 5-hour limit (Emerald Green #10b981)
+        r5_row = ctk.CTkFrame(quotas_container, fg_color="transparent")
+        r5_row.pack(fill="x", pady=(2, 1))
+        b5_lbl = ctk.CTkLabel(
+            r5_row,
+            text="⚡ 5 часов",
+            font=self.font(size=10, weight="bold"),
+            fg_color=("#dcfce7", "#064e3b"),
+            text_color="#10b981",
+            corner_radius=6,
+            padx=6,
+            pady=1
+        )
+        b5_lbl.pack(side="left")
+        ctk.CTkLabel(r5_row, text="100% (квота доступна)", font=self.font(size=11, weight="bold"), text_color="#10b981").pack(side="right")
+
+        b_5h = ctk.CTkProgressBar(quotas_container, height=6, corner_radius=3)
+        b_5h.pack(fill="x", pady=(2, 4))
+        b_5h.set(1.0)
+        b_5h.configure(progress_color="#10b981", fg_color=COLOR["bar_bg"])
+
+        # Weekly limit (Amber Orange #f59e0b)
+        rwk_row = ctk.CTkFrame(quotas_container, fg_color="transparent")
+        rwk_row.pack(fill="x", pady=(2, 1))
+        bwk_lbl = ctk.CTkLabel(
+            rwk_row,
+            text="📅 Неделя",
+            font=self.font(size=10, weight="bold"),
+            fg_color=("#fef3c7", "#78350f"),
+            text_color="#f59e0b",
+            corner_radius=6,
+            padx=6,
+            pady=1
+        )
+        bwk_lbl.pack(side="left")
+        ctk.CTkLabel(rwk_row, text="100% (квота доступна)", font=self.font(size=11, weight="bold"), text_color="#f59e0b").pack(side="right")
+
+        b_wk = ctk.CTkProgressBar(quotas_container, height=6, corner_radius=3)
+        b_wk.pack(fill="x", pady=(2, 4))
+        b_wk.set(1.0)
+        b_wk.configure(progress_color="#f59e0b", fg_color=COLOR["bar_bg"])
+
+        # 3. Card Footer Actions
+        divider = ctk.CTkFrame(card, height=1, fg_color=COLOR["border"])
+        divider.pack(fill="x", padx=16, pady=(6, 8))
+
+        footer = ctk.CTkFrame(card, fg_color="transparent")
+        footer.pack(fill="x", padx=16, pady=(0, 12))
+        footer.grid_columnconfigure(0, weight=1)
+
+        actions_pill = ctk.CTkFrame(footer, fg_color="transparent")
+        actions_pill.grid(row=0, column=0, sticky="w")
+
+        ctk.CTkButton(
+            actions_pill,
+            text="🩺 Тест",
+            font=self.font(size=11, weight="bold"),
+            fg_color=("#f1f5f9", "#151f33"),
+            hover_color=("#e2e8f0", "#1e2d4a"),
+            text_color=COLOR["text_primary"],
+            border_width=1,
+            border_color=("#cbd5e1", "#2a3b5c"),
+            width=58,
+            height=28,
+            corner_radius=8,
+            command=lambda a=acc: self.test_claude_account_action(a),
+        ).pack(side="left", padx=(0, 4))
+
+        if not is_active:
+            ctk.CTkButton(
+                actions_pill,
+                text="⭐ Выбрать",
+                font=self.font(size=11, weight="bold"),
+                fg_color="#d97706",
+                hover_color="#b45309",
+                text_color="#ffffff",
+                width=76,
+                height=28,
+                corner_radius=8,
+                command=lambda e=email: self.activate_claude_account_action(e),
+            ).pack(side="left", padx=(0, 4))
+
+        ctk.CTkButton(
+            actions_pill,
+            text="📋",
+            font=self.font(size=13, weight="bold"),
+            fg_color=("#f1f5f9", "#151f33"),
+            hover_color=("#e2e8f0", "#1e2d4a"),
+            text_color=COLOR["text_primary"],
+            border_width=1,
+            border_color=("#cbd5e1", "#2a3b5c"),
+            width=32,
+            height=28,
+            corner_radius=8,
+            command=lambda e=email: self.copy_to_clipboard(e, "Email скопирован"),
+        ).pack(side="left", padx=(0, 4))
+
+        ctk.CTkButton(
+            actions_pill,
+            text="🗑",
+            font=self.font(size=13, weight="bold"),
+            fg_color=("#f1f5f9", "#151f33"),
+            hover_color=("#fee2e2", "#3b1818"),
+            text_color="#f87171",
+            border_width=1,
+            border_color=("#cbd5e1", "#2a3b5c"),
+            width=32,
+            height=28,
+            corner_radius=8,
+            command=lambda a=acc: self.delete_claude_account_action(a),
+        ).pack(side="left")
+
+        return card
+
+    # =========================================================================
     # SETTINGS VIEW
     # =========================================================================
     def create_settings_view(self):
@@ -2967,14 +3211,24 @@ class AntigravityManagerApp(ctk.CTk):
             except Exception:
                 openai_accounts = []
 
+        claude_accounts = []
         try:
-            self.after(0, lambda: self._on_quotas_fetched(google_accounts, openai_accounts, rotate_msg))
+            claude_accounts = claude_service.load_accounts()
+        except Exception as e:
+            print(f"Error fetching Claude accounts: {e}")
+
+        try:
+            self.after(0, lambda: self._on_quotas_fetched(google_accounts, openai_accounts, claude_accounts, rotate_msg))
         except Exception as e:
             print(f"Callback error: {e}")
 
-    def _on_quotas_fetched(self, google_accounts, openai_accounts, rotate_msg=None):
+    def _on_quotas_fetched(self, google_accounts, openai_accounts, claude_accounts=None, rotate_msg=None):
         self.accounts_data = google_accounts
         self.openai_accounts_data = openai_accounts
+        if claude_accounts is not None:
+            self.claude_accounts_data = claude_accounts
+        else:
+            self.claude_accounts_data = claude_service.load_accounts()
         self.render_accounts()
         self.is_loading = False
         self.btn_refresh.configure(state="normal", text="🔄 Обновить квоты")
@@ -3083,6 +3337,147 @@ class AntigravityManagerApp(ctk.CTk):
         self.openai_accounts_data = openai_manager.load_openai_accounts()
         self.show_flash(f"Аккаунт {email} удален")
         self.render_accounts()
+
+    def add_claude_account_action(self):
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Подключение аккаунта Claude (Anthropic Pro)")
+        dialog.geometry("540x480")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ctk.CTkLabel(
+            dialog,
+            text="🟠 Авторизация Claude Pro / Team",
+            font=self.font(size=16, weight="bold"),
+            text_color=COLOR["text_primary"],
+        ).pack(anchor="w", padx=20, pady=(18, 6))
+
+        ctk.CTkLabel(
+            dialog,
+            text=(
+                "Чтобы использовать вашу подписку Claude Pro или Team в OpenCode без покупки API-токенов:\n\n"
+                "1. Войдите на сайт https://claude.ai со своим аккаунтом.\n"
+                "2. Нажмите F12 (Инструменты разработчика) -> вкладка Application (Приложение) -> Cookies -> claude.ai.\n"
+                "3. Скопируйте значение cookie 'sessionKey' (начинается с sk-ant-sid01-...) и вставьте ниже."
+            ),
+            font=self.font(size=11),
+            text_color=COLOR["text_secondary"],
+            justify="left",
+            wraplength=490,
+        ).pack(anchor="w", padx=20, pady=(0, 10))
+
+        btn_open_browser = ctk.CTkButton(
+            dialog,
+            text="🌐 Открыть claude.ai в браузере",
+            font=self.font(size=11, weight="bold"),
+            fg_color=COLOR["subbox_bg"],
+            hover_color=("#e2e8f0", "#16233a"),
+            text_color=COLOR["text_primary"],
+            border_width=1,
+            border_color=COLOR["border"],
+            height=30,
+            command=lambda: webbrowser.open("https://claude.ai"),
+        )
+        btn_open_browser.pack(anchor="w", padx=20, pady=(0, 12))
+
+        ctk.CTkLabel(dialog, text="Ключ сессии (sessionKey):", font=self.font(size=11, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w", padx=20, pady=(2, 2))
+        key_entry = ctk.CTkEntry(
+            dialog,
+            placeholder_text="sk-ant-sid01-...",
+            font=self.font(size=11),
+            height=34,
+            show="•",
+            fg_color=COLOR["subbox_bg"],
+            border_color=COLOR["border"],
+        )
+        key_entry.pack(fill="x", padx=20, pady=(0, 10))
+
+        lbl_status = ctk.CTkLabel(dialog, text="", font=self.font(size=11), text_color="#10b981")
+        lbl_status.pack(anchor="w", padx=20, pady=(0, 8))
+
+        btn_submit = ctk.CTkButton(
+            dialog,
+            text="✔ Проверить и подключить аккаунт",
+            font=self.font(size=12, weight="bold"),
+            fg_color="#d97706",
+            hover_color="#b45309",
+            height=36,
+        )
+        btn_submit.pack(fill="x", padx=20, pady=(4, 16))
+
+        def _do_verify():
+            key = key_entry.get().strip()
+            if not key:
+                lbl_status.configure(text="❌ Введите значение sessionKey", text_color="#ef4444")
+                return
+
+            btn_submit.configure(state="disabled", text="⏳ Проверка сессии...")
+            lbl_status.configure(text="Подключение к claude.ai...", text_color="#0284c7")
+
+            def _worker():
+                ok, msg, acc = claude_service.verify_and_add_account(key)
+                def _done():
+                    btn_submit.configure(state="normal", text="✔ Проверить и подключить аккаунт")
+                    if ok:
+                        self.claude_accounts_data = claude_service.load_accounts()
+                        self.show_flash(f"Аккаунт {acc.get('email')} успешно подключен!")
+                        self.render_accounts()
+                        try:
+                            dialog.grab_release()
+                            dialog.destroy()
+                        except Exception:
+                            pass
+                    else:
+                        lbl_status.configure(text=f"❌ {msg}", text_color="#ef4444")
+                        messagebox.showerror("Ошибка подключения", msg)
+                self.after(0, _done)
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        btn_submit.configure(command=_do_verify)
+
+    def activate_claude_account_action(self, email):
+        if claude_service.set_active_account(email):
+            self.claude_accounts_data = claude_service.load_accounts()
+            self.show_flash(f"Активный аккаунт Claude: {email}")
+            self.render_accounts()
+        else:
+            messagebox.showerror("Ошибка", "Не удалось активировать аккаунт Claude.")
+
+    def delete_claude_account_action(self, acc):
+        email = acc.get("email", "unknown")
+        if not messagebox.askyesno("Удаление", f"Удалить аккаунт Claude {email} из пула?"):
+            return
+        if claude_service.delete_account(email):
+            self.claude_accounts_data = claude_service.load_accounts()
+            self.show_flash(f"Аккаунт {email} удален")
+            self.render_accounts()
+
+    def test_claude_account_action(self, acc):
+        email = acc.get("email", "unknown")
+        self.set_status(f"🩺 Проверка аккаунта Claude {email}...")
+
+        def _worker():
+            start = time.time()
+            ok, msg, _ = claude_service.verify_and_add_account(acc.get("session_key", ""))
+            latency = int((time.time() - start) * 1000)
+
+            def _done():
+                self.set_status("Готово")
+                if ok:
+                    messagebox.showinfo(
+                        "Проверка Claude",
+                        f"Аккаунт: {email}\n\n• Статус: ✅ Активен ({acc.get('plan', 'pro').upper()})\n• Пинг: 🟢 {latency} мс\n• Модели: Claude 3.7 Sonnet, Thinking, Opus"
+                    )
+                else:
+                    messagebox.showerror(
+                        "Проверка Claude",
+                        f"Аккаунт: {email}\n\n• Ошибка: ❌ {msg}\nСессия могла истечь. Обновите sessionKey."
+                    )
+            self.after(0, _done)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def test_google_account_action(self, acc):
         email = acc.get("email", "unknown")
