@@ -56,6 +56,14 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 
 def get_active_proxy() -> Optional[str]:
     """Returns proxy to use (VLESS 10809 if running, or custom proxy)."""
+    # 1. First check if VLESS port 10809 is actively listening
+    try:
+        with socket.create_connection(("127.0.0.1", 10809), timeout=0.2):
+            return "http://127.0.0.1:10809"
+    except Exception:
+        pass
+
+    # 2. Check saved user proxy or config
     try:
         cfg_file = CONFIG_DIR / "antigravity.json"
         if cfg_file.exists():
@@ -142,15 +150,71 @@ class ClaudeAccountManager:
         return False
 
     def verify_and_add_account(self, session_key: str, custom_name: str = "") -> Tuple[bool, str, Optional[Dict[str, Any]]]:
-        """Validates claude.ai sessionKey and saves account info."""
+        """Validates claude.ai sessionKey or Claude Code setup-token and saves account info."""
         session_key = session_key.strip()
         if not session_key:
-            return False, "Укажите sessionKey (куки сессии claude.ai)", None
+            return False, "Укажите sessionKey (куки claude.ai) или токен Claude Code", None
 
+        opener = get_http_opener(timeout=15)
+
+        # Case A: Anthropic API / Claude Code setup-token (starts with sk-ant-api...)
+        if session_key.startswith("sk-ant-api"):
+            try:
+                headers = {
+                    "User-Agent": USER_AGENT,
+                    "x-api-key": session_key,
+                    "anthropic-version": "2023-06-01",
+                }
+                req = urllib.request.Request("https://api.anthropic.com/v1/models", headers=headers)
+                with opener.open(req) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                email = custom_name or "claude-code@anthropic"
+                account_data = {
+                    "email": email,
+                    "name": custom_name or "Claude Code",
+                    "session_key": session_key,
+                    "token_type": "api_token",
+                    "org_id": "claude-code",
+                    "plan": "pro",
+                    "active": False,
+                    "added_at": int(time.time()),
+                    "groups": [
+                        {
+                            "name": "claude",
+                            "remainingPercent": 100.0,
+                            "resetTime": "",
+                            "windows": [
+                                {"window": "5h", "remainingPercent": 100.0, "resetTime": ""},
+                                {"window": "weekly", "remainingPercent": 100.0, "resetTime": ""},
+                            ]
+                        }
+                    ]
+                }
+                accounts = self.load_accounts()
+                updated = False
+                for i, existing in enumerate(accounts):
+                    if existing.get("email") == email:
+                        account_data["active"] = existing.get("active", False)
+                        accounts[i] = account_data
+                        updated = True
+                        break
+                if not updated:
+                    if not accounts:
+                        account_data["active"] = True
+                    accounts.append(account_data)
+
+                self.save_accounts(accounts)
+                self.configure_opencode_provider()
+                return True, f"Аккаунт Claude Code ({email}) успешно подключён!", account_data
+            except urllib.error.HTTPError as e:
+                return False, f"Ошибка авторизации Anthropic API ({e.code}): недействительный токен.", None
+            except Exception as e:
+                return False, f"Ошибка подключения к api.anthropic.com: {e}", None
+
+        # Case B: claude.ai Web Session (sessionKey cookie: sk-ant-sid...)
         if not session_key.startswith("sk-ant-"):
             session_key = f"sk-ant-{session_key}" if not session_key.startswith("sid01-") else f"sk-ant-{session_key}"
 
-        opener = get_http_opener(timeout=15)
         headers = {
             "User-Agent": USER_AGENT,
             "Cookie": f"sessionKey={session_key}",
@@ -158,7 +222,7 @@ class ClaudeAccountManager:
         }
 
         try:
-            req = urllib.request.Request("https://api.claude.ai/api/organizations", headers=headers)
+            req = urllib.request.Request("https://claude.ai/api/organizations", headers=headers)
             with opener.open(req) as resp:
                 orgs = json.loads(resp.read().decode("utf-8"))
 
@@ -172,7 +236,7 @@ class ClaudeAccountManager:
             # Fetch user profile
             email = "claude.user@anthropic"
             try:
-                prof_req = urllib.request.Request("https://api.claude.ai/api/auth/current_user", headers=headers)
+                prof_req = urllib.request.Request("https://claude.ai/api/auth/current_user", headers=headers)
                 with opener.open(prof_req) as resp:
                     u_data = json.loads(resp.read().decode("utf-8"))
                     email = u_data.get("email_address") or u_data.get("email") or email
@@ -183,6 +247,7 @@ class ClaudeAccountManager:
                 "email": email,
                 "name": custom_name or email.split("@")[0],
                 "session_key": session_key,
+                "token_type": "session_key",
                 "org_id": org_id,
                 "plan": plan_type,
                 "active": False,
@@ -201,7 +266,6 @@ class ClaudeAccountManager:
             }
 
             accounts = self.load_accounts()
-            # If already exists, update
             updated = False
             for i, existing in enumerate(accounts):
                 if existing.get("email") == email:
@@ -219,8 +283,8 @@ class ClaudeAccountManager:
             self.configure_opencode_provider()
             return True, f"Аккаунт {email} ({plan_type.upper()}) успешно подключён!", account_data
         except urllib.error.HTTPError as e:
-            if e.code == 401 or e.code == 403:
-                return False, f"Ошибка авторизации ({e.code}). Сессия недействительна или истекла.", None
+            if e.code in (401, 403):
+                return False, f"Ошибка авторизации claude.ai ({e.code}). Сессия истекла или заблокирована.", None
             return False, f"Ошибка API claude.ai: {e}", None
         except Exception as e:
             return False, f"Ошибка проверки сессии: {e}", None
@@ -393,29 +457,69 @@ class ClaudeSubscriptionBridge:
             handler.wfile.flush()
 
             try:
-                target_url = f"https://api.claude.ai/api/organizations/{org_id}/chat_conversations"
-                req = urllib.request.Request(target_url, data=json.dumps(claude_payload).encode("utf-8"), headers=req_headers)
-                with opener.open(req, timeout=45) as resp:
-                    for line in resp:
-                        if not line:
-                            continue
-                        line_str = line.decode("utf-8", errors="ignore")
-                        if line_str.startswith("data: "):
-                            try:
-                                data = json.loads(line_str[6:].strip())
-                                completion = data.get("completion") or data.get("text") or ""
-                                if completion:
-                                    c = {
-                                        "id": chunk_id,
-                                        "object": "chat.completion.chunk",
-                                        "created": int(time.time()),
-                                        "model": requested_model,
-                                        "choices": [{"index": 0, "delta": {"content": completion}, "finish_reason": None}],
-                                    }
-                                    handler.wfile.write(f"data: {json.dumps(c)}\n\n".encode("utf-8"))
-                                    handler.wfile.flush()
-                            except Exception:
-                                pass
+                if account.get("token_type") == "api_token":
+                    target_url = "https://api.anthropic.com/v1/messages"
+                    anthropic_headers = {
+                        "User-Agent": USER_AGENT,
+                        "x-api-key": session_key,
+                        "anthropic-version": "2023-06-01",
+                        "Content-Type": "application/json",
+                        "Accept": "text/event-stream",
+                    }
+                    anthropic_body = {
+                        "model": actual_model,
+                        "messages": [{"role": m.get("role", "user"), "content": m.get("content", "")} for m in raw_messages if m.get("role") in ("user", "assistant")],
+                        "max_tokens": model_info.get("limit", {}).get("output", 4096),
+                        "stream": True,
+                    }
+                    req = urllib.request.Request(target_url, data=json.dumps(anthropic_body).encode("utf-8"), headers=anthropic_headers)
+                    with opener.open(req, timeout=45) as resp:
+                        for line in resp:
+                            if not line:
+                                continue
+                            line_str = line.decode("utf-8", errors="ignore")
+                            if line_str.startswith("data: "):
+                                try:
+                                    ev = json.loads(line_str[6:].strip())
+                                    delta_text = ""
+                                    if ev.get("type") == "content_block_delta":
+                                        delta_text = ev.get("delta", {}).get("text", "")
+                                    if delta_text:
+                                        c = {
+                                            "id": chunk_id,
+                                            "object": "chat.completion.chunk",
+                                            "created": int(time.time()),
+                                            "model": requested_model,
+                                            "choices": [{"index": 0, "delta": {"content": delta_text}, "finish_reason": None}],
+                                        }
+                                        handler.wfile.write(f"data: {json.dumps(c)}\n\n".encode("utf-8"))
+                                        handler.wfile.flush()
+                                except Exception:
+                                    pass
+                else:
+                    target_url = f"https://claude.ai/api/organizations/{org_id}/chat_conversations"
+                    req = urllib.request.Request(target_url, data=json.dumps(claude_payload).encode("utf-8"), headers=req_headers)
+                    with opener.open(req, timeout=45) as resp:
+                        for line in resp:
+                            if not line:
+                                continue
+                            line_str = line.decode("utf-8", errors="ignore")
+                            if line_str.startswith("data: "):
+                                try:
+                                    data = json.loads(line_str[6:].strip())
+                                    completion = data.get("completion") or data.get("text") or ""
+                                    if completion:
+                                        c = {
+                                            "id": chunk_id,
+                                            "object": "chat.completion.chunk",
+                                            "created": int(time.time()),
+                                            "model": requested_model,
+                                            "choices": [{"index": 0, "delta": {"content": completion}, "finish_reason": None}],
+                                        }
+                                        handler.wfile.write(f"data: {json.dumps(c)}\n\n".encode("utf-8"))
+                                        handler.wfile.flush()
+                                except Exception:
+                                    pass
             except Exception as e:
                 err_chunk = {
                     "id": chunk_id,
@@ -439,7 +543,7 @@ class ClaudeSubscriptionBridge:
         else:
             # Non-streaming fallback
             try:
-                target_url = f"https://api.claude.ai/api/organizations/{org_id}/chat_conversations"
+                target_url = f"https://claude.ai/api/organizations/{org_id}/chat_conversations"
                 req = urllib.request.Request(target_url, data=json.dumps(claude_payload).encode("utf-8"), headers=req_headers)
                 with opener.open(req, timeout=45) as resp:
                     raw_text = resp.read().decode("utf-8")

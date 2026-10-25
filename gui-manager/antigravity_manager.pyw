@@ -3340,15 +3340,15 @@ class AntigravityManagerApp(ctk.CTk):
 
     def add_claude_account_action(self):
         dialog = ctk.CTkToplevel(self)
-        dialog.title("Подключение аккаунта Claude (Anthropic Pro)")
-        dialog.geometry("540x480")
+        dialog.title("Подключение аккаунта Claude (Anthropic Pro / Claude Code)")
+        dialog.geometry("560x520")
         dialog.resizable(False, False)
         dialog.transient(self)
         dialog.grab_set()
 
         ctk.CTkLabel(
             dialog,
-            text="🟠 Авторизация Claude Pro / Team",
+            text="🟠 Авторизация Claude Pro / Team / Claude Code",
             font=self.font(size=16, weight="bold"),
             text_color=COLOR["text_primary"],
         ).pack(anchor="w", padx=20, pady=(18, 6))
@@ -3356,42 +3356,77 @@ class AntigravityManagerApp(ctk.CTk):
         ctk.CTkLabel(
             dialog,
             text=(
-                "Чтобы использовать вашу подписку Claude Pro или Team в OpenCode без покупки API-токенов:\n\n"
-                "1. Войдите на сайт https://claude.ai со своим аккаунтом.\n"
-                "2. Нажмите F12 (Инструменты разработчика) -> вкладка Application (Приложение) -> Cookies -> claude.ai.\n"
-                "3. Скопируйте значение cookie 'sessionKey' (начинается с sk-ant-sid01-...) и вставьте ниже."
+                "Подключение учетной записи Anthropic Claude для использования подписки Pro / Team "
+                "в OpenCode без покупки API-токенов.\n\n"
+                "Доступно два простых способа:"
             ),
             font=self.font(size=11),
             text_color=COLOR["text_secondary"],
             justify="left",
-            wraplength=490,
+            wraplength=510,
         ).pack(anchor="w", padx=20, pady=(0, 10))
 
-        btn_open_browser = ctk.CTkButton(
-            dialog,
-            text="🌐 Открыть claude.ai в браузере",
+        # Buttons row: Official Claude Code setup-token & Browser
+        btns_row = ctk.CTkFrame(dialog, fg_color="transparent")
+        btns_row.pack(fill="x", padx=20, pady=(0, 12))
+
+        def _launch_claude_code():
+            try:
+                subprocess.Popen(
+                    ["cmd.exe", "/c", "start", "Claude Code Auth", "cmd.exe", "/k", "npx --yes @anthropic-ai/claude-code setup-token"]
+                )
+            except Exception as err:
+                messagebox.showerror("Ошибка запуска", f"Не удалось запустить Claude Code CLI: {err}")
+
+        btn_cli_auth = ctk.CTkButton(
+            btns_row,
+            text="⚡ Официальный вход Claude Code",
             font=self.font(size=11, weight="bold"),
+            fg_color="#d97706",
+            hover_color="#b45309",
+            height=32,
+            command=_launch_claude_code,
+        )
+        btn_cli_auth.pack(side="left", padx=(0, 8))
+
+        btn_open_browser = ctk.CTkButton(
+            btns_row,
+            text="🌐 Открыть claude.ai",
+            font=self.font(size=11),
             fg_color=COLOR["subbox_bg"],
             hover_color=("#e2e8f0", "#16233a"),
             text_color=COLOR["text_primary"],
             border_width=1,
             border_color=COLOR["border"],
-            height=30,
+            height=32,
             command=lambda: webbrowser.open("https://claude.ai"),
         )
-        btn_open_browser.pack(anchor="w", padx=20, pady=(0, 12))
+        btn_open_browser.pack(side="left")
 
-        ctk.CTkLabel(dialog, text="Ключ сессии (sessionKey):", font=self.font(size=11, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w", padx=20, pady=(2, 2))
+        guide_box = ctk.CTkFrame(dialog, fg_color=COLOR["subbox_bg"], corner_radius=8, border_width=1, border_color=COLOR["border"])
+        guide_box.pack(fill="x", padx=20, pady=(0, 12))
+        ctk.CTkLabel(
+            guide_box,
+            text=(
+                "• Способ 1 (Claude Code CLI): Нажмите «⚡ Официальный вход Claude Code». В терминале откроется браузер, войдите со своей подпиской, скопируйте сгенерированный токен и вставьте ниже.\n"
+                "• Способ 2 (Браузерная сессия): Откройте claude.ai, нажмите F12 -> Application -> Cookies -> claude.ai, скопируйте значение 'sessionKey' (sk-ant-sid01-...) и вставьте ниже."
+            ),
+            font=self.font(size=10),
+            text_color=COLOR["text_secondary"],
+            justify="left",
+            wraplength=500,
+        ).pack(fill="x", padx=10, pady=8)
+
+        ctk.CTkLabel(dialog, text="Токен Claude Code или sessionKey:", font=self.font(size=11, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w", padx=20, pady=(2, 2))
         key_entry = ctk.CTkEntry(
             dialog,
-            placeholder_text="sk-ant-sid01-...",
+            placeholder_text="sk-ant-sid01-... (sessionKey) или токен Claude Code",
             font=self.font(size=11),
             height=34,
-            show="•",
             fg_color=COLOR["subbox_bg"],
             border_color=COLOR["border"],
         )
-        key_entry.pack(fill="x", padx=20, pady=(0, 10))
+        key_entry.pack(fill="x", padx=20, pady=(0, 8))
 
         lbl_status = ctk.CTkLabel(dialog, text="", font=self.font(size=11), text_color="#10b981")
         lbl_status.pack(anchor="w", padx=20, pady=(0, 8))
