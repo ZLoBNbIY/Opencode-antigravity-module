@@ -598,6 +598,7 @@ class MwapiView(ctk.CTkScrollableFrame):
             usage = None
 
         if usage:
+            self._last_usage_refresh = time.monotonic()
             self.update_quota_display(usage)
 
         self.models = models
