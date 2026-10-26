@@ -24,6 +24,41 @@ CLAUDE_PROFILE_DIR = CONFIG_DIR / "claude_profile"
 DEFAULT_BRIDGE_PORT = 51186
 
 CLAUDE_MODELS = {
+    "claude-opus-5": {
+        "name": "Claude Opus 5",
+        "api_model": "claude-opus-5",
+        "limit": {"context": 200000, "output": 64000},
+    },
+    "claude-opus-4-8": {
+        "name": "Claude Opus 4.8",
+        "api_model": "claude-opus-4-8",
+        "limit": {"context": 200000, "output": 64000},
+    },
+    "claude-opus-4-7": {
+        "name": "Claude Opus 4.7",
+        "api_model": "claude-opus-4-7",
+        "limit": {"context": 200000, "output": 64000},
+    },
+    "claude-sonnet-5": {
+        "name": "Claude Sonnet 5",
+        "api_model": "claude-sonnet-5",
+        "limit": {"context": 200000, "output": 64000},
+    },
+    "claude-sonnet-4-6": {
+        "name": "Claude Sonnet 4.6",
+        "api_model": "claude-sonnet-4-6",
+        "limit": {"context": 200000, "output": 64000},
+    },
+    "claude-haiku-4-5": {
+        "name": "Claude Haiku 4.5",
+        "api_model": "claude-haiku-4-5",
+        "limit": {"context": 200000, "output": 8192},
+    },
+    "claude-fable-5": {
+        "name": "Claude Fable 5",
+        "api_model": "claude-fable-5",
+        "limit": {"context": 200000, "output": 64000},
+    },
     "claude-3-7-sonnet": {
         "name": "Claude 3.7 Sonnet",
         "api_model": "claude-3-7-sonnet-20250219",
@@ -150,78 +185,99 @@ class ClaudeAccountManager:
             return True
         return False
 
-    def verify_and_add_account(self, session_key: str, custom_name: str = "") -> Tuple[bool, str, Optional[Dict[str, Any]]]:
-        """Validates claude.ai sessionKey or Claude Code setup-token and saves account info."""
+    def verify_and_add_account(self, session_key: str, custom_name: str = "", base_url: str = "") -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """Validates claude.ai sessionKey, Claude Code setup-token, or third-party Claude API (e.g. Xpiki) and saves account."""
         session_key = session_key.strip()
+        base_url = (base_url or "").strip().rstrip("/")
         if not session_key:
-            return False, "Укажите sessionKey (куки claude.ai) или токен Claude Code", None
+            return False, "Укажите sessionKey (куки claude.ai) или API-ключ Claude (sk-...)", None
 
         opener = get_http_opener(timeout=15)
 
-        # Case A: Anthropic API / Claude Code setup-token (starts with sk-ant-api...)
-        if session_key.startswith("sk-ant-api"):
+        # Case A: Anthropic API / Third-Party Proxy (Xpiki, etc.) / Claude Code setup-token
+        is_api_token = session_key.startswith("sk-ant-api") or session_key.startswith("sk-") or bool(base_url)
+        if is_api_token and not session_key.startswith("sk-ant-sid"):
+            target_base = base_url or "https://api.anthropic.com/v1"
+            test_url = f"{target_base}/models"
+            headers = {
+                "User-Agent": USER_AGENT,
+                "x-api-key": session_key,
+                "Authorization": f"Bearer {session_key}",
+                "anthropic-version": "2023-06-01",
+            }
             try:
-                headers = {
-                    "User-Agent": USER_AGENT,
-                    "x-api-key": session_key,
-                    "anthropic-version": "2023-06-01",
-                }
-                req = urllib.request.Request("https://api.anthropic.com/v1/models", headers=headers)
-                with opener.open(req, timeout=10) as resp:
+                req = urllib.request.Request(test_url, headers=headers)
+                with opener.open(req, timeout=12) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
-                email = custom_name or "claude-code@anthropic"
-                account_data = {
-                    "email": email,
-                    "name": custom_name or "Claude Code",
-                    "session_key": session_key,
-                    "token_type": "api_token",
-                    "org_id": "claude-code",
-                    "plan": "pro",
-                    "active": False,
-                    "added_at": int(time.time()),
-                    "groups": [
-                        {
-                            "name": "claude",
-                            "remainingPercent": 100.0,
-                            "resetTime": "",
-                            "windows": [
-                                {"window": "5h", "remainingPercent": 100.0, "resetTime": ""},
-                                {"window": "weekly", "remainingPercent": 100.0, "resetTime": ""},
-                            ]
-                        }
-                    ]
-                }
-                accounts = self.load_accounts()
-                updated = False
-                for i, existing in enumerate(accounts):
-                    if existing.get("email") == email:
-                        account_data["active"] = existing.get("active", False)
-                        accounts[i] = account_data
-                        updated = True
-                        break
-                if not updated:
-                    if not accounts:
-                        account_data["active"] = True
-                    accounts.append(account_data)
+            except Exception:
+                # Fallback probe to /messages with small ping
+                try:
+                    probe_body = {
+                        "model": "claude-3-5-haiku-20241022" if "anthropic.com" in target_base else "claude-haiku-4-5",
+                        "max_tokens": 10,
+                        "messages": [{"role": "user", "content": "ping"}]
+                    }
+                    probe_req = urllib.request.Request(
+                        f"{target_base}/messages",
+                        data=json.dumps(probe_body).encode("utf-8"),
+                        headers={**headers, "Content-Type": "application/json"}
+                    )
+                    with opener.open(probe_req, timeout=12) as resp:
+                        data = json.loads(resp.read().decode("utf-8"))
+                except urllib.error.HTTPError as e:
+                    return False, f"Ошибка авторизации Claude API ({e.code}): недействительный ключ или эндпоинт {target_base}.", None
+                except Exception as e:
+                    return False, f"Ошибка подключения к {target_base}: {e}", None
 
-                self.save_accounts(accounts)
-                self.configure_opencode_provider()
-                return True, f"Аккаунт Claude Code ({email}) успешно подключён!", account_data
-            except urllib.error.HTTPError as e:
-                return False, f"Ошибка авторизации Anthropic API ({e.code}): недействительный токен.", None
-            except Exception as e:
-                return False, f"Ошибка подключения к api.anthropic.com (таймаут или сеть): {e}", None
+            domain_label = urllib.parse.urlparse(target_base).netloc or "anthropic"
+            email = custom_name or (f"claude-api@{domain_label}" if domain_label != "api.anthropic.com" else "claude-code@anthropic")
+            account_data = {
+                "email": email,
+                "name": custom_name or ("Claude API (Xpiki)" if "xpiki" in target_base else "Claude API"),
+                "session_key": session_key,
+                "base_url": target_base,
+                "token_type": "api_token",
+                "org_id": domain_label,
+                "plan": "pro",
+                "active": False,
+                "added_at": int(time.time()),
+                "groups": [
+                    {
+                        "name": "claude",
+                        "remainingPercent": 100.0,
+                        "resetTime": "",
+                        "windows": [
+                            {"window": "5h", "remainingPercent": 100.0, "resetTime": ""},
+                            {"window": "weekly", "remainingPercent": 100.0, "resetTime": ""},
+                        ]
+                    }
+                ]
+            }
+            accounts = self.load_accounts()
+            updated = False
+            for i, existing in enumerate(accounts):
+                if existing.get("email") == email:
+                    account_data["active"] = existing.get("active", False)
+                    accounts[i] = account_data
+                    updated = True
+                    break
+            if not updated:
+                if not accounts:
+                    account_data["active"] = True
+                accounts.append(account_data)
+
+            self.save_accounts(accounts)
+            self.configure_opencode_provider()
+            self.configure_claude_cli_settings(session_key, target_base)
+            return True, f"Аккаунт Claude API ({email}) успешно подключён!", account_data
 
         # Case B: claude.ai Web Session (sessionKey cookie: sk-ant-sid...)
         if not session_key.startswith("sk-ant-"):
             if not session_key.startswith("sid01-"):
                 return False, (
-                    "Введённое значение не является sessionKey или токеном Claude!\n\n"
-                    "• Для сессии claude.ai: cookie в первой колонке называется 'sessionKey', "
-                    "а её значение начинается с 'sk-ant-sid01-...'.\n"
-                    "• Для Claude Code CLI: токен начинается с 'sk-ant-api...'.\n\n"
-                    "Вы скопировали значение другой куки (например, __cf_bm). "
-                    "В таблице Cookies найдите именно строку 'sessionKey'."
+                    "Введённое значение не является sessionKey или API-токеном Claude!\n\n"
+                    "• Для сессии claude.ai: cookie называется 'sessionKey' (начинается с sk-ant-sid01-...).\n"
+                    "• Для Claude API (Xpiki): токен начинается с sk-..."
                 ), None
             session_key = f"sk-ant-{session_key}"
 
@@ -336,6 +392,50 @@ class ClaudeAccountManager:
         except Exception as e:
             print(f"[Claude Manager] Failed to configure opencode.json: {e}")
             return False
+
+    def configure_claude_cli_settings(self, api_token: str, base_url: str = "https://api.xpiki.com/v1", model: str = "claude-opus-5") -> Tuple[bool, str]:
+        """Configures ~/.claude/settings.json for official Claude Code CLI according to the Teletype guide."""
+        try:
+            claude_dir = Path.home() / ".claude"
+            claude_dir.mkdir(parents=True, exist_ok=True)
+            settings_path = claude_dir / "settings.json"
+            data: Dict[str, Any] = {}
+            if settings_path.exists():
+                try:
+                    data = json.loads(settings_path.read_text(encoding="utf-8"))
+                except Exception:
+                    data = {}
+            env_block = data.setdefault("env", {})
+            env_block["ANTHROPIC_AUTH_TOKEN"] = api_token.strip()
+            env_block["ANTHROPIC_BASE_URL"] = (base_url or "https://api.xpiki.com/v1").strip().rstrip("/")
+            env_block["ANTHROPIC_MODEL"] = model.strip()
+            settings_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            return True, f"Настройки Claude Code CLI записаны в {settings_path}"
+        except Exception as e:
+            return False, f"Ошибка записи ~/.claude/settings.json: {e}"
+
+    def configure_claude_desktop_settings(self, api_token: str, base_url: str = "https://api.xpiki.com/v1") -> Tuple[bool, str]:
+        """Configures Claude Desktop config (%APPDATA%/Claude/claude_desktop_config.json) for third-party inference."""
+        try:
+            appdata = os.environ.get("APPDATA")
+            if not appdata:
+                return False, "APPDATA environment variable not found"
+            claude_desktop_dir = Path(appdata) / "Claude"
+            claude_desktop_dir.mkdir(parents=True, exist_ok=True)
+            cfg_path = claude_desktop_dir / "claude_desktop_config.json"
+            data: Dict[str, Any] = {}
+            if cfg_path.exists():
+                try:
+                    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+                except Exception:
+                    data = {}
+            inference = data.setdefault("thirdPartyInference", {})
+            inference["baseUrl"] = (base_url or "https://api.xpiki.com/v1").strip().rstrip("/")
+            inference["apiKey"] = api_token.strip()
+            cfg_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            return True, f"Настройки Claude Desktop записаны в {cfg_path}"
+        except Exception as e:
+            return False, f"Ошибка настройки Claude Desktop: {e}"
 
     def login_claude_browser(self, mode: str = "tunnel", timeout: int = 300, progress_callback=None) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
         """Opens a browser window for user to log into claude.ai,
@@ -592,26 +692,44 @@ class ClaudeSubscriptionBridge:
                 print(f"[Claude Bridge] Failed to start server on port {self.port}: {e}")
 
     def handle_completion_request(self, handler: BaseHTTPRequestHandler, payload: dict, account: dict):
-        """Translates completion requests into claude.ai conversation calls with streaming."""
+        """Translates completion requests into claude.ai conversation calls with streaming and compaction filtering."""
         is_stream = payload.get("stream", False)
         requested_model = payload.get("model", "claude-pro/claude-3-7-sonnet").replace("claude-pro/", "")
-        model_info = CLAUDE_MODELS.get(requested_model, CLAUDE_MODELS["claude-3-7-sonnet"])
-        actual_model = model_info["api_model"]
+        model_info = CLAUDE_MODELS.get(requested_model, CLAUDE_MODELS.get("claude-3-7-sonnet", {}))
+        actual_model = model_info.get("api_model", requested_model)
 
         opener = get_http_opener(timeout=60)
         session_key = account.get("session_key", "")
         org_id = account.get("org_id", "")
+        base_url = account.get("base_url") or "https://api.anthropic.com/v1"
 
-        # Extract messages
+        # Extract messages and separate system prompt
         raw_messages = payload.get("messages", [])
-        prompt_text = ""
+        system_parts = []
+        conversation_messages = []
+
         for m in raw_messages:
             role = m.get("role", "user")
             content = m.get("content", "")
             if isinstance(content, list):
                 text_parts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
                 content = "\n".join(text_parts)
-            prompt_text += f"\n\n{role.capitalize()}: {content}"
+            if role == "system":
+                system_parts.append(content)
+            elif role in ("user", "assistant"):
+                conversation_messages.append({"role": role, "content": content})
+
+        system_text = "\n\n".join(system_parts) if system_parts else ""
+        is_compaction = "<summary>" in system_text or any("<summary>" in m.get("content", "") for m in conversation_messages)
+
+        prompt_text = ""
+        if system_text:
+            prompt_text += f"\n\nSystem: {system_text}"
+            if is_compaction:
+                prompt_text += "\n\nCRITICAL INSTRUCTION: Output MUST begin immediately with <summary> and end with </summary>. Do NOT output any intro or greeting."
+
+        for m in conversation_messages:
+            prompt_text += f"\n\n{m['role'].capitalize()}: {m['content']}"
         prompt_text += "\n\nAssistant:"
 
         req_headers = {
@@ -646,22 +764,61 @@ class ClaudeSubscriptionBridge:
             handler.wfile.write(f"data: {json.dumps(initial_chunk)}\n\n".encode("utf-8"))
             handler.wfile.flush()
 
+            compaction_buffer = ""
+            summary_started = not is_compaction
+
+            def emit_chunk(delta_text: str):
+                nonlocal compaction_buffer, summary_started
+                if not delta_text:
+                    return
+                if is_compaction and not summary_started:
+                    compaction_buffer += delta_text
+                    if "<summary>" in compaction_buffer:
+                        summary_started = True
+                        clean_text = compaction_buffer[compaction_buffer.index("<summary>"):]
+                        c = {
+                            "id": chunk_id,
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": requested_model,
+                            "choices": [{"index": 0, "delta": {"content": clean_text}, "finish_reason": None}],
+                        }
+                        handler.wfile.write(f"data: {json.dumps(c)}\n\n".encode("utf-8"))
+                        handler.wfile.flush()
+                    return
+
+                c = {
+                    "id": chunk_id,
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": requested_model,
+                    "choices": [{"index": 0, "delta": {"content": delta_text}, "finish_reason": None}],
+                }
+                handler.wfile.write(f"data: {json.dumps(c)}\n\n".encode("utf-8"))
+                handler.wfile.flush()
+
             try:
                 if account.get("token_type") == "api_token":
-                    target_url = "https://api.anthropic.com/v1/messages"
+                    target_url = f"{base_url.rstrip('/')}/messages"
                     anthropic_headers = {
                         "User-Agent": USER_AGENT,
                         "x-api-key": session_key,
+                        "Authorization": f"Bearer {session_key}",
                         "anthropic-version": "2023-06-01",
                         "Content-Type": "application/json",
                         "Accept": "text/event-stream",
                     }
                     anthropic_body = {
                         "model": actual_model,
-                        "messages": [{"role": m.get("role", "user"), "content": m.get("content", "")} for m in raw_messages if m.get("role") in ("user", "assistant")],
+                        "messages": conversation_messages or [{"role": "user", "content": "Hello"}],
                         "max_tokens": model_info.get("limit", {}).get("output", 4096),
                         "stream": True,
                     }
+                    if system_text:
+                        anthropic_body["system"] = system_text
+                        if is_compaction:
+                            anthropic_body["system"] += "\n\nCRITICAL INSTRUCTION: Output MUST begin immediately with <summary> and end with </summary>. Do NOT output any intro or greeting before <summary>."
+
                     req = urllib.request.Request(target_url, data=json.dumps(anthropic_body).encode("utf-8"), headers=anthropic_headers)
                     with opener.open(req, timeout=45) as resp:
                         for line in resp:
@@ -674,16 +831,7 @@ class ClaudeSubscriptionBridge:
                                     delta_text = ""
                                     if ev.get("type") == "content_block_delta":
                                         delta_text = ev.get("delta", {}).get("text", "")
-                                    if delta_text:
-                                        c = {
-                                            "id": chunk_id,
-                                            "object": "chat.completion.chunk",
-                                            "created": int(time.time()),
-                                            "model": requested_model,
-                                            "choices": [{"index": 0, "delta": {"content": delta_text}, "finish_reason": None}],
-                                        }
-                                        handler.wfile.write(f"data: {json.dumps(c)}\n\n".encode("utf-8"))
-                                        handler.wfile.flush()
+                                    emit_chunk(delta_text)
                                 except Exception:
                                     pass
                 else:
@@ -698,16 +846,7 @@ class ClaudeSubscriptionBridge:
                                 try:
                                     data = json.loads(line_str[6:].strip())
                                     completion = data.get("completion") or data.get("text") or ""
-                                    if completion:
-                                        c = {
-                                            "id": chunk_id,
-                                            "object": "chat.completion.chunk",
-                                            "created": int(time.time()),
-                                            "model": requested_model,
-                                            "choices": [{"index": 0, "delta": {"content": completion}, "finish_reason": None}],
-                                        }
-                                        handler.wfile.write(f"data: {json.dumps(c)}\n\n".encode("utf-8"))
-                                        handler.wfile.flush()
+                                    emit_chunk(completion)
                                 except Exception:
                                     pass
             except Exception as e:
@@ -719,6 +858,18 @@ class ClaudeSubscriptionBridge:
                     "choices": [{"index": 0, "delta": {"content": f"\n\n[Claude Subscription Error: {e}]"}, "finish_reason": "stop"}],
                 }
                 handler.wfile.write(f"data: {json.dumps(err_chunk)}\n\n".encode("utf-8"))
+
+            # If compaction summary was not found in buffer, wrap buffer in summary tags
+            if is_compaction and not summary_started and compaction_buffer:
+                fallback_summary = f"<summary>\n{compaction_buffer.strip()}\n</summary>"
+                c = {
+                    "id": chunk_id,
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": requested_model,
+                    "choices": [{"index": 0, "delta": {"content": fallback_summary}, "finish_reason": None}],
+                }
+                handler.wfile.write(f"data: {json.dumps(c)}\n\n".encode("utf-8"))
 
             final_chunk = {
                 "id": chunk_id,
@@ -733,10 +884,35 @@ class ClaudeSubscriptionBridge:
         else:
             # Non-streaming fallback
             try:
-                target_url = f"https://claude.ai/api/organizations/{org_id}/chat_conversations"
-                req = urllib.request.Request(target_url, data=json.dumps(claude_payload).encode("utf-8"), headers=req_headers)
-                with opener.open(req, timeout=45) as resp:
-                    raw_text = resp.read().decode("utf-8")
+                if account.get("token_type") == "api_token":
+                    target_url = f"{base_url.rstrip('/')}/messages"
+                    anthropic_headers = {
+                        "User-Agent": USER_AGENT,
+                        "x-api-key": session_key,
+                        "Authorization": f"Bearer {session_key}",
+                        "anthropic-version": "2023-06-01",
+                        "Content-Type": "application/json",
+                    }
+                    anthropic_body = {
+                        "model": actual_model,
+                        "messages": conversation_messages or [{"role": "user", "content": "Hello"}],
+                        "max_tokens": model_info.get("limit", {}).get("output", 4096),
+                    }
+                    if system_text:
+                        anthropic_body["system"] = system_text
+                    req = urllib.request.Request(target_url, data=json.dumps(anthropic_body).encode("utf-8"), headers=anthropic_headers)
+                    with opener.open(req, timeout=45) as resp:
+                        res_json = json.loads(resp.read().decode("utf-8"))
+                        text_blocks = [c.get("text", "") for c in res_json.get("content", []) if c.get("type") == "text"]
+                        raw_text = "".join(text_blocks)
+                else:
+                    target_url = f"https://claude.ai/api/organizations/{org_id}/chat_conversations"
+                    req = urllib.request.Request(target_url, data=json.dumps(claude_payload).encode("utf-8"), headers=req_headers)
+                    with opener.open(req, timeout=45) as resp:
+                        raw_text = resp.read().decode("utf-8")
+
+                if is_compaction and "<summary>" in raw_text:
+                    raw_text = raw_text[raw_text.index("<summary>"):]
                     resp_obj = {
                         "id": f"chatcmpl-{secrets.token_hex(6)}",
                         "object": "chat.completion",

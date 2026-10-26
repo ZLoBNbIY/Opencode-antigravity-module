@@ -3671,7 +3671,7 @@ class AntigravityManagerApp(ctk.CTk):
             text=(
                 "• Вариант 1 (VLESS): Hub запускает встроенный браузер через ваш локальный VLESS-туннель (10809), перехватывает sessionKey и настраивает фоновое авто-продление сессии.\n"
                 "• Вариант 2 (Дефолтный браузер): Hub откроет ваш системный браузер (Yandex / Chrome / Edge). Убедитесь, что в системе включен VPN.\n"
-                "• Вариант 3 (Вручную): Вы можете вставить токен Claude Code или sessionKey (sk-ant-sid01-...) в поле ниже."
+                "• Вариант 3 (Claude API / Xpiki): Вставьте API-ключ (sk-...) и Base URL ниже. Hub автоматически настроит и OpenCode, и Claude Code CLI (~/.claude/settings.json)."
             ),
             font=self.font(size=10),
             text_color=COLOR["text_secondary"],
@@ -3679,16 +3679,42 @@ class AntigravityManagerApp(ctk.CTk):
             wraplength=570,
         ).pack(fill="x", padx=12, pady=8)
 
-        ctk.CTkLabel(dialog, text="Токен Claude Code или sessionKey:", font=self.font(size=11, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w", padx=20, pady=(2, 2))
+        ctk.CTkLabel(dialog, text="Токен / sessionKey / API-ключ Claude:", font=self.font(size=11, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w", padx=20, pady=(2, 2))
         key_entry = ctk.CTkEntry(
             dialog,
-            placeholder_text="sk-ant-sid01-... (sessionKey) или токен Claude Code",
+            placeholder_text="sk-ant-sid01-... (sessionKey) или API-ключ sk-... (Xpiki / Claude)",
             font=self.font(size=11),
             height=34,
             fg_color=COLOR["subbox_bg"],
             border_color=COLOR["border"],
         )
         key_entry.pack(fill="x", padx=20, pady=(0, 6))
+
+        api_options_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        api_options_frame.pack(fill="x", padx=20, pady=(0, 6))
+
+        url_entry = ctk.CTkEntry(
+            api_options_frame,
+            placeholder_text="Base URL (для Xpiki/прокси, напр: https://api.xpiki.com/v1)",
+            font=self.font(size=11),
+            height=30,
+            fg_color=COLOR["subbox_bg"],
+            border_color=COLOR["border"],
+        )
+        url_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        ctk.CTkButton(
+            api_options_frame,
+            text="🔍 Баланс xpiki.com",
+            font=self.font(size=11),
+            fg_color=COLOR["subbox_bg"],
+            hover_color=("#eaeef2", "#21262d"),
+            text_color=COLOR["accent_cyan"],
+            border_width=1,
+            border_color=COLOR["border"],
+            height=30,
+            command=lambda: open_url_in_browser("https://api.xpiki.com/key"),
+        ).pack(side="left")
 
         lbl_status = ctk.CTkLabel(dialog, text="", font=self.font(size=11), text_color="#10b981", wraplength=570, justify="left")
         lbl_status.pack(anchor="w", padx=20, pady=(0, 6))
@@ -3709,26 +3735,23 @@ class AntigravityManagerApp(ctk.CTk):
 
         def _do_verify():
             key = key_entry.get().strip()
+            custom_url = url_entry.get().strip()
             if not key:
-                lbl_status.configure(text="❌ Введите значение sessionKey", text_color="#ef4444")
+                lbl_status.configure(text="❌ Введите sessionKey или API-ключ Claude", text_color="#ef4444")
                 return
 
-            btn_submit.configure(state="disabled", text="⏳ Проверка сессии...")
-            lbl_status.configure(text="Подключение к claude.ai...", text_color=COLOR["accent_cyan"])
+            btn_submit.configure(state="disabled", text="⏳ Проверка ключа/сессии...")
+            lbl_status.configure(text="Подключение к Claude...", text_color=COLOR["accent_cyan"])
 
             def _worker():
-                ok, msg, acc = claude_service.verify_and_add_account(key)
+                ok, msg, acc = claude_service.verify_and_add_account(key, base_url=custom_url)
                 def _done():
-                    btn_submit.configure(state="normal", text="✔ Проверить и подключить аккаунт")
+                    btn_submit.configure(state="normal", text="✔ Проверить и подключить аккаунт вручную")
                     if ok:
                         self.claude_accounts_data = claude_service.load_accounts()
                         self.show_flash(f"Аккаунт {acc.get('email')} успешно подключен!")
                         self.render_accounts()
-                        try:
-                            dialog.grab_release()
-                            dialog.destroy()
-                        except Exception:
-                            pass
+                        self.after(1400, lambda: [dialog.grab_release(), dialog.destroy()])
                     else:
                         lbl_status.configure(text=f"❌ {msg}", text_color="#ef4444")
                         messagebox.showerror("Ошибка подключения", msg)
