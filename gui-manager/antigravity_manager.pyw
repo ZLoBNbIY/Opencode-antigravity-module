@@ -104,9 +104,9 @@ from claude_manager import claude_service, CLAUDE_MODELS
 AVAILABLE_PROVIDERS = [
     ("antigravity", "🚀  Antigravity (Google)", "google", "Google Gemini & Claude через Google Cloud Code"),
     ("openai", "🟢  ChatGPT (OpenAI)", "openai", "Аккаунты ChatGPT (OpenAI)"),
-    ("claude", "🟠  Claude (Anthropic Pro)", "claude", "Подписка Claude Pro / Team без покупки API-токенов"),
+    ("claude", "🟠  Claude (Anthropic)", "claude", "Подписка Claude Pro / Team без покупки API-токенов"),
     ("openrouter", "🟣  OpenRouter Free", "openrouter", "Бесплатные модели OpenRouter"),
-    ("mwapi", "🌐  MWAPI (Cloud Code)", "mwapi", "Cloud Code MWAPI модели"),
+    ("mwapi", "⚡  MWAPI Cloud Code", "mwapi", "Cloud Code MWAPI модели"),
     ("deepseek", "🐋  DeepSeek Web", "deepseek", "Подключение DeepSeek через веб-сессию"),
 ]
 
@@ -817,8 +817,8 @@ class AntigravityManagerApp(ctk.CTk):
         super().__init__()
 
         self.title("Antigravity Hub — Google, ChatGPT & DeepSeek")
-        self.geometry("1180x760")
-        self.minsize(980, 680)
+        self.geometry("1240x780")
+        self.minsize(1040, 700)
 
         # Load config first to read theme
         self.config_data = self.load_config()
@@ -1210,7 +1210,7 @@ class AntigravityManagerApp(ctk.CTk):
     def create_sidebar(self):
         self.sidebar = ctk.CTkFrame(
             self,
-            width=230,
+            width=260,
             corner_radius=0,
             fg_color=COLOR["sidebar_bg"],
             border_width=1,
@@ -1283,12 +1283,14 @@ class AntigravityManagerApp(ctk.CTk):
             border_color=COLOR["border"],
             corner_radius=10,
             height=30,
+            wraplength=235,
+            justify="center",
         )
         self.opencode_badge.pack(fill="x", pady=(0, 8))
 
         ctk.CTkButton(
             footer_box,
-            text="🔄 Перезапустить OpenCode",
+            text="🔄 Перезапуск OpenCode",
             font=self.font(size=11, weight="bold"),
             fg_color="#0284c7",
             hover_color="#0369a1",
@@ -1313,7 +1315,7 @@ class AntigravityManagerApp(ctk.CTk):
         # Core non-provider tools
         nav_items.append(("network", "🌐  Сеть, DNS & VLESS"))
         nav_items.append(("settings", "⚙️  Настройки"))
-        nav_items.append(("system", "🛠  OpenCode & Диагностика"))
+        nav_items.append(("system", "🛠  Диагностика OpenCode"))
 
         for key, label in nav_items:
             is_active = (key == self.current_nav)
@@ -1458,7 +1460,7 @@ class AntigravityManagerApp(ctk.CTk):
             self.top_action_bar,
             placeholder_text="🔍  Поиск аккаунта по email...",
             font=self.font(size=12),
-            width=280,
+            width=230,
             height=36,
             corner_radius=10,
             fg_color=COLOR["card_bg"],
@@ -2900,8 +2902,16 @@ class AntigravityManagerApp(ctk.CTk):
             command=self.on_strategy_change,
         )
         self.strategy_seg.pack(anchor="w", padx=16, pady=(0, 8))
-        self.strategy_desc = ctk.CTkLabel(c1, text="", font=self.font(size=11), text_color="#0284c7")
-        self.strategy_desc.pack(anchor="w", padx=16, pady=(0, 12))
+        self.strategy_desc = ctk.CTkLabel(
+            c1,
+            text="",
+            font=self.font(size=11),
+            text_color="#0284c7",
+            anchor="w",
+            justify="left",
+            wraplength=720,
+        )
+        self.strategy_desc.pack(fill="x", padx=16, pady=(0, 12))
         self.update_strategy_description(current_strat)
 
         c2 = ctk.CTkFrame(self.settings_frame, fg_color=COLOR["card_bg"], corner_radius=12, border_width=1, border_color=COLOR["border"])
@@ -2938,8 +2948,11 @@ class AntigravityManagerApp(ctk.CTk):
             text="Управление VLESS-туннелями (Reality / TLS), маршрутизацией всего трафика OpenCode и кастомными DNS (DoH / DoT / Обычный DNS) вынесено в отдельный раздел меню.\n"
                  "Обратите внимание: при выборе метода туннелирования через VLESS настройки DNS утрачивают свою силу.",
             font=self.font(size=11),
-            text_color=COLOR["text_secondary"]
-        ).pack(anchor="w", padx=16, pady=(0, 10))
+            text_color=COLOR["text_secondary"],
+            anchor="w",
+            justify="left",
+            wraplength=720,
+        ).pack(fill="x", padx=16, pady=(0, 10))
         ctk.CTkButton(
             c_net,
             text="Перейти в раздел «Сеть, DNS & VLESS» →",
@@ -2958,8 +2971,11 @@ class AntigravityManagerApp(ctk.CTk):
             p_card,
             text="Включение и скрытие провайдеров, которые можно подключить через Antigravity Hub. Отключенные провайдеры скрываются из бокового меню Hub.",
             font=self.font(size=11),
-            text_color=COLOR["text_secondary"]
-        ).pack(anchor="w", padx=16, pady=(0, 10))
+            text_color=COLOR["text_secondary"],
+            anchor="w",
+            justify="left",
+            wraplength=720,
+        ).pack(fill="x", padx=16, pady=(0, 10))
 
         vis = self.config_data.get("providers_visibility", {})
         self.provider_visibility_vars = {}
@@ -2970,16 +2986,26 @@ class AntigravityManagerApp(ctk.CTk):
 
             row = ctk.CTkFrame(p_card, fg_color="transparent")
             row.pack(fill="x", padx=16, pady=(3, 6))
+            row.grid_columnconfigure(1, weight=1)
 
-            create_cyber_switch(
+            sw = create_cyber_switch(
                 row,
                 text=label,
                 variable=var,
                 command=lambda k=key, v=var: self.on_toggle_provider_visibility(k, v),
                 font=self.font(size=12, weight="bold")
-            ).pack(side="left")
+            )
+            sw.grid(row=0, column=0, sticky="w")
 
-            ctk.CTkLabel(row, text=f"— {desc}", font=self.font(size=11), text_color=COLOR["text_secondary"]).pack(side="left", padx=(10, 0))
+            ctk.CTkLabel(
+                row,
+                text=f"— {desc}",
+                font=self.font(size=11),
+                text_color=COLOR["text_secondary"],
+                anchor="w",
+                justify="left",
+                wraplength=620,
+            ).grid(row=0, column=1, sticky="w", padx=(10, 0))
 
         ctk.CTkButton(
             self.settings_frame,
@@ -3715,7 +3741,7 @@ class AntigravityManagerApp(ctk.CTk):
                         )
                     elif service_running:
                         self.opencode_badge.configure(
-                            text="◉ OpenCode: Фоновый сервис работает",
+                            text="◉ OpenCode: Фоновый сервис",
                             text_color="#d97706",
                             fg_color=("#fef3c7", "#78350f"),
                         )

@@ -138,30 +138,36 @@ class NetworkView(ctk.CTkScrollableFrame):
         self.vless_entry.pack(fill="x", padx=16, pady=(0, 8))
         self.vless_entry.insert(0, self.app.config_data.get("vless_url", "") or "")
 
-        # Options checkboxes
+        # Options switches (arranged in two rows to prevent text clipping)
         opts_box = ctk.CTkFrame(vless_card, fg_color="transparent")
-        opts_box.pack(fill="x", padx=16, pady=(0, 8))
+        opts_box.pack(fill="x", padx=16, pady=(0, 10))
+
+        row1 = ctk.CTkFrame(opts_box, fg_color="transparent")
+        row1.pack(fill="x", pady=(0, 6))
 
         self.vless_enabled_var = tk.BooleanVar(value=self.app.config_data.get("vless_enabled", False))
         create_cyber_switch(
-            opts_box,
+            row1,
             text="Включить VLESS-туннель",
             variable=self.vless_enabled_var,
             command=self.on_vless_switch_toggled,
-            font=app.font(12)
-        ).pack(side="left", padx=(0, 20))
+            font=app.font(12, "bold")
+        ).pack(side="left", padx=(0, 24))
 
         self.vless_route_all_var = tk.BooleanVar(value=self.app.config_data.get("vless_route_all", True))
         create_cyber_switch(
-            opts_box,
+            row1,
             text="Маршрутизировать весь трафик OpenCode через VLESS",
             variable=self.vless_route_all_var,
             font=app.font(12)
-        ).pack(side="left", padx=(0, 20))
+        ).pack(side="left")
+
+        row2 = ctk.CTkFrame(opts_box, fg_color="transparent")
+        row2.pack(fill="x")
 
         self.vless_kill_switch_var = tk.BooleanVar(value=self.app.config_data.get("vless_kill_switch", True))
         create_cyber_switch(
-            opts_box,
+            row2,
             text="🛡️ Kill Switch (Защита от бана: блокировать OpenCode если VLESS оффлайн)",
             variable=self.vless_kill_switch_var,
             font=app.font(12)
@@ -175,7 +181,10 @@ class NetworkView(ctk.CTkScrollableFrame):
             core_box,
             text="Проверка ядра...",
             font=app.font(11),
-            text_color=colors["text_secondary"]
+            text_color=colors["text_secondary"],
+            wraplength=520,
+            justify="left",
+            anchor="w"
         )
         self.core_status_lbl.pack(side="left", padx=12, pady=8)
 
@@ -323,15 +332,15 @@ class NetworkView(ctk.CTkScrollableFrame):
         b1_btn_row.pack(fill="x", padx=12, pady=(4, 6))
         self.btn_test_std_dns = ctk.CTkButton(
             b1_btn_row,
-            text="🩺 Проверить доступность",
+            text="🩺 Проверить",
             font=app.font(11, "bold"),
             fg_color="#0284c7",
             hover_color="#0369a1",
-            height=26,
+            height=28,
             command=self.test_standard_dns_action,
         )
         self.btn_test_std_dns.pack(fill="x")
-        self.lbl_test_std_dns = ctk.CTkLabel(b1, text="", font=app.font(10), text_color="#16a34a")
+        self.lbl_test_std_dns = ctk.CTkLabel(b1, text="", font=app.font(10), text_color="#16a34a", wraplength=200, justify="left")
         self.lbl_test_std_dns.pack(anchor="w", padx=12, pady=(0, 6))
 
         # --- BLOCK 2: DNS-over-TLS (DoT) ---
@@ -353,15 +362,15 @@ class NetworkView(ctk.CTkScrollableFrame):
         b2_btn_row.pack(fill="x", padx=12, pady=(4, 6))
         self.btn_test_dot = ctk.CTkButton(
             b2_btn_row,
-            text="🩺 Проверить доступность",
+            text="🩺 Проверить",
             font=app.font(11, "bold"),
             fg_color="#0284c7",
             hover_color="#0369a1",
-            height=26,
+            height=28,
             command=self.test_dot_action,
         )
         self.btn_test_dot.pack(fill="x")
-        self.lbl_test_dot = ctk.CTkLabel(b2, text="", font=app.font(10), text_color="#16a34a")
+        self.lbl_test_dot = ctk.CTkLabel(b2, text="", font=app.font(10), text_color="#16a34a", wraplength=200, justify="left")
         self.lbl_test_dot.pack(anchor="w", padx=12, pady=(0, 6))
 
         # --- BLOCK 3: DNS-over-HTTPS (DoH) ---
@@ -383,15 +392,15 @@ class NetworkView(ctk.CTkScrollableFrame):
         b3_btn_row.pack(fill="x", padx=12, pady=(4, 6))
         self.btn_test_doh = ctk.CTkButton(
             b3_btn_row,
-            text="🩺 Проверить доступность",
+            text="🩺 Проверить",
             font=app.font(11, "bold"),
             fg_color="#0284c7",
             hover_color="#0369a1",
-            height=26,
+            height=28,
             command=self.test_doh_action,
         )
         self.btn_test_doh.pack(fill="x")
-        self.lbl_test_doh = ctk.CTkLabel(b3, text="", font=app.font(10), text_color="#16a34a")
+        self.lbl_test_doh = ctk.CTkLabel(b3, text="", font=app.font(10), text_color="#16a34a", wraplength=200, justify="left")
         self.lbl_test_doh.pack(anchor="w", padx=12, pady=(0, 6))
 
         # Proxy Row
