@@ -2935,7 +2935,8 @@ class AntigravityManagerApp(ctk.CTk):
         ctk.CTkLabel(c_net, text="🌐 Сеть, DNS и VLESS-маршрутизация", font=self.font(size=14, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w", padx=16, pady=(12, 4))
         ctk.CTkLabel(
             c_net,
-            text="Управление VLESS-туннелями (Reality / TLS), маршрутизацией всего трафика OpenCode и кастомными DNS (DoH / DoT / Обычный DNS) вынесено в отдельный раздел меню.",
+            text="Управление VLESS-туннелями (Reality / TLS), маршрутизацией всего трафика OpenCode и кастомными DNS (DoH / DoT / Обычный DNS) вынесено в отдельный раздел меню.\n"
+                 "Обратите внимание: при выборе метода туннелирования через VLESS настройки DNS утрачивают свою силу.",
             font=self.font(size=11),
             text_color=COLOR["text_secondary"]
         ).pack(anchor="w", padx=16, pady=(0, 10))

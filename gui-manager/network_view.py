@@ -59,7 +59,32 @@ class NetworkView(ctk.CTkScrollableFrame):
             font=app.font(12),
             anchor="w",
             text_color=colors["text_secondary"]
-        ).pack(fill="x", pady=(0, 14))
+        ).pack(fill="x", pady=(0, 10))
+
+        # Disclaimer Banner: VLESS vs DNS priority
+        notice_banner = ctk.CTkFrame(self, fg_color=colors["subbox_bg"], corner_radius=10, border_width=1, border_color="#f59e0b")
+        notice_banner.pack(fill="x", pady=(0, 12))
+
+        nb_header = ctk.CTkFrame(notice_banner, fg_color="transparent")
+        nb_header.pack(fill="x", padx=14, pady=(10, 2))
+        ctk.CTkLabel(
+            nb_header,
+            text="⚠️ Важное примечание о приоритете VLESS и DNS",
+            font=app.font(12, "bold"),
+            text_color="#f59e0b"
+        ).pack(side="left")
+
+        ctk.CTkLabel(
+            notice_banner,
+            text="При выборе метода туннелирования через VLESS все настройки DNS (Обычный DNS / DoT / DoH / SmartDNS) полностью утрачивают свою силу.\n"
+                 "Весь трафик и DNS-запросы OpenCode направляются через удалённый VLESS-сервер, который самостоятельно разрешает доменные имена. "
+                 "Локальные и кастомные DNS-серверы используются только тогда, когда VLESS-туннель выключен.",
+            font=app.font(11),
+            text_color=colors["text_secondary"],
+            justify="left",
+            wraplength=980,
+            anchor="w"
+        ).pack(fill="x", padx=14, pady=(0, 10))
 
         # =====================================================================
         # CARD 1: VLESS TUNNEL
@@ -238,6 +263,20 @@ class NetworkView(ctk.CTkScrollableFrame):
             font=app.font(11),
             text_color=colors["text_secondary"]
         ).pack(anchor="w", padx=16, pady=(0, 10))
+
+        # DNS Disclaimer Box
+        dns_disclaimer = ctk.CTkFrame(dns_card, fg_color=colors["subbox_bg"], corner_radius=8, border_width=1, border_color=colors["border"])
+        dns_disclaimer.pack(fill="x", padx=16, pady=(0, 10))
+        ctk.CTkLabel(
+            dns_disclaimer,
+            text="💡 Дисклеймер: при выборе метода туннелирования через VLESS указанные ниже настройки DNS полностью утрачивают свою силу.\n"
+                 "В этом режиме все сетевые запросы и DNS-резолвинг передаются удалённому VLESS-серверу.",
+            font=app.font(11),
+            text_color="#f59e0b" if self.app.config_data.get("vless_enabled") else colors["text_secondary"],
+            justify="left",
+            anchor="w",
+            wraplength=960
+        ).pack(fill="x", padx=12, pady=8)
 
         # DNS Mode Selector
         mode_row = ctk.CTkFrame(dns_card, fg_color="transparent")
