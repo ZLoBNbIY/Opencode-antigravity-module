@@ -20,6 +20,7 @@ from typing import Optional, Dict, Any, List, Tuple
 
 CONFIG_DIR = Path.home() / ".config" / "opencode"
 CLAUDE_ACCOUNTS_FILE = CONFIG_DIR / "claude-accounts.json"
+CLAUDE_PROFILE_DIR = CONFIG_DIR / "claude_profile"
 DEFAULT_BRIDGE_PORT = 51186
 
 CLAUDE_MODELS = {
@@ -335,6 +336,155 @@ class ClaudeAccountManager:
         except Exception as e:
             print(f"[Claude Manager] Failed to configure opencode.json: {e}")
             return False
+
+    def login_claude_browser(self, timeout: int = 300, progress_callback=None) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """Opens a dedicated browser window for user to log into claude.ai,
+        automatically captures sessionKey cookie, and saves the verified account."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            return False, "Библиотека playwright не найдена.", None
+
+        CLAUDE_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+        proxy = get_active_proxy()
+        proxy_cfg = {"server": proxy} if proxy else None
+
+        if progress_callback:
+            progress_callback("Запуск браузера для входа в claude.ai...")
+
+        p = None
+        context = None
+        try:
+            p = sync_playwright().start()
+            context = p.chromium.launch_persistent_context(
+                str(CLAUDE_PROFILE_DIR),
+                headless=False,
+                proxy=proxy_cfg,
+                user_agent=USER_AGENT,
+                viewport={"width": 1280, "height": 800},
+                args=["--disable-blink-features=AutomationControlled"]
+            )
+            page = context.pages[0] if context.pages else context.new_page()
+
+            if progress_callback:
+                progress_callback("Открываем claude.ai... Пожалуйста, выполните вход в аккаунт.")
+
+            try:
+                page.goto("https://claude.ai/login", wait_until="commit", timeout=30000)
+            except Exception:
+                pass
+
+            deadline = time.monotonic() + timeout
+            captured_key = None
+
+            while time.monotonic() < deadline:
+                try:
+                    cookies = context.cookies(["https://claude.ai", "https://api.claude.ai"])
+                    for c in cookies:
+                        c_name = c.get("name", "")
+                        c_val = c.get("value", "")
+                        if c_name == "sessionKey" and c_val:
+                            captured_key = c_val
+                            break
+                    if captured_key:
+                        break
+                except Exception:
+                    pass
+
+                time.sleep(1.5)
+
+            try:
+                context.close()
+                p.stop()
+            except Exception:
+                pass
+
+            if not captured_key:
+                return False, "Время ожидания входа истекло (sessionKey не обнаружен в браузере).", None
+
+            if progress_callback:
+                progress_callback("sessionKey перехвачен! Проверяем аккаунт...")
+
+            ok, msg, acc = self.verify_and_add_account(captured_key)
+            if ok:
+                return True, f"Успешно! sessionKey извлечен автоматически. Аккаунт: {acc.get('email', '')}", acc
+            return False, f"Перехвачен sessionKey, но ошибка проверки: {msg}", None
+
+        except Exception as e:
+            if context:
+                try:
+                    context.close()
+                except Exception:
+                    pass
+            if p:
+                try:
+                    p.stop()
+                except Exception:
+                    pass
+            return False, f"Ошибка запуска браузера: {e}", None
+
+    def refresh_claude_sessions_silent(self) -> None:
+        """Periodically refreshes claude.ai sessionKey so it stays active and never expires."""
+        accounts = self.load_accounts()
+        changed = False
+
+        for acc in accounts:
+            if acc.get("token_type") != "session_key":
+                continue
+
+            session_key = acc.get("session_key", "")
+            if not session_key:
+                continue
+
+            try:
+                opener = get_http_opener(timeout=10)
+                headers = {
+                    "User-Agent": USER_AGENT,
+                    "Cookie": f"sessionKey={session_key}",
+                    "Accept": "application/json",
+                }
+                req = urllib.request.Request("https://claude.ai/api/auth/current_user", headers=headers)
+                with opener.open(req, timeout=10) as resp:
+                    set_cookie = resp.headers.get("Set-Cookie", "")
+                    if "sessionKey=" in set_cookie:
+                        for part in set_cookie.split(";"):
+                            part = part.strip()
+                            if part.startswith("sessionKey="):
+                                new_key = part.split("=", 1)[1].strip()
+                                if new_key and new_key != session_key:
+                                    acc["session_key"] = new_key
+                                    changed = True
+                                    print(f"[Claude Manager] sessionKey auto-refreshed for {acc.get('email')}")
+            except Exception:
+                if CLAUDE_PROFILE_DIR.exists():
+                    try:
+                        from playwright.sync_api import sync_playwright
+                        p = sync_playwright().start()
+                        proxy = get_active_proxy()
+                        proxy_cfg = {"server": proxy} if proxy else None
+                        ctx = p.chromium.launch_persistent_context(
+                            str(CLAUDE_PROFILE_DIR),
+                            headless=True,
+                            proxy=proxy_cfg,
+                            user_agent=USER_AGENT
+                        )
+                        page = ctx.new_page()
+                        page.goto("https://claude.ai/", wait_until="networkidle", timeout=15000)
+                        cookies = ctx.cookies(["https://claude.ai", "https://api.claude.ai"])
+                        for c in cookies:
+                            if c.get("name") == "sessionKey" and c.get("value"):
+                                new_val = c.get("value")
+                                if new_val != session_key:
+                                    acc["session_key"] = new_val
+                                    changed = True
+                                    print(f"[Claude Manager] Headless sessionKey renewal successful for {acc.get('email')}")
+                        ctx.close()
+                        p.stop()
+                    except Exception:
+                        pass
+
+        if changed:
+            self.save_accounts(accounts)
 
 
 class ClaudeSubscriptionBridge:
