@@ -22,17 +22,17 @@ def create_cyber_switch(master, text="", variable=None, command=None, font=None,
         variable=variable,
         command=command,
         font=font,
-        width=52,
-        height=26,
-        switch_width=44,
-        switch_height=22,
-        corner_radius=11,
+        width=44,
+        height=22,
+        switch_width=36,
+        switch_height=18,
+        corner_radius=9,
         border_width=1,
-        fg_color=("#cbd5e1", "#172338"),
-        progress_color=("#0284c7", "#0ea5e9"),
+        fg_color=("#d0d7de", "#21262d"),
+        progress_color=("#1f883d", "#238636"),
         button_color=("#ffffff", "#ffffff"),
-        button_hover_color=("#f1f5f9", "#e2e8f0"),
-        border_color=("#94a3b8", "#2a3d5e"),
+        button_hover_color=("#f6f8fa", "#f0f6fc"),
+        border_color=("#afb8c1", "#30363d"),
         **kwargs
     )
 
@@ -192,10 +192,11 @@ class NetworkView(ctk.CTkScrollableFrame):
             core_box,
             text="⬇ Скачать sing-box (в 1 клик)",
             font=app.font(11, "bold"),
-            fg_color="#0284c7",
-            hover_color="#0369a1",
+            fg_color=("#0969da", "#1f6feb"),
+            hover_color=("#0550ae", "#388bfd"),
             text_color="#ffffff",
             height=28,
+            corner_radius=6,
             command=self.download_core_action
         )
         self.btn_download_core.pack(side="right", padx=(4, 12), pady=6)
@@ -205,11 +206,12 @@ class NetworkView(ctk.CTkScrollableFrame):
             text="📁 Указать exe",
             font=app.font(11),
             fg_color=colors["card_bg"],
-            hover_color=("#e2e8f0", "#16233a"),
+            hover_color=("#eaeef2", "#21262d"),
             text_color=colors["text_primary"],
             border_width=1,
             border_color=colors["border"],
             height=28,
+            corner_radius=6,
             command=self.select_custom_core_action
         )
         self.btn_custom_core.pack(side="right", padx=(0, 4), pady=6)
@@ -222,10 +224,11 @@ class NetworkView(ctk.CTkScrollableFrame):
             action_row,
             text="▶ Запустить туннель",
             font=app.font(12, "bold"),
-            fg_color="#10b981",
-            hover_color="#059669",
+            fg_color="#238636",
+            hover_color="#2ea043",
             text_color="#ffffff",
             height=32,
+            corner_radius=6,
             command=self.start_vless_action
         )
         self.btn_vless_start.pack(side="left", padx=(0, 8))
@@ -234,10 +237,11 @@ class NetworkView(ctk.CTkScrollableFrame):
             action_row,
             text="⏹ Остановить",
             font=app.font(12, "bold"),
-            fg_color="#ef4444",
-            hover_color="#dc2626",
+            fg_color="#cf222e",
+            hover_color="#a40e26",
             text_color="#ffffff",
             height=32,
+            corner_radius=6,
             command=self.stop_vless_action
         )
         self.btn_vless_stop.pack(side="left", padx=(0, 8))
@@ -246,15 +250,16 @@ class NetworkView(ctk.CTkScrollableFrame):
             action_row,
             text="🩺 Проверить подключение и IP",
             font=app.font(12, "bold"),
-            fg_color="#0284c7",
-            hover_color="#0369a1",
+            fg_color=("#0969da", "#1f6feb"),
+            hover_color=("#0550ae", "#388bfd"),
             text_color="#ffffff",
             height=32,
+            corner_radius=6,
             command=self.test_vless_action
         )
         self.btn_vless_test.pack(side="left", padx=(0, 8))
 
-        self.vless_test_lbl = ctk.CTkLabel(vless_card, text="", font=app.font(11), text_color="#10b981", anchor="w")
+        self.vless_test_lbl = ctk.CTkLabel(vless_card, text="", font=app.font(11), text_color="#3fb950", anchor="w")
         self.vless_test_lbl.pack(fill="x", padx=16, pady=(0, 8))
 
         # =====================================================================
@@ -303,10 +308,11 @@ class NetworkView(ctk.CTkScrollableFrame):
             values=["Обычный DNS", "DNS-over-TLS (DoT)", "DNS-over-HTTPS (DoH)", "Системный DNS"],
             variable=self.dns_mode_var,
             font=app.font(11, "bold"),
-            selected_color="#0284c7",
-            selected_hover_color="#0369a1",
-            unselected_color=("#e2e8f0", "#141d2e"),
-            unselected_hover_color=("#cbd5e1", "#1e293b"),
+            selected_color=("#0969da", "#1f6feb"),
+            selected_hover_color=("#0550ae", "#388bfd"),
+            unselected_color=("#eaeef2", "#21262d"),
+            unselected_hover_color=("#d0d7de", "#30363d"),
+            corner_radius=6,
             text_color=colors["text_primary"],
         )
         self.dns_mode_seg.pack(side="left")
@@ -343,14 +349,17 @@ class NetworkView(ctk.CTkScrollableFrame):
             b1_btn_row,
             text="🩺 Проверить",
             font=app.font(11, "bold"),
-            fg_color="#0284c7",
-            hover_color="#0369a1",
-            text_color="#ffffff",
+            fg_color=("#f6f8fa", "#21262d"),
+            hover_color=("#eaeef2", "#30363d"),
+            text_color=colors["text_primary"],
+            border_width=1,
+            border_color=colors["border"],
+            corner_radius=6,
             height=28,
             command=self.test_standard_dns_action,
         )
         self.btn_test_std_dns.pack(fill="x")
-        self.lbl_test_std_dns = ctk.CTkLabel(b1, text="", font=app.font(10), text_color="#16a34a", wraplength=200, justify="left")
+        self.lbl_test_std_dns = ctk.CTkLabel(b1, text="", font=app.font(10), text_color="#3fb950", wraplength=200, justify="left")
         self.lbl_test_std_dns.pack(anchor="w", padx=12, pady=(0, 6))
 
         # --- BLOCK 2: DNS-over-TLS (DoT) ---
@@ -374,14 +383,17 @@ class NetworkView(ctk.CTkScrollableFrame):
             b2_btn_row,
             text="🩺 Проверить",
             font=app.font(11, "bold"),
-            fg_color="#0284c7",
-            hover_color="#0369a1",
-            text_color="#ffffff",
+            fg_color=("#f6f8fa", "#21262d"),
+            hover_color=("#eaeef2", "#30363d"),
+            text_color=colors["text_primary"],
+            border_width=1,
+            border_color=colors["border"],
+            corner_radius=6,
             height=28,
             command=self.test_dot_action,
         )
         self.btn_test_dot.pack(fill="x")
-        self.lbl_test_dot = ctk.CTkLabel(b2, text="", font=app.font(10), text_color="#16a34a", wraplength=200, justify="left")
+        self.lbl_test_dot = ctk.CTkLabel(b2, text="", font=app.font(10), text_color="#3fb950", wraplength=200, justify="left")
         self.lbl_test_dot.pack(anchor="w", padx=12, pady=(0, 6))
 
         # --- BLOCK 3: DNS-over-HTTPS (DoH) ---
@@ -405,14 +417,17 @@ class NetworkView(ctk.CTkScrollableFrame):
             b3_btn_row,
             text="🩺 Проверить",
             font=app.font(11, "bold"),
-            fg_color="#0284c7",
-            hover_color="#0369a1",
-            text_color="#ffffff",
+            fg_color=("#f6f8fa", "#21262d"),
+            hover_color=("#eaeef2", "#30363d"),
+            text_color=colors["text_primary"],
+            border_width=1,
+            border_color=colors["border"],
+            corner_radius=6,
             height=28,
             command=self.test_doh_action,
         )
         self.btn_test_doh.pack(fill="x")
-        self.lbl_test_doh = ctk.CTkLabel(b3, text="", font=app.font(10), text_color="#16a34a", wraplength=200, justify="left")
+        self.lbl_test_doh = ctk.CTkLabel(b3, text="", font=app.font(10), text_color="#3fb950", wraplength=200, justify="left")
         self.lbl_test_doh.pack(anchor="w", padx=12, pady=(0, 6))
 
         # Proxy Row
@@ -436,10 +451,11 @@ class NetworkView(ctk.CTkScrollableFrame):
             self,
             text="💾 Сохранить настройки сети",
             font=app.font(13, "bold"),
-            fg_color="#0284c7",
-            hover_color="#0369a1",
+            fg_color="#238636",
+            hover_color="#2ea043",
             text_color="#ffffff",
-            height=38,
+            height=36,
+            corner_radius=6,
             command=self.save_network_settings
         )
         save_btn.pack(anchor="w", pady=(8, 16))
@@ -453,16 +469,16 @@ class NetworkView(ctk.CTkScrollableFrame):
     def update_core_status(self):
         cand = vless_service.find_core_executable(self.app.config_data.get("vless_core_path"))
         if cand:
-            self.core_status_lbl.configure(text=f"✔ Найдено ядро: {cand.name} ({cand.parent})", text_color="#10b981")
+            self.core_status_lbl.configure(text=f"✔ Найдено ядро: {cand.name} ({cand.parent})", text_color="#3fb950")
             self.btn_download_core.configure(text="🔄 Обновить sing-box")
         else:
-            self.core_status_lbl.configure(text="⚠ Ядро Xray / sing-box не установлено", text_color="#f59e0b")
+            self.core_status_lbl.configure(text="⚠ Ядро Xray / sing-box не установлено", text_color="#d29922")
             self.btn_download_core.configure(text="⬇ Скачать sing-box (в 1 клик)")
 
     def update_vless_status(self):
         running = vless_service.is_running()
         if running:
-            self.vless_badge.configure(text="● Туннель активен", text_color="#10b981")
+            self.vless_badge.configure(text="● Туннель активен", text_color="#3fb950")
             self.btn_vless_start.configure(state="disabled")
             self.btn_vless_stop.configure(state="normal")
             self.vless_enabled_var.set(True)
@@ -538,7 +554,7 @@ class NetworkView(ctk.CTkScrollableFrame):
 
         def _worker():
             def _prog(msg):
-                self.app.after(0, lambda m=msg: self.core_status_lbl.configure(text=m, text_color="#0284c7"))
+                self.app.after(0, lambda m=msg: self.core_status_lbl.configure(text=m, text_color="#58a6ff"))
 
             ok, msg = vless_service.download_core("sing-box", progress_callback=_prog)
 

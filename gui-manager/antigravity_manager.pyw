@@ -716,37 +716,37 @@ def import_google_account(account_dict: dict) -> bool:
 
 
 # =========================================================================
-# HIGH-CONTRAST FROSTED GLASS PALETTE (Tuple format: (Light, Dark))
-# Deep obsidian backdrop, luminous glass cards, pure white crisp typography
+# CONCEPT 2: LINEAR MINIMAL (GRAPHITE GLASS) PALETTE (Light, Dark)
+# Deep monochrome graphite, crisp 1px hairline borders, high-contrast typography
 # =========================================================================
 COLOR = {
-    "bg": ("#f1f5f9", "#080c16"),
-    "sidebar_bg": ("#ffffff", "#0c111f"),
-    "card_bg": ("#ffffff", "#111827"),
-    "card_active_bg": ("#f0fdf4", "#14223b"),
-    "subbox_bg": ("#f8fafc", "#0a0f1d"),
-    "border": ("#cbd5e1", "#1e293b"),
-    "border_active": ("#0284c7", "#38bdf8"),
-    "text_primary": ("#0f172a", "#ffffff"),
-    "text_secondary": ("#334155", "#e2e8f0"),
-    "text_muted": ("#64748b", "#94a3b8"),
-    "bar_bg": ("#e2e8f0", "#162035"),
-    "statusbar_bg": ("#ffffff", "#0a0e1a"),
-    "nav_active_bg": ("#e0f2fe", "#182846"),
-    "nav_active_text": ("#0284c7", "#38bdf8"),
-    "nav_idle_text": ("#475569", "#94a3b8"),
-    "accent_cyan": "#38bdf8",
-    "accent_emerald": "#34d399",
-    "accent_purple": "#c084fc",
-    "quota_5h": ("#059669", "#10b981"),
-    "quota_5h_bg": ("#dcfce7", "#064e3b"),
-    "quota_weekly": ("#d97706", "#f59e0b"),
-    "quota_weekly_bg": ("#fef3c7", "#78350f"),
+    "bg": ("#f6f8fa", "#0d1117"),
+    "sidebar_bg": ("#ffffff", "#161b22"),
+    "card_bg": ("#ffffff", "#161b22"),
+    "card_active_bg": ("#f0f6fc", "#1c2128"),
+    "subbox_bg": ("#f6f8fa", "#0d1117"),
+    "border": ("#d0d7de", "#30363d"),
+    "border_active": ("#0969da", "#58a6ff"),
+    "text_primary": ("#1f2328", "#ffffff"),
+    "text_secondary": ("#656d76", "#c9d1d9"),
+    "text_muted": ("#8c959f", "#8b949e"),
+    "bar_bg": ("#eaeef2", "#21262d"),
+    "statusbar_bg": ("#ffffff", "#161b22"),
+    "nav_active_bg": ("#f0f6fc", "#21262d"),
+    "nav_active_text": ("#0969da", "#58a6ff"),
+    "nav_idle_text": ("#656d76", "#8b949e"),
+    "accent_cyan": "#58a6ff",
+    "accent_emerald": "#3fb950",
+    "accent_purple": "#bc8cff",
+    "quota_5h": ("#1a7f37", "#3fb950"),
+    "quota_5h_bg": ("#dafbe1", "#102d1a"),
+    "quota_weekly": ("#9a6700", "#d29922"),
+    "quota_weekly_bg": ("#fff8c5", "#382305"),
 }
 
 
 def apply_windows_acrylic_effect(window):
-    """Enables crisp Windows 11 DWM dark titlebar and window border without bleaching canvas contrast."""
+    """Enables crisp Windows 11 DWM dark titlebar and graphite window border."""
     if sys.platform != "win32":
         return
     try:
@@ -761,20 +761,20 @@ def apply_windows_acrylic_effect(window):
             hwnd, 20, ctypes.byref(dark_mode), ctypes.sizeof(dark_mode)
         )
 
-        # DWMWA_CAPTION_COLOR = 35 (Titlebar background: #080c16 -> BGR 0x00160c08)
-        caption_col = ctypes.c_int(0x00160c08)
+        # DWMWA_CAPTION_COLOR = 35 (Titlebar background: #0d1117 -> BGR 0x0017110d)
+        caption_col = ctypes.c_int(0x0017110d)
         ctypes.windll.dwmapi.DwmSetWindowAttribute(
             hwnd, 35, ctypes.byref(caption_col), ctypes.sizeof(caption_col)
         )
 
-        # DWMWA_TEXT_COLOR = 36 (Titlebar text: crisp cyan-white BGR 0x00f8bd38)
-        text_col = ctypes.c_int(0x00f8bd38)
+        # DWMWA_TEXT_COLOR = 36 (Titlebar text: crisp silver BGR 0x00ffffff)
+        text_col = ctypes.c_int(0x00ffffff)
         ctypes.windll.dwmapi.DwmSetWindowAttribute(
             hwnd, 36, ctypes.byref(text_col), ctypes.sizeof(text_col)
         )
 
-        # DWMWA_BORDER_COLOR = 34 (Subtle luminous border: BGR 0x003b291e)
-        border_col = ctypes.c_int(0x003b291e)
+        # DWMWA_BORDER_COLOR = 34 (Subtle hairline border #30363d: BGR 0x003d3630)
+        border_col = ctypes.c_int(0x003d3630)
         ctypes.windll.dwmapi.DwmSetWindowAttribute(
             hwnd, 34, ctypes.byref(border_col), ctypes.sizeof(border_col)
         )
@@ -783,24 +783,24 @@ def apply_windows_acrylic_effect(window):
 
 
 def create_cyber_switch(master, text="", variable=None, command=None, font=None, **kwargs):
-    """Creates a high-contrast pill switch with sleek dark styling."""
+    """Creates a sleek Linear-style switch."""
     return ctk.CTkSwitch(
         master,
         text=text,
         variable=variable,
         command=command,
         font=font,
-        width=48,
-        height=24,
-        switch_width=40,
-        switch_height=20,
-        corner_radius=10,
+        width=44,
+        height=22,
+        switch_width=36,
+        switch_height=18,
+        corner_radius=9,
         border_width=1,
-        fg_color=("#cbd5e1", "#1e293b"),
-        progress_color=("#0284c7", "#0ea5e9"),
+        fg_color=("#d0d7de", "#21262d"),
+        progress_color=("#1f883d", "#238636"),
         button_color=("#ffffff", "#ffffff"),
-        button_hover_color=("#f1f5f9", "#e2e8f0"),
-        border_color=("#94a3b8", "#334155"),
+        button_hover_color=("#f6f8fa", "#f0f6fc"),
+        border_color=("#afb8c1", "#30363d"),
         text_color=COLOR["text_primary"],
         **kwargs
     )
@@ -1131,8 +1131,9 @@ class AntigravityManagerApp(ctk.CTk):
             btn_box,
             text="Обновить",
             font=self.font(size=11, weight="bold"),
-            fg_color="#0284c7",
-            hover_color="#0369a1",
+            fg_color=("#0969da", "#1f6feb"),
+            hover_color=("#0550ae", "#388bfd"),
+            corner_radius=6,
             height=28,
             command=self.apply_update_action,
         ).pack(side="left", padx=(0, 6))
@@ -1142,8 +1143,9 @@ class AntigravityManagerApp(ctk.CTk):
             text="✕",
             font=self.font(size=12),
             fg_color="transparent",
-            hover_color="#075985" if self.current_theme == "dark" else "#cbd5e1",
-            text_color="#ffffff" if self.current_theme == "dark" else "#475569",
+            hover_color=("#eaeef2", "#21262d"),
+            text_color=COLOR["text_muted"],
+            corner_radius=6,
             height=28,
             width=28,
             command=self.dismiss_update_banner,
@@ -1221,19 +1223,19 @@ class AntigravityManagerApp(ctk.CTk):
         icon_badge = ctk.CTkLabel(
             logo_box,
             text="✨",
-            font=self.font(size=16, weight="bold"),
-            fg_color="#0284c7",
-            text_color="#ffffff",
-            width=34,
-            height=34,
-            corner_radius=10,
+            font=self.font(size=15, weight="bold"),
+            fg_color=("#eaeef2", "#21262d"),
+            text_color=COLOR["accent_cyan"],
+            width=32,
+            height=32,
+            corner_radius=8,
         )
         icon_badge.pack(side="left", padx=(0, 10))
 
         title_lbl = ctk.CTkLabel(
             logo_box,
             text="Antigravity Hub",
-            font=self.font(size=16, weight="bold"),
+            font=self.font(size=15, weight="bold"),
             text_color=COLOR["text_primary"],
         )
         title_lbl.pack(side="left")
@@ -1248,36 +1250,36 @@ class AntigravityManagerApp(ctk.CTk):
 
         # Sidebar Footer: Theme Toggle + OpenCode status
         footer_box = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        footer_box.grid(row=3, column=0, padx=14, pady=16, sticky="ew")
+        footer_box.grid(row=3, column=0, padx=12, pady=14, sticky="ew")
 
         # Theme toggle button
         theme_txt = "☀️  Светлая тема" if self.current_theme == "dark" else "🌙  Тёмная тема"
         self.btn_theme_toggle = ctk.CTkButton(
             footer_box,
             text=theme_txt,
-            font=self.font(size=12, weight="bold"),
+            font=self.font(size=11, weight="bold"),
             fg_color=COLOR["card_bg"],
-            hover_color=("#e2e8f0", "#16233a"),
-            text_color=COLOR["text_primary"],
+            hover_color=("#eaeef2", "#21262d"),
+            text_color=COLOR["text_secondary"],
             border_width=1,
             border_color=COLOR["border"],
-            height=34,
-            corner_radius=10,
+            height=32,
+            corner_radius=8,
             command=self.toggle_theme,
         )
-        self.btn_theme_toggle.pack(fill="x", pady=(0, 10))
+        self.btn_theme_toggle.pack(fill="x", pady=(0, 8))
 
         self.opencode_badge = ctk.CTkLabel(
             footer_box,
             text="● OpenCode: Проверка...",
-            font=self.font(size=11, weight="bold"),
+            font=self.font(size=11),
             fg_color=COLOR["card_bg"],
             text_color=COLOR["text_secondary"],
             border_width=1,
             border_color=COLOR["border"],
-            corner_radius=10,
-            height=30,
-            wraplength=235,
+            corner_radius=8,
+            height=28,
+            wraplength=230,
             justify="center",
         )
         self.opencode_badge.pack(fill="x", pady=(0, 8))
@@ -1286,11 +1288,13 @@ class AntigravityManagerApp(ctk.CTk):
             footer_box,
             text="🔄 Перезапуск OpenCode",
             font=self.font(size=11, weight="bold"),
-            fg_color="#0284c7",
-            hover_color="#0369a1",
-            text_color="#ffffff",
-            height=34,
-            corner_radius=10,
+            fg_color=("#f6f8fa", "#21262d"),
+            hover_color=("#eaeef2", "#30363d"),
+            text_color=COLOR["text_primary"],
+            border_width=1,
+            border_color=COLOR["border"],
+            height=32,
+            corner_radius=8,
             command=self.restart_opencode_action,
         ).pack(fill="x")
 
@@ -1316,18 +1320,18 @@ class AntigravityManagerApp(ctk.CTk):
             btn = ctk.CTkButton(
                 self.nav_frame,
                 text=label,
-                font=self.font(size=13, weight="bold"),
+                font=self.font(size=12, weight="bold"),
                 anchor="w",
-                height=42,
-                corner_radius=10,
+                height=38,
+                corner_radius=8,
                 border_width=1 if is_active else 0,
-                border_color="#1e3a5f" if is_active else COLOR["border"],
+                border_color=COLOR["border"] if is_active else "transparent",
                 fg_color=COLOR["nav_active_bg"] if is_active else "transparent",
                 text_color=COLOR["nav_active_text"] if is_active else COLOR["nav_idle_text"],
-                hover_color=("#e2e8f0", "#16233a"),
+                hover_color=("#eaeef2", "#1c2128"),
                 command=lambda k=key: self.switch_nav(k),
             )
-            btn.pack(fill="x", padx=12, pady=3)
+            btn.pack(fill="x", padx=10, pady=2)
             self.nav_btns[key] = btn
 
         if self.current_nav not in self.nav_btns:
@@ -1348,7 +1352,7 @@ class AntigravityManagerApp(ctk.CTk):
                     fg_color=COLOR["nav_active_bg"],
                     text_color=COLOR["nav_active_text"],
                     border_width=1,
-                    border_color="#1e3a5f"
+                    border_color=COLOR["border"]
                 )
             else:
                 btn.configure(
@@ -1455,8 +1459,8 @@ class AntigravityManagerApp(ctk.CTk):
             placeholder_text="🔍  Поиск аккаунта по email...",
             font=self.font(size=12),
             width=230,
-            height=36,
-            corner_radius=10,
+            height=34,
+            corner_radius=8,
             fg_color=COLOR["card_bg"],
             border_color=COLOR["border"],
             text_color=COLOR["text_primary"],
@@ -1471,11 +1475,11 @@ class AntigravityManagerApp(ctk.CTk):
             font=self.font(size=12, weight="bold"),
             fg_color=COLOR["subbox_bg"],
             text_color=COLOR["accent_cyan"],
-            corner_radius=10,
+            corner_radius=8,
             border_width=1,
             border_color=COLOR["border"],
-            padx=14,
-            height=36,
+            padx=12,
+            height=34,
         )
         self.lbl_count_pill.pack(side="left", padx=(0, 10))
 
@@ -1492,9 +1496,9 @@ class AntigravityManagerApp(ctk.CTk):
             text_color=COLOR["text_primary"],
             border_width=1,
             border_color=COLOR["border"],
-            height=36,
-            width=38,
-            corner_radius=10,
+            height=34,
+            width=36,
+            corner_radius=8,
             command=self.import_accounts_action,
         )
         self.btn_import.pack(side="left", padx=3)
@@ -1508,9 +1512,9 @@ class AntigravityManagerApp(ctk.CTk):
             text_color=COLOR["text_primary"],
             border_width=1,
             border_color=COLOR["border"],
-            height=36,
-            width=38,
-            corner_radius=10,
+            height=34,
+            width=36,
+            corner_radius=8,
             command=self.export_accounts_action,
         )
         self.btn_export.pack(side="left", padx=3)
@@ -1518,15 +1522,15 @@ class AntigravityManagerApp(ctk.CTk):
         self.btn_refresh = ctk.CTkButton(
             self.actions_right_frame,
             text="🔄 Квоты",
-            font=self.font(size=12, weight="bold"),
+            font=self.font(size=11, weight="bold"),
             fg_color=COLOR["card_bg"],
             hover_color=COLOR["subbox_bg"],
             text_color=COLOR["text_primary"],
             border_width=1,
             border_color=COLOR["border"],
-            height=36,
-            width=95,
-            corner_radius=10,
+            height=34,
+            width=90,
+            corner_radius=8,
             command=self.refresh_all_async,
         )
         self.btn_refresh.pack(side="left", padx=3)
@@ -1534,15 +1538,15 @@ class AntigravityManagerApp(ctk.CTk):
         self.btn_google_models = ctk.CTkButton(
             self.actions_right_frame,
             text="📋 Модели",
-            font=self.font(size=12, weight="bold"),
+            font=self.font(size=11, weight="bold"),
             fg_color=COLOR["card_bg"],
             hover_color=COLOR["subbox_bg"],
             text_color=COLOR["text_primary"],
             border_width=1,
             border_color=COLOR["border"],
-            height=36,
-            width=95,
-            corner_radius=10,
+            height=34,
+            width=90,
+            corner_radius=8,
             command=self.show_google_models_action,
         )
         self.btn_google_models.pack(side="left", padx=3)
@@ -1551,12 +1555,12 @@ class AntigravityManagerApp(ctk.CTk):
             self.actions_right_frame,
             text="➕ Добавить",
             font=self.font(size=12, weight="bold"),
-            fg_color="#0284c7",
-            hover_color="#0369a1",
+            fg_color="#238636",
+            hover_color="#2ea043",
             text_color="#ffffff",
-            height=36,
-            width=115,
-            corner_radius=10,
+            height=34,
+            width=110,
+            corner_radius=8,
             command=self.add_account_action,
         )
         self.btn_add_account.pack(side="left", padx=(3, 0))
@@ -1567,24 +1571,24 @@ class AntigravityManagerApp(ctk.CTk):
             self.btn_add_account.configure(
                 text="➕ Добавить",
                 command=self.add_account_action,
-                fg_color="#0284c7",
-                hover_color="#0369a1",
+                fg_color="#238636",
+                hover_color="#2ea043",
             )
         elif self.current_provider_view == "openai":
             self.btn_google_models.pack_forget()
             self.btn_add_account.configure(
                 text="➕ Добавить",
                 command=self.add_openai_account_action,
-                fg_color="#10a37f",
-                hover_color="#0e8a6c",
+                fg_color="#238636",
+                hover_color="#2ea043",
             )
         elif self.current_provider_view == "claude":
             self.btn_google_models.pack_forget()
             self.btn_add_account.configure(
                 text="➕ Добавить Claude",
                 command=self.add_claude_account_action,
-                fg_color="#d97706",
-                hover_color="#b45309",
+                fg_color="#238636",
+                hover_color="#2ea043",
             )
 
     def show_google_models_action(self):
@@ -1686,10 +1690,10 @@ class AntigravityManagerApp(ctk.CTk):
             top_bar,
             text="🩺 Проверить доступность всех моделей",
             font=self.font(size=12, weight="bold"),
-            fg_color="#0284c7",
-            hover_color="#0369a1",
+            fg_color=("#0969da", "#1f6feb"),
+            hover_color=("#0550ae", "#388bfd"),
             height=34,
-            corner_radius=8
+            corner_radius=6
         )
         btn_check_all.pack(side="left")
 
@@ -1753,7 +1757,7 @@ class AntigravityManagerApp(ctk.CTk):
             badge = model_badges.get(m_id)
             btn = model_test_btns.get(m_id)
             if badge:
-                badge.configure(text="⏳ Проверка...", fg_color="#0284c7", text_color="#ffffff")
+                badge.configure(text="⏳ Проверка...", fg_color=COLOR["subbox_bg"], text_color=COLOR["accent_cyan"])
             if btn:
                 btn.configure(state="disabled", text="⏳...")
 
@@ -1939,10 +1943,11 @@ class AntigravityManagerApp(ctk.CTk):
             text="✕",
             font=self.font(size=11),
             fg_color="transparent",
-            hover_color="#0284c7" if self.current_theme == "dark" else "#dbeafe",
-            text_color="#ffffff" if self.current_theme == "dark" else "#60a5fa",
+            hover_color=("#eaeef2", "#21262d"),
+            text_color=COLOR["text_muted"],
             width=24,
             height=24,
+            corner_radius=6,
             command=lambda: self.flash_banner.pack_forget(),
         ).grid(row=0, column=1, sticky="e", padx=8)
 
@@ -2086,14 +2091,14 @@ class AntigravityManagerApp(ctk.CTk):
         card = ctk.CTkFrame(
             parent,
             fg_color=COLOR["card_active_bg"] if is_active else COLOR["card_bg"],
-            corner_radius=16,
-            border_width=2 if is_active else 1,
+            corner_radius=12,
+            border_width=1,
             border_color=COLOR["border_active"] if is_active else COLOR["border"],
         )
 
         # 1. Top Header Row
         header = ctk.CTkFrame(card, fg_color="transparent")
-        header.pack(fill="x", padx=16, pady=(16, 6))
+        header.pack(fill="x", padx=14, pady=(14, 6))
         header.grid_columnconfigure(0, weight=1)
 
         title_box = ctk.CTkFrame(header, fg_color="transparent")
@@ -2104,7 +2109,7 @@ class AntigravityManagerApp(ctk.CTk):
         email_lbl = ctk.CTkLabel(
             title_box,
             text=f"{prefix}{short_email}",
-            font=self.font(size=14, weight="bold"),
+            font=self.font(size=13, weight="bold"),
             text_color=COLOR["text_primary"],
         )
         email_lbl.pack(anchor="w")
@@ -2127,10 +2132,10 @@ class AntigravityManagerApp(ctk.CTk):
                 badges_box,
                 text="● Активен",
                 font=self.font(size=11, weight="bold"),
-                fg_color="#10b981",
+                fg_color=("#2da44e", "#238636"),
                 text_color="#ffffff",
-                corner_radius=10,
-                padx=9,
+                corner_radius=6,
+                padx=8,
                 pady=2,
             )
             status_badge.pack(side="left", padx=(0, 6))
@@ -2141,7 +2146,9 @@ class AntigravityManagerApp(ctk.CTk):
                 font=self.font(size=11, weight="bold"),
                 fg_color=COLOR["subbox_bg"],
                 text_color=COLOR["text_muted"],
-                corner_radius=10,
+                border_width=1,
+                border_color=COLOR["border"],
+                corner_radius=6,
                 padx=8,
                 pady=2,
             )
@@ -2151,17 +2158,25 @@ class AntigravityManagerApp(ctk.CTk):
             badges_box,
             text="PRO",
             font=self.font(size=11, weight="bold"),
-            fg_color="#0284c7",
-            text_color="#ffffff",
-            corner_radius=10,
+            fg_color=COLOR["subbox_bg"],
+            text_color=COLOR["accent_cyan"],
+            border_width=1,
+            border_color=COLOR["border"],
+            corner_radius=6,
             padx=7,
             pady=2,
         )
         pro_badge.pack(side="left")
 
-        # 2. Sleek Full-Width Quotas Container (Gemini & Claude with 5h & Weekly windows)
-        quotas_container = ctk.CTkFrame(card, fg_color="transparent")
-        quotas_container.pack(fill="x", padx=16, pady=(4, 8))
+        # 2. Sleek Inset Quotas Box (Linear Minimal spec)
+        quotas_container = ctk.CTkFrame(
+            card,
+            fg_color=COLOR["subbox_bg"],
+            corner_radius=8,
+            border_width=1,
+            border_color=COLOR["border"],
+        )
+        quotas_container.pack(fill="x", padx=14, pady=(4, 8), ipadx=4, ipady=4)
 
         def extract_quota_windows(group_info):
             if not group_info:
@@ -2198,54 +2213,54 @@ class AntigravityManagerApp(ctk.CTk):
 
             # Model title
             t_row = ctk.CTkFrame(container, fg_color="transparent")
-            t_row.pack(fill="x", pady=(2, 2))
+            t_row.pack(fill="x", padx=8, pady=(4, 2))
             ctk.CTkLabel(t_row, text=model_title, font=self.font(size=12, weight="bold"), text_color=COLOR["text_primary"]).pack(side="left")
 
-            # 5-hour limit (Emerald Green #10b981)
+            # 5-hour limit
             r5_row = ctk.CTkFrame(container, fg_color="transparent")
-            r5_row.pack(fill="x", pady=(2, 1))
-            col_5h = "#ef4444" if pct_5h <= 20 else "#10b981"
+            r5_row.pack(fill="x", padx=8, pady=(2, 1))
+            col_5h = "#f85149" if pct_5h <= 20 else COLOR["quota_5h"][1]
             reset_str_5h = f" ({reset_5h})" if reset_5h else ""
 
             b5_lbl = ctk.CTkLabel(
                 r5_row,
                 text="⚡ 5 часов",
                 font=self.font(size=10, weight="bold"),
-                fg_color=("#dcfce7", "#064e3b"),
+                fg_color=COLOR["quota_5h_bg"],
                 text_color=col_5h,
-                corner_radius=6,
+                corner_radius=4,
                 padx=6,
                 pady=1
             )
             b5_lbl.pack(side="left")
             ctk.CTkLabel(r5_row, text=f"{int(pct_5h)}%{reset_str_5h}", font=self.font(size=11, weight="bold"), text_color=col_5h).pack(side="right")
 
-            b_5h = ctk.CTkProgressBar(container, height=6, corner_radius=3)
-            b_5h.pack(fill="x", pady=(2, 4))
+            b_5h = ctk.CTkProgressBar(container, height=4, corner_radius=2)
+            b_5h.pack(fill="x", padx=8, pady=(2, 4))
             b_5h.set(max(0.0, min(1.0, pct_5h / 100.0)))
             b_5h.configure(progress_color=col_5h, fg_color=COLOR["bar_bg"])
 
-            # Weekly limit (Amber Orange #f59e0b)
+            # Weekly limit
             rwk_row = ctk.CTkFrame(container, fg_color="transparent")
-            rwk_row.pack(fill="x", pady=(2, 1))
-            col_wk = "#ef4444" if pct_wk <= 20 else "#f59e0b"
+            rwk_row.pack(fill="x", padx=8, pady=(2, 1))
+            col_wk = "#f85149" if pct_wk <= 20 else COLOR["quota_weekly"][1]
             reset_str_wk = f" ({reset_wk})" if reset_wk else ""
 
             bwk_lbl = ctk.CTkLabel(
                 rwk_row,
                 text="📅 Неделя",
                 font=self.font(size=10, weight="bold"),
-                fg_color=("#fef3c7", "#78350f"),
+                fg_color=COLOR["quota_weekly_bg"],
                 text_color=col_wk,
-                corner_radius=6,
+                corner_radius=4,
                 padx=6,
                 pady=1
             )
             bwk_lbl.pack(side="left")
             ctk.CTkLabel(rwk_row, text=f"{int(pct_wk)}%{reset_str_wk}", font=self.font(size=11, weight="bold"), text_color=col_wk).pack(side="right")
 
-            b_wk = ctk.CTkProgressBar(container, height=6, corner_radius=3)
-            b_wk.pack(fill="x", pady=(2, 2 if is_last else 6))
+            b_wk = ctk.CTkProgressBar(container, height=4, corner_radius=2)
+            b_wk.pack(fill="x", padx=8, pady=(2, 2 if is_last else 6))
             b_wk.set(max(0.0, min(1.0, pct_wk / 100.0)))
             b_wk.configure(progress_color=col_wk, fg_color=COLOR["bar_bg"])
 
@@ -2254,10 +2269,10 @@ class AntigravityManagerApp(ctk.CTk):
 
         # 3. Card Footer with Action Buttons & Cyber Switch
         divider = ctk.CTkFrame(card, height=1, fg_color=COLOR["border"])
-        divider.pack(fill="x", padx=16, pady=(6, 8))
+        divider.pack(fill="x", padx=14, pady=(4, 8))
 
         footer = ctk.CTkFrame(card, fg_color="transparent")
-        footer.pack(fill="x", padx=16, pady=(0, 12))
+        footer.pack(fill="x", padx=14, pady=(0, 10))
         footer.grid_columnconfigure(0, weight=1)
 
         # Left: Actions
@@ -2268,14 +2283,14 @@ class AntigravityManagerApp(ctk.CTk):
             actions_pill,
             text="🩺 Тест",
             font=self.font(size=11, weight="bold"),
-            fg_color=("#f1f5f9", "#151f33"),
-            hover_color=("#e2e8f0", "#1e2d4a"),
+            fg_color=("#f6f8fa", "#21262d"),
+            hover_color=("#eaeef2", "#30363d"),
             text_color=COLOR["text_primary"],
             border_width=1,
-            border_color=("#cbd5e1", "#2a3b5c"),
+            border_color=COLOR["border"],
             width=58,
             height=28,
-            corner_radius=8,
+            corner_radius=6,
             command=lambda a=acc: self.test_google_account_action(a),
         ).pack(side="left", padx=(0, 4))
 
@@ -2284,12 +2299,12 @@ class AntigravityManagerApp(ctk.CTk):
                 actions_pill,
                 text="⭐ Выбрать",
                 font=self.font(size=11, weight="bold"),
-                fg_color="#0284c7",
-                hover_color="#0369a1",
+                fg_color=("#0969da", "#1f6feb"),
+                hover_color=("#0550ae", "#388bfd"),
                 text_color="#ffffff",
                 width=76,
                 height=28,
-                corner_radius=8,
+                corner_radius=6,
                 command=lambda idx=index - 1: self.activate_google_account_action(idx),
             ).pack(side="left", padx=(0, 4))
 
@@ -2297,14 +2312,14 @@ class AntigravityManagerApp(ctk.CTk):
             actions_pill,
             text="📋",
             font=self.font(size=13, weight="bold"),
-            fg_color=("#f1f5f9", "#151f33"),
-            hover_color=("#e2e8f0", "#1e2d4a"),
+            fg_color=("#f6f8fa", "#21262d"),
+            hover_color=("#eaeef2", "#30363d"),
             text_color=COLOR["text_primary"],
             border_width=1,
-            border_color=("#cbd5e1", "#2a3b5c"),
-            width=32,
+            border_color=COLOR["border"],
+            width=30,
             height=28,
-            corner_radius=8,
+            corner_radius=6,
             command=lambda e=email: self.copy_to_clipboard(e, "Email скопирован"),
         ).pack(side="left", padx=(0, 4))
 
@@ -2312,14 +2327,14 @@ class AntigravityManagerApp(ctk.CTk):
             actions_pill,
             text="🗑",
             font=self.font(size=13, weight="bold"),
-            fg_color=("#f1f5f9", "#151f33"),
-            hover_color=("#fee2e2", "#3b1818"),
-            text_color="#f87171",
+            fg_color=("#f6f8fa", "#21262d"),
+            hover_color=("#ffebe9", "#3c1e1e"),
+            text_color=("#cf222e", "#f85149"),
             border_width=1,
-            border_color=("#cbd5e1", "#2a3b5c"),
-            width=32,
+            border_color=COLOR["border"],
+            width=30,
             height=28,
-            corner_radius=8,
+            corner_radius=6,
             command=lambda a=acc: self.delete_google_account_action(a),
         ).pack(side="left")
 
@@ -2387,10 +2402,10 @@ class AntigravityManagerApp(ctk.CTk):
 
     def _render_compact_subrow(self, parent, label, pct, reset_iso):
         rem = round(float(pct), 1) if pct is not None else None
-        color = (COLOR["accent_emerald"] if rem > 50 else ("#f59e0b" if rem > 20 else "#ef4444")) if rem is not None else COLOR["text_muted"]
+        color = (COLOR["quota_5h"][1] if rem > 50 else (COLOR["quota_weekly"][1] if rem > 20 else "#f85149")) if rem is not None else COLOR["text_muted"]
 
         row = ctk.CTkFrame(parent, fg_color="transparent")
-        row.pack(fill="x", pady=(3, 0))
+        row.pack(fill="x", pady=(2, 0))
 
         ctk.CTkLabel(
             row,
@@ -2406,7 +2421,7 @@ class AntigravityManagerApp(ctk.CTk):
             text_color=color,
         ).pack(side="right")
 
-        bar = ctk.CTkProgressBar(parent, height=6, corner_radius=3)
+        bar = ctk.CTkProgressBar(parent, height=4, corner_radius=2)
         bar.pack(fill="x", pady=(2, 2))
         bar.set(max(0.0, min(1.0, rem / 100.0)) if rem is not None else 0.0)
         bar.configure(progress_color=color, fg_color=COLOR["bar_bg"])
@@ -2460,7 +2475,7 @@ class AntigravityManagerApp(ctk.CTk):
             return "12.04.2026"
 
     # =========================================================================
-    # COMPACT OPENAI CARD (High-contrast Segoe UI, Dual Theme)
+    # COMPACT OPENAI CARD (Linear Minimal spec)
     # =========================================================================
     def create_compact_openai_card(self, parent, acc, is_active=False):
         email = acc.get("email", "unknown@chatgpt.com")
@@ -2475,14 +2490,14 @@ class AntigravityManagerApp(ctk.CTk):
         card = ctk.CTkFrame(
             parent,
             fg_color=COLOR["card_active_bg"] if is_active else COLOR["card_bg"],
-            corner_radius=16,
-            border_width=2 if is_active else 1,
-            border_color="#10a37f" if is_active else COLOR["border"],
+            corner_radius=12,
+            border_width=1,
+            border_color=COLOR["border_active"] if is_active else COLOR["border"],
         )
 
         # 1. Top Header Row
         header = ctk.CTkFrame(card, fg_color="transparent")
-        header.pack(fill="x", padx=16, pady=(16, 6))
+        header.pack(fill="x", padx=14, pady=(14, 6))
         header.grid_columnconfigure(0, weight=1)
 
         title_box = ctk.CTkFrame(header, fg_color="transparent")
@@ -2493,7 +2508,7 @@ class AntigravityManagerApp(ctk.CTk):
         ctk.CTkLabel(
             title_box,
             text=f"{prefix}{short_email}",
-            font=self.font(size=14, weight="bold"),
+            font=self.font(size=13, weight="bold"),
             text_color=COLOR["text_primary"],
         ).pack(anchor="w")
 
@@ -2512,10 +2527,10 @@ class AntigravityManagerApp(ctk.CTk):
                 badges_box,
                 text="● Активен",
                 font=self.font(size=11, weight="bold"),
-                fg_color="#10a37f",
+                fg_color=("#2da44e", "#238636"),
                 text_color="#ffffff",
-                corner_radius=10,
-                padx=9,
+                corner_radius=6,
+                padx=8,
                 pady=2,
             ).pack(side="left", padx=(0, 6))
         else:
@@ -2525,7 +2540,9 @@ class AntigravityManagerApp(ctk.CTk):
                 font=self.font(size=11, weight="bold"),
                 fg_color=COLOR["subbox_bg"],
                 text_color=COLOR["text_muted"],
-                corner_radius=10,
+                border_width=1,
+                border_color=COLOR["border"],
+                corner_radius=6,
                 padx=8,
                 pady=2,
             ).pack(side="left", padx=(0, 6))
@@ -2534,53 +2551,81 @@ class AntigravityManagerApp(ctk.CTk):
             badges_box,
             text=plan_type,
             font=self.font(size=11, weight="bold"),
-            fg_color="#0284c7",
-            text_color="#ffffff",
-            corner_radius=10,
+            fg_color=COLOR["subbox_bg"],
+            text_color=COLOR["accent_cyan"],
+            border_width=1,
+            border_color=COLOR["border"],
+            corner_radius=6,
             padx=7,
             pady=2,
         ).pack(side="left")
 
-        # 2. Sleek Full-Width Quotas Container
-        quotas_container = ctk.CTkFrame(card, fg_color="transparent")
-        quotas_container.pack(fill="x", padx=16, pady=(6, 10))
+        # 2. Sleek Inset Quotas Box (Linear Minimal spec)
+        quotas_container = ctk.CTkFrame(
+            card,
+            fg_color=COLOR["subbox_bg"],
+            corner_radius=8,
+            border_width=1,
+            border_color=COLOR["border"],
+        )
+        quotas_container.pack(fill="x", padx=14, pady=(4, 8), ipadx=4, ipady=4)
 
         rem_p = round(float(primary_quota.get("remaining_percent", 100.0)), 1)
         reset_p = self.format_compact_reset(primary_quota.get("reset_at"))
-        reset_p_str = f"({reset_p})" if reset_p else ""
-        col_p = "#10a37f" if rem_p > 20 else "#ef4444"
+        reset_p_str = f" ({reset_p})" if reset_p else ""
+        col_p = "#f85149" if rem_p <= 20 else COLOR["quota_5h"][1]
 
         row1 = ctk.CTkFrame(quotas_container, fg_color="transparent")
-        row1.pack(fill="x", pady=(2, 3))
-        ctk.CTkLabel(row1, text="Лимит 5 часов (Primary)", font=self.font(size=12, weight="bold"), text_color=COLOR["text_secondary"]).pack(side="left")
-        ctk.CTkLabel(row1, text=f"{int(rem_p)}% {reset_p_str}", font=self.font(size=11, weight="bold"), text_color=col_p).pack(side="right")
+        row1.pack(fill="x", padx=8, pady=(4, 1))
+        b5_lbl = ctk.CTkLabel(
+            row1,
+            text="⚡ 5 часов",
+            font=self.font(size=10, weight="bold"),
+            fg_color=COLOR["quota_5h_bg"],
+            text_color=col_p,
+            corner_radius=4,
+            padx=6,
+            pady=1
+        )
+        b5_lbl.pack(side="left")
+        ctk.CTkLabel(row1, text=f"{int(rem_p)}%{reset_p_str}", font=self.font(size=11, weight="bold"), text_color=col_p).pack(side="right")
 
-        bar1 = ctk.CTkProgressBar(quotas_container, height=7, corner_radius=4)
-        bar1.pack(fill="x", pady=(0, 8))
+        bar1 = ctk.CTkProgressBar(quotas_container, height=4, corner_radius=2)
+        bar1.pack(fill="x", padx=8, pady=(2, 6))
         bar1.set(max(0.0, min(1.0, rem_p / 100.0)))
-        bar1.configure(progress_color="#10a37f", fg_color=COLOR["bar_bg"])
+        bar1.configure(progress_color=col_p, fg_color=COLOR["bar_bg"])
 
         rem_s = round(float(secondary_quota.get("remaining_percent", 100.0)), 1)
         reset_s = self.format_compact_reset(secondary_quota.get("reset_at"))
-        reset_s_str = f"({reset_s})" if reset_s else ""
-        col_s = COLOR["accent_cyan"] if rem_s > 20 else "#ef4444"
+        reset_s_str = f" ({reset_s})" if reset_s else ""
+        col_s = "#f85149" if rem_s <= 20 else COLOR["quota_weekly"][1]
 
         row2 = ctk.CTkFrame(quotas_container, fg_color="transparent")
-        row2.pack(fill="x", pady=(2, 3))
-        ctk.CTkLabel(row2, text="Недельный лимит", font=self.font(size=12, weight="bold"), text_color=COLOR["text_secondary"]).pack(side="left")
-        ctk.CTkLabel(row2, text=f"{int(rem_s)}% {reset_s_str}", font=self.font(size=11, weight="bold"), text_color=col_s).pack(side="right")
+        row2.pack(fill="x", padx=8, pady=(2, 1))
+        bwk_lbl = ctk.CTkLabel(
+            row2,
+            text="📅 Неделя",
+            font=self.font(size=10, weight="bold"),
+            fg_color=COLOR["quota_weekly_bg"],
+            text_color=col_s,
+            corner_radius=4,
+            padx=6,
+            pady=1
+        )
+        bwk_lbl.pack(side="left")
+        ctk.CTkLabel(row2, text=f"{int(rem_s)}%{reset_s_str}", font=self.font(size=11, weight="bold"), text_color=col_s).pack(side="right")
 
-        bar2 = ctk.CTkProgressBar(quotas_container, height=7, corner_radius=4)
-        bar2.pack(fill="x", pady=(0, 4))
+        bar2 = ctk.CTkProgressBar(quotas_container, height=4, corner_radius=2)
+        bar2.pack(fill="x", padx=8, pady=(2, 4))
         bar2.set(max(0.0, min(1.0, rem_s / 100.0)))
-        bar2.configure(progress_color=COLOR["accent_cyan"], fg_color=COLOR["bar_bg"])
+        bar2.configure(progress_color=col_s, fg_color=COLOR["bar_bg"])
 
         # 3. Card Footer Actions
         divider = ctk.CTkFrame(card, height=1, fg_color=COLOR["border"])
-        divider.pack(fill="x", padx=16, pady=(6, 8))
+        divider.pack(fill="x", padx=14, pady=(4, 8))
 
         footer = ctk.CTkFrame(card, fg_color="transparent")
-        footer.pack(fill="x", padx=16, pady=(0, 12))
+        footer.pack(fill="x", padx=14, pady=(0, 10))
         footer.grid_columnconfigure(0, weight=1)
 
         actions_pill = ctk.CTkFrame(footer, fg_color="transparent")
@@ -2590,14 +2635,14 @@ class AntigravityManagerApp(ctk.CTk):
             actions_pill,
             text="🩺 Тест",
             font=self.font(size=11, weight="bold"),
-            fg_color=("#f1f5f9", "#151f33"),
-            hover_color=("#e2e8f0", "#1e2d4a"),
+            fg_color=("#f6f8fa", "#21262d"),
+            hover_color=("#eaeef2", "#30363d"),
             text_color=COLOR["text_primary"],
             border_width=1,
-            border_color=("#cbd5e1", "#2a3b5c"),
+            border_color=COLOR["border"],
             width=58,
             height=28,
-            corner_radius=8,
+            corner_radius=6,
             command=lambda a=acc: self.test_openai_account_action(a),
         ).pack(side="left", padx=(0, 4))
 
@@ -2606,12 +2651,12 @@ class AntigravityManagerApp(ctk.CTk):
                 actions_pill,
                 text="⭐ Выбрать",
                 font=self.font(size=11, weight="bold"),
-                fg_color="#10a37f",
-                hover_color="#0e8a6c",
+                fg_color=("#0969da", "#1f6feb"),
+                hover_color=("#0550ae", "#388bfd"),
                 text_color="#ffffff",
                 width=76,
                 height=28,
-                corner_radius=8,
+                corner_radius=6,
                 command=lambda aid=account_id: self.activate_openai_account_action(aid),
             ).pack(side="left", padx=(0, 4))
 
@@ -2619,14 +2664,14 @@ class AntigravityManagerApp(ctk.CTk):
             actions_pill,
             text="📋",
             font=self.font(size=13, weight="bold"),
-            fg_color=("#f1f5f9", "#151f33"),
-            hover_color=("#e2e8f0", "#1e2d4a"),
+            fg_color=("#f6f8fa", "#21262d"),
+            hover_color=("#eaeef2", "#30363d"),
             text_color=COLOR["text_primary"],
             border_width=1,
-            border_color=("#cbd5e1", "#2a3b5c"),
-            width=32,
+            border_color=COLOR["border"],
+            width=30,
             height=28,
-            corner_radius=8,
+            corner_radius=6,
             command=lambda e=email: self.copy_to_clipboard(e, "Email скопирован"),
         ).pack(side="left", padx=(0, 4))
 
@@ -2634,14 +2679,14 @@ class AntigravityManagerApp(ctk.CTk):
             actions_pill,
             text="🗑",
             font=self.font(size=13, weight="bold"),
-            fg_color=("#f1f5f9", "#151f33"),
-            hover_color=("#fee2e2", "#3b1818"),
-            text_color="#f87171",
+            fg_color=("#f6f8fa", "#21262d"),
+            hover_color=("#ffebe9", "#3c1e1e"),
+            text_color=("#cf222e", "#f85149"),
             border_width=1,
-            border_color=("#cbd5e1", "#2a3b5c"),
-            width=32,
+            border_color=COLOR["border"],
+            width=30,
             height=28,
-            corner_radius=8,
+            corner_radius=6,
             command=lambda a=acc: self.delete_openai_account_action(a),
         ).pack(side="left")
 
@@ -2659,7 +2704,7 @@ class AntigravityManagerApp(ctk.CTk):
         return card
 
     # =========================================================================
-    # COMPACT CLAUDE PRO CARD
+    # COMPACT CLAUDE PRO CARD (Linear Minimal spec)
     # =========================================================================
     def create_compact_claude_card(self, parent, acc, is_active=False):
         email = acc.get("email", "unknown@claude.ai")
@@ -2670,14 +2715,14 @@ class AntigravityManagerApp(ctk.CTk):
         card = ctk.CTkFrame(
             parent,
             fg_color=COLOR["card_active_bg"] if is_active else COLOR["card_bg"],
-            corner_radius=16,
-            border_width=2 if is_active else 1,
-            border_color="#d97706" if is_active else COLOR["border"],
+            corner_radius=12,
+            border_width=1,
+            border_color=COLOR["border_active"] if is_active else COLOR["border"],
         )
 
         # 1. Top Header Row
         header = ctk.CTkFrame(card, fg_color="transparent")
-        header.pack(fill="x", padx=16, pady=(16, 6))
+        header.pack(fill="x", padx=14, pady=(14, 6))
         header.grid_columnconfigure(0, weight=1)
 
         title_box = ctk.CTkFrame(header, fg_color="transparent")
@@ -2688,7 +2733,7 @@ class AntigravityManagerApp(ctk.CTk):
         ctk.CTkLabel(
             title_box,
             text=f"{prefix}{short_email}",
-            font=self.font(size=14, weight="bold"),
+            font=self.font(size=13, weight="bold"),
             text_color=COLOR["text_primary"],
         ).pack(anchor="w")
 
@@ -2707,10 +2752,10 @@ class AntigravityManagerApp(ctk.CTk):
                 badges_box,
                 text="● Активен",
                 font=self.font(size=11, weight="bold"),
-                fg_color="#d97706",
+                fg_color=("#2da44e", "#238636"),
                 text_color="#ffffff",
-                corner_radius=10,
-                padx=9,
+                corner_radius=6,
+                padx=8,
                 pady=2,
             ).pack(side="left", padx=(0, 6))
         else:
@@ -2720,7 +2765,9 @@ class AntigravityManagerApp(ctk.CTk):
                 font=self.font(size=11, weight="bold"),
                 fg_color=COLOR["subbox_bg"],
                 text_color=COLOR["text_muted"],
-                corner_radius=10,
+                border_width=1,
+                border_color=COLOR["border"],
+                corner_radius=6,
                 padx=8,
                 pady=2,
             ).pack(side="left", padx=(0, 6))
@@ -2729,69 +2776,77 @@ class AntigravityManagerApp(ctk.CTk):
             badges_box,
             text=plan_type,
             font=self.font(size=11, weight="bold"),
-            fg_color="#d97706",
-            text_color="#ffffff",
-            corner_radius=10,
+            fg_color=COLOR["subbox_bg"],
+            text_color=COLOR["accent_purple"],
+            border_width=1,
+            border_color=COLOR["border"],
+            corner_radius=6,
             padx=7,
             pady=2,
         ).pack(side="left")
 
-        # 2. Sleek Full-Width Quotas Container (Claude 3.7 / 3.5 Sonnet & Opus)
-        quotas_container = ctk.CTkFrame(card, fg_color="transparent")
-        quotas_container.pack(fill="x", padx=16, pady=(4, 8))
+        # 2. Sleek Inset Quotas Box (Linear Minimal spec)
+        quotas_container = ctk.CTkFrame(
+            card,
+            fg_color=COLOR["subbox_bg"],
+            corner_radius=8,
+            border_width=1,
+            border_color=COLOR["border"],
+        )
+        quotas_container.pack(fill="x", padx=14, pady=(4, 8), ipadx=4, ipady=4)
 
         t_row = ctk.CTkFrame(quotas_container, fg_color="transparent")
-        t_row.pack(fill="x", pady=(2, 2))
+        t_row.pack(fill="x", padx=8, pady=(4, 2))
         ctk.CTkLabel(t_row, text="Claude 3.7 / 3.5 Sonnet & Opus", font=self.font(size=12, weight="bold"), text_color=COLOR["text_primary"]).pack(side="left")
 
-        # 5-hour limit (Emerald Green #10b981)
+        # 5-hour limit
         r5_row = ctk.CTkFrame(quotas_container, fg_color="transparent")
-        r5_row.pack(fill="x", pady=(2, 1))
+        r5_row.pack(fill="x", padx=8, pady=(2, 1))
         b5_lbl = ctk.CTkLabel(
             r5_row,
             text="⚡ 5 часов",
             font=self.font(size=10, weight="bold"),
-            fg_color=("#dcfce7", "#064e3b"),
-            text_color="#10b981",
-            corner_radius=6,
+            fg_color=COLOR["quota_5h_bg"],
+            text_color=COLOR["quota_5h"][1],
+            corner_radius=4,
             padx=6,
             pady=1
         )
         b5_lbl.pack(side="left")
-        ctk.CTkLabel(r5_row, text="100% (квота доступна)", font=self.font(size=11, weight="bold"), text_color="#10b981").pack(side="right")
+        ctk.CTkLabel(r5_row, text="100% (квота доступна)", font=self.font(size=11, weight="bold"), text_color=COLOR["quota_5h"][1]).pack(side="right")
 
-        b_5h = ctk.CTkProgressBar(quotas_container, height=6, corner_radius=3)
-        b_5h.pack(fill="x", pady=(2, 4))
+        b_5h = ctk.CTkProgressBar(quotas_container, height=4, corner_radius=2)
+        b_5h.pack(fill="x", padx=8, pady=(2, 4))
         b_5h.set(1.0)
-        b_5h.configure(progress_color="#10b981", fg_color=COLOR["bar_bg"])
+        b_5h.configure(progress_color=COLOR["quota_5h"][1], fg_color=COLOR["bar_bg"])
 
-        # Weekly limit (Amber Orange #f59e0b)
+        # Weekly limit
         rwk_row = ctk.CTkFrame(quotas_container, fg_color="transparent")
-        rwk_row.pack(fill="x", pady=(2, 1))
+        rwk_row.pack(fill="x", padx=8, pady=(2, 1))
         bwk_lbl = ctk.CTkLabel(
             rwk_row,
             text="📅 Неделя",
             font=self.font(size=10, weight="bold"),
-            fg_color=("#fef3c7", "#78350f"),
-            text_color="#f59e0b",
-            corner_radius=6,
+            fg_color=COLOR["quota_weekly_bg"],
+            text_color=COLOR["quota_weekly"][1],
+            corner_radius=4,
             padx=6,
             pady=1
         )
         bwk_lbl.pack(side="left")
-        ctk.CTkLabel(rwk_row, text="100% (квота доступна)", font=self.font(size=11, weight="bold"), text_color="#f59e0b").pack(side="right")
+        ctk.CTkLabel(rwk_row, text="100% (квота доступна)", font=self.font(size=11, weight="bold"), text_color=COLOR["quota_weekly"][1]).pack(side="right")
 
-        b_wk = ctk.CTkProgressBar(quotas_container, height=6, corner_radius=3)
-        b_wk.pack(fill="x", pady=(2, 4))
+        b_wk = ctk.CTkProgressBar(quotas_container, height=4, corner_radius=2)
+        b_wk.pack(fill="x", padx=8, pady=(2, 4))
         b_wk.set(1.0)
-        b_wk.configure(progress_color="#f59e0b", fg_color=COLOR["bar_bg"])
+        b_wk.configure(progress_color=COLOR["quota_weekly"][1], fg_color=COLOR["bar_bg"])
 
         # 3. Card Footer Actions
         divider = ctk.CTkFrame(card, height=1, fg_color=COLOR["border"])
-        divider.pack(fill="x", padx=16, pady=(6, 8))
+        divider.pack(fill="x", padx=14, pady=(4, 8))
 
         footer = ctk.CTkFrame(card, fg_color="transparent")
-        footer.pack(fill="x", padx=16, pady=(0, 12))
+        footer.pack(fill="x", padx=14, pady=(0, 10))
         footer.grid_columnconfigure(0, weight=1)
 
         actions_pill = ctk.CTkFrame(footer, fg_color="transparent")
@@ -2801,14 +2856,14 @@ class AntigravityManagerApp(ctk.CTk):
             actions_pill,
             text="🩺 Тест",
             font=self.font(size=11, weight="bold"),
-            fg_color=("#f1f5f9", "#151f33"),
-            hover_color=("#e2e8f0", "#1e2d4a"),
+            fg_color=("#f6f8fa", "#21262d"),
+            hover_color=("#eaeef2", "#30363d"),
             text_color=COLOR["text_primary"],
             border_width=1,
-            border_color=("#cbd5e1", "#2a3b5c"),
+            border_color=COLOR["border"],
             width=58,
             height=28,
-            corner_radius=8,
+            corner_radius=6,
             command=lambda a=acc: self.test_claude_account_action(a),
         ).pack(side="left", padx=(0, 4))
 
@@ -2817,12 +2872,12 @@ class AntigravityManagerApp(ctk.CTk):
                 actions_pill,
                 text="⭐ Выбрать",
                 font=self.font(size=11, weight="bold"),
-                fg_color="#d97706",
-                hover_color="#b45309",
+                fg_color=("#0969da", "#1f6feb"),
+                hover_color=("#0550ae", "#388bfd"),
                 text_color="#ffffff",
                 width=76,
                 height=28,
-                corner_radius=8,
+                corner_radius=6,
                 command=lambda e=email: self.activate_claude_account_action(e),
             ).pack(side="left", padx=(0, 4))
 
@@ -2830,14 +2885,14 @@ class AntigravityManagerApp(ctk.CTk):
             actions_pill,
             text="📋",
             font=self.font(size=13, weight="bold"),
-            fg_color=("#f1f5f9", "#151f33"),
-            hover_color=("#e2e8f0", "#1e2d4a"),
+            fg_color=("#f6f8fa", "#21262d"),
+            hover_color=("#eaeef2", "#30363d"),
             text_color=COLOR["text_primary"],
             border_width=1,
-            border_color=("#cbd5e1", "#2a3b5c"),
-            width=32,
+            border_color=COLOR["border"],
+            width=30,
             height=28,
-            corner_radius=8,
+            corner_radius=6,
             command=lambda e=email: self.copy_to_clipboard(e, "Email скопирован"),
         ).pack(side="left", padx=(0, 4))
 
@@ -2845,14 +2900,14 @@ class AntigravityManagerApp(ctk.CTk):
             actions_pill,
             text="🗑",
             font=self.font(size=13, weight="bold"),
-            fg_color=("#f1f5f9", "#151f33"),
-            hover_color=("#fee2e2", "#3b1818"),
-            text_color="#f87171",
+            fg_color=("#f6f8fa", "#21262d"),
+            hover_color=("#ffebe9", "#3c1e1e"),
+            text_color=("#cf222e", "#f85149"),
             border_width=1,
-            border_color=("#cbd5e1", "#2a3b5c"),
-            width=32,
+            border_color=COLOR["border"],
+            width=30,
             height=28,
-            corner_radius=8,
+            corner_radius=6,
             command=lambda a=acc: self.delete_claude_account_action(a),
         ).pack(side="left")
 
@@ -2900,7 +2955,7 @@ class AntigravityManagerApp(ctk.CTk):
             c1,
             text="",
             font=self.font(size=11),
-            text_color="#0284c7",
+            text_color=COLOR["accent_cyan"],
             anchor="w",
             justify="left",
             wraplength=720,
@@ -2951,8 +3006,9 @@ class AntigravityManagerApp(ctk.CTk):
             c_net,
             text="Перейти в раздел «Сеть, DNS & VLESS» →",
             font=self.font(size=12, weight="bold"),
-            fg_color="#0284c7",
-            hover_color="#0369a1",
+            fg_color=("#0969da", "#1f6feb"),
+            hover_color=("#0550ae", "#388bfd"),
+            corner_radius=6,
             height=34,
             command=lambda: self.switch_nav("network")
         ).pack(anchor="w", padx=16, pady=(0, 12))
@@ -3005,8 +3061,9 @@ class AntigravityManagerApp(ctk.CTk):
             self.settings_frame,
             text="💾 Сохранить настройки",
             font=self.font(size=13, weight="bold"),
-            fg_color="#0284c7",
-            hover_color="#0369a1",
+            fg_color="#238636",
+            hover_color="#2ea043",
+            corner_radius=6,
             height=36,
             command=self.save_settings_action,
         ).pack(anchor="w", pady=12)
@@ -3092,7 +3149,7 @@ class AntigravityManagerApp(ctk.CTk):
             self.statusbar,
             text="⏱ Автообновление: 10:00",
             font=self.font(size=11),
-            text_color="#0284c7",
+            text_color=COLOR["accent_cyan"],
         )
         self.lbl_auto_refresh.pack(side="right", padx=16)
 
@@ -3437,7 +3494,7 @@ class AntigravityManagerApp(ctk.CTk):
                 return
 
             btn_submit.configure(state="disabled", text="⏳ Проверка сессии...")
-            lbl_status.configure(text="Подключение к claude.ai...", text_color="#0284c7")
+            lbl_status.configure(text="Подключение к claude.ai...", text_color=COLOR["accent_cyan"])
 
             def _worker():
                 ok, msg, acc = claude_service.verify_and_add_account(key)
