@@ -110,7 +110,7 @@ AVAILABLE_PROVIDERS = [
     ("claude", "🟠  Claude Code / Pro", "claude", "Подписка Claude Pro / Team без покупки API-токенов"),
     ("xpiki", "🟠  Claude API (Xpiki)", "xpiki", "Шлюз Claude API (Xpiki) по гайду с квотой 100M и Opus 5"),
     ("openrouter", "🟣  OpenRouter Free", "openrouter", "Бесплатные модели OpenRouter"),
-    ("mwapi", "⚡  MWAPI Cloud Code", "mwapi", "Cloud Code MWAPI модели"),
+    ("mwapi", "🧠  Claude Cloud Code", "mwapi", "Claude Opus / Sonnet через MWAPI Cloud Code"),
     ("deepseek", "🐋  DeepSeek Web", "deepseek", "Подключение DeepSeek через веб-сессию"),
 ]
 
