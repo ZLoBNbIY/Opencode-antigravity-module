@@ -30,7 +30,6 @@ class XpikiView(ctk.CTkScrollableFrame):
         self._render_warning_banner()
         self._render_quota_card()
         self._render_settings_card()
-        self._render_cli_setup_card()
         self._render_models_card()
 
     def _render_header(self):
@@ -511,100 +510,6 @@ class XpikiView(ctk.CTkScrollableFrame):
         )
         self.btn_check_balance.pack(side="left", padx=(0, 6))
 
-    def _render_cli_setup_card(self):
-        card = ctk.CTkFrame(
-            self,
-            fg_color=self.colors["card_bg"],
-            corner_radius=12,
-            border_width=1,
-            border_color=self.colors["border"],
-        )
-        card.pack(fill="x", padx=16, pady=(0, 12))
-
-        ctk.CTkLabel(
-            card,
-            text="1-Клик интеграция с Claude Code CLI и Claude Desktop (по гайду)",
-            font=self.app.font(14, "bold"),
-            text_color=self.colors["text_primary"],
-            anchor="w",
-        ).pack(fill="x", padx=16, pady=(14, 4))
-
-        ctk.CTkLabel(
-            card,
-            text=(
-                "Автоматическая запись шаблона из статьи Teletype в системные конфиги. "
-                "Вам не нужно открывать PowerShell, искать пути и вручную редактировать JSON-файлы."
-            ),
-            font=self.app.font(11),
-            text_color=self.colors["text_secondary"],
-            anchor="w",
-        ).pack(fill="x", padx=16, pady=(0, 10))
-
-        # Model selector for CLI
-        cli_row = ctk.CTkFrame(card, fg_color="transparent")
-        cli_row.pack(fill="x", padx=16, pady=(0, 10))
-
-        ctk.CTkLabel(
-            cli_row,
-            text="Модель по умолчанию для Claude CLI:",
-            font=self.app.font(11, "bold"),
-            text_color=self.colors["text_secondary"],
-        ).pack(side="left", padx=(0, 8))
-
-        self.cli_model_var = ctk.StringVar(value=self.config_data.get("default_model", "claude-opus-5"))
-        self.cli_model_dropdown = ctk.CTkComboBox(
-            cli_row,
-            values=list(xpiki_manager.XPIKI_MODELS.keys()),
-            variable=self.cli_model_var,
-            font=self.app.font(11),
-            width=200,
-            height=30,
-        )
-        self.cli_model_dropdown.pack(side="left")
-
-        # Buttons
-        btns_row = ctk.CTkFrame(card, fg_color="transparent")
-        btns_row.pack(fill="x", padx=16, pady=(0, 14))
-
-        ctk.CTkButton(
-            btns_row,
-            text="⚡ Настроить Claude Code CLI (~/.claude/settings.json)",
-            font=self.app.font(11, "bold"),
-            fg_color="#d97706",
-            hover_color="#b45309",
-            height=32,
-            corner_radius=6,
-            command=self.setup_cli_action,
-        ).pack(side="left", padx=(0, 6))
-
-        ctk.CTkButton(
-            btns_row,
-            text="🖥️ Настроить Claude Desktop",
-            font=self.app.font(11),
-            fg_color=self.colors["subbox_bg"],
-            hover_color=("#eaeef2", "#21262d"),
-            text_color=self.colors["text_primary"],
-            border_width=1,
-            border_color=self.colors["border"],
-            height=32,
-            corner_radius=6,
-            command=self.setup_desktop_action,
-        ).pack(side="left", padx=(0, 6))
-
-        ctk.CTkButton(
-            btns_row,
-            text="▶ Запустить Claude Code",
-            font=self.app.font(11, "bold"),
-            fg_color=("#f6f8fa", "#21262d"),
-            hover_color=("#eaeef2", "#30363d"),
-            text_color=self.colors["text_primary"],
-            border_width=1,
-            border_color=self.colors["border"],
-            height=32,
-            corner_radius=6,
-            command=self.launch_claude_cli_action,
-        ).pack(side="left")
-
     def _render_models_card(self):
         card = ctk.CTkFrame(
             self,
@@ -719,7 +624,6 @@ class XpikiView(ctk.CTkScrollableFrame):
         cfg = {
             "api_key": key,
             "base_url": url,
-            "default_model": self.cli_model_var.get(),
             "enabled_models": selected_models,
             "connected": True,
         }
@@ -753,39 +657,6 @@ class XpikiView(ctk.CTkScrollableFrame):
             xpiki_manager.disconnect_xpiki()
             self.config_data["connected"] = False
             self.app.show_flash("Xpiki Claude API исключен из пула.")
-
-    def setup_cli_action(self):
-        key = self.key_entry.get().strip()
-        url = self.url_entry.get().strip() or xpiki_manager.DEFAULT_BASE_URL
-        model = self.cli_model_var.get()
-        if not key:
-            messagebox.showwarning("Внимание", "Сначала укажите API-ключ в поле выше.")
-            return
-
-        ok, msg = xpiki_manager.configure_claude_cli(key, url, model)
-        if ok:
-            messagebox.showinfo("Claude Code CLI", f"{msg}\n\nТеперь вы можете запускать команду 'claude' в терминале.")
-        else:
-            messagebox.showerror("Ошибка", msg)
-
-    def setup_desktop_action(self):
-        key = self.key_entry.get().strip()
-        url = self.url_entry.get().strip() or xpiki_manager.DEFAULT_BASE_URL
-        if not key:
-            messagebox.showwarning("Внимание", "Сначала укажите API-ключ в поле выше.")
-            return
-
-        ok, msg = xpiki_manager.configure_claude_desktop(key, url)
-        if ok:
-            messagebox.showinfo("Claude Desktop", f"{msg}\n\nПерезапустите приложение Claude Desktop для вступления изменений в силу.")
-        else:
-            messagebox.showerror("Ошибка", msg)
-
-    def launch_claude_cli_action(self):
-        try:
-            subprocess.Popen(["cmd.exe", "/c", "start", "Claude Code", "cmd.exe", "/k", "claude"])
-        except Exception as e:
-            messagebox.showerror("Ошибка запуска", f"Не удалось запустить Claude Code CLI: {e}")
 
     def open_balance_page(self):
         try:

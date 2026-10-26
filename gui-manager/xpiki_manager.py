@@ -95,7 +95,6 @@ def load_xpiki_config() -> Dict[str, Any]:
         return {
             "api_key": "",
             "base_url": DEFAULT_BASE_URL,
-            "default_model": "claude-opus-5",
             "enabled_models": list(XPIKI_MODELS.keys()),
             "connected": False,
         }
@@ -105,7 +104,6 @@ def load_xpiki_config() -> Dict[str, Any]:
         return {
             "api_key": "",
             "base_url": DEFAULT_BASE_URL,
-            "default_model": "claude-opus-5",
             "enabled_models": list(XPIKI_MODELS.keys()),
             "connected": False,
         }
@@ -213,56 +211,6 @@ def configure_opencode(api_key: str, base_url: str = DEFAULT_BASE_URL, enabled_m
     except Exception as e:
         print(f"[Xpiki] Failed to configure opencode.json: {e}")
         return False
-
-
-def configure_claude_cli(api_key: str, base_url: str = DEFAULT_BASE_URL, model: str = "claude-opus-5") -> Tuple[bool, str]:
-    """Writes settings directly to ~/.claude/settings.json according to the Teletype guide."""
-    try:
-        claude_dir = Path.home() / ".claude"
-        claude_dir.mkdir(parents=True, exist_ok=True)
-        settings_path = claude_dir / "settings.json"
-        data: Dict[str, Any] = {}
-        if settings_path.exists():
-            try:
-                data = json.loads(settings_path.read_text(encoding="utf-8"))
-            except Exception:
-                data = {}
-
-        env_block = data.setdefault("env", {})
-        env_block["ANTHROPIC_AUTH_TOKEN"] = api_key.strip()
-        env_block["ANTHROPIC_BASE_URL"] = (base_url or DEFAULT_BASE_URL).strip().rstrip("/")
-        env_block["ANTHROPIC_MODEL"] = model.strip()
-
-        settings_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-        return True, f"Конфиг {settings_path} успешно обновлен для Claude Code CLI!"
-    except Exception as e:
-        return False, f"Ошибка записи ~/.claude/settings.json: {e}"
-
-
-def configure_claude_desktop(api_key: str, base_url: str = DEFAULT_BASE_URL) -> Tuple[bool, str]:
-    """Configures %APPDATA%/Claude/claude_desktop_config.json for third-party inference."""
-    try:
-        appdata = os.environ.get("APPDATA")
-        if not appdata:
-            return False, "Переменная окружения APPDATA не найдена"
-        claude_desktop_dir = Path(appdata) / "Claude"
-        claude_desktop_dir.mkdir(parents=True, exist_ok=True)
-        cfg_path = claude_desktop_dir / "claude_desktop_config.json"
-        data: Dict[str, Any] = {}
-        if cfg_path.exists():
-            try:
-                data = json.loads(cfg_path.read_text(encoding="utf-8"))
-            except Exception:
-                data = {}
-
-        inference = data.setdefault("thirdPartyInference", {})
-        inference["baseUrl"] = (base_url or DEFAULT_BASE_URL).strip().rstrip("/")
-        inference["apiKey"] = api_key.strip()
-
-        cfg_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-        return True, f"Конфигурация Claude Desktop успешно записана в {cfg_path}!"
-    except Exception as e:
-        return False, f"Ошибка настройки Claude Desktop: {e}"
 
 
 def disconnect_xpiki() -> bool:
