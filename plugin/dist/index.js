@@ -43973,7 +43973,7 @@ function createRequestExecutor(deps) {
             model
           );
           const maxWaitMs2 = (config.max_rate_limit_wait_seconds ?? 300) * 1e3;
-          if (softQuotaWaitMs === null || maxWaitMs2 > 0 && softQuotaWaitMs > maxWaitMs2) {
+          if (softQuotaWaitMs === null || accountCount > 1 && maxWaitMs2 > 0 && softQuotaWaitMs > maxWaitMs2) {
             const waitTimeFormatted = softQuotaWaitMs ? formatWaitTime(softQuotaWaitMs) : "unknown";
             await showToast(
               `All accounts over ${threshold}% quota threshold. Resets in ${waitTimeFormatted}.`,

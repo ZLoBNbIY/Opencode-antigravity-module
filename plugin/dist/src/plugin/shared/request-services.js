@@ -521,7 +521,7 @@ export function createRequestExecutor(deps) {
                     const softQuotaWaitMs = accountManager.getMinWaitTimeForSoftQuota(family, threshold, softQuotaCacheTtlMs, model);
                     const maxWaitMs = (config.max_rate_limit_wait_seconds ?? 300) * 1000;
                     if (softQuotaWaitMs === null ||
-                        (maxWaitMs > 0 && softQuotaWaitMs > maxWaitMs)) {
+                        (accountCount > 1 && maxWaitMs > 0 && softQuotaWaitMs > maxWaitMs)) {
                         const waitTimeFormatted = softQuotaWaitMs
                             ? formatWaitTime(softQuotaWaitMs)
                             : 'unknown';
@@ -553,7 +553,7 @@ export function createRequestExecutor(deps) {
                     debug.logRateLimitSnapshot(family, accountManager.getAccountsSnapshot());
                 }
                 const maxWaitMs = (config.max_rate_limit_wait_seconds ?? 300) * 1000;
-                if (maxWaitMs > 0 && waitMs > maxWaitMs) {
+                if (maxWaitMs > 0 && accountCount > 1 && waitMs > maxWaitMs) {
                     const waitTimeFormatted = formatWaitTime(waitMs);
                     await showToast(`Rate limited for ${waitTimeFormatted}. Try again later or add another account.`, 'error');
                     return createNativeGoogleErrorResponse({

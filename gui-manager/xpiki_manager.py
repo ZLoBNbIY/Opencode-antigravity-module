@@ -222,78 +222,87 @@ def disconnect_xpiki() -> bool:
 
 
 def fetch_xpiki_quota(api_key: str, base_url: str = DEFAULT_BASE_URL, timeout: int = 12) -> Dict[str, Any]:
-    """Fetches real-time token quota, RPM limits and status from api.xpiki.com or custom gateway."""
+    """Fetch the key quota from Xpiki's public key-status API.
+
+    The web client uses POST /api/public/key-status with only a bearer token.
+    A failed request must not be presented as a real 100M quota: the account's
+    actual limit is returned by the server and can differ per key/tariff.
+    """
     api_key = api_key.strip()
     base_url = (base_url or DEFAULT_BASE_URL).strip().rstrip("/")
+    empty = {
+        "status": "no_key" if not api_key else "error",
+        "quota_limit": None,
+        "quota_used": None,
+        "remaining_tokens": None,
+        "remaining_percent": None,
+        "effective_rpm": None,
+        "effective_tpm": None,
+        "expires_at": "",
+    }
     if not api_key:
-        return {
-            "status": "no_key",
-            "quota_limit": 100000000,
-            "quota_used": 0,
-            "remaining_tokens": 100000000,
-            "remaining_percent": 100.0,
-            "effective_rpm": 100,
-            "effective_tpm": 0,
-            "expires_at": "",
-        }
+        return empty
 
     opener = get_http_opener(timeout=timeout)
-    domain = urllib.parse.urlparse(base_url).netloc or "api.xpiki.com"
-    endpoint = f"https://{domain}/api/public/key-status"
-
+    parsed = urllib.parse.urlparse(base_url)
+    origin = f"{parsed.scheme or 'https'}://{parsed.netloc or 'api.xpiki.com'}"
+    endpoint = f"{origin}/api/public/key-status"
     headers = {
         "User-Agent": USER_AGENT,
         "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
         "Accept": "application/json",
     }
 
     try:
-        req = urllib.request.Request(endpoint, data=b"{}", headers=headers)
+        # Match the request made by https://api.xpiki.com/key.  In particular,
+        # it is a body-less POST, not the old JSON {} request.
+        req = urllib.request.Request(endpoint, method="POST", headers=headers)
         with opener.open(req, timeout=timeout) as resp:
             raw = json.loads(resp.read().decode("utf-8"))
-            if raw.get("code") == 0 and isinstance(raw.get("data"), dict):
-                d = raw["data"]
-                total = int(d.get("quota_limit") or 100000000)
-                used = int(d.get("quota_used") or 0)
-                remaining = max(0, total - used) if total > 0 else 100000000
-                pct = round((remaining / total) * 100, 1) if total > 0 else 100.0
-                rpm = int(d.get("effective_rpm") or 100)
-                tpm = int(d.get("effective_tpm") or 0)
-                expires = d.get("expires_at") or ""
-                quota_info = {
-                    "status": "ok",
-                    "quota_limit": total,
-                    "quota_used": used,
-                    "remaining_tokens": remaining,
-                    "remaining_percent": pct,
-                    "effective_rpm": rpm,
-                    "effective_tpm": tpm,
-                    "expires_at": expires,
-                }
-                cfg = load_xpiki_config()
-                cfg["cached_quota"] = quota_info
-                save_xpiki_config(cfg)
-                return quota_info
+        if not isinstance(raw, dict) or raw.get("code") != 0 or not isinstance(raw.get("data"), dict):
+            raise ValueError(raw.get("message", "Некорректный ответ Xpiki") if isinstance(raw, dict) else "Некорректный ответ Xpiki")
+
+        d = raw["data"]
+        total = int(d["quota_limit"] or 0)
+        used = int(d.get("quota_used") or 0)
+        remaining = max(0, total - used)
+        quota_info = {
+            "status": "ok",
+            "quota_limit": total,
+            "quota_used": used,
+            "remaining_tokens": remaining,
+            "remaining_percent": round((remaining / total) * 100, 1) if total > 0 else 0.0,
+            "effective_rpm": int(d["effective_rpm"]) if d.get("effective_rpm") is not None else None,
+            "effective_tpm": int(d["effective_tpm"]) if d.get("effective_tpm") is not None else None,
+            "expires_at": d.get("expires_at") or "",
+        }
+        cfg = load_xpiki_config()
+        cfg["cached_quota"] = quota_info
+        save_xpiki_config(cfg)
+        return quota_info
+    except urllib.error.HTTPError as e:
+        detail = f"HTTP {e.code}"
+        try:
+            body = e.read().decode("utf-8")
+            payload = json.loads(body)
+            if isinstance(payload, dict) and payload.get("message"):
+                detail = f"HTTP {e.code}: {payload['message']}"
+        except Exception:
+            pass
+        print(f"[Xpiki] Key status check error: {detail}")
+        empty["error"] = detail
     except Exception as e:
         print(f"[Xpiki] Key status check error: {e}")
+        empty["error"] = str(e)
 
-    # Fallback to cached quota or default 100M pool with 100 RPM
     cfg = load_xpiki_config()
     cached = cfg.get("cached_quota")
-    if cached:
-        return cached
-
-    return {
-        "status": "ok",
-        "quota_limit": 100000000,
-        "quota_used": 0,
-        "remaining_tokens": 100000000,
-        "remaining_percent": 100.0,
-        "effective_rpm": 100,
-        "effective_tpm": 0,
-        "expires_at": "",
-    }
+    if isinstance(cached, dict) and cached.get("status") == "ok":
+        stale = dict(cached)
+        stale["status"] = "stale"
+        stale["error"] = empty.get("error", "Не удалось обновить квоту")
+        return stale
+    return empty
 
 
 def refresh_xpiki_quota_silent() -> Dict[str, Any]:

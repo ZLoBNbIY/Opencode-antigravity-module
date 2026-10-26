@@ -268,7 +268,7 @@ DEFAULT_CONFIG = {
         "mwapi": True,
         "deepseek": False,
     },
-    "max_rate_limit_wait_seconds": 60,
+    "max_rate_limit_wait_seconds": 300,
 }
 
 def run_silent_cmd(cmd, timeout=30):
@@ -1007,8 +1007,8 @@ class AntigravityManagerApp(ctk.CTk):
                 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     cfg = {**DEFAULT_CONFIG, **data}
-                    if cfg.get("max_rate_limit_wait_seconds", 60) < 60:
-                        cfg["max_rate_limit_wait_seconds"] = 60
+                    if cfg.get("max_rate_limit_wait_seconds", 300) < 300:
+                        cfg["max_rate_limit_wait_seconds"] = 300
                     return cfg
             except Exception as e:
                 print(f"Error loading config: {e}")

@@ -6,7 +6,7 @@
   "max_account_switches": 10,
   "quota_style_fallback": true,
   "debug": false,
-  "max_rate_limit_wait_seconds": 60,
+  "max_rate_limit_wait_seconds": 300,
   "dns_mode": "doh",
   "custom_dns": [
     "143.20.64.55",

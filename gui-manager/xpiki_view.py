@@ -31,6 +31,8 @@ class XpikiView(ctk.CTkScrollableFrame):
         self._render_quota_card()
         self._render_settings_card()
         self._render_models_card()
+        if self.config_data.get("connected") and self.config_data.get("api_key"):
+            self.after(100, self.refresh_quota_action)
 
     def _render_header(self):
         hdr = ctk.CTkFrame(self, fg_color="transparent")
@@ -118,12 +120,10 @@ class XpikiView(ctk.CTkScrollableFrame):
             return
 
         quota = self.config_data.get("cached_quota") or xpiki_manager.load_xpiki_config().get("cached_quota") or {
-            "quota_limit": 100000000,
-            "quota_used": 0,
-            "remaining_tokens": 100000000,
-            "remaining_percent": 100.0,
-            "effective_rpm": 100,
+            "status": "unavailable",
         }
+        rpm = quota.get("effective_rpm")
+        rpm_label = f"{rpm} RPM доступно" if rpm is not None else "не получен"
 
         self.quota_card = ctk.CTkFrame(
             self,
@@ -156,7 +156,7 @@ class XpikiView(ctk.CTkScrollableFrame):
         status_sub = "Подключен к OpenCode" if is_connected else "Не подключен"
         ctk.CTkLabel(
             title_box,
-            text=f"{status_sub} • RPM: {quota.get('effective_rpm', 100)} • ID: xpiki-api",
+            text=f"{status_sub} • RPM: {rpm if rpm is not None else '—'} • ID: xpiki-api",
             font=self.app.font(size=11),
             text_color=self.colors["text_muted"],
         ).pack(anchor="w", pady=(1, 0))
@@ -192,7 +192,11 @@ class XpikiView(ctk.CTkScrollableFrame):
 
         ctk.CTkLabel(
             badges_box,
-            text="100M ПУЛ",
+            text=(
+                f"{round(quota.get('quota_limit', 0) / 1000000, 1)}M ЛИМИТ"
+                if quota.get("quota_limit") is not None
+                else "ЛИМИТ НЕ ПОЛУЧЕН"
+            ),
             font=self.app.font(size=11, weight="bold"),
             fg_color=self.colors["subbox_bg"],
             text_color=self.colors["accent_cyan"],
@@ -229,7 +233,7 @@ class XpikiView(ctk.CTkScrollableFrame):
 
         ctk.CTkLabel(
             r1_row,
-            text="⚡ Лимит 100 RPM",
+            text=f"⚡ Лимит {rpm if rpm is not None else '—'} RPM",
             font=self.app.font(size=10, weight="bold"),
             fg_color=self.colors["quota_5h_bg"],
             text_color=self.colors["quota_5h"][1],
@@ -240,7 +244,7 @@ class XpikiView(ctk.CTkScrollableFrame):
 
         ctk.CTkLabel(
             r1_row,
-            text=f"100 запр./мин ({quota.get('effective_rpm', 100)} RPM доступно)",
+            text=f"{rpm_label}",
             font=self.app.font(size=11, weight="bold"),
             text_color=self.colors["quota_5h"][1],
         ).pack(side="right")
@@ -265,14 +269,18 @@ class XpikiView(ctk.CTkScrollableFrame):
             pady=1,
         ).pack(side="left")
 
-        total_tok = quota.get("quota_limit", 100000000)
-        rem_tok = quota.get("remaining_tokens", 100000000)
-        pct_tok = quota.get("remaining_percent", 100.0)
-        col_tok = "#f85149" if pct_tok <= 20 else self.colors["quota_weekly"][1]
+        total_tok = quota.get("quota_limit")
+        rem_tok = quota.get("remaining_tokens")
+        pct_tok = quota.get("remaining_percent")
+        quota_available = total_tok is not None and rem_tok is not None and pct_tok is not None
+        col_tok = "#f85149" if quota_available and pct_tok <= 20 else self.colors["quota_weekly"][1]
 
-        rem_m = round(rem_tok / 1000000, 1)
-        tot_m = round(total_tok / 1000000, 1)
-        tok_str = f"{rem_m}M / {tot_m}M ({int(pct_tok)}%)" if total_tok > 0 else f"{int(pct_tok)}%"
+        if quota_available:
+            rem_m = round(rem_tok / 1000000, 1)
+            tot_m = round(total_tok / 1000000, 1)
+            tok_str = f"{rem_m}M / {tot_m}M ({int(pct_tok)}%)"
+        else:
+            tok_str = "Не удалось получить квоту"
 
         ctk.CTkLabel(
             r2_row,
@@ -283,7 +291,7 @@ class XpikiView(ctk.CTkScrollableFrame):
 
         b_tok = ctk.CTkProgressBar(quotas_container, height=4, corner_radius=2)
         b_tok.pack(fill="x", padx=8, pady=(2, 4))
-        b_tok.set(max(0.0, min(1.0, pct_tok / 100.0)))
+        b_tok.set(max(0.0, min(1.0, (pct_tok or 0) / 100.0)))
         b_tok.configure(progress_color=col_tok, fg_color=self.colors["bar_bg"])
 
         # 3. Card Footer Actions
@@ -580,8 +588,12 @@ class XpikiView(ctk.CTkScrollableFrame):
                 self.config_data = xpiki_manager.load_xpiki_config()
                 self.quota_card.destroy()
                 self._render_quota_card()
-                # Re-pack in proper order
-                self.status_lbl.configure(text="✔ Квота токенов успешно обновлена!", text_color="#3fb950")
+                if quota.get("status") == "ok":
+                    self.status_lbl.configure(text="✔ Квота токенов успешно обновлена!", text_color="#3fb950")
+                elif quota.get("status") == "stale":
+                    self.status_lbl.configure(text="⚠ Не удалось обновить квоту; показаны последние сохранённые данные.", text_color="#d29922")
+                else:
+                    self.status_lbl.configure(text=f"❌ Квота не получена: {quota.get('error', 'сервер не вернул данные')}", text_color="#ef4444")
             self.after(0, _done)
 
         threading.Thread(target=_worker, daemon=True).start()
@@ -632,12 +644,12 @@ class XpikiView(ctk.CTkScrollableFrame):
         if ok:
             self.status_lbl.configure(text="✔ Провайдер Claude API (Xpiki) успешно добавлен в OpenCode!", text_color="#3fb950")
             self.app.show_flash("Xpiki Claude API успешно подключен в OpenCode!")
-            # Refresh card view
-            self.config_data = cfg
+            self.config_data = xpiki_manager.load_xpiki_config()
             if hasattr(self, "quota_card"):
                 self.quota_card.destroy()
                 self._render_quota_card()
-            messagebox.showinfo("Готово", "Провайдер Claude API (Xpiki) успешно подключен в OpenCode!\nМодели доступны с префиксом xpiki/...")
+                self.after(100, self.refresh_quota_action)
+            messagebox.showinfo("Готово", "Провайдер Claude API (Xpiki) успешно подключен в OpenCode!\nМодели доступны с префиксом xpiki/...\n\nЛимит аккаунта загружается автоматически.")
         else:
             self.status_lbl.configure(text="❌ Не удалось обновить opencode.json", text_color="#ef4444")
 
