@@ -716,23 +716,23 @@ def import_google_account(account_dict: dict) -> bool:
 
 
 # =========================================================================
-# FROSTED GLASS / ACRYLIC THEME PALETTE (Tuple format: (Light, Dark))
-# Semi-translucent obsidian glass, luminous cyan edges, frosted sub-boxes
+# HIGH-CONTRAST FROSTED GLASS PALETTE (Tuple format: (Light, Dark))
+# Deep obsidian backdrop, luminous glass cards, pure white crisp typography
 # =========================================================================
 COLOR = {
-    "bg": ("#f1f5f9", "#0a0e1a"),
-    "sidebar_bg": ("#ffffff", "#0d1322"),
-    "card_bg": ("#ffffff", "#121a2d"),
-    "card_active_bg": ("#f0fdf4", "#15223c"),
-    "subbox_bg": ("#f8fafc", "#090d17"),
-    "border": ("#e2e8f0", "#1f2d45"),
+    "bg": ("#f1f5f9", "#080c16"),
+    "sidebar_bg": ("#ffffff", "#0c111f"),
+    "card_bg": ("#ffffff", "#111827"),
+    "card_active_bg": ("#f0fdf4", "#14223b"),
+    "subbox_bg": ("#f8fafc", "#0a0f1d"),
+    "border": ("#cbd5e1", "#1e293b"),
     "border_active": ("#0284c7", "#38bdf8"),
-    "text_primary": ("#0f172a", "#f8fafc"),
-    "text_secondary": ("#334155", "#cbd5e1"),
+    "text_primary": ("#0f172a", "#ffffff"),
+    "text_secondary": ("#334155", "#e2e8f0"),
     "text_muted": ("#64748b", "#94a3b8"),
     "bar_bg": ("#e2e8f0", "#162035"),
-    "statusbar_bg": ("#ffffff", "#0c111f"),
-    "nav_active_bg": ("#e0f2fe", "#182844"),
+    "statusbar_bg": ("#ffffff", "#0a0e1a"),
+    "nav_active_bg": ("#e0f2fe", "#182846"),
     "nav_active_text": ("#0284c7", "#38bdf8"),
     "nav_idle_text": ("#475569", "#94a3b8"),
     "accent_cyan": "#38bdf8",
@@ -746,21 +746,9 @@ COLOR = {
 
 
 def apply_windows_acrylic_effect(window):
-    """Enables Windows 11 DWM Acrylic/Mica backdrop blur and frosted glass titlebar."""
+    """Enables crisp Windows 11 DWM dark titlebar and window border without bleaching canvas contrast."""
     if sys.platform != "win32":
         return
-    try:
-        import pywinstyles
-        try:
-            pywinstyles.apply_style(window, "acrylic")
-        except Exception:
-            pywinstyles.apply_style(window, "mica")
-        pywinstyles.change_header_color(window, color="#0a0e1a")
-        pywinstyles.change_border_color(window, color="#1f2d45")
-        pywinstyles.change_title_color(window, color="#38bdf8")
-    except Exception:
-        pass
-
     try:
         import ctypes
         hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
@@ -773,20 +761,20 @@ def apply_windows_acrylic_effect(window):
             hwnd, 20, ctypes.byref(dark_mode), ctypes.sizeof(dark_mode)
         )
 
-        # DWMWA_SYSTEMBACKDROP_TYPE = 38 (Windows 11 22H2+: 3 = Acrylic, 2 = Mica)
-        backdrop = ctypes.c_int(3)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(
-            hwnd, 38, ctypes.byref(backdrop), ctypes.sizeof(backdrop)
-        )
-
-        # DWMWA_CAPTION_COLOR = 35 (Titlebar background: #0a0e1a -> BGR 0x001a0e0a)
-        caption_col = ctypes.c_int(0x001a0e0a)
+        # DWMWA_CAPTION_COLOR = 35 (Titlebar background: #080c16 -> BGR 0x00160c08)
+        caption_col = ctypes.c_int(0x00160c08)
         ctypes.windll.dwmapi.DwmSetWindowAttribute(
             hwnd, 35, ctypes.byref(caption_col), ctypes.sizeof(caption_col)
         )
 
-        # DWMWA_BORDER_COLOR = 34 (Subtle frosted cyan border: BGR 0x00452d1f)
-        border_col = ctypes.c_int(0x00452d1f)
+        # DWMWA_TEXT_COLOR = 36 (Titlebar text: crisp cyan-white BGR 0x00f8bd38)
+        text_col = ctypes.c_int(0x00f8bd38)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd, 36, ctypes.byref(text_col), ctypes.sizeof(text_col)
+        )
+
+        # DWMWA_BORDER_COLOR = 34 (Subtle luminous border: BGR 0x003b291e)
+        border_col = ctypes.c_int(0x003b291e)
         ctypes.windll.dwmapi.DwmSetWindowAttribute(
             hwnd, 34, ctypes.byref(border_col), ctypes.sizeof(border_col)
         )
@@ -795,24 +783,25 @@ def apply_windows_acrylic_effect(window):
 
 
 def create_cyber_switch(master, text="", variable=None, command=None, font=None, **kwargs):
-    """Creates a modern pill-shaped switch with glowing cyber neon styling."""
+    """Creates a high-contrast pill switch with sleek dark styling."""
     return ctk.CTkSwitch(
         master,
         text=text,
         variable=variable,
         command=command,
         font=font,
-        width=52,
-        height=26,
-        switch_width=44,
-        switch_height=22,
-        corner_radius=11,
+        width=48,
+        height=24,
+        switch_width=40,
+        switch_height=20,
+        corner_radius=10,
         border_width=1,
-        fg_color=("#cbd5e1", "#172338"),
+        fg_color=("#cbd5e1", "#1e293b"),
         progress_color=("#0284c7", "#0ea5e9"),
         button_color=("#ffffff", "#ffffff"),
         button_hover_color=("#f1f5f9", "#e2e8f0"),
-        border_color=("#94a3b8", "#2a3d5e"),
+        border_color=("#94a3b8", "#334155"),
+        text_color=COLOR["text_primary"],
         **kwargs
     )
 

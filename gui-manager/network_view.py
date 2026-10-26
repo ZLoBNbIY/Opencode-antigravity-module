@@ -62,7 +62,7 @@ class NetworkView(ctk.CTkScrollableFrame):
         ).pack(fill="x", pady=(0, 10))
 
         # Disclaimer Banner: VLESS vs DNS priority
-        notice_banner = ctk.CTkFrame(self, fg_color=colors["subbox_bg"], corner_radius=10, border_width=1, border_color="#f59e0b")
+        notice_banner = ctk.CTkFrame(self, fg_color=("#fffbeb", "#141d2e"), corner_radius=10, border_width=1, border_color="#f59e0b")
         notice_banner.pack(fill="x", pady=(0, 12))
 
         nb_header = ctk.CTkFrame(notice_banner, fg_color="transparent")
@@ -80,7 +80,7 @@ class NetworkView(ctk.CTkScrollableFrame):
                  "Весь трафик и DNS-запросы OpenCode направляются через удалённый VLESS-сервер, который самостоятельно разрешает доменные имена. "
                  "Локальные и кастомные DNS-серверы используются только тогда, когда VLESS-туннель выключен.",
             font=app.font(11),
-            text_color=colors["text_secondary"],
+            text_color=("#78350f", "#f1f5f9"),
             justify="left",
             wraplength=980,
             anchor="w"
@@ -194,6 +194,7 @@ class NetworkView(ctk.CTkScrollableFrame):
             font=app.font(11, "bold"),
             fg_color="#0284c7",
             hover_color="#0369a1",
+            text_color="#ffffff",
             height=28,
             command=self.download_core_action
         )
@@ -223,6 +224,7 @@ class NetworkView(ctk.CTkScrollableFrame):
             font=app.font(12, "bold"),
             fg_color="#10b981",
             hover_color="#059669",
+            text_color="#ffffff",
             height=32,
             command=self.start_vless_action
         )
@@ -234,6 +236,7 @@ class NetworkView(ctk.CTkScrollableFrame):
             font=app.font(12, "bold"),
             fg_color="#ef4444",
             hover_color="#dc2626",
+            text_color="#ffffff",
             height=32,
             command=self.stop_vless_action
         )
@@ -245,6 +248,7 @@ class NetworkView(ctk.CTkScrollableFrame):
             font=app.font(12, "bold"),
             fg_color="#0284c7",
             hover_color="#0369a1",
+            text_color="#ffffff",
             height=32,
             command=self.test_vless_action
         )
@@ -274,14 +278,14 @@ class NetworkView(ctk.CTkScrollableFrame):
         ).pack(anchor="w", padx=16, pady=(0, 10))
 
         # DNS Disclaimer Box
-        dns_disclaimer = ctk.CTkFrame(dns_card, fg_color=colors["subbox_bg"], corner_radius=8, border_width=1, border_color=colors["border"])
+        dns_disclaimer = ctk.CTkFrame(dns_card, fg_color=("#fffbeb", "#141d2e"), corner_radius=8, border_width=1, border_color=("#fde68a", "#2a3749"))
         dns_disclaimer.pack(fill="x", padx=16, pady=(0, 10))
         ctk.CTkLabel(
             dns_disclaimer,
             text="💡 Дисклеймер: при выборе метода туннелирования через VLESS указанные ниже настройки DNS полностью утрачивают свою силу.\n"
                  "В этом режиме все сетевые запросы и DNS-резолвинг передаются удалённому VLESS-серверу.",
             font=app.font(11),
-            text_color="#f59e0b" if self.app.config_data.get("vless_enabled") else colors["text_secondary"],
+            text_color=("#92400e", "#fbbf24") if self.app.config_data.get("vless_enabled") else colors["text_secondary"],
             justify="left",
             anchor="w",
             wraplength=960
@@ -299,6 +303,11 @@ class NetworkView(ctk.CTkScrollableFrame):
             values=["Обычный DNS", "DNS-over-TLS (DoT)", "DNS-over-HTTPS (DoH)", "Системный DNS"],
             variable=self.dns_mode_var,
             font=app.font(11, "bold"),
+            selected_color="#0284c7",
+            selected_hover_color="#0369a1",
+            unselected_color=("#e2e8f0", "#141d2e"),
+            unselected_hover_color=("#cbd5e1", "#1e293b"),
+            text_color=colors["text_primary"],
         )
         self.dns_mode_seg.pack(side="left")
 
@@ -336,6 +345,7 @@ class NetworkView(ctk.CTkScrollableFrame):
             font=app.font(11, "bold"),
             fg_color="#0284c7",
             hover_color="#0369a1",
+            text_color="#ffffff",
             height=28,
             command=self.test_standard_dns_action,
         )
@@ -366,6 +376,7 @@ class NetworkView(ctk.CTkScrollableFrame):
             font=app.font(11, "bold"),
             fg_color="#0284c7",
             hover_color="#0369a1",
+            text_color="#ffffff",
             height=28,
             command=self.test_dot_action,
         )
@@ -396,6 +407,7 @@ class NetworkView(ctk.CTkScrollableFrame):
             font=app.font(11, "bold"),
             fg_color="#0284c7",
             hover_color="#0369a1",
+            text_color="#ffffff",
             height=28,
             command=self.test_doh_action,
         )
@@ -426,6 +438,7 @@ class NetworkView(ctk.CTkScrollableFrame):
             font=app.font(13, "bold"),
             fg_color="#0284c7",
             hover_color="#0369a1",
+            text_color="#ffffff",
             height=38,
             command=self.save_network_settings
         )
