@@ -21,9 +21,10 @@ from typing import Optional, Dict, Any, Tuple
 CONFIG_DIR = Path.home() / ".config" / "opencode"
 VLESS_RUNTIME_DIR = CONFIG_DIR / "vless"
 VLESS_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+PID_FILE = VLESS_RUNTIME_DIR / "core.pid"
 
-DEFAULT_HTTP_PORT = 10809
-DEFAULT_SOCKS_PORT = 10808
+DEFAULT_HTTP_PORT = 20809
+DEFAULT_SOCKS_PORT = 20808
 
 SING_BOX_DOWNLOAD_URL = "https://github.com/SagerNet/sing-box/releases/download/v1.10.7/sing-box-1.10.7-windows-amd64.zip"
 XRAY_DOWNLOAD_URL = "https://github.com/XTLS/Xray-core/releases/download/v24.11.30/Xray-windows-64.zip"
@@ -385,6 +386,25 @@ class VlessManager:
         except (socket.timeout, ConnectionRefusedError, OSError):
             return False
 
+    def _kill_saved_pid(self):
+        """Terminate only our own spawned core process by saved PID, without touching system-wide processes."""
+        pid = None
+        if PID_FILE.exists():
+            try:
+                pid = int(PID_FILE.read_text(encoding="utf-8").strip())
+            except Exception:
+                pid = None
+            PID_FILE.unlink(missing_ok=True)
+
+        if pid:
+            try:
+                if sys.platform == "win32":
+                    subprocess.run(["taskkill", "/f", "/pid", str(pid)], capture_output=True, creationflags=0x08000000)
+                else:
+                    os.kill(pid, 9)
+            except Exception:
+                pass
+
     def start_tunnel(
         self,
         vless_url: str,
@@ -425,12 +445,12 @@ class VlessManager:
             if sys.platform == "win32":
                 creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
-            # If port is already occupied by a previously detached core, stop it first
+            # If port is already occupied, stop previous instance of our own process if running
             if self.check_port_listening(http_port):
-                if sys.platform == "win32":
-                    subprocess.run(["taskkill", "/f", "/im", "sing-box.exe"], capture_output=True, creationflags=0x08000000)
-                    subprocess.run(["taskkill", "/f", "/im", "xray.exe"], capture_output=True, creationflags=0x08000000)
-                    time.sleep(0.3)
+                self._kill_saved_pid()
+                time.sleep(0.3)
+                if self.check_port_listening(http_port):
+                    return False, f"Локальный порт {http_port} уже занят другим приложением."
 
             # Log core output to file for diagnosis
             log_file = VLESS_RUNTIME_DIR / "core.log"
@@ -447,6 +467,11 @@ class VlessManager:
                     stdout=log_fh,
                     stderr=subprocess.STDOUT,
                 )
+                if self._process:
+                    try:
+                        PID_FILE.write_text(str(self._process.pid), encoding="utf-8")
+                    except Exception:
+                        pass
             except Exception as e:
                 return False, f"Не удалось запустить процесс ядра: {e}"
 
@@ -488,10 +513,7 @@ class VlessManager:
                 finally:
                     self._process = None
 
-            if sys.platform == "win32":
-                subprocess.run(["taskkill", "/f", "/im", "sing-box.exe"], capture_output=True, creationflags=0x08000000)
-                subprocess.run(["taskkill", "/f", "/im", "xray.exe"], capture_output=True, creationflags=0x08000000)
-
+            self._kill_saved_pid()
             self._status = "stopped"
 
         return True, "VLESS туннель остановлен."

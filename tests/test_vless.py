@@ -93,6 +93,26 @@ class VlessManagerTests(unittest.TestCase):
         self.assertEqual(cfg["outbounds"][0]["type"], "vless")
         self.assertEqual(cfg["outbounds"][0]["tls"]["reality"]["public_key"], "test-pbk")
 
+    def test_default_ports_are_isolated(self):
+        self.assertEqual(vless_manager.DEFAULT_HTTP_PORT, 20809)
+        self.assertEqual(vless_manager.DEFAULT_SOCKS_PORT, 20808)
+
+    def test_kill_saved_pid_targets_only_hub_pid(self):
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pid_file = Path(temp_dir) / "core.pid"
+            pid_file.write_text("99999", encoding="utf-8")
+            with patch.object(vless_manager, "PID_FILE", pid_file), \
+                 patch("subprocess.run") as mock_run:
+                vless_service._kill_saved_pid()
+                self.assertFalse(pid_file.exists())
+                self.assertTrue(mock_run.called)
+                args = mock_run.call_args[0][0]
+                self.assertIn("/pid", args)
+                self.assertIn("99999", args)
+                self.assertNotIn("/im", args)
+
 
 if __name__ == "__main__":
     unittest.main()

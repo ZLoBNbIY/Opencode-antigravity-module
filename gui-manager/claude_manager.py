@@ -91,11 +91,11 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 
 
 def get_active_proxy() -> Optional[str]:
-    """Returns proxy to use (VLESS 10809 if running, or custom proxy)."""
-    # 1. First check if VLESS port 10809 is actively listening
+    """Returns proxy to use (VLESS DEFAULT_HTTP_PORT if running, or custom proxy)."""
     try:
-        with socket.create_connection(("127.0.0.1", 10809), timeout=0.2):
-            return "http://127.0.0.1:10809"
+        from vless_manager import DEFAULT_HTTP_PORT
+        with socket.create_connection(("127.0.0.1", DEFAULT_HTTP_PORT), timeout=0.2):
+            return f"http://127.0.0.1:{DEFAULT_HTTP_PORT}"
     except Exception:
         pass
 
@@ -105,7 +105,8 @@ def get_active_proxy() -> Optional[str]:
         if cfg_file.exists():
             cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
             if cfg.get("vless_enabled") and cfg.get("vless_url"):
-                return "http://127.0.0.1:10809"
+                from vless_manager import DEFAULT_HTTP_PORT
+                return f"http://127.0.0.1:{DEFAULT_HTTP_PORT}"
             user_proxy = cfg.get("proxy")
             if user_proxy and user_proxy != "http://127.0.0.1:51180":
                 return user_proxy

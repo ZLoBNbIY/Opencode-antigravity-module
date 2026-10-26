@@ -75,7 +75,9 @@ def check_for_updates(repo_dir: Path, timeout=12) -> dict:
         if cfg_file.exists():
             cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
             if cfg.get("vless_enabled") and cfg.get("vless_url"):
-                vless_handler = urllib.request.ProxyHandler({"http": "http://127.0.0.1:10809", "https": "http://127.0.0.1:10809"})
+                from vless_manager import DEFAULT_HTTP_PORT
+                vless_url = f"http://127.0.0.1:{DEFAULT_HTTP_PORT}"
+                vless_handler = urllib.request.ProxyHandler({"http": vless_url, "https": vless_url})
                 openers.insert(0, ("vless", urllib.request.build_opener(vless_handler)))
             elif cfg.get("proxy") and cfg.get("proxy") != "http://127.0.0.1:51180":
                 p_handler = urllib.request.ProxyHandler({"http": cfg.get("proxy"), "https": cfg.get("proxy")})

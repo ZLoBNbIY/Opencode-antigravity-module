@@ -395,7 +395,8 @@ def _get_http_opener(timeout: int = 15):
                 with open(cfg_file, "r", encoding="utf-8") as f:
                     cfg = json.load(f)
                     if cfg.get("vless_enabled") and cfg.get("vless_url"):
-                        proxy_url = "http://127.0.0.1:10809"
+                        from vless_manager import DEFAULT_HTTP_PORT
+                        proxy_url = f"http://127.0.0.1:{DEFAULT_HTTP_PORT}"
                     else:
                         proxy_url = cfg.get("proxy")
     except Exception:
