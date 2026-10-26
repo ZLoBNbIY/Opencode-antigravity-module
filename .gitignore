@@ -22,3 +22,8 @@ auth.json
 .env.*
 
 *.map
+
+# Binaries & downloaded cores
+gui-manager/bin/
+*.exe
+
