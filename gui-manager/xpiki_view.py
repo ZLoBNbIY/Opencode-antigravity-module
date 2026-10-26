@@ -88,6 +88,36 @@ class XpikiView(ctk.CTkScrollableFrame):
     def _render_quota_card(self):
         """Renders the real-time quota limit card matching the exact design of Google accounts."""
         is_connected = self.config_data.get("connected", False) and bool(self.config_data.get("api_key"))
+
+        if not is_connected:
+            self.quota_card = ctk.CTkFrame(
+                self,
+                fg_color=self.colors["card_bg"],
+                corner_radius=12,
+                border_width=1,
+                border_color=self.colors["border"],
+            )
+            self.quota_card.pack(fill="x", padx=16, pady=(0, 12))
+            ctk.CTkLabel(
+                self.quota_card,
+                text="📭",
+                font=self.app.font(size=28),
+            ).pack(pady=(16, 4))
+            ctk.CTkLabel(
+                self.quota_card,
+                text="Claude API (Xpiki) не подключен",
+                font=self.app.font(size=14, weight="bold"),
+                text_color=self.colors["text_primary"],
+            ).pack()
+            ctk.CTkLabel(
+                self.quota_card,
+                text="Введите API-ключ в форме ниже и нажмите «Подключить в OpenCode». После подключения здесь появится карточка с лимитами и остатком токенов.",
+                font=self.app.font(size=11),
+                text_color=self.colors["text_secondary"],
+                justify="center",
+            ).pack(pady=(4, 16))
+            return
+
         quota = self.config_data.get("cached_quota") or xpiki_manager.load_xpiki_config().get("cached_quota") or {
             "quota_limit": 100000000,
             "quota_used": 0,
@@ -98,10 +128,10 @@ class XpikiView(ctk.CTkScrollableFrame):
 
         self.quota_card = ctk.CTkFrame(
             self,
-            fg_color=self.colors["card_active_bg"] if is_connected else self.colors["card_bg"],
+            fg_color=self.colors["card_active_bg"],
             corner_radius=12,
             border_width=1,
-            border_color=self.colors["border_active"] if is_connected else self.colors["border"],
+            border_color=self.colors["border_active"],
         )
         self.quota_card.pack(fill="x", padx=16, pady=(0, 12))
 
