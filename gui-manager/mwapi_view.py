@@ -231,7 +231,7 @@ class MwapiView(ctk.CTkScrollableFrame):
         table_head.grid_columnconfigure(0, weight=1)
 
         for column, (text, width, anchor) in enumerate((
-            ("Модель", 0, "w"),
+            ("Модель", 160, "w"),
             ("Запросы", 70, "e"),
             ("Токены", 110, "e"),
             ("Списано", 90, "e"),
@@ -241,7 +241,7 @@ class MwapiView(ctk.CTkScrollableFrame):
                 text=text,
                 font=app.font(10, "bold"),
                 text_color=colors["text_muted"],
-                width=width if width else 0,
+                width=width,
                 anchor=anchor,
             ).grid(row=0, column=column, sticky=anchor)
 
