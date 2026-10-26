@@ -185,6 +185,52 @@ class MwapiManagerTests(unittest.TestCase):
         self.assertEqual(parsed["today_requests"], 5)
         self.assertEqual(parsed["total_tokens"], 8199943)
 
+    def test_parse_usage_data_breaks_down_models_and_days(self):
+        payload = {
+            "isValid": True,
+            "expires_at": "2026-11-22T10:00:00Z",
+            "quota": {"limit": 100, "used": 83.7411, "remaining": 16.2589, "unit": "USD"},
+            "model_stats": [
+                {"model": "claude-haiku-4-5", "requests": 8, "total_tokens": 1000,
+                 "cost": 0.04, "actual_cost": 0.2},
+                {"model": "claude-sonnet-5", "requests": 111, "total_tokens": 8141641,
+                 "cost": 16.54101, "actual_cost": 82.70505},
+                {"model": "  ", "requests": 1},
+                "not-a-dict",
+                {"model": "claude-sonnet-5-5", "requests": 3, "total_tokens": 135082,
+                 "cost": 0.270332, "actual_cost": 1.35166},
+            ],
+            "daily_usage": [
+                {"date": "2026-10-22", "requests": 122, "total_tokens": 8199943,
+                 "actual_cost": 83.7411},
+                {"date": "2026-10-26", "requests": 2, "total_tokens": 128543,
+                 "actual_cost": 1.28595},
+            ],
+            "usage": {
+                "today": {"requests": 2, "total_tokens": 128543, "actual_cost": 1.28595},
+                "total": {"requests": 124, "total_tokens": 8328486, "actual_cost": 85.02705},
+            },
+        }
+
+        parsed = mwapi_manager.parse_usage_data(payload)
+
+        self.assertEqual([m["model"] for m in parsed["models"]],
+                         ["claude-sonnet-5", "claude-sonnet-5-5", "claude-haiku-4-5"])
+        self.assertEqual(parsed["models"][0]["requests"], 111)
+        self.assertEqual(parsed["models"][0]["total_tokens"], 8141641)
+        self.assertAlmostEqual(parsed["models"][0]["actual_cost"], 82.70505)
+
+        self.assertEqual([d["date"] for d in parsed["daily"]], ["2026-10-26", "2026-10-22"])
+        self.assertEqual(parsed["daily"][0]["requests"], 2)
+
+        self.assertEqual(parsed["today"]["requests"], 2)
+        self.assertEqual(parsed["total"]["requests"], 124)
+        self.assertEqual(parsed["today_tokens"], 128543)
+        self.assertEqual(parsed["total_tokens"], 8328486)
+        self.assertAlmostEqual(parsed["today_cost"], 1.28595)
+        self.assertEqual(parsed["expires_at"], "2026-11-22T10:00:00Z")
+        self.assertTrue(parsed["valid"])
+
     def test_parse_usage_data_missing_fields_calculates_sensible_defaults(self):
         # Only limit and remaining
         parsed = mwapi_manager.parse_usage_data({"quota": {"limit": 50, "remaining": 20}})
