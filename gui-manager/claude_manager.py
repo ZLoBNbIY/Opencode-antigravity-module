@@ -337,9 +337,10 @@ class ClaudeAccountManager:
             print(f"[Claude Manager] Failed to configure opencode.json: {e}")
             return False
 
-    def login_claude_browser(self, timeout: int = 300, progress_callback=None) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
-        """Opens a dedicated browser window for user to log into claude.ai,
-        automatically captures sessionKey cookie, and saves the verified account."""
+    def login_claude_browser(self, mode: str = "tunnel", timeout: int = 300, progress_callback=None) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """Opens a browser window for user to log into claude.ai,
+        automatically captures sessionKey cookie, and saves the verified account.
+        mode can be 'tunnel' (built-in browser through VLESS tunnel) or 'default' (system default browser)."""
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
@@ -349,25 +350,55 @@ class ClaudeAccountManager:
         proxy = get_active_proxy()
         proxy_cfg = {"server": proxy} if proxy else None
 
+        # Determine browser executable based on mode
+        executable_path = None
+        browser_desc = "встроенного браузера Chromium"
+        if mode == "default":
+            try:
+                from .deepseek_browser import browser_paths, supports_cdp
+                b_paths = browser_paths()
+                cand = b_paths.get("default") or b_paths.get("chrome") or b_paths.get("edge")
+                if cand and supports_cdp(cand):
+                    executable_path = str(cand)
+                    browser_desc = f"дефолтного браузера ({Path(executable_path).name})"
+            except Exception:
+                try:
+                    import deepseek_browser
+                    b_paths = deepseek_browser.browser_paths()
+                    cand = b_paths.get("default") or b_paths.get("chrome") or b_paths.get("edge")
+                    if cand and deepseek_browser.supports_cdp(cand):
+                        executable_path = str(cand)
+                        browser_desc = f"дефолтного браузера ({Path(executable_path).name})"
+                except Exception:
+                    pass
+
         if progress_callback:
-            progress_callback("Запуск браузера для входа в claude.ai...")
+            tunnel_info = "через VLESS-туннель" if proxy else "прямое подключение"
+            progress_callback(f"Запуск {browser_desc} ({tunnel_info})...")
 
         p = None
         context = None
         try:
             p = sync_playwright().start()
+            launch_args = ["--disable-blink-features=AutomationControlled"]
+            launch_kwargs = {
+                "headless": False,
+                "proxy": proxy_cfg,
+                "user_agent": USER_AGENT,
+                "viewport": {"width": 1280, "height": 800},
+                "args": launch_args,
+            }
+            if executable_path:
+                launch_kwargs["executable_path"] = executable_path
+
             context = p.chromium.launch_persistent_context(
                 str(CLAUDE_PROFILE_DIR),
-                headless=False,
-                proxy=proxy_cfg,
-                user_agent=USER_AGENT,
-                viewport={"width": 1280, "height": 800},
-                args=["--disable-blink-features=AutomationControlled"]
+                **launch_kwargs
             )
             page = context.pages[0] if context.pages else context.new_page()
 
             if progress_callback:
-                progress_callback("Открываем claude.ai... Пожалуйста, выполните вход в аккаунт.")
+                progress_callback("Открываем claude.ai... Пожалуйста, войдите в аккаунт.")
 
             try:
                 page.goto("https://claude.ai/login", wait_until="commit", timeout=30000)

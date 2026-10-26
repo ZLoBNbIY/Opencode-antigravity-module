@@ -3511,7 +3511,7 @@ class AntigravityManagerApp(ctk.CTk):
     def add_claude_account_action(self):
         dialog = ctk.CTkToplevel(self)
         dialog.title("Подключение аккаунта Claude (Anthropic Pro / Claude Code)")
-        dialog.geometry("580x550")
+        dialog.geometry("620x640")
         dialog.resizable(False, False)
         dialog.transient(self)
         dialog.grab_set()
@@ -3521,37 +3521,67 @@ class AntigravityManagerApp(ctk.CTk):
             text="🟠 Авторизация Claude Pro / Team / Claude Code",
             font=self.font(size=16, weight="bold"),
             text_color=COLOR["text_primary"],
-        ).pack(anchor="w", padx=20, pady=(18, 6))
+        ).pack(anchor="w", padx=20, pady=(16, 4))
 
-        ctk.CTkLabel(
+        # Important Security & Tunnel Warning Box
+        warn_box = ctk.CTkFrame(
             dialog,
+            fg_color=COLOR["subbox_bg"],
+            corner_radius=8,
+            border_width=1,
+            border_color="#d29922",
+        )
+        warn_box.pack(fill="x", padx=20, pady=(0, 10))
+        ctk.CTkLabel(
+            warn_box,
             text=(
-                "Подключение учетной записи Anthropic Claude для использования подписки Pro / Team "
-                "в OpenCode без покупки API-токенов.\n"
-                "Сессия будет автоматически поддерживаться и обновляться в фоне."
+                "⚠️ Важное предупреждение о блокировках Claude:\n"
+                "Сервис claude.ai заблокирован в РФ. Авторизация в браузере должна производиться строго с того же IP / VPN-туннеля, через который OpenCode будет отправлять запросы, иначе Anthropic может заблокировать аккаунт при смене гео-локации!"
             ),
-            font=self.font(size=11),
-            text_color=COLOR["text_secondary"],
+            font=self.font(size=10),
+            text_color="#d29922",
             justify="left",
-            wraplength=530,
-        ).pack(anchor="w", padx=20, pady=(0, 10))
+            wraplength=570,
+        ).pack(fill="x", padx=12, pady=8)
 
-        # Buttons row: 1-Click Auto Browser, CLI Auth, Manual Open
-        btns_row = ctk.CTkFrame(dialog, fg_color="transparent")
-        btns_row.pack(fill="x", padx=20, pady=(0, 10))
+        # 1-Click Browser Options Container
+        opts_box = ctk.CTkFrame(dialog, fg_color="transparent")
+        opts_box.pack(fill="x", padx=20, pady=(0, 10))
 
-        def _do_auto_browser_login():
-            btn_auto_browser.configure(state="disabled", text="⏳ Открываем браузер...")
+        def _do_login(mode: str):
+            if mode == "tunnel":
+                if not vless_service.is_running():
+                    if not messagebox.askyesno(
+                        "VLESS-туннель не запущен",
+                        "VLESS-туннель сейчас остановлен!\n\n"
+                        "Для безопасной авторизации Claude рекомендуется сначала запустить VLESS в разделе «Сеть, DNS & VLESS».\n\n"
+                        "Продолжить вход с текущим подключением (или системным VPN)?",
+                        icon="warning"
+                    ):
+                        return
+            elif mode == "default":
+                if not messagebox.askyesno(
+                    "Проверка VPN / Прокси",
+                    "Вы выбрали авторизацию через системный браузер.\n\n"
+                    "Убедитесь, что в вашем браузере или системе включен VPN / прокси той страны, с которой вы будете работать в OpenCode.\n\n"
+                    "Открыть системный браузер для входа?",
+                    icon="info"
+                ):
+                    return
+
+            btn_tunnel_auth.configure(state="disabled")
+            btn_default_auth.configure(state="disabled")
             btn_submit.configure(state="disabled")
-            lbl_status.configure(text="Запуск Chromium... Выполните вход на claude.ai", text_color=COLOR["accent_cyan"])
+            lbl_status.configure(text="Запуск браузера... Выполните вход на claude.ai", text_color=COLOR["accent_cyan"])
 
             def _prog(msg):
                 dialog.after(0, lambda m=msg: lbl_status.configure(text=m, text_color=COLOR["accent_cyan"]))
 
             def _worker():
-                ok, msg, acc = claude_service.login_claude_browser(timeout=300, progress_callback=_prog)
+                ok, msg, acc = claude_service.login_claude_browser(mode=mode, timeout=300, progress_callback=_prog)
                 def _done():
-                    btn_auto_browser.configure(state="normal", text="🚀 1-клик вход через браузер")
+                    btn_tunnel_auth.configure(state="normal")
+                    btn_default_auth.configure(state="normal")
                     btn_submit.configure(state="normal")
                     if ok and acc:
                         key_entry.delete(0, "end")
@@ -3567,16 +3597,35 @@ class AntigravityManagerApp(ctk.CTk):
 
             threading.Thread(target=_worker, daemon=True).start()
 
-        btn_auto_browser = ctk.CTkButton(
-            btns_row,
-            text="🚀 1-клик вход через браузер",
+        # Two Main 1-Click Buttons
+        row1 = ctk.CTkFrame(opts_box, fg_color="transparent")
+        row1.pack(fill="x", pady=(0, 6))
+
+        btn_tunnel_auth = ctk.CTkButton(
+            row1,
+            text="🛡️ Вход через VLESS-туннель (Встроенный браузер)",
+            font=self.font(size=11, weight="bold"),
+            fg_color="#238636",
+            hover_color="#2ea043",
+            height=34,
+            command=lambda: _do_login("tunnel"),
+        )
+        btn_tunnel_auth.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        btn_default_auth = ctk.CTkButton(
+            row1,
+            text="🌐 Вход через дефолтный браузер (VPN / Прокси)",
             font=self.font(size=11, weight="bold"),
             fg_color=("#0969da", "#1f6feb"),
             hover_color=("#0550ae", "#388bfd"),
-            height=32,
-            command=_do_auto_browser_login,
+            height=34,
+            command=lambda: _do_login("default"),
         )
-        btn_auto_browser.pack(side="left", padx=(0, 6))
+        btn_default_auth.pack(side="left", fill="x", expand=True)
+
+        # Secondary Actions Row (CLI & Manual URL open)
+        row2 = ctk.CTkFrame(opts_box, fg_color="transparent")
+        row2.pack(fill="x")
 
         def _launch_claude_code():
             try:
@@ -3587,44 +3636,48 @@ class AntigravityManagerApp(ctk.CTk):
                 messagebox.showerror("Ошибка запуска", f"Не удалось запустить Claude Code CLI: {err}")
 
         btn_cli_auth = ctk.CTkButton(
-            btns_row,
-            text="⚡ Claude Code CLI",
-            font=self.font(size=11, weight="bold"),
-            fg_color="#d97706",
-            hover_color="#b45309",
-            height=32,
-            command=_launch_claude_code,
-        )
-        btn_cli_auth.pack(side="left", padx=(0, 6))
-
-        btn_open_browser = ctk.CTkButton(
-            btns_row,
-            text="🌐 Открыть claude.ai",
+            row2,
+            text="⚡ Claude Code CLI (setup-token)",
             font=self.font(size=11),
             fg_color=COLOR["subbox_bg"],
             hover_color=("#eaeef2", "#21262d"),
             text_color=COLOR["text_primary"],
             border_width=1,
             border_color=COLOR["border"],
-            height=32,
+            height=30,
+            command=_launch_claude_code,
+        )
+        btn_cli_auth.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        btn_open_browser = ctk.CTkButton(
+            row2,
+            text="🌐 Просто открыть claude.ai",
+            font=self.font(size=11),
+            fg_color=COLOR["subbox_bg"],
+            hover_color=("#eaeef2", "#21262d"),
+            text_color=COLOR["text_primary"],
+            border_width=1,
+            border_color=COLOR["border"],
+            height=30,
             command=lambda: open_url_in_browser("https://claude.ai"),
         )
-        btn_open_browser.pack(side="left")
+        btn_open_browser.pack(side="left", fill="x", expand=True)
 
+        # Instructions Box
         guide_box = ctk.CTkFrame(dialog, fg_color=COLOR["subbox_bg"], corner_radius=8, border_width=1, border_color=COLOR["border"])
         guide_box.pack(fill="x", padx=20, pady=(0, 10))
         ctk.CTkLabel(
             guide_box,
             text=(
-                "• Способ 1 (Рекомендуется): Нажмите «🚀 1-клик вход через браузер». Откроется отдельное окно браузера, выполните вход со своей подпиской на claude.ai. Hub автоматически перехватит sessionKey, сохранит профиль и настроит его авто-обновление в фоне, чтобы сессия не истекала.\n"
-                "• Способ 2 (Claude Code): Нажмите «⚡ Claude Code CLI», скопируйте выданный токен setup-token и вставьте ниже.\n"
-                "• Способ 3 (Вручную): Откройте claude.ai, нажмите F12 -> Application -> Cookies -> скопируйте sessionKey (sk-ant-sid01-...) и вставьте ниже."
+                "• Вариант 1 (VLESS): Hub запускает встроенный браузер через ваш локальный VLESS-туннель (10809), перехватывает sessionKey и настраивает фоновое авто-продление сессии.\n"
+                "• Вариант 2 (Дефолтный браузер): Hub откроет ваш системный браузер (Yandex / Chrome / Edge). Убедитесь, что в системе включен VPN.\n"
+                "• Вариант 3 (Вручную): Вы можете вставить токен Claude Code или sessionKey (sk-ant-sid01-...) в поле ниже."
             ),
             font=self.font(size=10),
             text_color=COLOR["text_secondary"],
             justify="left",
-            wraplength=520,
-        ).pack(fill="x", padx=10, pady=8)
+            wraplength=570,
+        ).pack(fill="x", padx=12, pady=8)
 
         ctk.CTkLabel(dialog, text="Токен Claude Code или sessionKey:", font=self.font(size=11, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w", padx=20, pady=(2, 2))
         key_entry = ctk.CTkEntry(
@@ -3637,15 +3690,18 @@ class AntigravityManagerApp(ctk.CTk):
         )
         key_entry.pack(fill="x", padx=20, pady=(0, 6))
 
-        lbl_status = ctk.CTkLabel(dialog, text="", font=self.font(size=11), text_color="#10b981", wraplength=520, justify="left")
+        lbl_status = ctk.CTkLabel(dialog, text="", font=self.font(size=11), text_color="#10b981", wraplength=570, justify="left")
         lbl_status.pack(anchor="w", padx=20, pady=(0, 6))
 
         btn_submit = ctk.CTkButton(
             dialog,
-            text="✔ Проверить и подключить аккаунт",
+            text="✔ Проверить и подключить аккаунт вручную",
             font=self.font(size=12, weight="bold"),
-            fg_color="#238636",
-            hover_color="#2ea043",
+            fg_color=("#f6f8fa", "#21262d"),
+            hover_color=("#eaeef2", "#30363d"),
+            text_color=COLOR["text_primary"],
+            border_width=1,
+            border_color=COLOR["border"],
             height=36,
             corner_radius=6,
         )
