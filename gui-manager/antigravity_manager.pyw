@@ -282,13 +282,22 @@ def get_active_google_account_index() -> int:
             try:
                 cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
                 routing = cfg.get("antigravityRouting", {})
-                active_row_id = routing.get("activeRow", {}).get("id")
                 accounts = cfg.get("accounts", [])
+                # Check active row for gemini first, then general activeRow
+                active_row_id = (
+                    routing.get("activeRowByFamily", {}).get("gemini", {}).get("id")
+                    or routing.get("activeRow", {}).get("id")
+                )
                 if active_row_id:
                     for i, acc in enumerate(accounts):
                         if acc.get("id") == active_row_id:
                             return i
-                return int(routing.get("activeIndex", 0))
+                idx = routing.get("activeIndexByFamily", {}).get("gemini")
+                if idx is not None and 0 <= int(idx) < len(accounts):
+                    return int(idx)
+                idx = routing.get("activeIndex")
+                if idx is not None and 0 <= int(idx) < len(accounts):
+                    return int(idx)
             except Exception:
                 pass
     legacy_file = config_dir / "antigravity-accounts.json"
@@ -299,6 +308,7 @@ def get_active_google_account_index() -> int:
         except Exception:
             pass
     return 0
+
 
 def set_active_google_account_index(target_index: int) -> bool:
     config_dir = Path(os.path.expanduser("~/.config/opencode"))
@@ -321,6 +331,14 @@ def set_active_google_account_index(target_index: int) -> bool:
                             "claude": {"id": target_id, "credentialEpoch": 1},
                             "gemini": {"id": target_id, "credentialEpoch": 1},
                         }
+                    # Ensure selected account is enabled in commonAuthPool
+                    rows = cfg.get("commonAuthPool", {}).get("rows", {})
+                    if target_id in rows:
+                        rows[target_id]["enabled"] = True
+                        rows[target_id]["usable"] = True
+                    accounts[target_index]["enabled"] = True
+                    accounts[target_index]["candidate"] = True
+
                     cfg["antigravityRouting"] = routing
                     cfg_file.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
                     changed = True
@@ -336,6 +354,80 @@ def set_active_google_account_index(target_index: int) -> bool:
                 legacy_data["activeIndexByFamily"] = {"claude": target_index, "gemini": target_index}
             legacy_file.write_text(json.dumps(legacy_data, indent=2, ensure_ascii=False), encoding="utf-8")
             changed = True
+        except Exception:
+            pass
+
+    return changed
+
+
+def set_google_account_candidate(target_email_or_id: str, enabled: bool) -> bool:
+    """Persists account enable/disable state to commonAuthPool and config so OpenCode respects auto-rotation toggles."""
+    config_dir = Path(os.path.expanduser("~/.config/opencode"))
+    gen_dirs = list(config_dir.glob("*.generation"))
+    changed = False
+
+    if gen_dirs:
+        gen_dir = gen_dirs[0]
+        cfg_file = gen_dir / "config.json"
+        state_file = gen_dir / "state.json"
+        if cfg_file.exists():
+            try:
+                cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+                target_id = None
+
+                if state_file.exists():
+                    try:
+                        state = json.loads(state_file.read_text(encoding="utf-8"))
+                        for aid, st in state.get("accounts", {}).items():
+                            meta = st.get("commonAuthProviderState", {}).get("metadata", {})
+                            if aid == target_email_or_id or meta.get("email") == target_email_or_id:
+                                target_id = aid
+                                break
+                    except Exception:
+                        pass
+
+                if not target_id:
+                    for acc in cfg.get("accounts", []):
+                        if acc.get("id") == target_email_or_id:
+                            target_id = acc.get("id")
+                            break
+
+                if target_id:
+                    rows = cfg.get("commonAuthPool", {}).get("rows", {})
+                    if target_id in rows:
+                        rows[target_id]["enabled"] = enabled
+                        rows[target_id]["usable"] = enabled
+                    for acc in cfg.get("accounts", []):
+                        if acc.get("id") == target_id:
+                            acc["candidate"] = enabled
+                            acc["enabled"] = enabled
+
+                    cfg_file.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+                    changed = True
+
+                    if state_file.exists():
+                        try:
+                            state = json.loads(state_file.read_text(encoding="utf-8"))
+                            if target_id in state.get("accounts", {}):
+                                meta = state["accounts"][target_id].setdefault("commonAuthProviderState", {}).setdefault("metadata", {})
+                                meta["enabled"] = enabled
+                                state_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+                        except Exception:
+                            pass
+            except Exception as e:
+                print(f"Error updating candidate in generation config: {e}")
+
+    legacy_file = config_dir / "antigravity-accounts.json"
+    if legacy_file.exists():
+        try:
+            legacy_data = json.loads(legacy_file.read_text(encoding="utf-8"))
+            for acc in legacy_data.get("accounts", []):
+                if acc.get("id") == target_email_or_id or acc.get("email") == target_email_or_id:
+                    acc["candidate"] = enabled
+                    acc["enabled"] = enabled
+                    changed = True
+            if changed:
+                legacy_file.write_text(json.dumps(legacy_data, indent=2, ensure_ascii=False), encoding="utf-8")
         except Exception:
             pass
 
@@ -513,6 +605,7 @@ def enrich_google_accounts_with_generation_store(accounts: list[dict]) -> list[d
             "email": email,
             "addedAt": added_at,
             "status": "ok" if row.get("enabled", True) else "disabled",
+            "candidate": row.get("enabled", True),
             "groups": groups,
         })
 
@@ -534,6 +627,7 @@ def enrich_google_accounts_with_generation_store(accounts: list[dict]) -> list[d
         if disk_acc is None and not account_id and not email and idx < len(disk_accounts):
             disk_acc = disk_accounts[idx]
         if disk_acc:
+            acc["candidate"] = disk_acc.get("candidate", True)
             if not acc.get("email") or acc.get("email", "").startswith("Account "):
                 acc["email"] = disk_acc["email"]
             if not acc.get("addedAt"):
@@ -2069,7 +2163,10 @@ class AntigravityManagerApp(ctk.CTk):
     def toggle_account_candidate(self, acc, enabled):
         try:
             acc["candidate"] = enabled
+            aid = acc.get("id") or acc.get("email")
             email = acc.get("email", "Аккаунт")
+            if aid:
+                set_google_account_candidate(aid, enabled)
             self.show_flash(f"Аккаунт {email} {'включен в авторотацию' if enabled else 'исключен из авторотации'}")
         except Exception as e:
             print(f"Error toggling candidate: {e}")
@@ -3217,6 +3314,9 @@ class AntigravityManagerApp(ctk.CTk):
 
     def _worker_refresh_quotas(self):
         google_accounts = []
+        openai_accounts = []
+        claude_accounts = []
+        rotate_msg = None
         try:
             node_exe = get_node_executable()
             cli_js = get_cli_js()
@@ -3246,8 +3346,6 @@ class AntigravityManagerApp(ctk.CTk):
         except Exception as e:
             print(f"Error enriching Google accounts: {e}")
 
-        openai_accounts = []
-        rotate_msg = None
         try:
             openai_accounts, rotate_msg = openai_manager.refresh_all_openai_accounts()
         except Exception as e:
@@ -3257,7 +3355,6 @@ class AntigravityManagerApp(ctk.CTk):
             except Exception:
                 openai_accounts = []
 
-        claude_accounts = []
         try:
             claude_accounts = claude_service.load_accounts()
         except Exception as e:
@@ -3266,25 +3363,32 @@ class AntigravityManagerApp(ctk.CTk):
         try:
             self.after(0, lambda: self._on_quotas_fetched(google_accounts, openai_accounts, claude_accounts, rotate_msg))
         except Exception as e:
-            print(f"Callback error: {e}")
+            print(f"Callback dispatch error: {e}")
+            self.is_loading = False
 
     def _on_quotas_fetched(self, google_accounts, openai_accounts, claude_accounts=None, rotate_msg=None):
-        self.accounts_data = google_accounts
-        self.openai_accounts_data = openai_accounts
-        if claude_accounts is not None:
-            self.claude_accounts_data = claude_accounts
-        else:
-            self.claude_accounts_data = claude_service.load_accounts()
-        self.render_accounts()
-        self.is_loading = False
-        self.btn_refresh.configure(state="normal", text="🔄 Обновить квоты")
-        now_str = datetime.datetime.now().strftime("%H:%M:%S")
-        self.countdown_seconds = self.auto_refresh_interval_min * 60
-        if rotate_msg:
-            self.set_status(f"🔄 {rotate_msg}")
-        else:
-            self.set_status(f"Квоты обновлены в {now_str}")
-        self.update_opencode_status()
+        try:
+            if google_accounts:
+                self.accounts_data = google_accounts
+            if openai_accounts is not None:
+                self.openai_accounts_data = openai_accounts
+            if claude_accounts is not None:
+                self.claude_accounts_data = claude_accounts
+            else:
+                self.claude_accounts_data = claude_service.load_accounts()
+            self.render_accounts()
+        except Exception as e:
+            print(f"Render accounts error: {e}")
+        finally:
+            self.is_loading = False
+            self.btn_refresh.configure(state="normal", text="🔄 Квоты")
+            now_str = datetime.datetime.now().strftime("%H:%M:%S")
+            self.countdown_seconds = self.auto_refresh_interval_min * 60
+            if rotate_msg:
+                self.set_status(f"🔄 {rotate_msg}")
+            else:
+                self.set_status(f"Квоты обновлены в {now_str}")
+            self.update_opencode_status()
 
     def add_account_action(self):
         self.btn_add_account.configure(state="disabled", text="⏳ Открываем...")

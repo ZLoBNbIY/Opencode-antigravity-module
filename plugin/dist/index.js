@@ -21152,6 +21152,17 @@ var AccountManager = class _AccountManager {
       this._lastConfigMtime = stat.mtimeMs;
       const raw = JSON.parse(syncFs.readFileSync(cfgPath, "utf8"));
       const routing = raw.antigravityRouting || raw;
+      if (raw.commonAuthPool?.rows) {
+        for (const account of this.accounts) {
+          const aid = account.ref?.id || account.id;
+          if (aid && raw.commonAuthPool.rows[aid]) {
+            const rowEnabled = raw.commonAuthPool.rows[aid].enabled !== false;
+            if (account.enabled !== rowEnabled) {
+              this.selection.setEnabledInMemory(account, rowEnabled);
+            }
+          }
+        }
+      }
       if (!routing) return;
       for (const fam of ["claude", "gemini"]) {
         let targetId = routing.activeRowByFamily?.[fam]?.id || routing.activeRow?.id;
@@ -21165,6 +21176,9 @@ var AccountManager = class _AccountManager {
           if (cur !== targetIdx) {
             this.selection.setGlobalActiveIndex(fam, targetIdx);
             if (this.pendingSelections) this.pendingSelections.delete(fam);
+            if (this.accounts[targetIdx]) {
+              clearExpiredRateLimits(this.accounts[targetIdx], this.now);
+            }
             if (this.selection.requestSessionStates) {
               for (const sessionState of this.selection.requestSessionStates.values()) {
                 if (sessionState && sessionState.currentAccountIndexByFamily) {
