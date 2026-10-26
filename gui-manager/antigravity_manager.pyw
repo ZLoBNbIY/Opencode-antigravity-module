@@ -98,13 +98,16 @@ from openrouter_view import OpenRouterView
 from mwapi_view import MwapiView
 from network_view import NetworkView
 from deepseek_view import DeepSeekView
+from xpiki_view import XpikiView
 from vless_manager import vless_service, DEFAULT_HTTP_PORT
 from claude_manager import claude_service, CLAUDE_MODELS
+import xpiki_manager
 
 AVAILABLE_PROVIDERS = [
     ("antigravity", "🚀  Antigravity (Google)", "google", "Google Gemini & Claude через Google Cloud Code"),
     ("openai", "🟢  ChatGPT (OpenAI)", "openai", "Аккаунты ChatGPT (OpenAI)"),
-    ("claude", "🟠  Claude (Anthropic)", "claude", "Подписка Claude Pro / Team без покупки API-токенов"),
+    ("claude", "🟠  Claude Code / Pro", "claude", "Подписка Claude Pro / Team без покупки API-токенов"),
+    ("xpiki", "🟠  Claude API (Xpiki)", "xpiki", "Шлюз Claude API (Xpiki) по гайду с квотой 100M и Opus 5"),
     ("openrouter", "🟣  OpenRouter Free", "openrouter", "Бесплатные модели OpenRouter"),
     ("mwapi", "⚡  MWAPI Cloud Code", "mwapi", "Cloud Code MWAPI модели"),
     ("deepseek", "🐋  DeepSeek Web", "deepseek", "Подключение DeepSeek через веб-сессию"),
@@ -1456,6 +1459,8 @@ class AntigravityManagerApp(ctk.CTk):
             self.network_view.pack_forget()
         if hasattr(self, "deepseek_view"):
             self.deepseek_view.pack_forget()
+        if hasattr(self, "xpiki_view"):
+            self.xpiki_view.pack_forget()
         for key, btn in self.nav_btns.items():
             if key == target_nav:
                 btn.configure(
@@ -1485,6 +1490,12 @@ class AntigravityManagerApp(ctk.CTk):
             self.system_frame.pack_forget()
             self.update_action_bar_for_provider()
             self.render_accounts()
+        elif target_nav == "xpiki":
+            self.top_action_bar.pack_forget()
+            self.accounts_container.pack_forget()
+            self.settings_frame.pack_forget()
+            self.system_frame.pack_forget()
+            self.xpiki_view.pack(fill="both", expand=True, padx=24, pady=16)
         elif target_nav == "openrouter":
             self.top_action_bar.pack_forget()
             self.accounts_container.pack_forget()
@@ -1555,6 +1566,7 @@ class AntigravityManagerApp(ctk.CTk):
         self.create_system_view()
         self.openrouter_view = OpenRouterView(self.content_area, self, COLOR)
         self.mwapi_view = MwapiView(self.content_area, self, COLOR)
+        self.xpiki_view = XpikiView(self.content_area, self, COLOR)
         self.network_view = NetworkView(self.content_area, self, COLOR)
         self.deepseek_view = DeepSeekView(self.content_area, self, COLOR)
         self.create_statusbar()
@@ -3381,6 +3393,11 @@ class AntigravityManagerApp(ctk.CTk):
             print(f"Error fetching Claude accounts: {e}")
 
         try:
+            xpiki_manager.refresh_xpiki_quota_silent()
+        except Exception as e:
+            print(f"Error refreshing Xpiki quota: {e}")
+
+        try:
             self.after(0, lambda: self._on_quotas_fetched(google_accounts, openai_accounts, claude_accounts, rotate_msg))
         except Exception as e:
             print(f"Callback dispatch error: {e}")
@@ -3671,7 +3688,8 @@ class AntigravityManagerApp(ctk.CTk):
             text=(
                 "• Вариант 1 (VLESS): Hub запускает встроенный браузер через ваш локальный VLESS-туннель (10809), перехватывает sessionKey и настраивает фоновое авто-продление сессии.\n"
                 "• Вариант 2 (Дефолтный браузер): Hub откроет ваш системный браузер (Yandex / Chrome / Edge). Убедитесь, что в системе включен VPN.\n"
-                "• Вариант 3 (Claude API / Xpiki): Вставьте API-ключ (sk-...) и Base URL ниже. Hub автоматически настроит и OpenCode, и Claude Code CLI (~/.claude/settings.json)."
+                "• Вариант 3 (Claude Code CLI): Нажмите «⚡ Claude Code CLI», скопируйте выданный токен setup-token и вставьте ниже.\n"
+                "• Вариант 4 (Вручную): Откройте claude.ai, скопируйте cookie 'sessionKey' (sk-ant-sid01-...) и вставьте ниже."
             ),
             font=self.font(size=10),
             text_color=COLOR["text_secondary"],
@@ -3679,42 +3697,16 @@ class AntigravityManagerApp(ctk.CTk):
             wraplength=570,
         ).pack(fill="x", padx=12, pady=8)
 
-        ctk.CTkLabel(dialog, text="Токен / sessionKey / API-ключ Claude:", font=self.font(size=11, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w", padx=20, pady=(2, 2))
+        ctk.CTkLabel(dialog, text="Токен Claude Code или sessionKey:", font=self.font(size=11, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w", padx=20, pady=(2, 2))
         key_entry = ctk.CTkEntry(
             dialog,
-            placeholder_text="sk-ant-sid01-... (sessionKey) или API-ключ sk-... (Xpiki / Claude)",
+            placeholder_text="sk-ant-sid01-... (sessionKey) или токен Claude Code",
             font=self.font(size=11),
             height=34,
             fg_color=COLOR["subbox_bg"],
             border_color=COLOR["border"],
         )
         key_entry.pack(fill="x", padx=20, pady=(0, 6))
-
-        api_options_frame = ctk.CTkFrame(dialog, fg_color="transparent")
-        api_options_frame.pack(fill="x", padx=20, pady=(0, 6))
-
-        url_entry = ctk.CTkEntry(
-            api_options_frame,
-            placeholder_text="Base URL (для Xpiki/прокси, напр: https://api.xpiki.com/v1)",
-            font=self.font(size=11),
-            height=30,
-            fg_color=COLOR["subbox_bg"],
-            border_color=COLOR["border"],
-        )
-        url_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
-
-        ctk.CTkButton(
-            api_options_frame,
-            text="🔍 Баланс xpiki.com",
-            font=self.font(size=11),
-            fg_color=COLOR["subbox_bg"],
-            hover_color=("#eaeef2", "#21262d"),
-            text_color=COLOR["accent_cyan"],
-            border_width=1,
-            border_color=COLOR["border"],
-            height=30,
-            command=lambda: open_url_in_browser("https://api.xpiki.com/key"),
-        ).pack(side="left")
 
         lbl_status = ctk.CTkLabel(dialog, text="", font=self.font(size=11), text_color="#10b981", wraplength=570, justify="left")
         lbl_status.pack(anchor="w", padx=20, pady=(0, 6))
@@ -3735,16 +3727,15 @@ class AntigravityManagerApp(ctk.CTk):
 
         def _do_verify():
             key = key_entry.get().strip()
-            custom_url = url_entry.get().strip()
             if not key:
-                lbl_status.configure(text="❌ Введите sessionKey или API-ключ Claude", text_color="#ef4444")
+                lbl_status.configure(text="❌ Введите sessionKey или токен Claude Code", text_color="#ef4444")
                 return
 
-            btn_submit.configure(state="disabled", text="⏳ Проверка ключа/сессии...")
-            lbl_status.configure(text="Подключение к Claude...", text_color=COLOR["accent_cyan"])
+            btn_submit.configure(state="disabled", text="⏳ Проверка сессии...")
+            lbl_status.configure(text="Подключение к claude.ai...", text_color=COLOR["accent_cyan"])
 
             def _worker():
-                ok, msg, acc = claude_service.verify_and_add_account(key, base_url=custom_url)
+                ok, msg, acc = claude_service.verify_and_add_account(key)
                 def _done():
                     btn_submit.configure(state="normal", text="✔ Проверить и подключить аккаунт вручную")
                     if ok:
