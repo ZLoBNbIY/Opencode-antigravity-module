@@ -1325,7 +1325,7 @@ class AntigravityManagerApp(ctk.CTk):
                 height=38,
                 corner_radius=8,
                 border_width=1 if is_active else 0,
-                border_color=COLOR["border"] if is_active else "transparent",
+                border_color=COLOR["border"],
                 fg_color=COLOR["nav_active_bg"] if is_active else "transparent",
                 text_color=COLOR["nav_active_text"] if is_active else COLOR["nav_idle_text"],
                 hover_color=("#eaeef2", "#1c2128"),
