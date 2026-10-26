@@ -716,23 +716,23 @@ def import_google_account(account_dict: dict) -> bool:
 
 
 # =========================================================================
-# DEEP CYBER GLASS THEME PALETTE (Tuple format: (Light, Dark))
-# Dark sapphire glass, luminous cyan borders, high-contrast typography
+# FROSTED GLASS / ACRYLIC THEME PALETTE (Tuple format: (Light, Dark))
+# Semi-translucent obsidian glass, luminous cyan edges, frosted sub-boxes
 # =========================================================================
 COLOR = {
-    "bg": ("#f1f5f9", "#060911"),
-    "sidebar_bg": ("#ffffff", "#090d18"),
-    "card_bg": ("#ffffff", "#0e1526"),
-    "card_active_bg": ("#f0fdf4", "#131f38"),
-    "subbox_bg": ("#f8fafc", "#080c16"),
-    "border": ("#e2e8f0", "#1e2d4a"),
+    "bg": ("#f1f5f9", "#0a0e1a"),
+    "sidebar_bg": ("#ffffff", "#0d1322"),
+    "card_bg": ("#ffffff", "#121a2d"),
+    "card_active_bg": ("#f0fdf4", "#15223c"),
+    "subbox_bg": ("#f8fafc", "#090d17"),
+    "border": ("#e2e8f0", "#1f2d45"),
     "border_active": ("#0284c7", "#38bdf8"),
     "text_primary": ("#0f172a", "#f8fafc"),
     "text_secondary": ("#334155", "#cbd5e1"),
     "text_muted": ("#64748b", "#94a3b8"),
-    "bar_bg": ("#e2e8f0", "#182238"),
-    "statusbar_bg": ("#ffffff", "#090d18"),
-    "nav_active_bg": ("#e0f2fe", "#16233a"),
+    "bar_bg": ("#e2e8f0", "#162035"),
+    "statusbar_bg": ("#ffffff", "#0c111f"),
+    "nav_active_bg": ("#e0f2fe", "#182844"),
     "nav_active_text": ("#0284c7", "#38bdf8"),
     "nav_idle_text": ("#475569", "#94a3b8"),
     "accent_cyan": "#38bdf8",
@@ -746,7 +746,7 @@ COLOR = {
 
 
 def apply_windows_acrylic_effect(window):
-    """Enables Windows 11 DWM Acrylic/Mica backdrop blur and immersive dark titlebar."""
+    """Enables Windows 11 DWM Acrylic/Mica backdrop blur and frosted glass titlebar."""
     if sys.platform != "win32":
         return
     try:
@@ -755,10 +755,9 @@ def apply_windows_acrylic_effect(window):
             pywinstyles.apply_style(window, "acrylic")
         except Exception:
             pywinstyles.apply_style(window, "mica")
-        pywinstyles.change_header_color(window, color="#060911")
-        pywinstyles.change_border_color(window, color="#38bdf8")
+        pywinstyles.change_header_color(window, color="#0a0e1a")
+        pywinstyles.change_border_color(window, color="#1f2d45")
         pywinstyles.change_title_color(window, color="#38bdf8")
-        return
     except Exception:
         pass
 
@@ -780,8 +779,14 @@ def apply_windows_acrylic_effect(window):
             hwnd, 38, ctypes.byref(backdrop), ctypes.sizeof(backdrop)
         )
 
-        # DWMWA_BORDER_COLOR = 34 (Subtle cyber cyan border: 0x00382218 in BGR)
-        border_col = ctypes.c_int(0x00382218)
+        # DWMWA_CAPTION_COLOR = 35 (Titlebar background: #0a0e1a -> BGR 0x001a0e0a)
+        caption_col = ctypes.c_int(0x001a0e0a)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd, 35, ctypes.byref(caption_col), ctypes.sizeof(caption_col)
+        )
+
+        # DWMWA_BORDER_COLOR = 34 (Subtle frosted cyan border: BGR 0x00452d1f)
+        border_col = ctypes.c_int(0x00452d1f)
         ctypes.windll.dwmapi.DwmSetWindowAttribute(
             hwnd, 34, ctypes.byref(border_col), ctypes.sizeof(border_col)
         )
