@@ -121,65 +121,85 @@ class VlessManager:
         return self.find_core_executable(custom_path) is not None
 
     def download_core(self, core_type: str = "sing-box", progress_callback=None) -> Tuple[bool, str]:
-        """Downloads sing-box or xray-core into bin folder."""
+        """Downloads sing-box or xray-core into bin folder, bypassing dead local proxies."""
         bin_dir = self.get_bin_dir()
-        url = SING_BOX_DOWNLOAD_URL if core_type == "sing-box" else XRAY_DOWNLOAD_URL
+        existing = self.find_core_executable()
+        if existing:
+            return True, f"Ядро уже установлено: {existing.name}"
+
+        base_url = SING_BOX_DOWNLOAD_URL if core_type == "sing-box" else XRAY_DOWNLOAD_URL
         archive_path = bin_dir / "core_archive.zip"
 
-        try:
-            if progress_callback:
-                progress_callback(f"Загрузка {core_type} из GitHub...")
+        # List of candidate endpoints (direct GitHub first, then fast mirrors)
+        urls_to_try = [
+            base_url,
+            f"https://ghfast.top/{base_url}",
+            f"https://mirror.ghproxy.com/{base_url}",
+        ]
 
-            req = urllib.request.Request(
-                url,
-                headers={"User-Agent": "AntigravityHub-VlessManager/1.0"}
-            )
-            with urllib.request.urlopen(req, timeout=30) as resp, open(archive_path, "wb") as f:
-                total_size = resp.length or 0
-                downloaded = 0
-                while True:
-                    chunk = resp.read(65536)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if progress_callback and total_size > 0:
-                        pct = int((downloaded / total_size) * 100)
-                        progress_callback(f"Загрузка {core_type}: {pct}%")
-
-            if progress_callback:
-                progress_callback("Распаковка архива...")
-
-            with zipfile.ZipFile(archive_path, "r") as zf:
-                for member in zf.namelist():
-                    basename = os.path.basename(member)
-                    if basename in ("sing-box.exe", "xray.exe"):
-                        with zf.open(member) as source:
-                            target_file = bin_dir / basename
-                            with open(target_file, "wb") as out_f:
-                                shutil.copyfileobj(source, out_f)
-
-            # Cleanup zip archive safely on Windows
-            import gc
-            gc.collect()
-            time.sleep(0.2)
+        last_error = None
+        for candidate_url in urls_to_try:
             try:
-                if archive_path.exists():
-                    archive_path.unlink()
-            except Exception:
-                pass
+                if progress_callback:
+                    progress_callback(f"Загрузка {core_type}...")
 
-            found = self.find_core_executable()
-            if found:
-                return True, f"Ядро успешно установлено: {found.name}"
-            return False, "Не удалось обнаружить исполняемый файл в скачанном архиве."
-        except Exception as e:
-            if archive_path.exists():
+                req = urllib.request.Request(
+                    candidate_url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                        "Accept": "*/*",
+                    }
+                )
+                # Build opener with empty ProxyHandler to bypass dead local proxies (WinError 10061)
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                with opener.open(req, timeout=30) as resp, open(archive_path, "wb") as f:
+                    total_size = resp.length or 0
+                    downloaded = 0
+                    while True:
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if progress_callback and total_size > 0:
+                            pct = int((downloaded / total_size) * 100)
+                            progress_callback(f"Загрузка {core_type}: {pct}%")
+
+                if progress_callback:
+                    progress_callback("Распаковка архива...")
+
+                with zipfile.ZipFile(archive_path, "r") as zf:
+                    for member in zf.namelist():
+                        basename = os.path.basename(member)
+                        if basename in ("sing-box.exe", "xray.exe"):
+                            with zf.open(member) as source:
+                                target_file = bin_dir / basename
+                                with open(target_file, "wb") as out_f:
+                                    shutil.copyfileobj(source, out_f)
+
+                # Cleanup zip archive safely on Windows
+                import gc
+                gc.collect()
+                time.sleep(0.2)
                 try:
-                    archive_path.unlink()
+                    if archive_path.exists():
+                        archive_path.unlink()
                 except Exception:
                     pass
-            return False, f"Ошибка загрузки ядра: {e}"
+
+                found = self.find_core_executable()
+                if found:
+                    return True, f"Ядро успешно установлено: {found.name}"
+            except Exception as e:
+                last_error = e
+                if archive_path.exists():
+                    try:
+                        archive_path.unlink()
+                    except Exception:
+                        pass
+                continue
+
+        return False, f"Ошибка загрузки ядра: {last_error}"
 
     def generate_xray_config(self, params: Dict[str, Any], http_port: int, socks_port: int) -> Dict[str, Any]:
         """Creates an Xray JSON config."""
