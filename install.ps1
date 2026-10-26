@@ -295,6 +295,21 @@ if (Test-Path -LiteralPath $OpencodeConfigFile) {
             }
             $modified = $true
         }
+        if (-not $cfg.agents) {
+            $cfg | Add-Member -MemberType NoteProperty -Name "agents" -Value ([PSCustomObject]@{
+                title = [PSCustomObject]@{ model = "opencode/big-pickle" }
+            }) -Force
+            $modified = $true
+        } elseif (-not $cfg.agents.title -or $cfg.agents.title.model -like "*3.5*") {
+            if (-not $cfg.agents.title) {
+                $cfg.agents | Add-Member -MemberType NoteProperty -Name "title" -Value ([PSCustomObject]@{
+                    model = "opencode/big-pickle"
+                }) -Force
+            } else {
+                $cfg.agents.title.model = "opencode/big-pickle"
+            }
+            $modified = $true
+        }
 
         if ($modified) {
             $cfg | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $OpencodeConfigFile -Encoding UTF8

@@ -535,6 +535,11 @@ class NetworkView(ctk.CTkScrollableFrame):
                         if "options" in oc_data["provider"]["openai"]:
                             oc_data["provider"]["openai"]["options"].pop("proxy", None)
                 opencode_cfg_path.write_text(json.dumps(oc_data, indent=4, ensure_ascii=False), encoding="utf-8")
+                try:
+                    import opencode_config
+                    opencode_config.ensure_session_title_config(opencode_cfg_path)
+                except Exception:
+                    pass
         except Exception as e:
             print(f"Warning: Failed to sync proxy to opencode.json: {e}")
 
@@ -773,6 +778,11 @@ class NetworkView(ctk.CTkScrollableFrame):
                         if "options" in oc_data["provider"]["openai"]:
                             oc_data["provider"]["openai"]["options"].pop("proxy", None)
                 opencode_cfg_path.write_text(json.dumps(oc_data, indent=4, ensure_ascii=False), encoding="utf-8")
+                try:
+                    import opencode_config
+                    opencode_config.ensure_session_title_config(opencode_cfg_path)
+                except Exception:
+                    pass
         except Exception as e:
             print(f"Warning: Failed to sync proxy to opencode.json: {e}")
 

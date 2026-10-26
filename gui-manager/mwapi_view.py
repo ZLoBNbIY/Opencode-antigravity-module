@@ -1,10 +1,14 @@
-"""MWAPI (Cloud Code / CCS) setup, model selection, limits and quota monitoring for Antigravity Hub."""
+"""Claude Cloud Code (MWAPI) setup, limits and model selection for Antigravity Hub."""
 import threading
+import time
 import webbrowser
+from datetime import datetime
 from tkinter import messagebox
 
 import customtkinter as ctk
 import mwapi_manager
+
+AUTO_REFRESH_SECONDS = 60
 
 
 class MwapiView(ctk.CTkScrollableFrame):
@@ -14,12 +18,22 @@ class MwapiView(ctk.CTkScrollableFrame):
         self.colors = colors
         self.models = []
         self.checkboxes = []
+        self._last_usage_refresh = 0.0
+        self._usage_loading = False
 
         ctk.CTkLabel(
             self,
-            text="MWAPI (Cloud Code / CCS)",
+            text="Claude (Cloud Code)",
             font=app.font(22, "bold"),
             anchor="w",
+        ).pack(fill="x", pady=(0, 4))
+
+        ctk.CTkLabel(
+            self,
+            text="MWAPI Gateway · Claude Opus / Sonnet, лимиты и расход аккаунта.",
+            anchor="w",
+            font=app.font(12),
+            text_color=colors["text_secondary"],
         ).pack(fill="x", pady=(0, 12))
 
         ctk.CTkLabel(
@@ -177,7 +191,64 @@ class MwapiView(ctk.CTkScrollableFrame):
         self.val_remaining, self.sub_remaining = make_col(0, "Осталось")
         self.val_used, self.sub_used = make_col(1, "Израсходовано")
         self.val_limit, self.sub_limit = make_col(2, "Лимит аккаунта")
-        self.val_activity, self.sub_activity = make_col(3, "Запросы / Токены")
+        self.val_activity, self.sub_activity = make_col(3, "Сегодня")
+
+        # Subscription / last refresh line
+        info_row = ctk.CTkFrame(self.quota_card, fg_color="transparent")
+        info_row.pack(fill="x", padx=16, pady=(0, 8))
+        self.quota_info = ctk.CTkLabel(
+            info_row,
+            text="Лимиты ещё не загружены.",
+            font=app.font(11),
+            text_color=colors["text_muted"],
+            anchor="w",
+            justify="left",
+            wraplength=720,
+        )
+        self.quota_info.pack(side="left")
+
+        # Per-model spend breakdown
+        model_usage_header = ctk.CTkFrame(self.quota_card, fg_color="transparent")
+        model_usage_header.pack(fill="x", padx=16, pady=(2, 4))
+
+        ctk.CTkLabel(
+            model_usage_header,
+            text="Расход по моделям",
+            font=app.font(11, "bold"),
+            text_color=colors["text_secondary"],
+        ).pack(side="left")
+
+        self.model_usage_hint = ctk.CTkLabel(
+            model_usage_header,
+            text="",
+            font=app.font(10),
+            text_color=colors["text_muted"],
+        )
+        self.model_usage_hint.pack(side="right")
+
+        table_head = ctk.CTkFrame(self.quota_card, fg_color="transparent")
+        table_head.pack(fill="x", padx=24, pady=(0, 2))
+        table_head.grid_columnconfigure(0, weight=1)
+
+        for column, (text, width, anchor) in enumerate((
+            ("Модель", 0, "w"),
+            ("Запросы", 70, "e"),
+            ("Токены", 110, "e"),
+            ("Списано", 90, "e"),
+        )):
+            ctk.CTkLabel(
+                table_head,
+                text=text,
+                font=app.font(10, "bold"),
+                text_color=colors["text_muted"],
+                width=width if width else 0,
+                anchor=anchor,
+            ).grid(row=0, column=column, sticky=anchor)
+
+        self.model_usage_list = ctk.CTkScrollableFrame(
+            self.quota_card, height=140, fg_color=colors["subbox_bg"], corner_radius=6,
+        )
+        self.model_usage_list.pack(fill="x", padx=16, pady=(0, 12))
 
         self.status = ctk.CTkLabel(
             self,
@@ -271,6 +342,51 @@ class MwapiView(ctk.CTkScrollableFrame):
             return f"${val:,.2f}"
         return f"{val:,.2f} {unit}"
 
+    @staticmethod
+    def _format_number(value):
+        try:
+            return f"{int(value):,}".replace(",", " ")
+        except (TypeError, ValueError):
+            return "—"
+
+    def _clear_model_usage(self):
+        for widget in self.model_usage_list.winfo_children():
+            widget.destroy()
+        self.model_usage_hint.configure(text="")
+
+    def _render_model_usage(self, models):
+        self._clear_model_usage()
+        if not models:
+            return
+        unit = "USD"
+        for model in models[:20]:
+            row = ctk.CTkFrame(self.model_usage_list, fg_color="transparent")
+            row.pack(fill="x", padx=6, pady=1)
+            row.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(
+                row, text=model.get("model", "—"), anchor="w",
+                font=self.app.font(11), text_color=self.colors["text_primary"],
+            ).grid(row=0, column=0, sticky="w")
+            ctk.CTkLabel(
+                row, text=self._format_number(model.get("requests", 0)), width=70, anchor="e",
+                font=self.app.font(11), text_color=self.colors["text_secondary"],
+            ).grid(row=0, column=1, sticky="e")
+            ctk.CTkLabel(
+                row, text=self._format_number(model.get("total_tokens", 0)), width=110, anchor="e",
+                font=self.app.font(11), text_color=self.colors["text_secondary"],
+            ).grid(row=0, column=2, sticky="e")
+            ctk.CTkLabel(
+                row, text=self._format_currency(model.get("actual_cost") or model.get("cost"), unit),
+                width=90, anchor="e", font=self.app.font(11, "bold"),
+                text_color=self.colors["text_primary"],
+            ).grid(row=0, column=3, sticky="e")
+
+        if len(models) > 20:
+            self.model_usage_hint.configure(text=f"показано 20 из {len(models)}")
+        else:
+            self.model_usage_hint.configure(text=f"всего: {len(models)}")
+
     def update_quota_display(self, usage: dict):
         if not usage or not isinstance(usage, dict):
             self.quota_badge.configure(text="")
@@ -284,6 +400,8 @@ class MwapiView(ctk.CTkScrollableFrame):
             self.sub_limit.configure(text="")
             self.val_activity.configure(text="—")
             self.sub_activity.configure(text="")
+            self.quota_info.configure(text="Лимиты ещё не загружены.")
+            self._clear_model_usage()
             return
 
         unit = usage.get("unit", "USD")
@@ -294,8 +412,10 @@ class MwapiView(ctk.CTkScrollableFrame):
         used_pct = usage.get("used_pct")
         mode = usage.get("mode") or ""
         status = usage.get("status") or "active"
+        today = usage.get("today") or {}
+        total = usage.get("total") or {}
 
-        mode_label = f"Тариф: {mode}" if mode else ""
+        mode_label = f"тариф: {mode}" if mode else ""
         status_label = "Активен" if status == "active" else status
         self.quota_badge.configure(text=f"[{status_label}{(' · ' + mode_label) if mode_label else ''}]")
 
@@ -325,27 +445,44 @@ class MwapiView(ctk.CTkScrollableFrame):
 
         self.val_used.configure(text=used_text)
         if used_pct is not None:
-            self.sub_used.configure(text=f"{used_pct:.1f}% использовано")
+            self.sub_used.configure(
+                text=f"{used_pct:.1f}% лимита · {self._format_number(total.get('requests', 0))} запр."
+            )
         else:
             self.sub_used.configure(text="")
 
         self.val_limit.configure(text=lim_text)
         if limit is not None:
-            self.sub_limit.configure(text="Выделенный лимит")
+            self.sub_limit.configure(text=mode or "Выделенный лимит")
         else:
             self.sub_limit.configure(text="Без фиксированного лимита")
 
-        reqs = usage.get("total_requests", 0)
-        today_reqs = usage.get("today_requests", 0)
-        tokens = usage.get("total_tokens", 0)
+        self.val_activity.configure(text=self._format_currency(today.get("actual_cost") or today.get("cost"), unit))
+        self.sub_activity.configure(
+            text=(
+                f"{self._format_number(today.get('requests', 0))} запр. · "
+                f"{self._format_number(today.get('total_tokens', 0))} токенов"
+            )
+        )
 
-        self.val_activity.configure(text=f"{reqs:,} запр.")
-        self.sub_activity.configure(text=f"{tokens:,} токенов (сегодня: {today_reqs})")
+        details = [f"Обновлено: {datetime.now().strftime('%H:%M:%S')}"]
+        if usage.get("expires_at"):
+            details.append(f"действует до {str(usage['expires_at'])[:10]}")
+        total_cost = total.get("actual_cost") or total.get("cost")
+        if total_cost:
+            details.append(f"всего списано: {self._format_currency(total_cost, unit)}")
+        details.append(f"токенов за всё время: {self._format_number(total.get('total_tokens', 0))}")
+        self.quota_info.configure(text="  ·  ".join(details))
+
+        self._render_model_usage(usage.get("models") or [])
 
     def on_show(self):
         key = self.key_entry.get().strip()
-        if key:
-            self.refresh_usage(silent=True)
+        if not key:
+            return
+        if time.monotonic() - self._last_usage_refresh < AUTO_REFRESH_SECONDS:
+            return
+        self.refresh_usage(silent=True)
 
     def refresh_usage(self, silent=False):
         key = self.key_entry.get().strip()
@@ -353,8 +490,12 @@ class MwapiView(ctk.CTkScrollableFrame):
             if not silent:
                 messagebox.showwarning("MWAPI", "Сначала вставьте API-ключ MWAPI.", parent=self.app)
             return
+        if self._usage_loading:
+            return
 
+        self._usage_loading = True
         self.refresh_quota_button.configure(state="disabled", text="Обновление…")
+        self.quota_info.configure(text="Загрузка лимитов MWAPI…")
 
         def worker():
             try:
@@ -367,11 +508,15 @@ class MwapiView(ctk.CTkScrollableFrame):
         threading.Thread(target=worker, name="hub-mwapi-usage", daemon=True).start()
 
     def _usage_refreshed(self, usage):
+        self._usage_loading = False
+        self._last_usage_refresh = time.monotonic()
         self.refresh_quota_button.configure(state="normal", text="Обновить лимиты")
         self.update_quota_display(usage)
 
     def _usage_refresh_failed(self, message, silent=False):
+        self._usage_loading = False
         self.refresh_quota_button.configure(state="normal", text="Обновить лимиты")
+        self.quota_info.configure(text=f"Не удалось загрузить лимиты: {message}")
         if not silent:
             messagebox.showwarning("MWAPI", f"Не удалось обновить данные лимитов: {message}", parent=self.app)
 

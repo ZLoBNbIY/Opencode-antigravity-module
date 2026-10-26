@@ -102,6 +102,7 @@ from xpiki_view import XpikiView
 from vless_manager import vless_service, DEFAULT_HTTP_PORT
 from claude_manager import claude_service, CLAUDE_MODELS
 import xpiki_manager
+import opencode_config
 
 AVAILABLE_PROVIDERS = [
     ("antigravity", "🚀  Antigravity (Google)", "google", "Google Gemini & Claude через Google Cloud Code"),
@@ -996,6 +997,12 @@ class AntigravityManagerApp(ctk.CTk):
         self.start_countdown_timer()
         self.check_updates_async()
 
+        # Автоматическая проверка и фиксация модели именования сессий (opencode/big-pickle)
+        try:
+            opencode_config.ensure_session_title_config()
+        except Exception as e:
+            print(f"[Hub] Ошибка проверки настройки подписи сессий: {e}")
+
     # --- Font Helper (Crisp Segoe UI) ---
     def font(self, size=12, weight="normal", underline=False):
         return ctk.CTkFont(family="Segoe UI", size=size, weight=weight, underline=underline)
@@ -1543,6 +1550,8 @@ class AntigravityManagerApp(ctk.CTk):
             self.settings_frame.pack_forget()
             self.system_frame.pack_forget()
             self.system_frame.pack(fill="both", expand=True, padx=24, pady=16)
+            if hasattr(self, "update_session_title_status"):
+                self.update_session_title_status()
 
     # =========================================================================
     # MAIN CONTENT AREA
@@ -3259,6 +3268,69 @@ class AntigravityManagerApp(ctk.CTk):
         ctk.CTkButton(r2, text="📂 Конфиги (~/.config/opencode)", fg_color=COLOR["subbox_bg"], text_color=COLOR["text_primary"], command=lambda: os.startfile(CONFIG_DIR) if CONFIG_DIR.exists() else None).pack(side="left", padx=(0, 8))
         ctk.CTkButton(r2, text="📂 Логи", fg_color=COLOR["subbox_bg"], text_color=COLOR["text_primary"], command=lambda: os.startfile(LOG_DIR) if LOG_DIR.exists() else None).pack(side="left")
 
+        # OpenCode Session Title Model Card
+        c_title = ctk.CTkFrame(self.system_frame, fg_color=COLOR["card_bg"], corner_radius=12, border_width=1, border_color=COLOR["border"])
+        c_title.pack(fill="x", pady=6)
+        ctk.CTkLabel(c_title, text="Подпись сессий OpenCode", font=self.font(size=14, weight="bold"), text_color=COLOR["text_primary"]).pack(anchor="w", padx=16, pady=(12, 4))
+        ctk.CTkLabel(
+            c_title,
+            text="Именование новых сессий закреплено за бесплатной встроенной моделью Big Pickle (opencode/big-pickle).\n"
+                 "Хаб автоматически проверяет и поддерживает эту настройку при запуске, обновлениях и перезапуске OpenCode, исключая расход лимитов основных моделей.",
+            font=self.font(size=11),
+            text_color=COLOR["text_secondary"],
+            anchor="w",
+            justify="left",
+            wraplength=720,
+        ).pack(fill="x", padx=16, pady=(0, 8))
+
+        row_title = ctk.CTkFrame(c_title, fg_color="transparent")
+        row_title.pack(fill="x", padx=16, pady=(0, 14))
+
+        self.lbl_title_model_status = ctk.CTkLabel(
+            row_title,
+            text="Проверка...",
+            font=self.font(size=12, weight="bold"),
+            text_color=COLOR["text_primary"],
+        )
+        self.lbl_title_model_status.pack(side="left", padx=(0, 12))
+
+        ctk.CTkButton(
+            row_title,
+            text="🩺 Проверить и исправить",
+            font=self.font(size=11, weight="bold"),
+            fg_color=("#0969da", "#1f6feb"),
+            hover_color=("#0550ae", "#388bfd"),
+            height=30,
+            command=self.manual_fix_session_title_action,
+        ).pack(side="left")
+
+        self.update_session_title_status()
+
+    def update_session_title_status(self):
+        try:
+            valid, msg = opencode_config.check_session_title_config()
+            if hasattr(self, "lbl_title_model_status"):
+                if valid:
+                    self.lbl_title_model_status.configure(
+                        text="✅ Активна: opencode/big-pickle",
+                        text_color="#16a34a",
+                    )
+                else:
+                    self.lbl_title_model_status.configure(
+                        text="⚠️ Требуется исправление",
+                        text_color="#d97706",
+                    )
+        except Exception:
+            pass
+
+    def manual_fix_session_title_action(self):
+        try:
+            modified, msg = opencode_config.ensure_session_title_config()
+            self.update_session_title_status()
+            messagebox.showinfo("Подпись сессий OpenCode", msg)
+        except Exception as e:
+            messagebox.showerror("Ошибка", str(e))
+
     # =========================================================================
     # STATUSBAR
     # =========================================================================
@@ -3333,6 +3405,10 @@ class AntigravityManagerApp(ctk.CTk):
                     claude_service.refresh_claude_sessions_silent()
                 except Exception:
                     pass
+                try:
+                    opencode_config.ensure_session_title_config()
+                except Exception:
+                    pass
             except Exception as e:
                 print(f"Token refresh warning: {e}")
 
@@ -3400,6 +3476,12 @@ class AntigravityManagerApp(ctk.CTk):
             xpiki_manager.refresh_xpiki_quota_silent()
         except Exception as e:
             print(f"Error refreshing Xpiki quota: {e}")
+
+        try:
+            opencode_config.ensure_session_title_config()
+            self.after(0, self.update_session_title_status)
+        except Exception as e:
+            print(f"Error checking session title config: {e}")
 
         try:
             self.after(0, lambda: self._on_quotas_fetched(google_accounts, openai_accounts, claude_accounts, rotate_msg))
@@ -4155,6 +4237,12 @@ class AntigravityManagerApp(ctk.CTk):
             self.set_status("⚠️ Запуск OpenCode отменён: защита от бана Claude")
             return
 
+        # Гарантируем корректность бесплатной модели подписи сессий перед запуском
+        try:
+            opencode_config.ensure_session_title_config()
+        except Exception:
+            pass
+
         self.set_status("Перезапуск OpenCode...")
 
         def _do_restart():
@@ -4185,6 +4273,12 @@ class AntigravityManagerApp(ctk.CTk):
         if not self.check_claude_tunnel_risk():
             self.set_status("⚠️ Запуск OpenCode отменён: защита от бана Claude")
             return
+
+        # Гарантируем корректность бесплатной модели подписи сессий перед запуском
+        try:
+            opencode_config.ensure_session_title_config()
+        except Exception:
+            pass
 
         cleanup_opencode_locks()
         exe = get_opencode_exe()

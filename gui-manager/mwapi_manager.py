@@ -133,6 +133,36 @@ def fetch_models(api_key: str, timeout: int = 20) -> list[dict]:
     return sorted(models, key=lambda m: m["id"].lower())
 
 
+def _as_float(value, default=None):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _usage_bucket(item) -> dict:
+    """Normalize one usage bucket (today/total/model/day) from the MWAPI payload."""
+    if not isinstance(item, dict):
+        item = {}
+    return {
+        "requests": _as_int(item.get("requests")),
+        "input_tokens": _as_int(item.get("input_tokens")),
+        "output_tokens": _as_int(item.get("output_tokens")),
+        "total_tokens": _as_int(item.get("total_tokens")),
+        "cache_creation_tokens": _as_int(item.get("cache_creation_tokens", item.get("cache_write_tokens"))),
+        "cache_read_tokens": _as_int(item.get("cache_read_tokens")),
+        "cost": _as_float(item.get("cost"), 0.0),
+        "actual_cost": _as_float(item.get("actual_cost"), 0.0),
+    }
+
+
 def parse_usage_data(payload: dict) -> dict:
     """Parse and normalize usage and quota data from MWAPI."""
     if not isinstance(payload, dict):
@@ -143,30 +173,14 @@ def parse_usage_data(payload: dict) -> dict:
     usage_total = usage.get("total") if isinstance(usage.get("total"), dict) else {}
     usage_today = usage.get("today") if isinstance(usage.get("today"), dict) else {}
 
-    limit = quota.get("limit")
-    if limit is not None:
-        try:
-            limit = float(limit)
-        except (ValueError, TypeError):
-            limit = None
-
-    used = quota.get("used")
+    limit = _as_float(quota.get("limit"))
+    used = _as_float(quota.get("used"))
     if used is None:
-        used = usage_total.get("actual_cost") if usage_total.get("actual_cost") is not None else usage_total.get("cost")
-    if used is not None:
-        try:
-            used = float(used)
-        except (ValueError, TypeError):
-            used = None
+        used = _as_float(usage_total.get("actual_cost"), _as_float(usage_total.get("cost")))
 
-    remaining = quota.get("remaining")
+    remaining = _as_float(quota.get("remaining"))
     if remaining is None:
-        remaining = payload.get("remaining")
-    if remaining is not None:
-        try:
-            remaining = float(remaining)
-        except (ValueError, TypeError):
-            remaining = None
+        remaining = _as_float(payload.get("remaining"))
 
     if limit is not None and limit > 0:
         if used is None and remaining is not None:
@@ -182,14 +196,32 @@ def parse_usage_data(payload: dict) -> dict:
         if remaining is not None:
             rem_pct = min(100.0, max(0.0, (remaining / limit) * 100.0))
 
-    unit = quota.get("unit") or payload.get("unit") or "USD"
-    status = payload.get("status", "active")
-    mode = payload.get("mode", "")
+    today = _usage_bucket(usage_today)
+    total = _usage_bucket(usage_total)
 
-    total_tokens = usage_total.get("total_tokens", 0)
-    total_requests = usage_total.get("requests", 0)
-    today_requests = usage_today.get("requests", 0)
-    today_cost = usage_today.get("actual_cost", usage_today.get("cost", 0))
+    models = []
+    for item in payload.get("model_stats") or []:
+        if not isinstance(item, dict):
+            continue
+        model_id = item.get("model")
+        if not isinstance(model_id, str) or not model_id.strip():
+            continue
+        bucket = _usage_bucket(item)
+        bucket["model"] = model_id.strip()
+        bucket["account_cost"] = _as_float(item.get("account_cost"), bucket["cost"])
+        models.append(bucket)
+    models.sort(key=lambda m: (m["actual_cost"], m["cost"]), reverse=True)
+
+    daily = []
+    for item in payload.get("daily_usage") or []:
+        if not isinstance(item, dict):
+            continue
+        bucket = _usage_bucket(item)
+        bucket["date"] = str(item.get("date") or "")
+        daily.append(bucket)
+    daily.sort(key=lambda d: d["date"], reverse=True)
+
+    unit = quota.get("unit") or payload.get("unit") or "USD"
 
     return {
         "limit": limit,
@@ -198,12 +230,24 @@ def parse_usage_data(payload: dict) -> dict:
         "used_pct": used_pct,
         "rem_pct": rem_pct,
         "unit": unit,
-        "status": status,
-        "mode": mode,
-        "total_requests": total_requests,
-        "today_requests": today_requests,
-        "total_tokens": total_tokens,
-        "today_cost": today_cost,
+        "status": payload.get("status", "active"),
+        "mode": payload.get("mode", ""),
+        "valid": payload.get("isValid", True),
+        "expires_at": payload.get("expires_at") or "",
+        "today": today,
+        "total": total,
+        "models": models,
+        "daily": daily,
+        "rpm": _as_int(usage.get("rpm")),
+        "tpm": _as_int(usage.get("tpm")),
+        "average_duration_ms": _as_float(usage.get("average_duration_ms"), 0.0),
+        # Backward-compatible flat fields.
+        "total_requests": total["requests"],
+        "today_requests": today["requests"],
+        "total_tokens": total["total_tokens"],
+        "today_tokens": today["total_tokens"],
+        "today_cost": today["actual_cost"] or today["cost"],
+        "total_cost": total["actual_cost"] or total["cost"],
         "raw": payload,
     }
 

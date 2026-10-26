@@ -207,6 +207,11 @@ def configure_opencode(api_key: str, base_url: str = DEFAULT_BASE_URL, enabled_m
             cfg_data["provider"].pop("xpiki", None)
 
         cfg_path.write_text(json.dumps(cfg_data, indent=4, ensure_ascii=False), encoding="utf-8")
+        try:
+            import opencode_config
+            opencode_config.ensure_session_title_config(cfg_path)
+        except Exception:
+            pass
         return True
     except Exception as e:
         print(f"[Xpiki] Failed to configure opencode.json: {e}")
