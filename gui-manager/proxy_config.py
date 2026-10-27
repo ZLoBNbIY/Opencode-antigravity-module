@@ -43,6 +43,7 @@ def _sync_section(section: dict, proxy: str | None) -> None:
             target = provider.setdefault("options", {})
 
         if _is_local_endpoint(target):
+            target.pop("proxy", None)
             continue
         if proxy:
             target["proxy"] = proxy

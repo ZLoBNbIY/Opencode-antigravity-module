@@ -25,7 +25,7 @@ class ProxyConfigTests(unittest.TestCase):
             "provider": {
                 "google": {"options": {"apiKey": "antigravity"}},
                 "openrouter": {"options": {"baseURL": "https://openrouter.ai/api/v1"}},
-                "hub": {"options": {"baseURL": "http://127.0.0.1:51186/v1"}},
+                "hub": {"options": {"baseURL": "http://127.0.0.1:51186/v1", "proxy": "http://127.0.0.1:51180"}},
             },
             "providers": {
                 "deepseek": {"settings": {"baseURL": "https://api.deepseek.com/anthropic/v1"}},
