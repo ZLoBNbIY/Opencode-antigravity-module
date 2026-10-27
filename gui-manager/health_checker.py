@@ -81,7 +81,8 @@ def _test_google_account_health_once(account: dict, timeout=10) -> dict:
     try:
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
         proxy_urls = [_effective_proxy_from_config()]
-        if proxy_urls[0] == "http://127.0.0.1:20809":
+        first_proxy = proxy_urls[0] or ""
+        if first_proxy.startswith("http://127.0.0.1") or first_proxy.startswith("http://localhost"):
             proxy_urls.append("http://127.0.0.1:51180")
         proxy_urls.append(None)
         last_error = None
@@ -272,12 +273,8 @@ ANTIGRAVITY_MODEL_INTERNAL_MAP = {
 def _effective_proxy_from_config() -> str | None:
     """Read Hub routing state without exposing credentials."""
     try:
-        from pathlib import Path
-        import json
-        from proxy_config import select_effective_proxy
-        path = Path.home() / ".config" / "opencode" / "antigravity.json"
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return select_effective_proxy(data, 20809)
+        import vless_manager
+        return vless_manager.get_active_proxy()
     except Exception:
         return None
 
