@@ -9,7 +9,7 @@ import tkinter as tk
 import customtkinter as ctk
 
 from vless_manager import vless_service, VlessParser, DEFAULT_HTTP_PORT
-from proxy_config import select_effective_proxy, sync_provider_proxies
+from proxy_config import select_effective_proxy, sync_process_proxy_environment, sync_provider_proxies
 try:
     import dns_tester
 except ImportError:
@@ -513,6 +513,7 @@ class NetworkView(ctk.CTkScrollableFrame):
             opencode_cfg_path = config_dir / "opencode.json"
             antigravity_cfg_path = config_dir / "antigravity.json"
             effective_proxy = select_effective_proxy(self.app.config_data, DEFAULT_HTTP_PORT)
+            sync_process_proxy_environment(effective_proxy)
 
             # The Antigravity plugin has its own config and does not read
             # provider.openai.options.proxy from opencode.json.

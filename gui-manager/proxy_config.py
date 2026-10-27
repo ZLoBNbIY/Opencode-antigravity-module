@@ -3,6 +3,7 @@
 from urllib.parse import urlparse
 
 DNS_PROXY = "http://127.0.0.1:51180"
+VLESS_PROXY = "http://127.0.0.1:20809"
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
@@ -19,6 +20,23 @@ def select_effective_proxy(config: dict, http_port: int) -> str | None:
         return DNS_PROXY
     return None
 
+
+
+def sync_process_proxy_environment(proxy: str | None) -> None:
+    """Keep OpenCode's HTTPS proxy variables aligned with the Hub route."""
+    import os
+
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        if proxy:
+            os.environ[name] = proxy
+        else:
+            os.environ.pop(name, None)
+
+    for name in ("NO_PROXY", "no_proxy"):
+        current = [entry.strip() for entry in os.environ.get(name, "").split(",") if entry.strip()]
+        current = [entry for entry in current if entry not in LOCAL_HOSTS]
+        current.extend(("127.0.0.1", "localhost", "::1"))
+        os.environ[name] = ",".join(dict.fromkeys(current))
 
 def _is_local_endpoint(options: dict) -> bool:
     base_url = options.get("baseURL") or options.get("baseUrl")

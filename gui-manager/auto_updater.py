@@ -45,6 +45,31 @@ def get_local_commit_sha(repo_dir: Path) -> str:
 
     return ""
 
+def _git_commit_contains(repo_dir: Path, ancestor_sha: str) -> bool:
+    """Return whether local HEAD already contains the advertised commit."""
+    try:
+        flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", ancestor_sha, "HEAD"],
+            cwd=str(repo_dir),
+            capture_output=True,
+            creationflags=flags,
+            timeout=5,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _has_newer_remote_commit(repo_dir: Path, local_sha: str, remote_sha: str) -> bool:
+    """Avoid reporting an update when local work is ahead of the remote commit."""
+    if not local_sha or not remote_sha or local_sha == remote_sha:
+        return False
+    if _git_commit_contains(repo_dir, remote_sha):
+        return False
+    return True
+
+
 def check_for_updates(repo_dir: Path, timeout=12) -> dict:
     """
     Checks GitHub API for the latest commit on branch V2.
@@ -100,7 +125,7 @@ def check_for_updates(repo_dir: Path, timeout=12) -> dict:
                 if not remote_sha:
                     return {"has_update": False, "error": "Не удалось определить remote sha"}
 
-                has_update = bool(local_sha and remote_sha and not local_sha.startswith(remote_sha[:7]))
+                has_update = _has_newer_remote_commit(repo_dir, local_sha, remote_sha)
 
                 return {
                     "has_update": has_update,

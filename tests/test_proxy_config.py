@@ -1,12 +1,23 @@
+import os
 import sys
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gui-manager"))
-from proxy_config import DNS_PROXY, select_effective_proxy, sync_provider_proxies
+from proxy_config import DNS_PROXY, select_effective_proxy, sync_process_proxy_environment, sync_provider_proxies
 
 
 class ProxyConfigTests(unittest.TestCase):
+    def test_process_proxy_environment_sets_route_and_keeps_loopback_bypass(self):
+        from unittest.mock import patch
+        with patch.dict(os.environ, {"NO_PROXY": "example.com,localhost", "no_proxy": "example.com,localhost"}, clear=True):
+            sync_process_proxy_environment("http://127.0.0.1:20809")
+            self.assertEqual(os.environ["HTTPS_PROXY"], "http://127.0.0.1:20809")
+            self.assertEqual(os.environ["https_proxy"], "http://127.0.0.1:20809")
+            self.assertIn("127.0.0.1", os.environ["NO_PROXY"])
+            self.assertIn("localhost", os.environ["no_proxy"])
+            self.assertIn("example.com", os.environ["NO_PROXY"])
+
     def test_vless_has_priority_over_custom_and_dns(self):
         config = {
             "vless_enabled": True,

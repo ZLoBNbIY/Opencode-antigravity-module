@@ -252,7 +252,20 @@ ANTIGRAVITY_MODEL_INTERNAL_MAP = {
 }
 
 
-def test_antigravity_model(account: dict, model_id: str, timeout=6, proxy_url="http://127.0.0.1:51180") -> dict:
+def _effective_proxy_from_config() -> str | None:
+    """Read Hub routing state without exposing credentials."""
+    try:
+        from pathlib import Path
+        import json
+        from proxy_config import select_effective_proxy
+        path = Path.home() / ".config" / "opencode" / "antigravity.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return select_effective_proxy(data, 20809)
+    except Exception:
+        return None
+
+
+def test_antigravity_model(account: dict, model_id: str, timeout=6, proxy_url=None) -> dict:
     """
     Tests a specific Antigravity model using a lightweight generation probe.
     Returns: {ok: bool, status: str, latency_ms: int, badge: str, color: str, display_name: str}
@@ -269,6 +282,8 @@ def test_antigravity_model(account: dict, model_id: str, timeout=6, proxy_url="h
         internal_name = clean_id.replace("antigravity-", "")
 
     access_token = account.get("accessToken") or account.get("access")
+    if proxy_url is None:
+        proxy_url = _effective_proxy_from_config()
     if not access_token:
         return {
             "ok": False,
