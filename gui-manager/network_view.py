@@ -9,6 +9,7 @@ import tkinter as tk
 import customtkinter as ctk
 
 from vless_manager import vless_service, VlessParser, DEFAULT_HTTP_PORT
+from proxy_config import select_effective_proxy, sync_provider_proxies
 try:
     import dns_tester
 except ImportError:
@@ -503,37 +504,32 @@ class NetworkView(ctk.CTkScrollableFrame):
                 self.stop_vless_action()
 
     def sync_opencode_proxy(self):
+        """Keep every external OpenCode provider on the active Hub route."""
         try:
             import json
             from pathlib import Path
-            opencode_cfg_path = Path.home() / ".config" / "opencode" / "opencode.json"
+
+            config_dir = Path.home() / ".config" / "opencode"
+            opencode_cfg_path = config_dir / "opencode.json"
+            antigravity_cfg_path = config_dir / "antigravity.json"
+            effective_proxy = select_effective_proxy(self.app.config_data, DEFAULT_HTTP_PORT)
+
+            # The Antigravity plugin has its own config and does not read
+            # provider.openai.options.proxy from opencode.json.
+            if antigravity_cfg_path.exists():
+                antigravity_data = json.loads(antigravity_cfg_path.read_text(encoding="utf-8"))
+                if effective_proxy:
+                    antigravity_data["proxy"] = effective_proxy
+                elif antigravity_data.get("proxy", "").startswith("http://127.0.0.1:"):
+                    antigravity_data.pop("proxy", None)
+                antigravity_cfg_path.write_text(
+                    json.dumps(antigravity_data, indent=2, ensure_ascii=False) + "\n",
+                    encoding="utf-8",
+                )
+
             if opencode_cfg_path.exists():
                 oc_data = json.loads(opencode_cfg_path.read_text(encoding="utf-8"))
-                dns_active = self.app.config_data.get("dns_mode") in ("standard", "dot", "doh")
-                vless_active = self.app.config_data.get("vless_enabled") and self.app.config_data.get("vless_url")
-                user_proxy = self.app.config_data.get("proxy")
-
-                if vless_active:
-                    effective_openai_proxy = f"http://127.0.0.1:{DEFAULT_HTTP_PORT}"
-                elif user_proxy and user_proxy != "http://127.0.0.1:51180":
-                    effective_openai_proxy = user_proxy
-                elif dns_active:
-                    effective_openai_proxy = "http://127.0.0.1:51180"
-                else:
-                    effective_openai_proxy = None
-
-                if effective_openai_proxy:
-                    if "provider" not in oc_data:
-                        oc_data["provider"] = {}
-                    if "openai" not in oc_data["provider"]:
-                        oc_data["provider"]["openai"] = {}
-                    if "options" not in oc_data["provider"]["openai"]:
-                        oc_data["provider"]["openai"]["options"] = {}
-                    oc_data["provider"]["openai"]["options"]["proxy"] = effective_openai_proxy
-                else:
-                    if "provider" in oc_data and "openai" in oc_data["provider"]:
-                        if "options" in oc_data["provider"]["openai"]:
-                            oc_data["provider"]["openai"]["options"].pop("proxy", None)
+                sync_provider_proxies(oc_data, effective_proxy)
                 opencode_cfg_path.write_text(json.dumps(oc_data, indent=4, ensure_ascii=False), encoding="utf-8")
                 try:
                     import opencode_config
@@ -541,7 +537,7 @@ class NetworkView(ctk.CTkScrollableFrame):
                 except Exception:
                     pass
         except Exception as e:
-            print(f"Warning: Failed to sync proxy to opencode.json: {e}")
+            print(f"Warning: Failed to sync proxy to OpenCode configs: {e}")
 
     def select_custom_core_action(self):
         f = filedialog.askopenfilename(
@@ -747,44 +743,8 @@ class NetworkView(ctk.CTkScrollableFrame):
         else:
             self.app.config_data.pop("proxy", None)
 
-        # Synchronize proxy to opencode.json for OpenAI provider:
-        try:
-            import json
-            from pathlib import Path
-            opencode_cfg_path = Path.home() / ".config" / "opencode" / "opencode.json"
-            if opencode_cfg_path.exists():
-                oc_data = json.loads(opencode_cfg_path.read_text(encoding="utf-8"))
-                dns_active = self.app.config_data.get("dns_mode") in ("standard", "dot", "doh")
-                vless_active = self.vless_enabled_var.get() and vless_url
-                if vless_active:
-                    effective_openai_proxy = f"http://127.0.0.1:{DEFAULT_HTTP_PORT}"
-                elif user_proxy and user_proxy != "http://127.0.0.1:51180":
-                    effective_openai_proxy = user_proxy
-                elif dns_active:
-                    effective_openai_proxy = "http://127.0.0.1:51180"
-                else:
-                    effective_openai_proxy = None
-
-                if effective_openai_proxy:
-                    if "provider" not in oc_data:
-                        oc_data["provider"] = {}
-                    if "openai" not in oc_data["provider"]:
-                        oc_data["provider"]["openai"] = {}
-                    if "options" not in oc_data["provider"]["openai"]:
-                        oc_data["provider"]["openai"]["options"] = {}
-                    oc_data["provider"]["openai"]["options"]["proxy"] = effective_openai_proxy
-                else:
-                    if "provider" in oc_data and "openai" in oc_data["provider"]:
-                        if "options" in oc_data["provider"]["openai"]:
-                            oc_data["provider"]["openai"]["options"].pop("proxy", None)
-                opencode_cfg_path.write_text(json.dumps(oc_data, indent=4, ensure_ascii=False), encoding="utf-8")
-                try:
-                    import opencode_config
-                    opencode_config.ensure_session_title_config(opencode_cfg_path)
-                except Exception:
-                    pass
-        except Exception as e:
-            print(f"Warning: Failed to sync proxy to opencode.json: {e}")
+        # Synchronize active proxy to OpenCode and Antigravity configs.
+        self.sync_opencode_proxy()
 
         ok, msg = self.app.save_config()
         if ok:
