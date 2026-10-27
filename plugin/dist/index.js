@@ -21984,8 +21984,6 @@ function getHttpsProxy(url) {
     if (existsSync5(configPath)) {
       const parsed = JSON.parse(readFileSync2(configPath, "utf-8"));
       if (parsed.vless_enabled && parsed.vless_url) {
-        if (noProxyIncludes(url.hostname))
-          return void 0;
         const vlessPort = Number(parsed.vless_http_port) > 0 ? Number(parsed.vless_http_port) : 10879;
         return new URL(`http://127.0.0.1:${vlessPort}`);
       }
