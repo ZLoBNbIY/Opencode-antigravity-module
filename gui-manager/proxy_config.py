@@ -12,7 +12,7 @@ def select_effective_proxy(config: dict, http_port: int) -> str | None:
         return f"http://127.0.0.1:{http_port}"
 
     user_proxy = config.get("proxy")
-    if user_proxy and user_proxy != DNS_PROXY:
+    if user_proxy and user_proxy not in (DNS_PROXY, f"http://127.0.0.1:{http_port}"):
         return user_proxy
 
     if config.get("dns_mode") in ("standard", "dot", "doh"):

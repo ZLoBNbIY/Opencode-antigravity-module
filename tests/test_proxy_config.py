@@ -20,7 +20,15 @@ class ProxyConfigTests(unittest.TestCase):
         config = {"vless_enabled": False, "proxy": DNS_PROXY, "dns_mode": "standard"}
         self.assertEqual(select_effective_proxy(config, 20809), DNS_PROXY)
 
-    def test_external_providers_are_updated_and_local_hub_is_not(self):
+    def test_dns_proxy_replaces_stale_vless_proxy_when_disabled(self):
+        config = {
+            "vless_enabled": False,
+            "vless_url": "vless://example",
+            "proxy": "http://127.0.0.1:20809",
+            "dns_mode": "doh",
+        }
+        self.assertEqual(select_effective_proxy(config, 20809), DNS_PROXY)
+
         config = {
             "provider": {
                 "google": {"options": {"apiKey": "antigravity"}},
