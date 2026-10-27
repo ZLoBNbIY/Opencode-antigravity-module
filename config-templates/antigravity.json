@@ -13,5 +13,7 @@
     "31.58.216.201"
   ],
   "dot_host": "dns.bezmezhau.com",
-  "doh_url": "https://dns.bezmezhau.com/dns-query"
+  "doh_url": "https://dns.bezmezhau.com/dns-query",
+  "vless_http_port": 10879,
+  "vless_socks_port": 10878
 }

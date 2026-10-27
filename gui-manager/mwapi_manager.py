@@ -26,17 +26,26 @@ LOCAL_PROXY = "http://127.0.0.1:51180"
 
 
 def _request_with_fallback(request, timeout=20):
-    """Try direct request first; fall back to local Hub tunnel if available."""
+    """Try direct request first; fall back to the Hub proxies (VLESS -> custom -> local DNS tunnel)."""
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.read()
     except (urllib.error.URLError, TimeoutError, OSError) as direct_err:
         try:
-            with socket.create_connection(("127.0.0.1", 51180), timeout=1):
-                pass
-            opener = urllib.request.build_opener(
-                urllib.request.ProxyHandler({"http": LOCAL_PROXY, "https": LOCAL_PROXY})
-            )
+            import vless_manager
+            proxy_url = vless_manager.get_active_proxy()
+        except Exception:
+            proxy_url = None
+        if not proxy_url:
+            try:
+                with socket.create_connection(("127.0.0.1", 51180), timeout=1):
+                    proxy_url = "http://127.0.0.1:51180"
+            except Exception:
+                raise direct_err
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+        )
+        try:
             with opener.open(request, timeout=timeout) as response:
                 return response.read()
         except Exception:

@@ -418,6 +418,44 @@ for (const basePath of targetPaths) {
       console.log(`✓ Patched transformSseLineWithMetadata in ${file} (Gemini 3.8 top-level stream compatibility)`);
     }
 
+    // Patch getHttpsProxy: follow Hub routing priority (VLESS -> custom proxy -> env)
+    // The stock code prefers antigravity.json `proxy` key unconditionally, which
+    // breaks when VLESS is enabled or the saved external proxy is offline
+    // (ECONNREFUSED on a stale port).
+    const proxyPriorityTarget = `function getHttpsProxy(url) {
+  try {
+    const configPath = getUserConfigPath();
+    if (existsSync5(configPath)) {
+      const parsed = JSON.parse(readFileSync2(configPath, "utf-8"));
+      if (parsed.proxy && typeof parsed.proxy === "string" && parsed.proxy.trim()) {
+        return new URL(parsed.proxy.trim());
+      }
+    }
+  } catch {}`;
+
+    const proxyPriorityReplacement = `function getHttpsProxy(url) {
+  try {
+    const configPath = getUserConfigPath();
+    if (existsSync5(configPath)) {
+      const parsed = JSON.parse(readFileSync2(configPath, "utf-8"));
+      if (parsed.vless_enabled && parsed.vless_url) {
+        if (noProxyIncludes(url.hostname))
+          return void 0;
+        const vlessPort = Number(parsed.vless_http_port) > 0 ? Number(parsed.vless_http_port) : 10879;
+        return new URL(\`http://127.0.0.1:\${vlessPort}\`);
+      }
+      if (parsed.proxy && typeof parsed.proxy === "string" && parsed.proxy.trim()) {
+        return new URL(parsed.proxy.trim());
+      }
+    }
+  } catch {}`;
+
+    if (content.includes(proxyPriorityTarget)) {
+      content = content.replace(proxyPriorityTarget, proxyPriorityReplacement);
+      changed = true;
+      console.log(`\u{2705} Patched getHttpsProxy in ${file} (Hub VLESS -> proxy priority)`);
+    }
+
     // Patch webstreams TransformStream abort
     const streamAbortTarget = `  const abort = () => {
     if (finished || stopping) return;

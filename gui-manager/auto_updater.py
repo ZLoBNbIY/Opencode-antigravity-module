@@ -69,7 +69,6 @@ def _has_newer_remote_commit(repo_dir: Path, local_sha: str, remote_sha: str) ->
         return False
     return True
 
-
 def check_for_updates(repo_dir: Path, timeout=12) -> dict:
     """
     Checks GitHub API for the latest commit on branch V2.
@@ -92,26 +91,11 @@ def check_for_updates(repo_dir: Path, timeout=12) -> dict:
     }
     ctx = ssl.create_default_context()
 
-    # Prefer the configured route, then use the local DNS proxy as a network fallback.
-    # The direct route remains last so a blocked region does not bypass Hub routing first.
-    openers = []
-
-    try:
-        cfg_file = Path.home() / ".config" / "opencode" / "antigravity.json"
-        cfg = json.loads(cfg_file.read_text(encoding="utf-8")) if cfg_file.exists() else {}
-        from proxy_config import select_effective_proxy
-        effective_proxy = select_effective_proxy(cfg, 20809)
-        proxy_urls = [effective_proxy]
-        if effective_proxy == "http://127.0.0.1:20809":
-            proxy_urls.append("http://127.0.0.1:51180")
-        proxy_urls.append(None)
-        for proxy_url in dict.fromkeys(proxy_urls):
-            handler = urllib.request.ProxyHandler(
-                {"http": proxy_url, "https": proxy_url} if proxy_url else {}
-            )
-            openers.append((proxy_url or "direct", urllib.request.build_opener(handler)))
-    except Exception:
-        openers = [("direct", urllib.request.build_opener(urllib.request.ProxyHandler({})))]
+    # Hub self-updates must NEVER go through the VLESS tunnel or custom proxies:
+    # updating the Hub through its own tunnel breaks when the tunnel is down and
+    # creates a dependency loop. Use the system network settings (default urllib
+    # opener, which honours OS-level proxy configuration) and connect directly.
+    openers = [("system", urllib.request.build_opener(urllib.request.ProxyHandler()))]
 
     last_err = None
     for label, opener in openers:
@@ -157,12 +141,7 @@ def apply_update_git(repo_dir: Path) -> tuple[bool, str]:
     """Pull updates while preserving local edits, then re-apply bundled patches."""
     flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
 
-    def git(*args, timeout=30, proxy=None):
-        env = None
-        if proxy is not None:
-            env = os.environ.copy()
-            for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
-                env[name] = proxy
+    def git(*args, timeout=30):
         return subprocess.run(
             ["git", *args],
             cwd=str(repo_dir),
@@ -170,22 +149,7 @@ def apply_update_git(repo_dir: Path) -> tuple[bool, str]:
             text=True,
             creationflags=flags,
             timeout=timeout,
-            env=env,
         )
-
-    def update_routes():
-        try:
-            cfg_file = Path.home() / ".config" / "opencode" / "antigravity.json"
-            cfg = json.loads(cfg_file.read_text(encoding="utf-8")) if cfg_file.exists() else {}
-            from proxy_config import select_effective_proxy
-            route = select_effective_proxy(cfg, 20809)
-            routes = [route]
-            if route == "http://127.0.0.1:20809":
-                routes.append("http://127.0.0.1:51180")
-            routes.append(None)
-            return list(dict.fromkeys(routes))
-        except Exception:
-            return [None]
 
     def restore_stash():
         return git("stash", "pop", "--index", timeout=30)
@@ -203,13 +167,7 @@ def apply_update_git(repo_dir: Path) -> tuple[bool, str]:
             # Git may report success even when there was nothing to stash.
             stashed = "No local changes to save" not in (stash.stdout + stash.stderr)
 
-        proc = None
-        for proxy in update_routes():
-            proc = git("pull", "--rebase", "origin", BRANCH, timeout=60, proxy=proxy)
-            if proc.returncode == 0:
-                break
-        if proc is None:
-            return False, "Не удалось определить маршрут обновления"
+        proc = git("pull", "--rebase", "origin", BRANCH, timeout=60)
         if proc.returncode != 0:
             detail = proc.stderr or proc.stdout
             if stashed:

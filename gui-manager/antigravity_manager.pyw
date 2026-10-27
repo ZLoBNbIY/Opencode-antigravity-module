@@ -99,7 +99,7 @@ from mwapi_view import MwapiView
 from network_view import NetworkView
 from deepseek_view import DeepSeekView
 from xpiki_view import XpikiView
-from vless_manager import vless_service, DEFAULT_HTTP_PORT
+from vless_manager import vless_service, get_http_port, get_active_proxy
 from claude_manager import claude_service, CLAUDE_MODELS
 import xpiki_manager
 import opencode_config
@@ -261,6 +261,8 @@ DEFAULT_CONFIG = {
     "vless_route_all": True,
     "vless_core_path": None,
     "vless_kill_switch": True,
+    "vless_http_port": 10879,
+    "vless_socks_port": 10878,
     "providers_visibility": {
         "antigravity": True,
         "openai": True,
@@ -1901,7 +1903,7 @@ class AntigravityManagerApp(ctk.CTk):
                 if not acc:
                     res = {"ok": False, "status": "no_auth", "badge": "🔴 Нет аккаунта", "color": "#ef4444"}
                 else:
-                    active_proxy = f"http://127.0.0.1:{DEFAULT_HTTP_PORT}" if (self.config_data.get("vless_enabled") and self.config_data.get("vless_url")) else "http://127.0.0.1:51180"
+                    active_proxy = get_active_proxy()
                     res = health_checker.test_antigravity_model(acc, m_id, timeout=8, proxy_url=active_proxy)
                 dialog.after(0, lambda m=m_id, r=res: apply_result(m, r))
 
@@ -1924,7 +1926,7 @@ class AntigravityManagerApp(ctk.CTk):
 
                 import concurrent.futures
                 results_summary = {"ok": 0, "rate_limit": 0, "error": 0}
-                active_proxy = f"http://127.0.0.1:{DEFAULT_HTTP_PORT}" if (self.config_data.get("vless_enabled") and self.config_data.get("vless_url")) else "http://127.0.0.1:51180"
+                active_proxy = get_active_proxy()
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
                     futures = {
@@ -4182,11 +4184,12 @@ class AntigravityManagerApp(ctk.CTk):
         launch_env = os.environ.copy()
         vless_enabled = self.config_data.get("vless_enabled", False)
         vless_url = (self.config_data.get("vless_url") or "").strip()
+        http_port = get_http_port()
         vless_route_all = self.config_data.get("vless_route_all", True)
 
         # If VLESS is running and functional, automatically route through it
         if vless_service.is_running():
-            vless_http = f"http://127.0.0.1:{DEFAULT_HTTP_PORT}"
+            vless_http = f"http://127.0.0.1:{http_port}"
             for var in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
                 launch_env[var] = vless_http
 
@@ -4204,7 +4207,7 @@ class AntigravityManagerApp(ctk.CTk):
             custom_core = self.config_data.get("vless_core_path")
             ok, msg = vless_service.start_tunnel(vless_url, custom_core_path=custom_core)
             if ok and vless_service.is_running():
-                vless_http = f"http://127.0.0.1:{DEFAULT_HTTP_PORT}"
+                vless_http = f"http://127.0.0.1:{http_port}"
                 for var in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
                     launch_env[var] = vless_http
                 no_proxy_rules = "localhost,127.0.0.1" if vless_route_all else "googleapis.com,.googleapis.com,google.com,.google.com,cloudcode-pa.googleapis.com,localhost,127.0.0.1"
@@ -4212,7 +4215,7 @@ class AntigravityManagerApp(ctk.CTk):
                 launch_env["no_proxy"] = no_proxy_rules
                 return launch_env
 
-        # Fallback to custom DNS / local proxy
+        # Priority when the tunnel is unavailable: custom proxy -> local DNS proxy
         dns_active = self.config_data.get("dns_mode") in ("standard", "dot", "doh")
         tunnel_url = "http://127.0.0.1:51180" if dns_active else None
         user_proxy = self.config_data.get("proxy")

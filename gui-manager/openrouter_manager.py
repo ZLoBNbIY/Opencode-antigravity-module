@@ -21,13 +21,21 @@ LOCAL_PROXY = "http://127.0.0.1:51180"
 
 
 def _openrouter_opener():
-    """Use the Hub's local tunnel; direct OpenRouter traffic can be region-blocked."""
+    """Use the Hub's proxies (VLESS -> custom proxy -> local DNS tunnel); direct OpenRouter traffic can be region-blocked."""
     try:
-        with socket.create_connection(("127.0.0.1", 51180), timeout=1):
+        import vless_manager
+        proxy_url = vless_manager.get_active_proxy()
+    except Exception:
+        proxy_url = None
+    if not proxy_url:
+        try:
+            with socket.create_connection(("127.0.0.1", 51180), timeout=1):
+                proxy_url = "http://127.0.0.1:51180"
+        except OSError:
             pass
-    except OSError:
+    if not proxy_url:
         raise ValueError("Локальный сетевой туннель Hub недоступен. Перезапустите Hub и проверьте настройки прокси/DNS.") from None
-    return urllib.request.build_opener(urllib.request.ProxyHandler({"http": LOCAL_PROXY, "https": LOCAL_PROXY}))
+    return urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}))
 
 
 def _is_free(value):

@@ -21,13 +21,108 @@ from typing import Optional, Dict, Any, Tuple
 CONFIG_DIR = Path.home() / ".config" / "opencode"
 VLESS_RUNTIME_DIR = CONFIG_DIR / "vless"
 VLESS_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-PID_FILE = VLESS_RUNTIME_DIR / "core.pid"
 
-DEFAULT_HTTP_PORT = 20809
-DEFAULT_SOCKS_PORT = 20808
+# Non-standard ports to avoid collisions with other local VPN/proxy tools
+# (for example browser extensions that run their own Xray on 10808/10809).
+# Can be overridden in ~/.config/opencode/antigravity.json:
+#   "vless_http_port": <int>, "vless_socks_port": <int>
+DEFAULT_HTTP_PORT = 10879
+DEFAULT_SOCKS_PORT = 10878
+LOCAL_DNS_PROXY_PORT = 51180
 
 SING_BOX_DOWNLOAD_URL = "https://github.com/SagerNet/sing-box/releases/download/v1.10.7/sing-box-1.10.7-windows-amd64.zip"
 XRAY_DOWNLOAD_URL = "https://github.com/XTLS/Xray-core/releases/download/v24.11.30/Xray-windows-64.zip"
+
+
+def load_hub_config() -> Dict[str, Any]:
+    """Reads the Hub configuration file (silently returns {} on errors)."""
+    cfg_file = CONFIG_DIR / "antigravity.json"
+    try:
+        if cfg_file.exists():
+            return json.loads(cfg_file.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _sanitize_port(value: Any, fallback: int) -> int:
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    if 1024 <= port <= 65535:
+        return port
+    return fallback
+
+
+def get_configured_ports() -> Tuple[int, int]:
+    """Returns (http_port, socks_port), taking user overrides into account."""
+    cfg = load_hub_config()
+    http_port = _sanitize_port(cfg.get("vless_http_port"), DEFAULT_HTTP_PORT)
+    socks_port = _sanitize_port(cfg.get("vless_socks_port"), DEFAULT_SOCKS_PORT)
+    if http_port == socks_port:
+        socks_port = DEFAULT_SOCKS_PORT if http_port != DEFAULT_SOCKS_PORT else DEFAULT_HTTP_PORT
+    return http_port, socks_port
+
+
+def get_http_port() -> int:
+    return get_configured_ports()[0]
+
+
+def get_socks_port() -> int:
+    return get_configured_ports()[1]
+
+
+def is_port_open(port: int, timeout: float = 0.3) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def get_active_proxy(
+    cfg: Optional[Dict[str, Any]] = None,
+    port_probe=None,
+    is_local_proxy_running=None,
+) -> Optional[str]:
+    """
+    Returns the effective local proxy URL for Hub-managed traffic.
+
+    Priority per Hub network policy:
+      1. VLESS tunnel (built-in Xray/sing-box).
+      2. User-defined external proxy (from the "proxy" config key).
+      3. Local DNS proxy (custom DNS mode) on 127.0.0.1:51180.
+      4. None (direct connection).
+    """
+    if cfg is None:
+        cfg = load_hub_config()
+    if port_probe is None:
+        port_probe = is_port_open
+
+    http_port = _sanitize_port(cfg.get("vless_http_port"), DEFAULT_HTTP_PORT)
+
+    # 1. VLESS tunnel
+    if cfg.get("vless_enabled") and cfg.get("vless_url"):
+        return f"http://127.0.0.1:{http_port}"
+
+    # A detached core may keep listening even when the flag was lost
+    if port_probe(http_port):
+        return f"http://127.0.0.1:{http_port}"
+
+    # 2. User-defined external proxy
+    user_proxy = cfg.get("proxy")
+    if user_proxy and str(user_proxy).strip() != f"http://127.0.0.1:{LOCAL_DNS_PROXY_PORT}":
+        return str(user_proxy).strip()
+
+    # 3. Local DNS proxy (custom DNS mode: standard / DoT / DoH)
+    if cfg.get("dns_mode") in ("standard", "dot", "doh"):
+        if is_local_proxy_running is None:
+            is_local_proxy_running = lambda: port_probe(LOCAL_DNS_PROXY_PORT)
+        if is_local_proxy_running():
+            return f"http://127.0.0.1:{LOCAL_DNS_PROXY_PORT}"
+
+    return None
 
 
 class VlessParser:
@@ -366,8 +461,8 @@ class VlessManager:
 
     def is_running(self) -> bool:
         with self._lock:
-            # If port 10809 is actively listening, tunnel is definitely up!
-            if self.check_port_listening(DEFAULT_HTTP_PORT):
+            # If the tunnel HTTP port is actively listening, tunnel is definitely up!
+            if self.check_port_listening(get_http_port()):
                 self._status = "running"
                 return True
             if self._process is None:
@@ -386,32 +481,92 @@ class VlessManager:
         except (socket.timeout, ConnectionRefusedError, OSError):
             return False
 
-    def _kill_saved_pid(self):
-        """Terminate only our own spawned core process by saved PID, without touching system-wide processes."""
-        pid = None
-        if PID_FILE.exists():
-            try:
-                pid = int(PID_FILE.read_text(encoding="utf-8").strip())
-            except Exception:
-                pid = None
-            PID_FILE.unlink(missing_ok=True)
+    # ------------------------------------------------------------------
+    # Safe process handling: never kill foreign Xray/sing-box instances
+    # (for example the one spawned by a browser VLESS-bridge extension).
+    # ------------------------------------------------------------------
+    def _get_listener_pids(self, port: int) -> list:
+        """Returns PIDs of processes listening on 127.0.0.1:port."""
+        pids = []
+        try:
+            ps_cmd = (
+                "Get-NetTCPConnection -LocalPort %d -State Listen -ErrorAction SilentlyContinue "
+                "| Select-Object -ExpandProperty OwningProcess" % port
+            )
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            proc = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_cmd],
+                capture_output=True, text=True, creationflags=flags, timeout=10,
+            )
+            for line in proc.stdout.splitlines():
+                line = line.strip()
+                if line.isdigit():
+                    pids.append(int(line))
+        except Exception:
+            pass
+        return sorted(set(pids))
 
-        if pid:
-            try:
-                if sys.platform == "win32":
-                    subprocess.run(["taskkill", "/f", "/pid", str(pid)], capture_output=True, creationflags=0x08000000)
-                else:
-                    os.kill(pid, 9)
-            except Exception:
-                pass
+    def _get_process_image(self, pid: int) -> str:
+        try:
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            proc = subprocess.run(
+                ["tasklist", "/fi", f"PID eq {pid}", "/fo", "csv", "/nh"],
+                capture_output=True, text=True, creationflags=flags, timeout=10,
+            )
+            for line in proc.stdout.splitlines():
+                if not line.strip():
+                    continue
+                return line.strip().split('","')[0].strip('"')
+        except Exception:
+            pass
+        return ""
+
+    def _kill_pid(self, pid: int) -> None:
+        try:
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            subprocess.run(
+                ["taskkill", "/f", "/pid", str(pid)],
+                capture_output=True, creationflags=flags, timeout=10,
+            )
+            subprocess.run(
+                ["taskkill", "/f", "/t", "/pid", str(pid)],
+                capture_output=True, creationflags=flags, timeout=10,
+            )
+        except Exception:
+            pass
+
+    def _reclaim_core_ports(self, http_port: int, socks_port: int) -> Tuple[bool, str]:
+        """
+        Frees tunnel ports from leftover (detached) instances of OUR core only.
+        Returns (killed_something, error_message). Error message is returned if the
+        port is occupied by a foreign program (not sing-box/xray).
+        """
+        core_images = ("sing-box.exe", "xray.exe", "sing-box", "xray")
+        for port in (http_port, socks_port):
+            for pid in self._get_listener_pids(port):
+                image = self._get_process_image(pid).lower()
+                if image in core_images:
+                    self._kill_pid(pid)
+                    time.sleep(0.3)
+                elif image:
+                    return False, (
+                        f"Порт {port} занят другой программой ({image}, PID {pid}). "
+                        f"Измените vless_http_port/vless_socks_port в "
+                        f"{CONFIG_DIR / 'antigravity.json'} и повторите запуск."
+                    )
+        return True, ""
 
     def start_tunnel(
         self,
         vless_url: str,
-        http_port: int = DEFAULT_HTTP_PORT,
-        socks_port: int = DEFAULT_SOCKS_PORT,
+        http_port: Optional[int] = None,
+        socks_port: Optional[int] = None,
         custom_core_path: Optional[str] = None,
     ) -> Tuple[bool, str]:
+        cfg_http, cfg_socks = get_configured_ports()
+        http_port = http_port or cfg_http
+        socks_port = socks_port or cfg_socks
+
         with self._lock:
             if self._process and self._process.poll() is None:
                 return True, "Туннель уже запущен."
@@ -445,12 +600,17 @@ class VlessManager:
             if sys.platform == "win32":
                 creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
-            # If port is already occupied, stop previous instance of our own process if running
-            if self.check_port_listening(http_port):
-                self._kill_saved_pid()
-                time.sleep(0.3)
-                if self.check_port_listening(http_port):
-                    return False, f"Локальный порт {http_port} уже занят другим приложением."
+            # If ports are occupied by a previously detached core, stop it first.
+            # Foreign programs (e.g. browser Xray extension) are never touched.
+            ok, err = self._reclaim_core_ports(http_port, socks_port)
+            if not ok:
+                return False, err
+            if self.check_port_listening(http_port) or self.check_port_listening(socks_port):
+                return False, (
+                    f"Не удалось освободить локальные порты {http_port}/{socks_port}. "
+                    f"Проверьте, не заняты ли они другой программой, или измените "
+                    f"vless_http_port/vless_socks_port в {CONFIG_DIR / 'antigravity.json'}."
+                )
 
             # Log core output to file for diagnosis
             log_file = VLESS_RUNTIME_DIR / "core.log"
@@ -467,11 +627,6 @@ class VlessManager:
                     stdout=log_fh,
                     stderr=subprocess.STDOUT,
                 )
-                if self._process:
-                    try:
-                        PID_FILE.write_text(str(self._process.pid), encoding="utf-8")
-                    except Exception:
-                        pass
             except Exception as e:
                 return False, f"Не удалось запустить процесс ядра: {e}"
 
@@ -490,7 +645,7 @@ class VlessManager:
                 try:
                     lines = log_file.read_text(encoding="utf-8", errors="ignore").strip().splitlines()
                     if lines:
-                        err_details = "\n" + "\n".join(lines[-4:])
+                        err_details = "\n".join(lines[-4:])
                 except Exception:
                     pass
             return False, f"Процесс ядра завершился с кодом ошибки {self._process.returncode}.{err_details}"
@@ -499,6 +654,7 @@ class VlessManager:
         return True, f"VLESS процесс запущен (порт {http_port})."
 
     def stop_tunnel(self) -> Tuple[bool, str]:
+        cfg_http, cfg_socks = get_configured_ports()
         with self._lock:
             if self._process is not None:
                 try:
@@ -513,13 +669,18 @@ class VlessManager:
                 finally:
                     self._process = None
 
-            self._kill_saved_pid()
+            # Clean up only OUR leftover core (detached case); foreign Xray
+            # processes (e.g. launched by browser extensions) are not touched.
+            self._reclaim_core_ports(cfg_http, cfg_socks)
+
             self._status = "stopped"
 
         return True, "VLESS туннель остановлен."
 
-    def test_connection(self, http_port: int = DEFAULT_HTTP_PORT, timeout: int = 8) -> Dict[str, Any]:
+    def test_connection(self, http_port: Optional[int] = None, timeout: int = 8) -> Dict[str, Any]:
         """Tests the proxy connection by fetching IP and country through the tunnel."""
+        if http_port is None:
+            http_port = get_http_port()
         if not self.check_port_listening(http_port):
             return {
                 "ok": False,

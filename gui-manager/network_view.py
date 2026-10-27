@@ -8,8 +8,15 @@ from tkinter import messagebox, filedialog
 import tkinter as tk
 import customtkinter as ctk
 
-from vless_manager import vless_service, VlessParser, DEFAULT_HTTP_PORT
-from proxy_config import select_effective_proxy, sync_process_proxy_environment, sync_provider_proxies
+from vless_manager import (
+    vless_service,
+    VlessParser,
+    get_http_port,
+    get_socks_port,
+    DEFAULT_HTTP_PORT,
+    DEFAULT_SOCKS_PORT,
+    LOCAL_DNS_PROXY_PORT,
+)
 try:
     import dns_tester
 except ImportError:
@@ -156,12 +163,38 @@ class NetworkView(ctk.CTkScrollableFrame):
         ).pack(side="left", padx=(0, 24))
 
         self.vless_route_all_var = tk.BooleanVar(value=self.app.config_data.get("vless_route_all", True))
+        route_row = ctk.CTkFrame(opts_box, fg_color="transparent")
+        route_row.pack(fill="x", pady=(0, 6))
         create_cyber_switch(
-            row1,
+            route_row,
             text="Маршрутизировать весь трафик OpenCode через VLESS",
             variable=self.vless_route_all_var,
+            command=self.on_route_all_toggled,
             font=app.font(12)
         ).pack(side="left")
+
+        ctk.CTkLabel(
+            vless_card,
+            text="Включено — прокси VLESS применяется ко всем провайдерам OpenCode; выключено — только к провайдеру OpenAI.",
+            font=app.font(10),
+            text_color=colors["text_secondary"],
+            justify="left",
+            anchor="w"
+        ).pack(fill="x", padx=16, pady=(0, 4))
+
+        ctk.CTkLabel(
+            vless_card,
+            text=(
+                f"🔌 Локальные порты туннеля: HTTP 127.0.0.1:{get_http_port()}, SOCKS 127.0.0.1:{get_socks_port()}. "
+                "Они выбраны нестандартными, чтобы не пересекаться с другими VPN/Xray-клиентами "
+                "(значения можно переопределить ключами vless_http_port / vless_socks_port в antigravity.json)."
+            ),
+            font=app.font(10),
+            text_color=colors["text_secondary"],
+            justify="left",
+            wraplength=980,
+            anchor="w"
+        ).pack(fill="x", padx=16, pady=(0, 8))
 
         row2 = ctk.CTkFrame(opts_box, fg_color="transparent")
         row2.pack(fill="x")
@@ -503,42 +536,92 @@ class NetworkView(ctk.CTkScrollableFrame):
             if vless_service.is_running():
                 self.stop_vless_action()
 
+    def on_route_all_toggled(self):
+        self.app.config_data["vless_route_all"] = self.vless_route_all_var.get()
+        self.app.save_config()
+        self.sync_opencode_proxy()
+
     def sync_opencode_proxy(self):
-        """Keep every external OpenCode provider on the active Hub route."""
+        """Apply the selected network proxy to OpenCode provider configurations."""
         try:
             import json
             from pathlib import Path
 
-            config_dir = Path.home() / ".config" / "opencode"
-            opencode_cfg_path = config_dir / "opencode.json"
-            antigravity_cfg_path = config_dir / "antigravity.json"
-            effective_proxy = select_effective_proxy(self.app.config_data, DEFAULT_HTTP_PORT)
-            sync_process_proxy_environment(effective_proxy)
+            opencode_cfg_path = Path.home() / ".config" / "opencode" / "opencode.json"
+            if not opencode_cfg_path.exists():
+                return
 
-            # The Antigravity plugin has its own config and does not read
-            # provider.openai.options.proxy from opencode.json.
-            if antigravity_cfg_path.exists():
-                antigravity_data = json.loads(antigravity_cfg_path.read_text(encoding="utf-8"))
+            oc_data = json.loads(opencode_cfg_path.read_text(encoding="utf-8"))
+            dns_active = self.app.config_data.get("dns_mode") in ("standard", "dot", "doh")
+            vless_active = bool(
+                self.app.config_data.get("vless_enabled")
+                and self.app.config_data.get("vless_url")
+            )
+            user_proxy = self.app.config_data.get("proxy")
+
+            if vless_active:
+                effective_proxy = f"http://127.0.0.1:{get_http_port()}"
+            elif user_proxy and user_proxy != f"http://127.0.0.1:{LOCAL_DNS_PROXY_PORT}":
+                effective_proxy = user_proxy
+            elif dns_active:
+                effective_proxy = f"http://127.0.0.1:{LOCAL_DNS_PROXY_PORT}"
+            else:
+                effective_proxy = None
+
+            providers = oc_data.get("provider")
+            if not isinstance(providers, dict):
+                providers = {}
+                oc_data["provider"] = providers
+
+            route_all = bool(self.app.config_data.get("vless_route_all", True)) and vless_active
+            target_names = list(providers) if route_all else ["openai"]
+            if not target_names:
+                target_names = ["openai"]
+            for provider_name in target_names:
+                provider = providers.setdefault(provider_name, {})
+                if not isinstance(provider, dict):
+                    provider = {}
+                    providers[provider_name] = provider
+                options = provider.setdefault("options", {})
+                if not isinstance(options, dict):
+                    options = {}
+                    provider["options"] = options
                 if effective_proxy:
-                    antigravity_data["proxy"] = effective_proxy
-                elif antigravity_data.get("proxy", "").startswith("http://127.0.0.1:"):
-                    antigravity_data.pop("proxy", None)
-                antigravity_cfg_path.write_text(
-                    json.dumps(antigravity_data, indent=2, ensure_ascii=False) + "\n",
-                    encoding="utf-8",
-                )
+                    options["proxy"] = effective_proxy
+                else:
+                    options.pop("proxy", None)
 
-            if opencode_cfg_path.exists():
-                oc_data = json.loads(opencode_cfg_path.read_text(encoding="utf-8"))
-                sync_provider_proxies(oc_data, effective_proxy)
-                opencode_cfg_path.write_text(json.dumps(oc_data, indent=4, ensure_ascii=False), encoding="utf-8")
-                try:
-                    import opencode_config
-                    opencode_config.ensure_session_title_config(opencode_cfg_path)
-                except Exception:
-                    pass
+            # When switching from route-all to selective mode, clear proxies that
+            # were previously managed by this screen from the other providers.
+            if not route_all:
+                managed_proxies = {
+                    f"http://127.0.0.1:{get_http_port()}",
+                    f"http://127.0.0.1:{get_socks_port()}",
+                    f"http://127.0.0.1:{LOCAL_DNS_PROXY_PORT}",
+                    # Legacy ports written by older Hub versions
+                    "http://127.0.0.1:10809",
+                    "http://127.0.0.1:10808",
+                    "http://127.0.0.1:51180",
+                    user_proxy,
+                }
+                for provider_name, provider in providers.items():
+                    if provider_name == "openai" or not isinstance(provider, dict):
+                        continue
+                    options = provider.get("options")
+                    if isinstance(options, dict) and options.get("proxy") in managed_proxies:
+                        options.pop("proxy", None)
+
+            opencode_cfg_path.write_text(
+                json.dumps(oc_data, indent=4, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            try:
+                import opencode_config
+                opencode_config.ensure_session_title_config(opencode_cfg_path)
+            except Exception:
+                pass
         except Exception as e:
-            print(f"Warning: Failed to sync proxy to OpenCode configs: {e}")
+            print(f"Warning: Failed to sync proxy to opencode.json: {e}")
 
     def select_custom_core_action(self):
         f = filedialog.askopenfilename(
@@ -739,12 +822,12 @@ class NetworkView(ctk.CTkScrollableFrame):
 
         # 6. Save User Proxy
         user_proxy = self.proxy_entry.get().strip()
-        if user_proxy and user_proxy != "http://127.0.0.1:51180":
+        if user_proxy and user_proxy != f"http://127.0.0.1:{LOCAL_DNS_PROXY_PORT}":
             self.app.config_data["proxy"] = user_proxy
         else:
             self.app.config_data.pop("proxy", None)
 
-        # Synchronize active proxy to OpenCode and Antigravity configs.
+        # Synchronize the selected proxy mode to OpenCode providers.
         self.sync_opencode_proxy()
 
         ok, msg = self.app.save_config()

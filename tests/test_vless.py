@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gui-manager"))
 import vless_manager
@@ -57,12 +58,12 @@ class VlessManagerTests(unittest.TestCase):
             "serviceName": "",
             "tag": "test-node",
         }
-        cfg = vless_service.generate_xray_config(params, 10809, 10808)
+        cfg = vless_service.generate_xray_config(params, 10879, 10878)
         self.assertEqual(len(cfg["inbounds"]), 2)
         self.assertEqual(cfg["inbounds"][0]["protocol"], "socks")
-        self.assertEqual(cfg["inbounds"][0]["port"], 10808)
+        self.assertEqual(cfg["inbounds"][0]["port"], 10878)
         self.assertEqual(cfg["inbounds"][1]["protocol"], "http")
-        self.assertEqual(cfg["inbounds"][1]["port"], 10809)
+        self.assertEqual(cfg["inbounds"][1]["port"], 10879)
         self.assertEqual(cfg["outbounds"][0]["protocol"], "vless")
         self.assertEqual(
             cfg["outbounds"][0]["streamSettings"]["realitySettings"]["publicKey"],
@@ -86,32 +87,100 @@ class VlessManagerTests(unittest.TestCase):
             "serviceName": "",
             "tag": "test-node",
         }
-        cfg = vless_service.generate_sing_box_config(params, 10809, 10808)
+        cfg = vless_service.generate_sing_box_config(params, 10879, 10878)
         self.assertEqual(len(cfg["inbounds"]), 1)
         self.assertEqual(cfg["inbounds"][0]["type"], "mixed")
-        self.assertEqual(cfg["inbounds"][0]["listen_port"], 10809)
+        self.assertEqual(cfg["inbounds"][0]["listen_port"], 10879)
         self.assertEqual(cfg["outbounds"][0]["type"], "vless")
         self.assertEqual(cfg["outbounds"][0]["tls"]["reality"]["public_key"], "test-pbk")
 
     def test_default_ports_are_isolated(self):
-        self.assertEqual(vless_manager.DEFAULT_HTTP_PORT, 20809)
-        self.assertEqual(vless_manager.DEFAULT_SOCKS_PORT, 20808)
+        # Non-standard isolated ports: must differ from the common 10808/10809
+        # used by other local VPN/Xray tools (e.g. browser VLESS extensions).
+        self.assertEqual(vless_manager.DEFAULT_HTTP_PORT, 10879)
+        self.assertEqual(vless_manager.DEFAULT_SOCKS_PORT, 10878)
+        self.assertNotIn(vless_manager.DEFAULT_HTTP_PORT, (10808, 10809))
+        self.assertNotIn(vless_manager.DEFAULT_SOCKS_PORT, (10808, 10809))
+        self.assertNotEqual(
+            vless_manager.DEFAULT_HTTP_PORT, vless_manager.DEFAULT_SOCKS_PORT
+        )
 
-    def test_kill_saved_pid_targets_only_hub_pid(self):
-        import tempfile
-        from unittest.mock import patch
-        with tempfile.TemporaryDirectory() as temp_dir:
-            pid_file = Path(temp_dir) / "core.pid"
-            pid_file.write_text("99999", encoding="utf-8")
-            with patch.object(vless_manager, "PID_FILE", pid_file), \
-                 patch("subprocess.run") as mock_run:
-                vless_service._kill_saved_pid()
-                self.assertFalse(pid_file.exists())
-                self.assertTrue(mock_run.called)
-                args = mock_run.call_args[0][0]
-                self.assertIn("/pid", args)
-                self.assertIn("99999", args)
-                self.assertNotIn("/im", args)
+    def test_reclaim_core_ports_targets_only_hub_core(self):
+        from unittest.mock import patch, MagicMock
+
+        svc = vless_manager.VlessManager()
+        with patch.object(
+            svc, "_get_listener_pids",
+            side_effect=lambda port: [4242] if port == 10879 else []
+        ) as listener_mock, \
+             patch.object(
+            svc, "_get_process_image", return_value="sing-box.exe"
+        ), \
+             patch.object(svc, "_kill_pid") as kill_mock:
+            ok, err = svc._reclaim_core_ports(10879, 10878)
+        self.assertTrue(ok)
+        self.assertEqual(err, "")
+        self.assertTrue(listener_mock.called)
+        kill_mock.assert_called_once_with(4242)
+
+        # A foreign program on a port must not be killed; an error returned
+        with patch.object(
+            svc, "_get_listener_pids", side_effect=lambda port: [5555]
+        ), \
+             patch.object(
+            svc, "_get_process_image", return_value="clash-verge.exe"
+        ), \
+             patch.object(svc, "_kill_pid") as kill_mock:
+            ok, err = svc._reclaim_core_ports(10879, 10878)
+        self.assertFalse(ok)
+        self.assertIn("clash-verge.exe", err)
+        self.assertIn("10879", err)
+        kill_mock.assert_not_called()
+
+
+class ActiveProxyPriorityTests(unittest.TestCase):
+    """Priority must be: VLESS -> custom proxy -> local DNS proxy -> direct."""
+
+    def test_vless_takes_priority_over_proxy_and_dns(self):
+        cfg = {
+            "vless_enabled": True,
+            "vless_url": "vless://test",
+            "proxy": "http://127.0.0.1:9999",
+            "dns_mode": "doh",
+        }
+        self.assertEqual(
+            vless_manager.get_active_proxy(cfg, port_probe=lambda p: False),
+            "http://127.0.0.1:10879",
+        )
+
+    def test_custom_proxy_when_vless_off(self):
+        cfg = {"proxy": "http://127.0.0.1:9999", "dns_mode": "doh"}
+        self.assertEqual(
+            vless_manager.get_active_proxy(cfg, port_probe=lambda p: False),
+            "http://127.0.0.1:9999",
+        )
+
+    def test_local_dns_proxy_when_no_vless_no_custom(self):
+        cfg = {"dns_mode": "doh"}
+        probe = lambda p: p == vless_manager.LOCAL_DNS_PROXY_PORT
+        self.assertEqual(
+            vless_manager.get_active_proxy(cfg, port_probe=probe),
+            "http://127.0.0.1:51180",
+        )
+
+    def test_direct_when_nothing_active(self):
+        cfg = {"dns_mode": "system"}
+        self.assertIsNone(vless_manager.get_active_proxy(cfg, port_probe=lambda p: False))
+
+    def test_detached_core_port_respects_config_file(self):
+        # All code paths must derive the port from the same config keys
+        with mock.patch.object(vless_manager, "load_hub_config",
+                               return_value={"vless_http_port": 20801}):
+            http_p, socks_p = vless_manager.get_configured_ports()
+        self.assertEqual((http_p, socks_p), (20801, 10878))
+        with mock.patch.object(vless_manager, "load_hub_config",
+                               return_value={"vless_http_port": 20801}):
+            self.assertEqual(vless_manager.get_http_port(), 20801)
 
 
 if __name__ == "__main__":

@@ -91,27 +91,14 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 
 
 def get_active_proxy() -> Optional[str]:
-    """Returns proxy to use (VLESS DEFAULT_HTTP_PORT if running, or custom proxy)."""
+    """Returns proxy to use (built-in VLESS tunnel, or custom proxy, or local DNS proxy)."""
     try:
-        from vless_manager import DEFAULT_HTTP_PORT
-        with socket.create_connection(("127.0.0.1", DEFAULT_HTTP_PORT), timeout=0.2):
-            return f"http://127.0.0.1:{DEFAULT_HTTP_PORT}"
+        import vless_manager
+        return vless_manager.get_active_proxy()
     except Exception:
         pass
 
-    # 2. Check saved user proxy or config
-    try:
-        cfg_file = CONFIG_DIR / "antigravity.json"
-        if cfg_file.exists():
-            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
-            if cfg.get("vless_enabled") and cfg.get("vless_url"):
-                from vless_manager import DEFAULT_HTTP_PORT
-                return f"http://127.0.0.1:{DEFAULT_HTTP_PORT}"
-            user_proxy = cfg.get("proxy")
-            if user_proxy and user_proxy != "http://127.0.0.1:51180":
-                return user_proxy
-    except Exception:
-        pass
+    # Fallback (should not normally happen): nothing configured
     return None
 
 

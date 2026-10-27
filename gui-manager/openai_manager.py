@@ -384,24 +384,18 @@ def remove_openai_account(account_id: str) -> bool:
 
 def _get_http_opener(timeout: int = 15):
     """
-    Returns a urllib opener configured with proxy (VLESS tunnel 10809, local SmartDNS tunnel 51180 or custom proxy)
-    to bypass geo-restrictions and Cloudflare blocks.
+    Returns a urllib opener configured with the Hub's proxy priority:
+    built-in VLESS tunnel -> custom user proxy -> local SmartDNS proxy (51180).
+    Falls back to a direct connection when nothing is active.
     """
     proxy_url = None
     try:
-        if CONFIG_DIR.exists():
-            cfg_file = CONFIG_DIR / "antigravity.json"
-            if cfg_file.exists():
-                with open(cfg_file, "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
-                    if cfg.get("vless_enabled") and cfg.get("vless_url"):
-                        from vless_manager import DEFAULT_HTTP_PORT
-                        proxy_url = f"http://127.0.0.1:{DEFAULT_HTTP_PORT}"
-                    else:
-                        proxy_url = cfg.get("proxy")
+        import vless_manager
+        proxy_url = vless_manager.get_active_proxy()
     except Exception:
-        pass
+        proxy_url = None
 
+    # Legacy fallback: local SmartDNS proxy if the Hub's DNS mode is active
     if not proxy_url:
         import socket
         try:
