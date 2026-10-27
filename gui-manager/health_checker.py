@@ -80,22 +80,39 @@ def _test_google_account_health_once(account: dict, timeout=10) -> dict:
 
     try:
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
-            elapsed_ms = round((time.perf_counter() - start_t) * 1000)
-            data = json.loads(resp.read().decode("utf-8"))
-            models = data.get("models", {})
-            has_claude = any("claude" in k.lower() for k in models.keys())
-            has_gemini = any("gemini" in k.lower() for k in models.keys())
+        proxy_urls = [_effective_proxy_from_config()]
+        if proxy_urls[0] == "http://127.0.0.1:20809":
+            proxy_urls.append("http://127.0.0.1:51180")
+        proxy_urls.append(None)
+        last_error = None
+        for proxy_url in dict.fromkeys(proxy_urls):
+            try:
+                if proxy_url:
+                    opener = urllib.request.build_opener(
+                        urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+                    )
+                else:
+                    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                with opener.open(req, timeout=timeout) as resp:
+                    elapsed_ms = round((time.perf_counter() - start_t) * 1000)
+                    data = json.loads(resp.read().decode("utf-8"))
+                    models = data.get("models", {})
+                    has_claude = any("claude" in k.lower() for k in models.keys())
+                    has_gemini = any("gemini" in k.lower() for k in models.keys())
 
-            return {
-                "ok": True,
-                "status": "active",
-                "message": f"Токен валиден, пинг {elapsed_ms} мс",
-                "latency_ms": elapsed_ms,
-                "has_claude": has_claude,
-                "has_gemini": has_gemini,
-                "models_count": len(models),
-            }
+                    return {
+                        "ok": True,
+                        "status": "active",
+                        "message": f"Токен валиден, пинг {elapsed_ms} мс",
+                        "latency_ms": elapsed_ms,
+                        "has_claude": has_claude,
+                        "has_gemini": has_gemini,
+                        "models_count": len(models),
+                    }
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                last_error = exc
+                continue
+        raise last_error or OSError("no network route")
     except urllib.error.HTTPError as e:
         elapsed_ms = round((time.perf_counter() - start_t) * 1000)
         err_msg = e.reason

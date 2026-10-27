@@ -37,16 +37,18 @@ class GoogleHealthAuthTests(unittest.TestCase):
             refresh_google_health_account({"email": "test@example.com"}, run, "node", "cli")
 
     @unittest.skipUnless(shutil.which("node"), "Node.js required")
-    @patch("health_checker.urllib.request.urlopen")
-    def test_cli_pipe_to_gui_retry_uses_new_token(self, urlopen):
+    @patch("health_checker._effective_proxy_from_config", return_value="http://127.0.0.1:20809")
+    @patch("health_checker.urllib.request.build_opener")
+    def test_cli_pipe_to_gui_retry_uses_new_token(self, build_opener, effective_proxy):
         # Disk account remains stale throughout. Only the captured CLI response changes.
         old = {"email": "test@example.com", "accessToken": "old", "expires": time.time() * 1000 + 3600000}
         response = Mock()
         response.__enter__ = Mock(return_value=response)
         response.__exit__ = Mock(return_value=False)
         response.read.return_value = b'{"models":{"gemini-test":{},"claude-test":{}}}'
-        urlopen.side_effect = [
-            urllib.error.HTTPError("https://unused", 401, "Unauthorized", {}, io.BytesIO(b'{}')),
+        opener = build_opener.return_value
+        opener.open.side_effect = [
+            urllib.error.HTTPError("https://unused", 401, "Unauthorized", {}, io.BytesIO(b"{}")),
             response,
         ]
 
@@ -57,9 +59,9 @@ class GoogleHealthAuthTests(unittest.TestCase):
         refresh = lambda account: refresh_google_health_account(account, run, shutil.which("node"), str(fixture))
         result = health_checker.test_google_account_health(old, refresh_account=refresh)
         self.assertTrue(result["ok"])
-        self.assertEqual(urlopen.call_count, 2)
-        self.assertEqual(urlopen.call_args_list[0].args[0].get_header("Authorization"), "Bearer old")
-        request = urlopen.call_args.args[0]
+        self.assertEqual(opener.open.call_count, 2)
+        self.assertEqual(opener.open.call_args_list[0].args[0].get_header("Authorization"), "Bearer old")
+        request = opener.open.call_args.args[0]
         self.assertEqual(request.get_header("Authorization"), "Bearer fresh-from-node")
         self.assertEqual(json.loads(request.data)["project"], "fresh-project")
         self.assertEqual(old["accessToken"], "old")
