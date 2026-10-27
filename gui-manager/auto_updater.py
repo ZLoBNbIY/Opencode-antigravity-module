@@ -93,9 +93,9 @@ def check_for_updates(repo_dir: Path, timeout=12) -> dict:
 
     # Hub self-updates must NEVER go through the VLESS tunnel or custom proxies:
     # updating the Hub through its own tunnel breaks when the tunnel is down and
-    # creates a dependency loop. Use the system network settings (default urllib
-    # opener, which honours OS-level proxy configuration) and connect directly.
-    openers = [("system", urllib.request.build_opener(urllib.request.ProxyHandler()))]
+    # creates a dependency loop. ProxyHandler({}) disables autodetection of
+    # HTTP(S)_PROXY environment variables, forcing a direct connection.
+    openers = [("direct", urllib.request.build_opener(urllib.request.ProxyHandler({})))]
 
     last_err = None
     for label, opener in openers:
@@ -137,9 +137,19 @@ def check_for_updates(repo_dir: Path, timeout=12) -> dict:
         "error": str(last_err) if last_err else "Неизвестная ошибка проверки обновлений",
     }
 
+def _direct_git_env() -> dict:
+    """Environment without proxy variables so git traffic always goes direct."""
+    env = os.environ.copy()
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY",
+                 "http_proxy", "https_proxy", "all_proxy", "ftp_proxy"):
+        env.pop(name, None)
+    return env
+
+
 def apply_update_git(repo_dir: Path) -> tuple[bool, str]:
     """Pull updates while preserving local edits, then re-apply bundled patches."""
     flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+    direct_env = _direct_git_env()
 
     def git(*args, timeout=30):
         return subprocess.run(
@@ -149,6 +159,7 @@ def apply_update_git(repo_dir: Path) -> tuple[bool, str]:
             text=True,
             creationflags=flags,
             timeout=timeout,
+            env=direct_env,
         )
 
     def restore_stash():
