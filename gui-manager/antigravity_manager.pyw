@@ -196,6 +196,8 @@ def get_cli_js():
 
 def get_opencode_exe():
     candidates = [
+        # Current installer layout (OpenCode Desktop >= 2.2)
+        Path.home() / "AppData" / "Local" / "Programs" / "ai.opencode.desktop" / "OpenCode.exe",
         Path.home() / "AppData" / "Local" / "Programs" / "@opencodedesktop" / "OpenCode.exe",
         Path.home() / "AppData" / "Local" / "Programs" / "@opencode-desktop" / "OpenCode.exe",
         Path.home() / "AppData" / "Local" / "Programs" / "@opencode-aidesktop" / "OpenCode.exe",
@@ -211,6 +213,20 @@ def get_opencode_exe():
     if which_opencode_cap:
         return which_opencode_cap
     return str(candidates[0])
+
+def get_opencode_cli():
+    """Locates opencode-cli.exe: next to the desktop app, in the Roaming CLI cache, or on PATH."""
+    candidates = [Path(get_opencode_exe()).parent / "resources" / "opencode-cli.exe"]
+    roaming_cli = Path.home() / "AppData" / "Roaming" / "ai.opencode.desktop" / "cli"
+    if roaming_cli.exists():
+        candidates.extend(sorted(roaming_cli.glob("*/opencode-cli.exe"), reverse=True))
+    path_cli = shutil.which("opencode-cli") or shutil.which("opencode")
+    if path_cli:
+        candidates.append(Path(path_cli))
+    for c in candidates:
+        if c.is_file():
+            return str(c)
+    return None
 
 def cleanup_opencode_locks():
     try:
@@ -1737,12 +1753,7 @@ class AntigravityManagerApp(ctk.CTk):
 
         def _load():
             try:
-                desktop_exe = Path(get_opencode_exe())
-                cli_candidates = [desktop_exe.parent / "resources" / "opencode-cli.exe"]
-                path_cli = shutil.which("opencode-cli") or shutil.which("opencode")
-                if path_cli:
-                    cli_candidates.append(Path(path_cli))
-                exe = next((str(candidate) for candidate in cli_candidates if candidate.is_file()), None)
+                exe = get_opencode_cli()
                 if not exe:
                     raise RuntimeError("Не найден CLI OpenCode (opencode-cli.exe).")
                 result = run_silent_cmd([exe, "models", "--standalone"], timeout=45)

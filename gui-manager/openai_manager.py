@@ -35,6 +35,7 @@ OPENCODE_DB_FILE = Path(os.path.expanduser("~/.local/share/opencode/opencode.db"
 
 def find_opencode_cli() -> str | None:
     candidates = [
+        Path(os.path.expanduser("~\\AppData\\Local\\Programs\\ai.opencode.desktop\\resources\\opencode-cli.exe")),
         Path(os.path.expanduser("~\\AppData\\Roaming\\ai.opencode.desktop\\cli\\2.0.27\\opencode-cli.exe")),
         Path(r"C:\Users\DevOps\AppData\Local\Programs\@opencode-aidesktop\resources\opencode-cli.exe"),
     ]
