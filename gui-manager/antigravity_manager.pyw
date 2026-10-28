@@ -274,7 +274,6 @@ DEFAULT_CONFIG = {
     "theme_mode": "dark",
     "vless_enabled": False,
     "vless_url": "",
-    "vless_route_all": True,
     "vless_core_path": None,
     "vless_kill_switch": True,
     "vless_http_port": 10879,
@@ -290,7 +289,7 @@ DEFAULT_CONFIG = {
     "max_rate_limit_wait_seconds": 300,
 }
 
-def run_silent_cmd(cmd, timeout=30):
+def run_silent_cmd(cmd, timeout=30, env=None):
     flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
     startupinfo = None
     if sys.platform == "win32":
@@ -304,6 +303,7 @@ def run_silent_cmd(cmd, timeout=30):
             timeout=timeout,
             creationflags=flags,
             startupinfo=startupinfo,
+            env=env,
         )
         stdout_str = proc.stdout.decode("utf-8", errors="replace") if proc.stdout else ""
         stderr_str = proc.stderr.decode("utf-8", errors="replace") if proc.stderr else ""
@@ -311,6 +311,17 @@ def run_silent_cmd(cmd, timeout=30):
         return type("SilentResult", (), {"returncode": 1, "stdout": "", "stderr": str(e)})()
 
     return type("SilentResult", (), {"returncode": proc.returncode, "stdout": stdout_str, "stderr": stderr_str})()
+
+
+def provider_route_environment():
+    """Environment for helper CLIs that fetch provider models or quotas."""
+    import provider_proxy
+    return provider_proxy.proxy_environment()
+
+
+def run_google_route_cmd(cmd, timeout=30):
+    return run_silent_cmd(cmd, timeout=timeout, env=provider_route_environment())
+
 
 def get_active_google_account_index() -> int:
     config_dir = Path(os.path.expanduser("~/.config/opencode"))
@@ -1756,9 +1767,9 @@ class AntigravityManagerApp(ctk.CTk):
                 exe = get_opencode_cli()
                 if not exe:
                     raise RuntimeError("Не найден CLI OpenCode (opencode-cli.exe).")
-                result = run_silent_cmd([exe, "models", "--standalone"], timeout=45)
+                result = run_silent_cmd([exe, "models", "--standalone"], timeout=45, env=provider_route_environment())
                 if result.returncode != 0:
-                    result = run_silent_cmd([exe, "models"], timeout=45)
+                    result = run_silent_cmd([exe, "models"], timeout=45, env=provider_route_environment())
                 output = (result.stdout or "").strip()
                 error = (result.stderr or "").strip()
                 if result.returncode != 0:
@@ -1873,7 +1884,7 @@ class AntigravityManagerApp(ctk.CTk):
                 node_exe = get_node_executable()
                 cli_js = get_cli_js()
                 refreshed = google_health_auth.refresh_google_health_account(
-                    target_acc, run_silent_cmd, node_exe, cli_js
+                    target_acc, run_google_route_cmd, node_exe, cli_js
                 )
                 return refreshed
             except Exception:
@@ -3409,7 +3420,8 @@ class AntigravityManagerApp(ctk.CTk):
                 node_exe = get_node_executable()
                 cli_js = get_cli_js()
                 if os.path.exists(node_exe) and os.path.exists(cli_js):
-                    run_silent_cmd([node_exe, cli_js, "quota", "--refresh", "--json"], timeout=25)
+                    run_silent_cmd([node_exe, cli_js, "quota", "--refresh", "--json"], timeout=25,
+                                   env=provider_route_environment())
                 try:
                     openai_manager.refresh_all_openai_accounts()
                 except Exception:
@@ -3447,7 +3459,7 @@ class AntigravityManagerApp(ctk.CTk):
             cli_js = get_cli_js()
             if os.path.exists(node_exe) and os.path.exists(cli_js):
                 cmd = [node_exe, cli_js, "quota", "--refresh", "--json"]
-                result = run_silent_cmd(cmd, timeout=20)
+                result = run_silent_cmd(cmd, timeout=20, env=provider_route_environment())
                 if result.returncode == 0 and result.stdout.strip():
                     try:
                         data = json.loads(result.stdout)
@@ -3456,7 +3468,7 @@ class AntigravityManagerApp(ctk.CTk):
                         pass
                 if not google_accounts:
                     cmd = [node_exe, cli_js, "quota", "--json"]
-                    result = run_silent_cmd(cmd, timeout=10)
+                    result = run_silent_cmd(cmd, timeout=10, env=provider_route_environment())
                     if result.returncode == 0 and result.stdout.strip():
                         try:
                             data = json.loads(result.stdout)
@@ -3904,7 +3916,7 @@ class AntigravityManagerApp(ctk.CTk):
 
             def refresh_account(_account):
                 return refresh_google_health_account(
-                    _account, run_silent_cmd, get_node_executable(), get_cli_js(),
+                    _account, run_google_route_cmd, get_node_executable(), get_cli_js(),
                 )
 
             target_dict = reload_account() or acc
@@ -4196,52 +4208,34 @@ class AntigravityManagerApp(ctk.CTk):
         vless_enabled = self.config_data.get("vless_enabled", False)
         vless_url = (self.config_data.get("vless_url") or "").strip()
         http_port = get_http_port()
-        vless_route_all = self.config_data.get("vless_route_all", True)
-
-        # If VLESS is running and functional, automatically route through it
-        if vless_service.is_running():
-            vless_http = f"http://127.0.0.1:{http_port}"
-            for var in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
-                launch_env[var] = vless_http
-
-            if vless_route_all:
-                no_proxy_rules = "localhost,127.0.0.1"
-            else:
-                no_proxy_rules = "googleapis.com,.googleapis.com,google.com,.google.com,cloudcode-pa.googleapis.com,localhost,127.0.0.1"
-
-            launch_env["NO_PROXY"] = no_proxy_rules
-            launch_env["no_proxy"] = no_proxy_rules
-            return launch_env
-
-        if vless_enabled and vless_url:
-            # Auto-start VLESS tunnel if configured
+        # Start the VLESS core when enabled; provider_proxy routes only selected
+        # provider hosts through it and sends other hosts via their own route.
+        if vless_enabled and vless_url and not vless_service.is_running():
             custom_core = self.config_data.get("vless_core_path")
-            ok, msg = vless_service.start_tunnel(vless_url, custom_core_path=custom_core)
-            if ok and vless_service.is_running():
-                vless_http = f"http://127.0.0.1:{http_port}"
-                for var in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
-                    launch_env[var] = vless_http
-                no_proxy_rules = "localhost,127.0.0.1" if vless_route_all else "googleapis.com,.googleapis.com,google.com,.google.com,cloudcode-pa.googleapis.com,localhost,127.0.0.1"
-                launch_env["NO_PROXY"] = no_proxy_rules
-                launch_env["no_proxy"] = no_proxy_rules
-                return launch_env
+            vless_service.start_tunnel(vless_url, custom_core_path=custom_core)
 
-        # Priority when the tunnel is unavailable: custom proxy -> local DNS proxy
-        dns_active = self.config_data.get("dns_mode") in ("standard", "dot", "doh")
-        tunnel_url = "http://127.0.0.1:51180" if dns_active else None
-        user_proxy = self.config_data.get("proxy")
-        effective_proxy = user_proxy if (user_proxy and user_proxy != "http://127.0.0.1:51180") else tunnel_url
+        try:
+            import provider_proxy
+            router_ready = provider_proxy.start()
+        except Exception:
+            router_ready = False
 
-        if effective_proxy:
+        if router_ready:
+            route_proxy = f"http://127.0.0.1:{provider_proxy.PORT}"
             for var in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
-                launch_env[var] = effective_proxy
-            # Exclude Google / Gemini and localhost so Gemini uses direct SmartDNS transport and never connects to 51180
-            no_proxy_rules = "googleapis.com,.googleapis.com,google.com,.google.com,cloudcode-pa.googleapis.com,localhost,127.0.0.1"
-            launch_env["NO_PROXY"] = no_proxy_rules
-            launch_env["no_proxy"] = no_proxy_rules
+                launch_env[var] = route_proxy
+            launch_env["NO_PROXY"] = "localhost,127.0.0.1,::1"
+            launch_env["no_proxy"] = launch_env["NO_PROXY"]
         else:
-            for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
-                launch_env.pop(var, None)
+            # Fail closed to the old global route if the per-provider router
+            # could not bind its local port.
+            from proxy_config import select_effective_proxy
+            effective_proxy = select_effective_proxy(self.config_data, http_port)
+            for var in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
+                if effective_proxy:
+                    launch_env[var] = effective_proxy
+                else:
+                    launch_env.pop(var, None)
 
         return launch_env
 

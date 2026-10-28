@@ -1,7 +1,6 @@
 """OpenRouter free-model integration for Antigravity Hub."""
 import json
 from pathlib import Path
-import socket
 import subprocess
 import urllib.error
 import urllib.request
@@ -21,20 +20,9 @@ LOCAL_PROXY = "http://127.0.0.1:51180"
 
 
 def _openrouter_opener():
-    """Use the Hub's proxies (VLESS -> custom proxy -> local DNS tunnel); direct OpenRouter traffic can be region-blocked."""
-    try:
-        import vless_manager
-        proxy_url = vless_manager.get_active_proxy()
-    except Exception:
-        proxy_url = None
-    if not proxy_url:
-        try:
-            with socket.create_connection(("127.0.0.1", 51180), timeout=1):
-                proxy_url = "http://127.0.0.1:51180"
-        except OSError:
-            pass
-    if not proxy_url:
-        raise ValueError("Локальный сетевой туннель Hub недоступен. Перезапустите Hub и проверьте настройки прокси/DNS.") from None
+    """Route model-catalog requests through the per-provider dispatcher."""
+    import provider_proxy
+    proxy_url = provider_proxy.proxy_url_for_hub_requests()
     return urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}))
 
 

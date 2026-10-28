@@ -384,33 +384,11 @@ def remove_openai_account(account_id: str) -> bool:
 
 
 def _get_http_opener(timeout: int = 15):
-    """
-    Returns a urllib opener configured with the Hub's proxy priority:
-    built-in VLESS tunnel -> custom user proxy -> local SmartDNS proxy (51180).
-    Falls back to a direct connection when nothing is active.
-    """
-    proxy_url = None
-    try:
-        import vless_manager
-        proxy_url = vless_manager.get_active_proxy()
-    except Exception:
-        proxy_url = None
-
-    # Legacy fallback: local SmartDNS proxy if the Hub's DNS mode is active
-    if not proxy_url:
-        import socket
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(0.2)
-                if s.connect_ex(("127.0.0.1", 51180)) == 0:
-                    proxy_url = "http://127.0.0.1:51180"
-        except Exception:
-            pass
-
-    if proxy_url:
-        handler = urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
-        return urllib.request.build_opener(handler)
-    return urllib.request.build_opener()
+    """Route OpenAI usage/auth requests according to the provider selector."""
+    import provider_proxy
+    proxy_url = provider_proxy.proxy_url_for_hub_requests()
+    handler = urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+    return urllib.request.build_opener(handler)
 
 
 OPENAI_BROWSER_UA = (

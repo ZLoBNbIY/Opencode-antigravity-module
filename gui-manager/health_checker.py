@@ -80,40 +80,26 @@ def _test_google_account_health_once(account: dict, timeout=10) -> dict:
 
     try:
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-        proxy_urls = [_effective_proxy_from_config()]
-        first_proxy = proxy_urls[0] or ""
-        if first_proxy.startswith("http://127.0.0.1") or first_proxy.startswith("http://localhost"):
-            proxy_urls.append("http://127.0.0.1:51180")
-        proxy_urls.append(None)
-        last_error = None
-        for proxy_url in dict.fromkeys(proxy_urls):
-            try:
-                if proxy_url:
-                    opener = urllib.request.build_opener(
-                        urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
-                    )
-                else:
-                    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-                with opener.open(req, timeout=timeout) as resp:
-                    elapsed_ms = round((time.perf_counter() - start_t) * 1000)
-                    data = json.loads(resp.read().decode("utf-8"))
-                    models = data.get("models", {})
-                    has_claude = any("claude" in k.lower() for k in models.keys())
-                    has_gemini = any("gemini" in k.lower() for k in models.keys())
+        proxy_url = _effective_proxy_from_config("google")
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+        )
+        with opener.open(req, timeout=timeout) as resp:
+            elapsed_ms = round((time.perf_counter() - start_t) * 1000)
+            data = json.loads(resp.read().decode("utf-8"))
+            models = data.get("models", {})
+            has_claude = any("claude" in k.lower() for k in models.keys())
+            has_gemini = any("gemini" in k.lower() for k in models.keys())
 
-                    return {
-                        "ok": True,
-                        "status": "active",
-                        "message": f"Токен валиден, пинг {elapsed_ms} мс",
-                        "latency_ms": elapsed_ms,
-                        "has_claude": has_claude,
-                        "has_gemini": has_gemini,
-                        "models_count": len(models),
-                    }
-            except (urllib.error.URLError, TimeoutError, OSError) as exc:
-                last_error = exc
-                continue
-        raise last_error or OSError("no network route")
+            return {
+                "ok": True,
+                "status": "active",
+                "message": f"Токен валиден, пинг {elapsed_ms} мс",
+                "latency_ms": elapsed_ms,
+                "has_claude": has_claude,
+                "has_gemini": has_gemini,
+                "models_count": len(models),
+            }
     except urllib.error.HTTPError as e:
         elapsed_ms = round((time.perf_counter() - start_t) * 1000)
         err_msg = e.reason
@@ -181,8 +167,13 @@ def test_openai_account_health(account: dict, timeout=10) -> dict:
             access_token = account.get("access", access_token)
             account_id = account.get("accountId", account_id)
         opener = openai_manager._get_http_opener(timeout=timeout)
-    except Exception:
-        opener = urllib.request.build_opener()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "status": "route_error",
+            "message": f"Не удалось подготовить маршрут OpenAI: {type(exc).__name__}",
+            "latency_ms": 0,
+        }
 
     url = "https://chatgpt.com/backend-api/wham/usage"
     headers = {
@@ -270,13 +261,10 @@ ANTIGRAVITY_MODEL_INTERNAL_MAP = {
 }
 
 
-def _effective_proxy_from_config() -> str | None:
-    """Read Hub routing state without exposing credentials."""
-    try:
-        import vless_manager
-        return vless_manager.get_active_proxy()
-    except Exception:
-        return None
+def _effective_proxy_from_config(provider: str = "google") -> str:
+    """Return the local dispatcher so Hub API calls use provider routes."""
+    import provider_proxy
+    return provider_proxy.proxy_url_for_hub_requests()
 
 
 def test_antigravity_model(account: dict, model_id: str, timeout=6, proxy_url=None) -> dict:

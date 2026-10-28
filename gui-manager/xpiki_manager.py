@@ -62,20 +62,14 @@ XPIKI_MODELS = {
 
 
 def get_active_proxy() -> Optional[str]:
-    """Returns proxy to use (built-in VLESS tunnel, or custom proxy, or local DNS proxy)."""
-    try:
-        import vless_manager
-        return vless_manager.get_active_proxy()
-    except Exception:
-        pass
-    return None
+    """Return the dispatcher; it applies the Xpiki provider route by host."""
+    import provider_proxy
+    return provider_proxy.proxy_url_for_hub_requests()
 
 
 def get_http_opener(timeout: int = 15) -> urllib.request.OpenerDirector:
     proxy = get_active_proxy()
-    if proxy:
-        return urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
-    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    return urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
 
 
 def load_xpiki_config() -> Dict[str, Any]:

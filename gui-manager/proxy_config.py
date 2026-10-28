@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 
 DNS_PROXY = "http://127.0.0.1:51180"
 VLESS_PROXY = "http://127.0.0.1:20809"
+ROUTE_PROXY = "http://127.0.0.1:10880"
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
@@ -75,4 +76,37 @@ def sync_provider_proxies(config: dict, proxy: str | None) -> dict:
         section = config.get(section_name)
         if isinstance(section, dict):
             _sync_section(section, proxy)
+    return config
+
+
+PROVIDER_ROUTE_MODES = ("default", "vless", "proxy", "dns", "direct")
+
+
+def sync_provider_routes(config: dict, hub_config: dict, http_port: int,
+                         routes: dict | None = None) -> dict:
+    """Configure external providers to use the loopback route dispatcher."""
+    routes = routes or {}
+
+    for section_name in ("provider", "providers"):
+        section = config.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        for provider_name, provider in section.items():
+            if not isinstance(provider, dict):
+                continue
+            options = provider.get("options")
+            settings = provider.get("settings")
+            target = options if isinstance(options, dict) else settings if isinstance(settings, dict) else None
+            if target is None:
+                target = provider.setdefault("options", {})
+            if _is_local_endpoint(target):
+                target.pop("proxy", None)
+                continue
+
+            mode = routes.get(provider_name, "default")
+            if mode not in PROVIDER_ROUTE_MODES:
+                mode = "default"
+            # OpenCode receives one loopback proxy; the router chooses the
+            # actual upstream from provider_routes for each request host.
+            target["proxy"] = ROUTE_PROXY
     return config

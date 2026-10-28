@@ -4,6 +4,8 @@ Provides configuration and status for VLESS routing and custom DNS (DoH, DoT, St
 """
 
 import threading
+import json
+from pathlib import Path
 from tkinter import messagebox, filedialog
 import tkinter as tk
 import customtkinter as ctk
@@ -21,6 +23,21 @@ try:
     import dns_tester
 except ImportError:
     from . import dns_tester
+
+try:
+    from proxy_config import PROVIDER_ROUTE_MODES, sync_provider_routes
+except ImportError:
+    from .proxy_config import PROVIDER_ROUTE_MODES, sync_provider_routes
+
+
+PROVIDER_ROUTE_LABELS = {
+    "default": "Общие настройки",
+    "vless": "VLESS",
+    "proxy": "Внешний прокси",
+    "dns": "DNS-прокси Hub",
+    "direct": "Напрямую",
+}
+PROVIDER_ROUTE_BY_LABEL = {label: mode for mode, label in PROVIDER_ROUTE_LABELS.items()}
 
 
 def create_cyber_switch(master, text="", variable=None, command=None, font=None, **kwargs):
@@ -84,9 +101,7 @@ class NetworkView(ctk.CTkScrollableFrame):
 
         ctk.CTkLabel(
             notice_banner,
-            text="При выборе метода туннелирования через VLESS все настройки DNS (Обычный DNS / DoT / DoH / SmartDNS) полностью утрачивают свою силу.\n"
-                 "Весь трафик и DNS-запросы OpenCode направляются через удалённый VLESS-сервер, который самостоятельно разрешает доменные имена. "
-                 "Локальные и кастомные DNS-серверы используются только тогда, когда VLESS-туннель выключен.",
+            text="Маршрут задаётся отдельно для каждого провайдера ниже. Для провайдера на VLESS домен разрешает удалённый туннель; для DNS-прокси Hub используется выбранный DNS-сервер.",
             font=app.font(11),
             text_color=("#78350f", "#f1f5f9"),
             justify="left",
@@ -146,9 +161,9 @@ class NetworkView(ctk.CTkScrollableFrame):
         self.vless_entry.pack(fill="x", padx=16, pady=(0, 8))
         self.vless_entry.insert(0, self.app.config_data.get("vless_url", "") or "")
 
-        # Options switches (arranged in two rows to prevent text clipping)
+        # Tunnel controls
         opts_box = ctk.CTkFrame(vless_card, fg_color="transparent")
-        opts_box.pack(fill="x", padx=16, pady=(0, 10))
+        opts_box.pack(fill="x", padx=16, pady=(0, 6))
 
         row1 = ctk.CTkFrame(opts_box, fg_color="transparent")
         row1.pack(fill="x", pady=(0, 6))
@@ -161,26 +176,6 @@ class NetworkView(ctk.CTkScrollableFrame):
             command=self.on_vless_switch_toggled,
             font=app.font(12, "bold")
         ).pack(side="left", padx=(0, 24))
-
-        self.vless_route_all_var = tk.BooleanVar(value=self.app.config_data.get("vless_route_all", True))
-        route_row = ctk.CTkFrame(opts_box, fg_color="transparent")
-        route_row.pack(fill="x", pady=(0, 6))
-        create_cyber_switch(
-            route_row,
-            text="Маршрутизировать весь трафик OpenCode через VLESS",
-            variable=self.vless_route_all_var,
-            command=self.on_route_all_toggled,
-            font=app.font(12)
-        ).pack(side="left")
-
-        ctk.CTkLabel(
-            vless_card,
-            text="Включено — прокси VLESS применяется ко всем провайдерам OpenCode; выключено — только к провайдеру OpenAI.",
-            font=app.font(10),
-            text_color=colors["text_secondary"],
-            justify="left",
-            anchor="w"
-        ).pack(fill="x", padx=16, pady=(0, 4))
 
         ctk.CTkLabel(
             vless_card,
@@ -321,8 +316,7 @@ class NetworkView(ctk.CTkScrollableFrame):
         dns_disclaimer.pack(fill="x", padx=16, pady=(0, 10))
         ctk.CTkLabel(
             dns_disclaimer,
-            text="💡 Дисклеймер: при выборе метода туннелирования через VLESS указанные ниже настройки DNS полностью утрачивают свою силу.\n"
-                 "В этом режиме все сетевые запросы и DNS-резолвинг передаются удалённому VLESS-серверу.",
+            text="💡 DNS используется для провайдеров, которым назначен маршрут «DNS-прокси Hub». Для провайдеров на VLESS DNS-разрешение выполняет удалённый туннель.",
             font=app.font(11),
             text_color=("#92400e", "#fbbf24") if self.app.config_data.get("vless_enabled") else colors["text_secondary"],
             justify="left",
@@ -480,6 +474,60 @@ class NetworkView(ctk.CTkScrollableFrame):
         self.proxy_entry.pack(side="left", fill="x", expand=True)
         self.proxy_entry.insert(0, self.app.config_data.get("proxy", "") or "")
 
+        # Per-provider routes. These are written to each provider's OpenCode
+        # options, while leaving the Hub-wide defaults available as fallback.
+        self.provider_route_vars = {}
+        provider_routes_card = ctk.CTkFrame(self, fg_color=colors["card_bg"], corner_radius=12,
+                                            border_width=1, border_color=colors["border"])
+        provider_routes_card.pack(fill="x", pady=6)
+        ctk.CTkLabel(
+            provider_routes_card,
+            text="🧭 Маршрут для каждого провайдера",
+            font=app.font(14, "bold"), text_color=colors["text_primary"]
+        ).pack(anchor="w", padx=16, pady=(12, 3))
+        ctk.CTkLabel(
+            provider_routes_card,
+            text="Выберите отдельный маршрут или оставьте общие настройки. DNS-прокси Hub использует выбранный выше режим DNS; «Напрямую» снимает прокси для провайдера.",
+            font=app.font(11), text_color=colors["text_secondary"], justify="left", wraplength=980
+        ).pack(anchor="w", padx=16, pady=(0, 8))
+
+        opencode_path = Path.home() / ".config" / "opencode" / "opencode.json"
+        try:
+            opencode_data = json.loads(opencode_path.read_text(encoding="utf-8")) if opencode_path.exists() else {}
+        except Exception:
+            opencode_data = {}
+        provider_names = []
+        for section_name in ("provider", "providers"):
+            section = opencode_data.get(section_name, {})
+            if isinstance(section, dict):
+                provider_names.extend(name for name in section if name not in provider_names)
+        saved_routes = self.app.config_data.get("provider_routes", {})
+        if not isinstance(saved_routes, dict):
+            saved_routes = {}
+        self.provider_route_names = provider_names
+        self.provider_route_vars = {}
+        for provider_name in provider_names:
+            route_row = ctk.CTkFrame(provider_routes_card, fg_color="transparent")
+            route_row.pack(fill="x", padx=16, pady=3)
+            ctk.CTkLabel(route_row, text=provider_name, font=app.font(11, "bold"),
+                         text_color=colors["text_primary"], anchor="w", width=220).pack(side="left")
+            mode = saved_routes.get(provider_name, "default")
+            if mode not in PROVIDER_ROUTE_MODES:
+                mode = "default"
+            variable = tk.StringVar(value=PROVIDER_ROUTE_LABELS[mode])
+            self.provider_route_vars[provider_name] = variable
+            ctk.CTkOptionMenu(
+                route_row, variable=variable, values=list(PROVIDER_ROUTE_BY_LABEL),
+                font=app.font(11), width=190, height=30,
+                fg_color=colors["subbox_bg"], button_color=colors["border"],
+                button_hover_color=colors["border"], text_color=colors["text_primary"]
+            ).pack(side="left")
+        if not provider_names:
+            ctk.CTkLabel(provider_routes_card,
+                         text="Провайдеры ещё не найдены в opencode.json. Сначала добавьте их в OpenCode и откройте эту вкладку снова.",
+                         font=app.font(11), text_color=colors["text_secondary"], wraplength=950
+                         ).pack(anchor="w", padx=16, pady=(0, 12))
+
         # Save Button
         save_btn = ctk.CTkButton(
             self,
@@ -496,6 +544,7 @@ class NetworkView(ctk.CTkScrollableFrame):
 
         self.update_core_status()
         self.update_vless_status()
+        self.after(2500, self._poll_vless_status)
 
     # =========================================================================
     # VLESS ACTIONS
@@ -521,12 +570,32 @@ class NetworkView(ctk.CTkScrollableFrame):
             self.btn_vless_start.configure(state="normal")
             self.btn_vless_stop.configure(state="disabled")
 
+    def _poll_vless_status(self):
+        """Keep the badge and controls synchronized with externally started tunnels."""
+        try:
+            if not self.winfo_exists():
+                return
+            self.update_vless_status()
+            self.after(2500, self._poll_vless_status)
+        except Exception:
+            # The view may be closing while its scheduled refresh is pending.
+            return
+
     def on_vless_switch_toggled(self):
         enabled = self.vless_enabled_var.get()
+        if not enabled and any(
+            PROVIDER_ROUTE_BY_LABEL.get(variable.get()) == "vless"
+            for variable in self.provider_route_vars.values()
+        ):
+            self.vless_enabled_var.set(True)
+            messagebox.showwarning(
+                "VLESS используется",
+                "Один или несколько провайдеров настроены на VLESS. Сначала измените их маршрут, затем отключайте туннель."
+            )
+            return
         url = self.vless_entry.get().strip()
         self.app.config_data["vless_enabled"] = enabled
         self.app.config_data["vless_url"] = url
-        self.app.config_data["vless_route_all"] = self.vless_route_all_var.get()
         self.app.save_config()
         self.sync_opencode_proxy()
         if enabled:
@@ -536,80 +605,24 @@ class NetworkView(ctk.CTkScrollableFrame):
             if vless_service.is_running():
                 self.stop_vless_action()
 
-    def on_route_all_toggled(self):
-        self.app.config_data["vless_route_all"] = self.vless_route_all_var.get()
-        self.app.save_config()
-        self.sync_opencode_proxy()
-
     def sync_opencode_proxy(self):
-        """Apply the selected network proxy to OpenCode provider configurations."""
+        """Apply global and provider-specific routes to OpenCode configuration."""
         try:
-            import json
-            from pathlib import Path
-
             opencode_cfg_path = Path.home() / ".config" / "opencode" / "opencode.json"
             if not opencode_cfg_path.exists():
                 return
 
             oc_data = json.loads(opencode_cfg_path.read_text(encoding="utf-8"))
-            dns_active = self.app.config_data.get("dns_mode") in ("standard", "dot", "doh")
-            vless_active = bool(
-                self.app.config_data.get("vless_enabled")
-                and self.app.config_data.get("vless_url")
-            )
-            user_proxy = self.app.config_data.get("proxy")
-
-            if vless_active:
-                effective_proxy = f"http://127.0.0.1:{get_http_port()}"
-            elif user_proxy and user_proxy != f"http://127.0.0.1:{LOCAL_DNS_PROXY_PORT}":
-                effective_proxy = user_proxy
-            elif dns_active:
-                effective_proxy = f"http://127.0.0.1:{LOCAL_DNS_PROXY_PORT}"
-            else:
-                effective_proxy = None
-
-            providers = oc_data.get("provider")
-            if not isinstance(providers, dict):
-                providers = {}
-                oc_data["provider"] = providers
-
-            route_all = bool(self.app.config_data.get("vless_route_all", True)) and vless_active
-            target_names = list(providers) if route_all else ["openai"]
-            if not target_names:
-                target_names = ["openai"]
-            for provider_name in target_names:
-                provider = providers.setdefault(provider_name, {})
-                if not isinstance(provider, dict):
-                    provider = {}
-                    providers[provider_name] = provider
-                options = provider.setdefault("options", {})
-                if not isinstance(options, dict):
-                    options = {}
-                    provider["options"] = options
-                if effective_proxy:
-                    options["proxy"] = effective_proxy
-                else:
-                    options.pop("proxy", None)
-
-            # When switching from route-all to selective mode, clear proxies that
-            # were previously managed by this screen from the other providers.
-            if not route_all:
-                managed_proxies = {
-                    f"http://127.0.0.1:{get_http_port()}",
-                    f"http://127.0.0.1:{get_socks_port()}",
-                    f"http://127.0.0.1:{LOCAL_DNS_PROXY_PORT}",
-                    # Legacy ports written by older Hub versions
-                    "http://127.0.0.1:10809",
-                    "http://127.0.0.1:10808",
-                    "http://127.0.0.1:51180",
-                    user_proxy,
-                }
-                for provider_name, provider in providers.items():
-                    if provider_name == "openai" or not isinstance(provider, dict):
-                        continue
-                    options = provider.get("options")
-                    if isinstance(options, dict) and options.get("proxy") in managed_proxies:
-                        options.pop("proxy", None)
+            hub_config = dict(self.app.config_data)
+            hub_config["vless_url"] = self.vless_entry.get().strip()
+            hub_config["vless_enabled"] = self.vless_enabled_var.get()
+            entered_proxy = self.proxy_entry.get().strip()
+            hub_config["proxy"] = entered_proxy if entered_proxy != f"http://127.0.0.1:{LOCAL_DNS_PROXY_PORT}" else ""
+            routes = {
+                name: PROVIDER_ROUTE_BY_LABEL.get(variable.get(), "default")
+                for name, variable in self.provider_route_vars.items()
+            }
+            sync_provider_routes(oc_data, hub_config, get_http_port(), routes)
 
             opencode_cfg_path.write_text(
                 json.dumps(oc_data, indent=4, ensure_ascii=False),
@@ -673,7 +686,6 @@ class NetworkView(ctk.CTkScrollableFrame):
                     self.vless_enabled_var.set(True)
                     self.app.config_data["vless_enabled"] = True
                     self.app.config_data["vless_url"] = url
-                    self.app.config_data["vless_route_all"] = self.vless_route_all_var.get()
                     self.app.save_config()
                     self.sync_opencode_proxy()
                     self.update_vless_status()
@@ -690,6 +702,13 @@ class NetworkView(ctk.CTkScrollableFrame):
         threading.Thread(target=_worker, daemon=True).start()
 
     def stop_vless_action(self):
+        if any(PROVIDER_ROUTE_BY_LABEL.get(variable.get()) == "vless"
+               for variable in self.provider_route_vars.values()):
+            messagebox.showwarning(
+                "VLESS используется",
+                "Один или несколько провайдеров настроены на VLESS. Сначала измените их маршрут."
+            )
+            return
         ok, msg = vless_service.stop_tunnel()
         self.vless_enabled_var.set(False)
         self.app.config_data["vless_enabled"] = False
@@ -778,11 +797,29 @@ class NetworkView(ctk.CTkScrollableFrame):
     # SAVE ALL SETTINGS
     # =========================================================================
     def save_network_settings(self):
+        provider_routes = {
+            name: PROVIDER_ROUTE_BY_LABEL.get(variable.get(), "default")
+            for name, variable in self.provider_route_vars.items()
+        }
+        if any(mode == "vless" for mode in provider_routes.values()) and not (
+            self.vless_enabled_var.get() and self.vless_entry.get().strip()
+        ):
+            messagebox.showwarning(
+                "Требуется VLESS",
+                "Для выбранного маршрута VLESS укажите ссылку и включите туннель."
+            )
+            return
+        if any(mode == "proxy" for mode in provider_routes.values()) and not self.proxy_entry.get().strip():
+            messagebox.showwarning(
+                "Не задан внешний прокси",
+                "Для выбранного маршрута «Внешний прокси» сначала укажите адрес прокси."
+            )
+            return
+
         # 1. Save VLESS settings
         vless_url = self.vless_entry.get().strip()
         self.app.config_data["vless_url"] = vless_url
         self.app.config_data["vless_enabled"] = self.vless_enabled_var.get()
-        self.app.config_data["vless_route_all"] = self.vless_route_all_var.get()
 
         # 2. Save DNS Mode
         selected_mode = self.dns_mode_var.get()
@@ -827,6 +864,8 @@ class NetworkView(ctk.CTkScrollableFrame):
         else:
             self.app.config_data.pop("proxy", None)
 
+        self.app.config_data["provider_routes"] = provider_routes
+
         # Synchronize the selected proxy mode to OpenCode providers.
         self.sync_opencode_proxy()
 
@@ -835,7 +874,7 @@ class NetworkView(ctk.CTkScrollableFrame):
             messagebox.showinfo(
                 "Успешно",
                 "Настройки сети успешно сохранены!\n\n"
-                "• VLESS: " + ("Включен (маршрутизация всего трафика OpenCode)" if self.vless_enabled_var.get() else "Отключен") + "\n"
+                "• VLESS: " + ("Включен" if self.vless_enabled_var.get() else "Отключен") + "\n"
                 f"• Режим DNS: {selected_mode}\n\n"
                 "Для применения изменений перезапустите OpenCode."
             )

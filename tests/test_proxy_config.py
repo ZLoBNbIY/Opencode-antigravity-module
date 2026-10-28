@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gui-manager"))
-from proxy_config import DNS_PROXY, select_effective_proxy, sync_process_proxy_environment, sync_provider_proxies
+from proxy_config import DNS_PROXY, ROUTE_PROXY, select_effective_proxy, sync_process_proxy_environment, sync_provider_proxies, sync_provider_routes
 
 
 class ProxyConfigTests(unittest.TestCase):
@@ -62,6 +62,43 @@ class ProxyConfigTests(unittest.TestCase):
         config = {"provider": {"google": {"options": {"proxy": DNS_PROXY}}}}
         sync_provider_proxies(config, None)
         self.assertNotIn("proxy", config["provider"]["google"]["options"])
+
+    def test_external_providers_use_local_route_dispatcher(self):
+        config = {"provider": {
+            "google": {"options": {}},
+            "openrouter": {"options": {}},
+            "deepseek": {"options": {"proxy": "old"}},
+            "custom": {"options": {"baseURL": "https://api.example/v1", "proxy": "old"}},
+            "hub": {"options": {"baseURL": "http://localhost:9000/v1", "proxy": "old"}},
+        }}
+        hub = {
+            "vless_enabled": True, "vless_url": "vless://example",
+            "dns_mode": "doh",
+            "proxy": "http://proxy.example:8080",
+        }
+        sync_provider_routes(config, hub, 10879, {
+            "google": "vless", "openrouter": "direct",
+            "deepseek": "proxy", "custom": "dns", "hub": "vless",
+        })
+        opts = config["provider"]
+        self.assertEqual(opts["google"]["options"]["proxy"], ROUTE_PROXY)
+        self.assertEqual(opts["openrouter"]["options"]["proxy"], ROUTE_PROXY)
+        self.assertEqual(opts["deepseek"]["options"]["proxy"], ROUTE_PROXY)
+        self.assertEqual(opts["custom"]["options"]["proxy"], ROUTE_PROXY)
+        self.assertNotIn("proxy", opts["hub"]["options"])
+
+    def test_route_dispatcher_is_applied_to_all_external_providers(self):
+        config = {"provider": {
+            "openai": {"options": {}}, "google": {"options": {}},
+            "openrouter": {"options": {}},
+        }}
+        hub = {"vless_enabled": True, "vless_url": "vless://example",
+               "dns_mode": "system"}
+        sync_provider_routes(config, hub, 10879, {"google": "direct"})
+        providers = config["provider"]
+        self.assertEqual(providers["openai"]["options"]["proxy"], ROUTE_PROXY)
+        self.assertEqual(providers["google"]["options"]["proxy"], ROUTE_PROXY)
+        self.assertEqual(providers["openrouter"]["options"]["proxy"], ROUTE_PROXY)
 
 
 if __name__ == "__main__":
