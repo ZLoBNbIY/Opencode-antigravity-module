@@ -4165,39 +4165,46 @@ class AntigravityManagerApp(ctk.CTk):
 
         threading.Thread(target=_check, daemon=True).start()
 
-    def check_claude_tunnel_risk(self) -> bool:
-        """
-        Specialized Kill Switch for Anthropic Claude (Claude Pro / Team / Claude Code).
-        Warns the user about high risk of account ban if Claude is active without VLESS.
-        If user accepts risk, returns True. If user cancels, returns False.
-        """
-        active_claude = claude_service.get_active_account()
-        if not active_claude:
-            # No Claude account active - proceed without Anthropic warning
-            return True
-
-        # Check if VLESS tunnel is actively listening and reachable
+    def check_provider_routing_risk(self) -> bool:
+        """Require explicit confirmation before launching without a working VLESS tunnel."""
         tunnel_alive = vless_service.is_running()
         if tunnel_alive:
             probe = vless_service.test_connection(timeout=3)
             tunnel_alive = probe.get("ok", False)
 
         if tunnel_alive:
-            # Tunnel is up and working - traffic will automatically route safely!
             return True
 
-        # Tunnel is NOT working, but Claude account is connected!
-        email = active_claude.get("email", "")
+        routes = self.config_data.get("provider_routes", {})
+        if not isinstance(routes, dict):
+            routes = {}
+        route_names = {
+            "vless": "VLESS",
+            "dns": "DNS-прокси Hub",
+            "proxy": "внешний прокси",
+            "direct": "напрямую",
+            "default": "общие настройки",
+        }
+        openai_route = route_names.get(routes.get("openai", "default"), "общие настройки")
+        google_route = route_names.get(routes.get("google", "default"), "общие настройки")
+        active_claude = claude_service.get_active_account()
+        claude_note = (
+            f"\nПодключённый аккаунт Claude: {active_claude.get('email', '')}."
+            if active_claude else ""
+        )
         answer = messagebox.askyesno(
-            "⚠️ Риск блокировки аккаунта Claude",
-            f"У вас подключён аккаунт Anthropic Claude ({email}).\n\n"
-            "ВНИМАНИЕ: VLESS-туннель сейчас отключен или недоступен!\n"
-            "Сервисы Anthropic строго блокируют запросы из неподдерживаемых регионов (РФ и др.). "
-            "Прямой запуск без туннеля с высокой вероятностью приведёт к перманентной блокировке "
-            "вашей подписки Claude на стороне Anthropic!\n\n"
-            "Запустить OpenCode напрямую без туннеля на свой страх и риск?\n\n"
-            "• Нажмите «Да» — продолжить запуск напрямую.\n"
-            "• Нажмите «Нет» — отменить запуск и включить туннель в разделе «Сеть, DNS & VLESS».",
+            "⚠️ Запуск OpenCode без VLESS",
+            "VLESS-туннель сейчас отключён или недоступен. Перед запуском проверьте индивидуальные маршруты провайдеров:\n\n"
+            f"• OpenAI: {openai_route}\n"
+            f"• Google Cloud Code / Antigravity: {google_route}\n\n"
+            "Подмена DNS не заменяет VPN или прокси: OpenAI и Google Cloud Code могут не работать "
+            "через DNS-маршрут. Неверная маршрутизация может раскрыть реальный IP, привести к отказам "
+            "в доступе или ограничениям/блокировке аккаунта."
+            f"{claude_note}\n\n"
+            "Продолжая, вы подтверждаете, что проверили настройки и принимаете риск. "
+            "Автор приложения не несёт ответственности за последствия неверной маршрутизации, "
+            "отказы сервисов или ограничения аккаунтов.\n\n"
+            "Запустить OpenCode без VLESS?",
             icon="warning",
             default="no",
         )
@@ -4240,9 +4247,8 @@ class AntigravityManagerApp(ctk.CTk):
         return launch_env
 
     def restart_opencode_action(self):
-        # Specific Kill Switch check for Claude
-        if not self.check_claude_tunnel_risk():
-            self.set_status("⚠️ Запуск OpenCode отменён: защита от бана Claude")
+        if not self.check_provider_routing_risk():
+            self.set_status("⚠️ Запуск OpenCode отменён: VLESS отключён")
             return
 
         # Гарантируем корректность бесплатной модели подписи сессий перед запуском
@@ -4277,9 +4283,8 @@ class AntigravityManagerApp(ctk.CTk):
         self.set_status("OpenCode остановлен")
 
     def start_opencode_action(self):
-        # Specific Kill Switch check for Claude
-        if not self.check_claude_tunnel_risk():
-            self.set_status("⚠️ Запуск OpenCode отменён: защита от бана Claude")
+        if not self.check_provider_routing_risk():
+            self.set_status("⚠️ Запуск OpenCode отменён: VLESS отключён")
             return
 
         # Гарантируем корректность бесплатной модели подписи сессий перед запуском
