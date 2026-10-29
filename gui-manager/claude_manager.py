@@ -573,6 +573,8 @@ class ClaudeAccountManager:
                                     print(f"[Claude Manager] sessionKey auto-refreshed for {acc.get('email')}")
             except Exception:
                 if CLAUDE_PROFILE_DIR.exists():
+                    p = None
+                    ctx = None
                     try:
                         from playwright.sync_api import sync_playwright
                         p = sync_playwright().start()
@@ -594,10 +596,19 @@ class ClaudeAccountManager:
                                     acc["session_key"] = new_val
                                     changed = True
                                     print(f"[Claude Manager] Headless sessionKey renewal successful for {acc.get('email')}")
-                        ctx.close()
-                        p.stop()
                     except Exception:
                         pass
+                    finally:
+                        if ctx is not None:
+                            try:
+                                ctx.close()
+                            except Exception:
+                                pass
+                        if p is not None:
+                            try:
+                                p.stop()
+                            except Exception:
+                                pass
 
         if changed:
             self.save_accounts(accounts)
