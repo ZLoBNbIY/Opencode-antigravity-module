@@ -89,24 +89,41 @@ def select_upstream(host: str, hub_config: dict | None = None,
     mode = routes.get(provider, "default") if isinstance(routes, dict) else "default"
     http_port = hub.get("vless_http_port", 10879)
 
+    if mode == "google-smart":
+        from google_smart_dns import GATE_HOSTS
+        if host.lower().rstrip(".") in GATE_HOSTS:
+            return "smartdns://google"
+        # OAuth and other Google hosts keep the normal route.
+        mode = "default"
+
     if mode == "direct":
         return None
+    if mode == "proxy":
+        return _hub_upstream_proxy(hub)
     if mode == "vless":
         return f"http://127.0.0.1:{http_port}"
     if mode == "dns":
         return "dns://hub"
-    if mode == "proxy":
-        external = str(hub.get("proxy") or "").strip()
-        return external if external and external != "http://127.0.0.1:51180" else None
 
     if hub.get("vless_enabled") and hub.get("vless_url"):
         return f"http://127.0.0.1:{http_port}"
-    external = str(hub.get("proxy") or "").strip()
-    if external and external != "http://127.0.0.1:51180":
+    if external := _hub_upstream_proxy(hub):
         return external
     if hub.get("dns_mode") in ("standard", "dot", "doh"):
         return "dns://hub"
     return None
+
+
+def _hub_upstream_proxy(hub: dict) -> str | None:
+    """Hub-level proxy from config, ignoring its own route dispatcher (no self-loop)."""
+    external = str(hub.get("proxy") or "").strip()
+    if not external or external == "http://127.0.0.1:51180":
+        return None
+    if external == f"http://{HOST}:{PORT}":
+        # OpenCode's plugin reads this same URL from antigravity.json; the
+        # dispatcher itself must not connect back to itself.
+        return None
+    return external
 
 
 def _resolve_with_hub_dns(host: str) -> str:
@@ -147,6 +164,9 @@ def _resolve_with_hub_dns(host: str) -> str:
 
 
 def _connect_upstream(proxy_url: str | None, target_host: str, target_port: int) -> socket.socket:
+    if proxy_url == "smartdns://google":
+        import google_smart_dns
+        return google_smart_dns.connect(target_host, target_port, _read_json(CONFIG_DIR / "antigravity.json"))
     if not proxy_url:
         upstream = socket.create_connection((target_host, target_port), timeout=20)
         upstream.settimeout(None)

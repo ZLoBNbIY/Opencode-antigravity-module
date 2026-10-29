@@ -79,7 +79,7 @@ def sync_provider_proxies(config: dict, proxy: str | None) -> dict:
     return config
 
 
-PROVIDER_ROUTE_MODES = ("default", "vless", "proxy", "dns", "direct")
+PROVIDER_ROUTE_MODES = ("default", "vless", "proxy", "dns", "direct", "google-smart")
 
 
 def sync_provider_routes(config: dict, hub_config: dict, http_port: int,

@@ -36,6 +36,7 @@ PROVIDER_ROUTE_LABELS = {
     "proxy": "Внешний прокси",
     "dns": "DNS-прокси Hub",
     "direct": "Напрямую",
+    "google-smart": "Google SmartDNS (встроенный)",
 }
 PROVIDER_ROUTE_BY_LABEL = {label: mode for mode, label in PROVIDER_ROUTE_LABELS.items()}
 
@@ -487,7 +488,7 @@ class NetworkView(ctk.CTkScrollableFrame):
         ).pack(anchor="w", padx=16, pady=(12, 3))
         ctk.CTkLabel(
             provider_routes_card,
-            text="Выберите отдельный маршрут или оставьте общие настройки. DNS-прокси Hub использует выбранный выше режим DNS; «Напрямую» снимает прокси для провайдера.",
+            text="Google SmartDNS встроен в Hub: получает адрес выхода через DoH и переносит TLS без AG Unlocker. Используется для двух Cloud Code-доменов; вход Google следует общим настройкам. «Напрямую» использует системную сеть и DNS.",
             font=app.font(11), text_color=colors["text_secondary"], justify="left", wraplength=980
         ).pack(anchor="w", padx=16, pady=(0, 8))
 
@@ -517,7 +518,9 @@ class NetworkView(ctk.CTkScrollableFrame):
             variable = tk.StringVar(value=PROVIDER_ROUTE_LABELS[mode])
             self.provider_route_vars[provider_name] = variable
             ctk.CTkOptionMenu(
-                route_row, variable=variable, values=list(PROVIDER_ROUTE_BY_LABEL),
+                route_row, variable=variable,
+                values=[label for label, value in PROVIDER_ROUTE_BY_LABEL.items()
+                        if value != "google-smart" or provider_name == "google"],
                 font=app.font(11), width=190, height=30,
                 fg_color=colors["subbox_bg"], button_color=colors["border"],
                 button_hover_color=colors["border"], text_color=colors["text_primary"]
@@ -527,6 +530,27 @@ class NetworkView(ctk.CTkScrollableFrame):
                          text="Провайдеры ещё не найдены в opencode.json. Сначала добавьте их в OpenCode и откройте эту вкладку снова.",
                          font=app.font(11), text_color=colors["text_secondary"], wraplength=950
                          ).pack(anchor="w", padx=16, pady=(0, 12))
+
+        ctk.CTkLabel(provider_routes_card, text="DoH для Google SmartDNS (публичный сервис или свой):",
+                     font=app.font(11), text_color=colors["text_secondary"]
+                     ).pack(anchor="w", padx=16, pady=(12, 2))
+        from google_smart_dns import DEFAULT_DOH
+        self.google_smart_doh_entry = ctk.CTkEntry(provider_routes_card, font=app.font(11))
+        self.google_smart_doh_entry.pack(fill="x", padx=16)
+        self.google_smart_doh_entry.insert(0, app.config_data.get("google_smart_doh") or DEFAULT_DOH)
+
+        google_tools = ctk.CTkFrame(provider_routes_card, fg_color="transparent")
+        google_tools.pack(fill="x", padx=16, pady=12)
+        self.btn_google_route_check = ctk.CTkButton(
+            google_tools, text="Диагностика маршрута Google", command=self.diagnose_google_route,
+            font=app.font(11), width=220)
+        self.btn_google_route_check.pack(side="left", padx=(0, 8))
+        ctk.CTkButton(google_tools, text="Тест Gemini 3.8", font=app.font(11),
+                      command=self.app.test_google_generation_action).pack(side="left")
+        ctk.CTkLabel(provider_routes_card,
+                     text="Диагностика и тест используют сохранённые настройки. SmartDNS зависит от доступности внешнего сервиса, но не требует сторонней программы на ПК.",
+                     font=app.font(11), text_color=colors["text_secondary"], wraplength=950
+                     ).pack(anchor="w", padx=16, pady=(0, 12))
 
         # Save Button
         save_btn = ctk.CTkButton(
@@ -564,7 +588,6 @@ class NetworkView(ctk.CTkScrollableFrame):
             self.vless_badge.configure(text="● Туннель активен", text_color="#3fb950")
             self.btn_vless_start.configure(state="disabled")
             self.btn_vless_stop.configure(state="normal")
-            self.vless_enabled_var.set(True)
         else:
             self.vless_badge.configure(text="● Остановлен", text_color="#ef4444")
             self.btn_vless_start.configure(state="normal")
@@ -797,6 +820,12 @@ class NetworkView(ctk.CTkScrollableFrame):
     # SAVE ALL SETTINGS
     # =========================================================================
     def save_network_settings(self):
+        from google_smart_dns import resolver_url
+        try:
+            smart_doh = resolver_url({"google_smart_doh": self.google_smart_doh_entry.get().strip()})
+        except ValueError as error:
+            messagebox.showerror("Google SmartDNS", str(error))
+            return
         provider_routes = {
             name: PROVIDER_ROUTE_BY_LABEL.get(variable.get(), "default")
             for name, variable in self.provider_route_vars.items()
@@ -865,6 +894,7 @@ class NetworkView(ctk.CTkScrollableFrame):
             self.app.config_data.pop("proxy", None)
 
         self.app.config_data["provider_routes"] = provider_routes
+        self.app.config_data["google_smart_doh"] = smart_doh
 
         # Synchronize the selected proxy mode to OpenCode providers.
         self.sync_opencode_proxy()
@@ -880,3 +910,22 @@ class NetworkView(ctk.CTkScrollableFrame):
             )
         else:
             messagebox.showerror("Ошибка", msg)
+    def diagnose_google_route(self):
+        self.btn_google_route_check.configure(state="disabled")
+
+        def worker():
+            import google_routes
+            try:
+                report = google_routes.diagnose_routes()
+            except Exception:
+                report = "Не удалось выполнить диагностику маршрута."
+
+            def done():
+                if not self.winfo_exists():
+                    return
+                self.btn_google_route_check.configure(state="normal")
+                messagebox.showinfo("Маршрут Google", report, parent=self.app)
+
+            self.app.after(0, done)
+
+        threading.Thread(target=worker, daemon=True).start()

@@ -267,7 +267,47 @@ def _effective_proxy_from_config(provider: str = "google") -> str:
     return provider_proxy.proxy_url_for_hub_requests()
 
 
-def test_antigravity_model(account: dict, model_id: str, timeout=6, proxy_url=None) -> dict:
+def test_antigravity_model(account: dict, model_id: str, timeout=30, proxy_url=None,
+                           prompt="Reply with exactly: OK") -> dict:
+    """Probe generation, preserving the outcome of each endpoint attempted."""
+    from google_routes import GATE_HOSTS, describe_route
+
+    attempts = []
+    try:
+        proxy = _effective_proxy_from_config() if proxy_url is None else proxy_url
+    except Exception:
+        return {"ok": False, "status": "route_error", "badge": "Ошибка запуска прокси Hub", "attempts": []}
+    result = None
+    for host in GATE_HOSTS:
+        result = _test_antigravity_model_once(account, model_id, timeout, proxy, (f"https://{host}",), prompt=prompt)
+        attempt = {key: result[key] for key in ("ok", "status", "latency_ms", "badge", "response_text") if key in result}
+        attempt["endpoint"] = host
+        try:
+            if proxy == "http://127.0.0.1:10880":
+                attempt["route"] = describe_route(host)
+            else:
+                attempt["route"] = "Явный прокси" if proxy else "Системный маршрут / DNS"
+        except Exception:
+            attempt["route"] = "Ошибка настройки маршрута"
+        attempts.append(attempt)
+        if result.get("ok") or result.get("status") in ("no_auth", "expired", "output_limit"):
+            break
+    return {**result, "attempts": attempts}
+
+
+def format_model_probe_result(result):
+    """Safe, human-readable report for model tests and route diagnostics."""
+    lines = [result.get("display_name", "Google"), result.get("badge", "Ошибка проверки")]
+    for attempt in result.get("attempts", []):
+        lines.append(f"\n{attempt['endpoint']}\nМаршрут: {attempt['route']}\n"
+                     f"{attempt.get('badge', attempt['status'])} ({attempt.get('latency_ms', 0)} мс)")
+        if attempt.get("response_text"):
+            lines.append(f"Ответ: {attempt['response_text']}")
+    return "\n".join(lines)
+
+
+def _test_antigravity_model_once(account: dict, model_id: str, timeout=30, proxy_url=None, endpoints=None,
+                                prompt="Reply with exactly: OK") -> dict:
     """
     Tests a specific Antigravity model using a lightweight generation probe.
     Returns: {ok: bool, status: str, latency_ms: int, badge: str, color: str, display_name: str}
@@ -302,8 +342,8 @@ def test_antigravity_model(account: dict, model_id: str, timeout=6, proxy_url=No
         "userAgent": "antigravity",
         "requestType": "agent",
         "request": {
-            "contents": [{"role": "user", "parts": [{"text": "1"}]}],
-            "generationConfig": {"maxOutputTokens": 2}
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {"maxOutputTokens": 2048}
         }
     }
 
@@ -313,12 +353,11 @@ def test_antigravity_model(account: dict, model_id: str, timeout=6, proxy_url=No
         "User-Agent": "antigravity/cli/1.1.24 (aidev_client; os_type=windows; arch=amd64; cl=974782877; auth_method=consumer)",
     }
 
-    handlers = []
-    if proxy_url:
-        handlers.append(urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}))
+    # An explicitly direct probe must not inherit HTTP_PROXY from the Hub process.
+    handlers = [urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url} if proxy_url else {})]
     opener = urllib.request.build_opener(*handlers)
 
-    endpoints = [
+    endpoints = endpoints or [
         "https://daily-cloudcode-pa.googleapis.com",
         "https://cloudcode-pa.googleapis.com",
     ]
@@ -334,7 +373,7 @@ def test_antigravity_model(account: dict, model_id: str, timeout=6, proxy_url=No
                 raw_body = resp.read().decode("utf-8", errors="ignore")
 
                 extracted_texts = []
-                has_candidates = False
+                finish_reasons = []
                 has_error = False
                 error_message = ""
 
@@ -351,19 +390,23 @@ def test_antigravity_model(account: dict, model_id: str, timeout=6, proxy_url=No
                             has_error = True
                             error_message = chunk.get("error", {}).get("message", "API Error")
                         resp_data = chunk.get("response", chunk)
+                        if "error" in resp_data:
+                            has_error = True
+                            error_message = resp_data.get("error", {}).get("message", "API Error")
                         candidates = resp_data.get("candidates", [])
                         if candidates:
-                            has_candidates = True
                             for cand in candidates:
+                                finish_reasons.append(cand.get("finishReason"))
                                 parts = cand.get("content", {}).get("parts", [])
                                 for part in parts:
                                     txt = part.get("text", "")
-                                    if txt:
+                                    if txt and not part.get("thought"):
                                         extracted_texts.append(txt)
                     except Exception:
                         pass
 
                 full_text = " ".join(extracted_texts).lower()
+                elapsed = round((time.perf_counter() - t0) * 1000)
 
                 # Check if region is blocked inside SSE stream body
                 if "user location is not supported" in full_text or "location is not supported" in error_message.lower():
@@ -402,12 +445,12 @@ def test_antigravity_model(account: dict, model_id: str, timeout=6, proxy_url=No
                     }
                     continue
 
-                if not has_candidates and not extracted_texts:
+                if not extracted_texts:
                     last_res = {
                         "ok": False,
-                        "status": "empty_response",
+                        "status": "output_limit" if "MAX_TOKENS" in finish_reasons else "empty_response",
                         "latency_ms": elapsed,
-                        "badge": "🔴 Нет ответа модели",
+                        "badge": "🟡 Лимит токенов теста, нет текста" if "MAX_TOKENS" in finish_reasons else "🔴 Нет текста ответа модели",
                         "color": "#ef4444",
                         "display_name": display_name,
                     }
@@ -420,6 +463,7 @@ def test_antigravity_model(account: dict, model_id: str, timeout=6, proxy_url=No
                     "badge": f"🟢 Работает ({elapsed} мс)",
                     "color": "#16a34a",
                     "display_name": display_name,
+                    "response_text": " ".join(extracted_texts)[:500],
                 }
         except urllib.error.HTTPError as e:
             elapsed = round((time.perf_counter() - t0) * 1000)
@@ -430,7 +474,7 @@ def test_antigravity_model(account: dict, model_id: str, timeout=6, proxy_url=No
             except Exception:
                 pass
 
-            if "User location is not supported" in err_msg:
+            if "user location is not supported" in err_msg.lower():
                 continue
 
             if e.code == 429:
@@ -438,7 +482,7 @@ def test_antigravity_model(account: dict, model_id: str, timeout=6, proxy_url=No
                     "ok": False,
                     "status": "rate_limited",
                     "latency_ms": elapsed,
-                    "badge": "🟡 Лимит 429 (Ранний доступ / квота)",
+                    "badge": "🟡 429: квота или перегрузка модели",
                     "color": "#f59e0b",
                     "display_name": display_name,
                 }
@@ -455,9 +499,9 @@ def test_antigravity_model(account: dict, model_id: str, timeout=6, proxy_url=No
                 continue
             last_res = {
                 "ok": False,
-                "status": f"http_{e.code}",
+                "status": "expired" if e.code == 401 else "overloaded" if e.code == 503 else f"http_{e.code}",
                 "latency_ms": elapsed,
-                "badge": f"🔴 Ошибка {e.code}",
+                "badge": "🔴 Авторизация отклонена (401)" if e.code == 401 else "🟡 Модель перегружена (503)" if e.code == 503 else f"🔴 Ошибка HTTP {e.code}",
                 "color": "#ef4444",
                 "display_name": display_name,
             }
@@ -465,7 +509,7 @@ def test_antigravity_model(account: dict, model_id: str, timeout=6, proxy_url=No
             elapsed = round((time.perf_counter() - t0) * 1000)
             last_res = {
                 "ok": False,
-                "status": "error",
+                "status": "network_error",
                 "latency_ms": elapsed,
                 "badge": f"🔴 Ошибка сети ({elapsed} мс)",
                 "color": "#ef4444",

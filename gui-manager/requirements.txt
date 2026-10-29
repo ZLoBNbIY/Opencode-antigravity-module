@@ -2,3 +2,4 @@ customtkinter>=5.2.0
 packaging>=23.0
 pillow>=10.0.0
 pywinstyles>=1.8
+httpx[http2]>=0.27,<1

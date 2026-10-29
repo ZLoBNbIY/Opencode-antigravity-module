@@ -525,6 +525,21 @@ def export_google_accounts() -> list[dict]:
 
     return accounts
 
+def get_active_google_health_account():
+    """Match the stored active row by ID; exported rows can omit incomplete accounts."""
+    accounts = export_google_accounts()
+    index = get_active_google_account_index()
+    generations = list((Path.home() / ".config" / "opencode").glob("*.generation"))
+    if generations and (generations[0] / "config.json").exists():
+        config = json.loads((generations[0] / "config.json").read_text(encoding="utf-8"))
+        rows = config.get("accounts", [])
+        if 0 <= index < len(rows):
+            active_id = rows[index].get("id")
+            return next((account for account in accounts if account.get("id") == active_id), None)
+        return None
+    return accounts[index] if 0 <= index < len(accounts) else None
+
+
 def delete_google_account(target_email_or_id: str) -> bool:
     config_dir = Path(os.path.expanduser("~/.config/opencode"))
     gen_dirs = list(config_dir.glob("*.generation"))
@@ -1787,6 +1802,34 @@ class AntigravityManagerApp(ctk.CTk):
 
         threading.Thread(target=_load, name="hub-google-model-list", daemon=True).start()
 
+    def test_google_generation_action(self):
+        if getattr(self, "google_generation_testing", False):
+            return
+        self.google_generation_testing = True
+        self.set_status("Тест Gemini 3.8: обновление токена и запрос генерации...")
+
+        def worker():
+            try:
+                import google_health_auth
+                account = get_active_google_health_account()
+                if not account:
+                    raise ValueError("Нет активного аккаунта")
+                account = google_health_auth.refresh_google_health_account(
+                    account, run_google_route_cmd, get_node_executable(), get_cli_js())
+                result = health_checker.test_antigravity_model(account, "antigravity-gemini-3.8-flash")
+                report = health_checker.format_model_probe_result(result)
+            except Exception:
+                report = "Не удалось подготовить тест. Проверьте активный Google-аккаунт, авторизацию и сеть."
+
+            def done():
+                self.google_generation_testing = False
+                self.set_status("Тест Gemini 3.8 завершён")
+                messagebox.showinfo("Генерация Gemini 3.8", report, parent=self)
+
+            self.after(0, done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _show_google_models_result(self, output, error):
         self.google_models_loading = False
         self.btn_google_models.configure(state="normal", text="📋 Модели")
@@ -1925,9 +1968,13 @@ class AntigravityManagerApp(ctk.CTk):
                 if not acc:
                     res = {"ok": False, "status": "no_auth", "badge": "🔴 Нет аккаунта", "color": "#ef4444"}
                 else:
-                    active_proxy = get_active_proxy()
-                    res = health_checker.test_antigravity_model(acc, m_id, timeout=8, proxy_url=active_proxy)
-                dialog.after(0, lambda m=m_id, r=res: apply_result(m, r))
+                    res = health_checker.test_antigravity_model(acc, m_id, timeout=30)
+                def done():
+                    if not dialog.winfo_exists():
+                        return
+                    apply_result(m_id, res)
+                    messagebox.showinfo("Результат генерации", health_checker.format_model_probe_result(res), parent=dialog)
+                dialog.after(0, done)
 
             threading.Thread(target=_worker, daemon=True).start()
 
@@ -1948,11 +1995,10 @@ class AntigravityManagerApp(ctk.CTk):
 
                 import concurrent.futures
                 results_summary = {"ok": 0, "rate_limit": 0, "error": 0}
-                active_proxy = get_active_proxy()
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
                     futures = {
-                        executor.submit(health_checker.test_antigravity_model, acc, m, 8, active_proxy): m
+                        executor.submit(health_checker.test_antigravity_model, acc, m, 30): m
                         for m in model_lines
                     }
                     for future in concurrent.futures.as_completed(futures):
@@ -4212,11 +4258,29 @@ class AntigravityManagerApp(ctk.CTk):
         )
         return answer
 
+    def sync_opencode_routes_from_config(self):
+        """Apply saved Hub routes to opencode.json without touching NetworkView widgets."""
+        try:
+            opencode_cfg_path = Path.home() / ".config" / "opencode" / "opencode.json"
+            if not opencode_cfg_path.exists():
+                return
+            oc_data = json.loads(opencode_cfg_path.read_text(encoding="utf-8"))
+            from proxy_config import sync_provider_routes
+            sync_provider_routes(oc_data, self.config_data, get_http_port(),
+                                 self.config_data.get("provider_routes", {}))
+            opencode_cfg_path.write_text(
+                json.dumps(oc_data, indent=4, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            print(f"Warning: Failed to sync routes to opencode.json: {e}")
+
     def prepare_opencode_launch_env(self):
         launch_env = os.environ.copy()
         vless_enabled = self.config_data.get("vless_enabled", False)
         vless_url = (self.config_data.get("vless_url") or "").strip()
         http_port = get_http_port()
+        self.sync_opencode_routes_from_config()
         # Start the VLESS core when enabled; provider_proxy routes only selected
         # provider hosts through it and sends other hosts via their own route.
         if vless_enabled and vless_url and not vless_service.is_running():
