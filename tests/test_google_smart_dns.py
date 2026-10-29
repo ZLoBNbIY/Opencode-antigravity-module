@@ -53,6 +53,25 @@ class SmartDnsTests(unittest.TestCase):
         smart.resolve(self.host, {"google_smart_doh": "https://resolver.example/dns-query"})
         self.assertEqual(transport.post.call_count, 2)
 
+    @patch("httpx.Client")
+    def test_resolver_failure_falls_back_to_public_doh(self, client):
+        transport = client.return_value.__enter__.return_value
+        failed = Mock()
+        failed.raise_for_status.side_effect = RuntimeError("503 Service Unavailable")
+        succeeded = Mock(content=answer(self.query),
+                         headers={"content-type": "application/dns-message"})
+        succeeded.raise_for_status.return_value = None
+        def respond(url, **kwargs):
+            if url == "https://resolver.example/dns-query":
+                return failed
+            return Mock(content=answer(kwargs["content"]),
+                        headers={"content-type": "application/dns-message"})
+        transport.post.side_effect = respond
+        self.assertEqual(smart.resolve(self.host, {"google_smart_doh": "https://resolver.example/dns-query"}),
+                         ["93.184.216.34"])
+        self.assertEqual(transport.post.call_count, 2)
+        self.assertEqual(transport.post.call_args_list[-1].args[0], "https://dns.dns-ai.ru/dns-query")
+
     @patch("google_smart_dns.socket.create_connection")
     @patch("google_smart_dns.resolve", return_value=["93.184.216.34", "93.184.216.35"])
     def test_connection_uses_public_literal_addresses_not_system_dns(self, resolve, connect):

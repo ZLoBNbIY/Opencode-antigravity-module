@@ -31,12 +31,11 @@ except ImportError:
 
 
 PROVIDER_ROUTE_LABELS = {
-    "default": "Общие настройки",
+    "direct": "Напрямую",
     "vless": "VLESS",
     "proxy": "Внешний прокси",
     "dns": "DNS-прокси Hub",
-    "direct": "Напрямую",
-    "google-smart": "Google SmartDNS (встроенный)",
+    "google-smart": "🧪 Google SmartDNS (Эксперимент)",
 }
 PROVIDER_ROUTE_BY_LABEL = {label: mode for mode, label in PROVIDER_ROUTE_LABELS.items()}
 
@@ -512,13 +511,24 @@ class NetworkView(ctk.CTkScrollableFrame):
             route_row.pack(fill="x", padx=16, pady=3)
             ctk.CTkLabel(route_row, text=provider_name, font=app.font(11, "bold"),
                          text_color=colors["text_primary"], anchor="w", width=220).pack(side="left")
-            mode = saved_routes.get(provider_name, "default")
-            if mode not in PROVIDER_ROUTE_MODES:
-                mode = "default"
+            mode = saved_routes.get(provider_name, "direct")
+            if mode not in PROVIDER_ROUTE_MODES or mode == "default":
+                mode = "direct"
             variable = tk.StringVar(value=PROVIDER_ROUTE_LABELS[mode])
             self.provider_route_vars[provider_name] = variable
+
+            if provider_name == "google":
+                def _on_google_option_selected(choice):
+                    is_smart = (choice == PROVIDER_ROUTE_LABELS["google-smart"])
+                    if hasattr(self, "smart_dns_enabled_var"):
+                        self.smart_dns_enabled_var.set(is_smart)
+
+                cmd = _on_google_option_selected
+            else:
+                cmd = None
+
             ctk.CTkOptionMenu(
-                route_row, variable=variable,
+                route_row, variable=variable, command=cmd,
                 values=[label for label, value in PROVIDER_ROUTE_BY_LABEL.items()
                         if value != "google-smart" or provider_name == "google"],
                 font=app.font(11), width=190, height=30,
@@ -531,26 +541,76 @@ class NetworkView(ctk.CTkScrollableFrame):
                          font=app.font(11), text_color=colors["text_secondary"], wraplength=950
                          ).pack(anchor="w", padx=16, pady=(0, 12))
 
-        ctk.CTkLabel(provider_routes_card, text="DoH для Google SmartDNS (публичный сервис или свой):",
+        # Сворачиваемый блок для экспериментальной функции Google SmartDNS
+        self.smart_dns_expanded = False
+        self.smart_dns_card = ctk.CTkFrame(provider_routes_card, fg_color=colors["subbox_bg"], corner_radius=8,
+                                         border_width=1, border_color=colors["border"])
+        self.smart_dns_card.pack(fill="x", padx=16, pady=(10, 4))
+
+        smart_header_row = ctk.CTkFrame(self.smart_dns_card, fg_color="transparent")
+        smart_header_row.pack(fill="x", padx=12, pady=8)
+
+        # Чекбокс включения / отключения SmartDNS для Google
+        google_current_route = saved_routes.get("google", "direct")
+        self.smart_dns_enabled_var = tk.BooleanVar(value=(google_current_route == "google-smart"))
+
+        def _on_toggle_smart_dns():
+            if "google" in self.provider_route_vars:
+                if self.smart_dns_enabled_var.get():
+                    self.provider_route_vars["google"].set(PROVIDER_ROUTE_LABELS["google-smart"])
+                else:
+                    self.provider_route_vars["google"].set(PROVIDER_ROUTE_LABELS["direct"])
+
+        self.smart_dns_switch = create_cyber_switch(
+            smart_header_row,
+            text=" Включить Google SmartDNS",
+            variable=self.smart_dns_enabled_var,
+            command=_on_toggle_smart_dns,
+            font=app.font(11, "bold")
+        )
+        self.smart_dns_switch.pack(side="left")
+
+        ctk.CTkLabel(smart_header_row, text="[Эксперимент]",
+                     font=app.font(10, "bold"), text_color="#d29922").pack(side="left", padx=(8, 0))
+
+        # Кнопка сворачивания/разворачивания блока подробностей
+        self.btn_toggle_smart_body = ctk.CTkButton(
+            smart_header_row, text="▶ Подробнее и DoH", width=140, height=24,
+            font=app.font(10), fg_color="transparent", hover_color=colors["card_bg"],
+            text_color=colors["text_secondary"], command=self._toggle_smart_dns_body
+        )
+        self.btn_toggle_smart_body.pack(side="right")
+
+        # Тело сворачиваемого блока (скрыто по умолчанию)
+        self.smart_dns_body = ctk.CTkFrame(self.smart_dns_card, fg_color="transparent")
+
+        smart_disclaimer = (
+            "• Зачем это нужно: Прямое подключение к шлюзам генерации Cloud Code (daily-cloudcode-pa / cloudcode-pa) "
+            "в обход VLESS. При генерации запрашивается список актуальных IP через защищённый DoH и отбирается рабочий адрес "
+            "с автоматическим переключением при сбоях.\n"
+            "• Как работает тумблер: Включение тумблера переводит маршрут «google» в режим «Google SmartDNS». "
+            "Выключение тумблера возвращает «google» на работу «Напрямую» (или выберите «DNS-прокси Hub»/«VLESS» в меню выше)."
+        )
+        ctk.CTkLabel(self.smart_dns_body, text=smart_disclaimer,
+                     font=app.font(10), text_color=colors["text_secondary"],
+                     wraplength=920, justify="left").pack(anchor="w", padx=12, pady=(0, 6))
+
+        ctk.CTkLabel(self.smart_dns_body, text="DoH-резолвер для SmartDNS (запрос пула IP):",
                      font=app.font(11), text_color=colors["text_secondary"]
-                     ).pack(anchor="w", padx=16, pady=(12, 2))
+                     ).pack(anchor="w", padx=12, pady=(4, 2))
         from google_smart_dns import DEFAULT_DOH
-        self.google_smart_doh_entry = ctk.CTkEntry(provider_routes_card, font=app.font(11))
-        self.google_smart_doh_entry.pack(fill="x", padx=16)
+        self.google_smart_doh_entry = ctk.CTkEntry(self.smart_dns_body, font=app.font(11))
+        self.google_smart_doh_entry.pack(fill="x", padx=12, pady=(0, 6))
         self.google_smart_doh_entry.insert(0, app.config_data.get("google_smart_doh") or DEFAULT_DOH)
 
-        google_tools = ctk.CTkFrame(provider_routes_card, fg_color="transparent")
-        google_tools.pack(fill="x", padx=16, pady=12)
+        google_tools = ctk.CTkFrame(self.smart_dns_body, fg_color="transparent")
+        google_tools.pack(fill="x", padx=12, pady=(4, 8))
         self.btn_google_route_check = ctk.CTkButton(
             google_tools, text="Диагностика маршрута Google", command=self.diagnose_google_route,
-            font=app.font(11), width=220)
+            font=app.font(11), width=200)
         self.btn_google_route_check.pack(side="left", padx=(0, 8))
         ctk.CTkButton(google_tools, text="Тест Gemini 3.8", font=app.font(11),
                       command=self.app.test_google_generation_action).pack(side="left")
-        ctk.CTkLabel(provider_routes_card,
-                     text="Диагностика и тест используют сохранённые настройки. SmartDNS зависит от доступности внешнего сервиса, но не требует сторонней программы на ПК.",
-                     font=app.font(11), text_color=colors["text_secondary"], wraplength=950
-                     ).pack(anchor="w", padx=16, pady=(0, 12))
 
         # Save Button
         save_btn = ctk.CTkButton(
@@ -569,6 +629,15 @@ class NetworkView(ctk.CTkScrollableFrame):
         self.update_core_status()
         self.update_vless_status()
         self.after(2500, self._poll_vless_status)
+
+    def _toggle_smart_dns_body(self):
+        self.smart_dns_expanded = not self.smart_dns_expanded
+        if self.smart_dns_expanded:
+            self.smart_dns_body.pack(fill="x", padx=4, pady=(0, 6))
+            self.btn_toggle_smart_body.configure(text="▼ Свернуть")
+        else:
+            self.smart_dns_body.pack_forget()
+            self.btn_toggle_smart_body.configure(text="▶ Подробнее и DoH")
 
     # =========================================================================
     # VLESS ACTIONS
@@ -827,7 +896,7 @@ class NetworkView(ctk.CTkScrollableFrame):
             messagebox.showerror("Google SmartDNS", str(error))
             return
         provider_routes = {
-            name: PROVIDER_ROUTE_BY_LABEL.get(variable.get(), "default")
+            name: PROVIDER_ROUTE_BY_LABEL.get(variable.get(), "direct")
             for name, variable in self.provider_route_vars.items()
         }
         if any(mode == "vless" for mode in provider_routes.values()) and not (

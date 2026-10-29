@@ -91,6 +91,12 @@ def resolver_url(config):
     return url
 
 
+def _resolver_urls(config):
+    primary = resolver_url(config)
+    fallback = DEFAULT_DOH if primary != DEFAULT_DOH else "https://dns.google/dns-query"
+    return [primary, fallback]
+
+
 def resolve(host, config):
     host = host.lower().rstrip(".")
     if host not in GATE_HOSTS:
@@ -104,16 +110,22 @@ def resolve(host, config):
             return list(entry[1])
         import httpx
         query = _query(host)
-        # Ignore the Hub's HTTP_PROXY: resolving through ourselves would recurse.
-        with httpx.Client(http2=True, trust_env=False, timeout=8) as client:
-            response = client.post(url, content=query, headers={
-                "Content-Type": "application/dns-message", "Accept": "application/dns-message"})
-            response.raise_for_status()
-            if response.headers.get("content-type", "").split(";")[0].strip() != "application/dns-message":
-                raise ValueError("DoH returned unexpected content")
-            addresses, ttl = _answers(response.content, query)
-        _cache[key] = (time.monotonic() + ttl, addresses)
-        return list(addresses)
+        errors = []
+        for candidate in _resolver_urls(config):
+            try:
+                # Ignore the Hub's HTTP_PROXY: resolving through ourselves would recurse.
+                with httpx.Client(http2=True, trust_env=False, timeout=8) as client:
+                    response = client.post(candidate, content=query, headers={
+                        "Content-Type": "application/dns-message", "Accept": "application/dns-message"})
+                    response.raise_for_status()
+                    if response.headers.get("content-type", "").split(";")[0].strip() != "application/dns-message":
+                        raise ValueError("DoH returned unexpected content")
+                    addresses, ttl = _answers(response.content, query)
+                _cache[key] = (time.monotonic() + ttl, addresses)
+                return list(addresses)
+            except Exception as exc:
+                errors.append(f"{urlparse(candidate).hostname}: {exc}")
+        raise OSError("Google SmartDNS resolvers failed: " + "; ".join(errors))
 
 
 def connect(host, port, config):

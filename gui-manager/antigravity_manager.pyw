@@ -95,9 +95,7 @@ import dns_tester
 import local_proxy
 import hub_restart
 from openrouter_view import OpenRouterView
-from mwapi_view import MwapiView
 from network_view import NetworkView
-from deepseek_view import DeepSeekView
 from xpiki_view import XpikiView
 from vless_manager import vless_service, get_http_port, get_active_proxy
 from claude_manager import claude_service, CLAUDE_MODELS
@@ -110,8 +108,6 @@ AVAILABLE_PROVIDERS = [
     ("claude", "🟠  Claude Code / Pro", "claude", "Подписка Claude Pro / Team без покупки API-токенов"),
     ("xpiki", "🟠  Claude API (Xpiki)", "xpiki", "Шлюз Claude API (Xpiki) по гайду с квотой 100M и Opus 5"),
     ("openrouter", "🟣  OpenRouter Free", "openrouter", "Бесплатные модели OpenRouter"),
-    ("mwapi", "🧠  Claude Cloud Code", "mwapi", "Claude Opus / Sonnet через MWAPI Cloud Code"),
-    ("deepseek", "🐋  DeepSeek Web", "deepseek", "Подключение DeepSeek через веб-сессию"),
 ]
 
 # Keep the Windows mutex handle alive for the lifetime of this process.
@@ -283,8 +279,7 @@ DEFAULT_CONFIG = {
         "openai": True,
         "claude": True,
         "openrouter": True,
-        "mwapi": True,
-        "deepseek": False,
+        "xpiki": True,
     },
     "max_rate_limit_wait_seconds": 300,
 }
@@ -969,7 +964,7 @@ class AntigravityManagerApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("Antigravity Hub — Google, ChatGPT & DeepSeek")
+        self.title("Antigravity Hub — Google, ChatGPT & Claude")
         self.geometry("1240x780")
         self.minsize(1040, 700)
 
@@ -1509,11 +1504,8 @@ class AntigravityManagerApp(ctk.CTk):
     def switch_nav(self, target_nav):
         self.current_nav = target_nav
         self.openrouter_view.pack_forget()
-        self.mwapi_view.pack_forget()
         if hasattr(self, "network_view"):
             self.network_view.pack_forget()
-        if hasattr(self, "deepseek_view"):
-            self.deepseek_view.pack_forget()
         if hasattr(self, "xpiki_view"):
             self.xpiki_view.pack_forget()
         for key, btn in self.nav_btns.items():
@@ -1557,22 +1549,6 @@ class AntigravityManagerApp(ctk.CTk):
             self.settings_frame.pack_forget()
             self.system_frame.pack_forget()
             self.openrouter_view.pack(fill="both", expand=True, padx=24, pady=16)
-        elif target_nav == "mwapi":
-            self.top_action_bar.pack_forget()
-            self.accounts_container.pack_forget()
-            self.settings_frame.pack_forget()
-            self.system_frame.pack_forget()
-            self.mwapi_view.pack(fill="both", expand=True, padx=24, pady=16)
-            if hasattr(self.mwapi_view, "on_show"):
-                self.mwapi_view.on_show()
-        elif target_nav == "deepseek":
-            self.top_action_bar.pack_forget()
-            self.accounts_container.pack_forget()
-            self.settings_frame.pack_forget()
-            self.system_frame.pack_forget()
-            self.deepseek_view.pack(fill="both", expand=True, padx=24, pady=16)
-            if hasattr(self.deepseek_view, "update_status"):
-                self.deepseek_view.update_status()
         elif target_nav == "network":
             self.top_action_bar.pack_forget()
             self.accounts_container.pack_forget()
@@ -1622,10 +1598,8 @@ class AntigravityManagerApp(ctk.CTk):
         self.create_settings_view()
         self.create_system_view()
         self.openrouter_view = OpenRouterView(self.content_area, self, COLOR)
-        self.mwapi_view = MwapiView(self.content_area, self, COLOR)
         self.xpiki_view = XpikiView(self.content_area, self, COLOR)
         self.network_view = NetworkView(self.content_area, self, COLOR)
-        self.deepseek_view = DeepSeekView(self.content_area, self, COLOR)
         self.create_statusbar()
 
     def create_action_bar(self):
@@ -4231,10 +4205,10 @@ class AntigravityManagerApp(ctk.CTk):
             "dns": "DNS-прокси Hub",
             "proxy": "внешний прокси",
             "direct": "напрямую",
-            "default": "общие настройки",
+            "google-smart": "Google SmartDNS",
         }
-        openai_route = route_names.get(routes.get("openai", "default"), "общие настройки")
-        google_route = route_names.get(routes.get("google", "default"), "общие настройки")
+        openai_route = route_names.get(routes.get("openai", "direct"), "напрямую")
+        google_route = route_names.get(routes.get("google", "direct"), "напрямую")
         active_claude = claude_service.get_active_account()
         claude_note = (
             f"\nПодключённый аккаунт Claude: {active_claude.get('email', '')}."
@@ -4272,15 +4246,24 @@ class AntigravityManagerApp(ctk.CTk):
                 json.dumps(oc_data, indent=4, ensure_ascii=False),
                 encoding="utf-8",
             )
+            return True
         except Exception as e:
             print(f"Warning: Failed to sync routes to opencode.json: {e}")
+            return False
 
     def prepare_opencode_launch_env(self):
         launch_env = os.environ.copy()
         vless_enabled = self.config_data.get("vless_enabled", False)
         vless_url = (self.config_data.get("vless_url") or "").strip()
         http_port = get_http_port()
-        self.sync_opencode_routes_from_config()
+        if not self.sync_opencode_routes_from_config():
+            raise RuntimeError("Не удалось сохранить маршруты провайдеров в opencode.json")
+        try:
+            from cloudcode_route_patch import patch_auth_plugin_transport
+            if not patch_auth_plugin_transport():
+                raise RuntimeError("Не найден auth-плагин OpenCode для настройки маршрута Cloud Code")
+        except Exception as e:
+            raise RuntimeError(f"Не удалось настроить Cloud Code через Hub: {e}") from e
         # Start the VLESS core when enabled; provider_proxy routes only selected
         # provider hosts through it and sends other hosts via their own route.
         if vless_enabled and vless_url and not vless_service.is_running():
@@ -4290,25 +4273,22 @@ class AntigravityManagerApp(ctk.CTk):
         try:
             import provider_proxy
             router_ready = provider_proxy.start()
-        except Exception:
+        except Exception as e:
+            router_error = f"Provider route proxy failed to start: {e}"
+            print(router_error)
             router_ready = False
 
-        if router_ready:
-            route_proxy = f"http://127.0.0.1:{provider_proxy.PORT}"
-            for var in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
-                launch_env[var] = route_proxy
-            launch_env["NO_PROXY"] = "localhost,127.0.0.1,::1"
-            launch_env["no_proxy"] = launch_env["NO_PROXY"]
-        else:
-            # Fail closed to the old global route if the per-provider router
-            # could not bind its local port.
-            from proxy_config import select_effective_proxy
-            effective_proxy = select_effective_proxy(self.config_data, http_port)
-            for var in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
-                if effective_proxy:
-                    launch_env[var] = effective_proxy
-                else:
-                    launch_env.pop(var, None)
+        if not router_ready:
+            # Do not launch OpenCode with a global proxy: that silently bypasses
+            # per-provider routing and can send Cloud Code through the wrong route.
+            raise RuntimeError(router_error if 'router_error' in locals() else
+                               "Provider route proxy is unavailable on 127.0.0.1:10880")
+
+        route_proxy = f"http://127.0.0.1:{provider_proxy.PORT}"
+        for var in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
+            launch_env[var] = route_proxy
+        launch_env["NO_PROXY"] = "localhost,127.0.0.1,::1"
+        launch_env["no_proxy"] = launch_env["NO_PROXY"]
 
         return launch_env
 
@@ -4333,8 +4313,14 @@ class AntigravityManagerApp(ctk.CTk):
             time.sleep(1)
             exe = get_opencode_exe()
             if os.path.exists(exe):
-                launch_env = self.prepare_opencode_launch_env()
-                subprocess.Popen([exe], cwd=os.path.dirname(exe), env=launch_env)
+                try:
+                    launch_env = self.prepare_opencode_launch_env()
+                    subprocess.Popen([exe], cwd=os.path.dirname(exe), env=launch_env)
+                except Exception as e:
+                    message = f"Запуск OpenCode отменён: {e}"
+                    print(message)
+                    self.after(0, lambda: self.set_status(message))
+                    return
             time.sleep(2)
             self.after(0, self.update_opencode_status)
             self.after(0, lambda: self.set_status("OpenCode перезапущен!"))
@@ -4362,9 +4348,12 @@ class AntigravityManagerApp(ctk.CTk):
         cleanup_opencode_locks()
         exe = get_opencode_exe()
         if os.path.exists(exe):
-            launch_env = self.prepare_opencode_launch_env()
-            subprocess.Popen([exe], cwd=os.path.dirname(exe), env=launch_env)
-            self.set_status("OpenCode запущен")
+            try:
+                launch_env = self.prepare_opencode_launch_env()
+                subprocess.Popen([exe], cwd=os.path.dirname(exe), env=launch_env)
+                self.set_status("OpenCode запущен")
+            except Exception as e:
+                messagebox.showerror("Ошибка запуска OpenCode", str(e), parent=self)
         self.after(2000, self.update_opencode_status)
 
 
