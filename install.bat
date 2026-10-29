@@ -43,11 +43,26 @@ if %ERRORLEVEL% equ 0 (
 )
 
 echo.
-echo [*] Установка зависимостей для GUI Менеджера аккаунтов (Python)...
-where python >nul 2>nul
-if %ERRORLEVEL% equ 0 (
-    pip install -r "%~dp0gui-manager\requirements.txt" --quiet
-    echo [✓] Зависимости GUI успешно установлены.
+echo [*] Проверка и установка зависимостей GUI Менеджера (Python)...
+set "CMD_PY="
+python -c "import sys; sys.exit(0)" >nul 2>nul
+if %ERRORLEVEL% equ 0 set "CMD_PY=python"
+if not defined CMD_PY (
+    py -3 -c "import sys; sys.exit(0)" >nul 2>nul
+    if !ERRORLEVEL! equ 0 set "CMD_PY=py -3"
+)
+
+if defined CMD_PY (
+    !CMD_PY! -m pip install -r "%~dp0gui-manager\requirements.txt" --quiet
+    if !ERRORLEVEL! equ 0 (
+        echo [✓] Зависимости GUI успешно установлены.
+    ) else (
+        echo [!] Предупреждение при установке зависимостей через pip.
+    )
+) else (
+    echo [x] ОШИБКА: Python 3 не обнаружен!
+    echo     Для работы Antigravity Hub требуется установить Python 3: https://www.python.org/downloads/
+    echo     Обязательно отметьте галочку: "Add python.exe to PATH".
 )
 
 :done

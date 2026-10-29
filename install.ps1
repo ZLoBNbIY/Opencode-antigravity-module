@@ -204,22 +204,134 @@ if ($NodePath) {
     Write-WarningMsg "Node.js $MinimumNodeVersion или новее не найден и не удалось установить автоматически. Установите Node.js 20 LTS или новее с https://nodejs.org; патчи плагина будут пропущены."
 }
 
-# --- 2. Поиск Python ---
-Write-Step "Проверка окружения Python..."
-$PythonPath = $null
-$pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-if ($pythonCmd) {
-    $PythonPath = $pythonCmd.Source
-} else {
+function Get-PythonEnvironment {
+    $candidates = [System.Collections.Generic.List[string]]::new()
+
+    # 1. py launcher (если установлен, он обычно в C:\Windows\py.exe)
     $pyCmd = Get-Command py -ErrorAction SilentlyContinue
-    if ($pyCmd) { $PythonPath = $pyCmd.Source }
+    if ($pyCmd) {
+        try {
+            $pyPath = (& $pyCmd.Source -3 -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
+            if ($pyPath -and (Test-Path -LiteralPath $pyPath)) {
+                $candidates.Add($pyPath)
+            }
+        } catch {}
+    }
+
+    # 2. PATH команды (python, python3)
+    foreach ($cmdName in @("python", "python3")) {
+        $found = Get-Command $cmdName -All -ErrorAction SilentlyContinue
+        if ($found) {
+            foreach ($item in $found) {
+                if ($item.Source) { $candidates.Add($item.Source) }
+            }
+        }
+    }
+
+    # 3. Стандартные пути установки Python в Windows (если не был добавлен в PATH)
+    $commonPatterns = @(
+        "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe",
+        "C:\Program Files\Python3*\python.exe",
+        "C:\Program Files (x86)\Python3*\python.exe",
+        "C:\Python3*\python.exe",
+        "$env:USERPROFILE\anaconda3\python.exe",
+        "$env:USERPROFILE\miniconda3\python.exe"
+    )
+    foreach ($pattern in $commonPatterns) {
+        try {
+            $expanded = $ExecutionContext.InvokeCommand.ExpandString($pattern)
+            $resolved = Get-ChildItem -Path $expanded -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+            if ($resolved) {
+                foreach ($res in $resolved) { $candidates.Add($res) }
+            }
+        } catch {}
+    }
+
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($cand in $candidates) {
+        if (-not $cand -or $seen.Contains($cand)) { continue }
+        $seen.Add($cand) | Out-Null
+        if (-not (Test-Path -LiteralPath $cand)) { continue }
+
+        try {
+            $prevEA = $ErrorActionPreference
+            $ErrorActionPreference = 'SilentlyContinue'
+            $verOutput = (& "$cand" --version 2>&1 | Out-String).Trim()
+            $code = $LASTEXITCODE
+            $ErrorActionPreference = $prevEA
+
+            # Проверяем, что процесс завершился успешно (код 0) и вернул 'Python 3.x'
+            # (Заглушка WindowsApps завершается с кодом 9009 и сообщением 'Python was not found...')
+            if ($code -eq 0 -and $verOutput -match '^Python\s+([0-9]+\.[0-9]+(\.[0-9]+)?)') {
+                $verString = $Matches[1]
+                # Дополнительная проверка запуска Python-кода
+                $testCode = (& "$cand" -c "import sys; print(sys.version_info[0])" 2>&1 | Out-String).Trim()
+                if ($LASTEXITCODE -eq 0 -and $testCode -eq "3") {
+                    return [PSCustomObject]@{
+                        Path       = $cand
+                        Version    = $verString
+                        FullOutput = $verOutput
+                    }
+                }
+            }
+        } catch {
+            continue
+        }
+    }
+
+    return $null
 }
 
-if ($PythonPath) {
-    $pyVer = & "$PythonPath" --version 2>&1
-    Write-Success "Python обнаружен: $PythonPath ($pyVer)"
+# --- 2. Поиск Python ---
+Write-Step "Проверка окружения Python..."
+$PythonEnv = Get-PythonEnvironment
+$PythonPath = $null
+
+if ($PythonEnv) {
+    $PythonPath = $PythonEnv.Path
+    Write-Success "Python обнаружен: $PythonPath ($($PythonEnv.FullOutput))"
+
+    # Если найденный python не в системном PATH, добавим его директорию в текущую сессию
+    $pyDir = Split-Path -Parent $PythonPath
+    $pyScripts = Join-Path $pyDir "Scripts"
+    if ($env:Path -notlike "*$pyDir*") {
+        $env:Path = "$pyDir;$pyScripts;" + $env:Path
+        Write-Info "Каталог Python временно добавлен в PATH текущей сессии: $pyDir"
+    }
 } else {
-    Write-Info "Python не найден. GUI менеджер можно будет запустить после установки Python."
+    # Проверяем, был ли ложный след от заглушки WindowsApps
+    $hasStub = $false
+    $stubPath = $null
+    $stubCmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($stubCmd -and $stubCmd.Source -like "*\Microsoft\WindowsApps\python*.exe") {
+        $hasStub = $true
+        $stubPath = $stubCmd.Source
+    }
+
+    Write-ErrorMsg "Ошибка: Рабочий интерпретатор Python 3 не обнаружен!"
+    if ($hasStub) {
+        Write-WarningMsg "Внимание: Обнаружен плейсхолдер Windows ($stubPath), но сам Python НЕ установлен!"
+    }
+
+    Write-Host ""
+    Write-Host "  ================================================================" -ForegroundColor DarkRed
+    Write-Host "  [!] ОШИБКА ОКРУЖЕНИЯ: ДЛЯ РАБОТЫ ХАБА (GUI) НЕОБХОДИМ PYTHON 3" -ForegroundColor Red
+    Write-Host "  ================================================================" -ForegroundColor DarkRed
+    Write-Host "  Графический менеджер (Antigravity Hub) не сможет запуститься без Python." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  Рекомендации по установке:" -ForegroundColor White
+    Write-Host "    1. Установите Python 3 (рекомендуется 3.10, 3.11 или 3.12):" -ForegroundColor White
+    Write-Host "       • Скачайте установщик: https://www.python.org/downloads/" -ForegroundColor Cyan
+    Write-Host "       • Или выполните в терминале: winget install Python.Python.3.12" -ForegroundColor Cyan
+    Write-Host "    2. ВАЖНО при установке через установщик Windows (.exe):" -ForegroundColor Yellow
+    Write-Host "       • На первом же экране установщика ОБЯЗАТЕЛЬНО отметьте галочку:" -ForegroundColor White
+    Write-Host "         [✓] 'Add python.exe to PATH' ('Добавить Python в PATH')" -ForegroundColor Green
+    Write-Host "    3. Если Python уже установлен на ПК, но не найден:" -ForegroundColor White
+    Write-Host "       • Добавьте путь к папке Python в системную переменную PATH," -ForegroundColor White
+    Write-Host "       • или отключите системную заглушку в Windows:" -ForegroundColor White
+    Write-Host "         Параметры -> Приложения -> Дополнительные параметры -> Псевдонимы приложений" -ForegroundColor White
+    Write-Host "    4. После установки Python запустите этот установщик снова или файл 'Запуск_Менеджера.bat'." -ForegroundColor White
+    Write-Host "  ================================================================`n" -ForegroundColor DarkRed
 }
 
 # --- 3. Подготовка каталогов ---
@@ -399,17 +511,25 @@ if (-not $SkipPatch -and $NodePath) {
 }
 
 # --- 7. Установка зависимостей Python GUI ---
-if (-not $SkipPython -and $PythonPath) {
+if (-not $SkipPython) {
     Write-Step "Проверка и установка зависимостей GUI-менеджера (Python)..."
-    $ReqFile = Join-Path $ScriptDir "gui-manager\requirements.txt"
-    if (Test-Path -LiteralPath $ReqFile) {
-        & "$PythonPath" -m pip install -r "$ReqFile" --quiet
-        if ($LASTEXITCODE -eq 0) {
-            Write-Success "Пакеты CustomTkinter успешно установлены!"
-        } else {
-            Write-WarningMsg "Предупреждение при установке pip-зависимостей."
+    if ($PythonPath) {
+        $ReqFile = Join-Path $ScriptDir "gui-manager\requirements.txt"
+        if (Test-Path -LiteralPath $ReqFile) {
+            Write-Info "Установка библиотек интерфейса из requirements.txt..."
+            & "$PythonPath" -m pip install -r "$ReqFile" --quiet
+            if ($LASTEXITCODE -eq 0) {
+                Write-Success "Пакеты CustomTkinter успешно установлены!"
+            } else {
+                Write-WarningMsg "Предупреждение при установке pip-зависимостей. Попробуйте выполнить вручную: & `"$PythonPath`" -m pip install -r `"$ReqFile`""
+            }
         }
+    } else {
+        Write-ErrorMsg "Пропуск установки зависимостей GUI: Python 3 не обнаружен."
+        Write-WarningMsg "Библиотеки интерфейса (customtkinter, pillow и др.) не установлены. Хаб не запустится без Python!"
     }
+} else {
+    Write-Info "Пропуск установки зависимостей Python (-SkipPython)."
 }
 
 # --- 8. Создание ярлыка на Рабочем столе ---
@@ -443,14 +563,28 @@ if ($CreateShortcut) {
 }
 
 # --- 9. Финальное резюме ---
-Write-Host "`n================================================================" -ForegroundColor DarkGreen
-Write-Host "              🎉 Установка успешно завершена!                  " -ForegroundColor Green -BackgroundColor Black
-Write-Host "================================================================" -ForegroundColor DarkGreen
+if ($PythonPath) {
+    Write-Host "`n================================================================" -ForegroundColor DarkGreen
+    Write-Host "              🎉 Установка успешно завершена!                  " -ForegroundColor Green -BackgroundColor Black
+    Write-Host "================================================================" -ForegroundColor DarkGreen
+} else {
+    Write-Host "`n================================================================" -ForegroundColor DarkYellow
+    Write-Host "      ⚠️  Конфигурация завершена, но ТРЕБУЕТСЯ PYTHON!         " -ForegroundColor Yellow -BackgroundColor Black
+    Write-Host "================================================================" -ForegroundColor DarkYellow
+}
 
 Write-Host "`nКак использовать модуль:" -ForegroundColor White
-Write-Host "  1. Запустите GUI-менеджер:" -ForegroundColor Cyan
-Write-Host "     • Через ярлык на Рабочем столе 'Antigravity Hub'" -ForegroundColor Gray
-Write-Host "     • Или файлом: Запуск_Менеджера.bat" -ForegroundColor Gray
+if ($PythonPath) {
+    Write-Host "  1. Запустите GUI-менеджер:" -ForegroundColor Cyan
+    Write-Host "     • Через ярлык на Рабочем столе 'Antigravity Hub'" -ForegroundColor Gray
+    Write-Host "     • Или файлом: Запуск_Менеджера.bat" -ForegroundColor Gray
+} else {
+    Write-Host "  1. Запуск GUI-менеджера (Antigravity Hub):" -ForegroundColor Red
+    Write-Host "     • [!] Сначала установите Python 3 с https://www.python.org/downloads/" -ForegroundColor Yellow
+    Write-Host "           (с обязательной галочкой 'Add python.exe to PATH')!" -ForegroundColor Yellow
+    Write-Host "     • После установки Python запустите ярлык 'Antigravity Hub' или 'Запуск_Менеджера.bat' —" -ForegroundColor Gray
+    Write-Host "       скрипт автоматически установит зависимости интерфейса и откроет Хаб." -ForegroundColor Gray
+}
 Write-Host "  2. Подключите аккаунты:" -ForegroundColor Cyan
 Write-Host "     • Google (Antigravity): вкладка 'Google' -> '+ Добавить аккаунт Google'" -ForegroundColor Gray
 Write-Host "     • OpenAI (ChatGPT):     вкладка 'OpenAI' -> '+ Добавить аккаунт OpenAI'" -ForegroundColor Gray
