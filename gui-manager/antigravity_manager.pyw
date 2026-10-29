@@ -2112,7 +2112,9 @@ class AntigravityManagerApp(ctk.CTk):
 
     def show_flash(self, message):
         self.lbl_flash.configure(text=message)
-        self.flash_banner.pack(fill="x", padx=24, pady=(10, 0), before=self.accounts_container)
+        # CTkScrollableFrame packs an outer wrapper, not the widget itself.
+        # Anchor to the action bar (a direct sibling) so Tk can place the banner.
+        self.flash_banner.pack(fill="x", padx=24, pady=(10, 0), after=self.top_action_bar)
         self.after(6000, lambda: self.flash_banner.pack_forget())
 
     def on_search_key(self, event):
