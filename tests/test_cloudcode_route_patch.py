@@ -21,6 +21,7 @@ PLUGIN_SOURCE = '''function getHttpsProxy(url) {
     }
   } catch {}
 }
+const shouldRetryEndpoint = geoBlockedLocation || response.status === 403 || response.status === 404 || response.status >= 500;
 '''
 
 

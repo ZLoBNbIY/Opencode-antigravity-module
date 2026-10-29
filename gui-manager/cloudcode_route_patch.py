@@ -13,26 +13,39 @@ def patch_auth_plugin_transport(plugin_cache: Path | None = None) -> bool:
     for path in candidates:
         try:
             source = path.read_text(encoding="utf-8")
+            changed = False
+
+            # 1. Route Cloud Code to 10880
             marker = "const hubRoutePort = 10880;"
-            if marker in source:
-                continue
-            pattern = re.compile(
-                r"const vlessPort = Number\(parsed\.vless_http_port\) > 0 \? Number\(parsed\.vless_http_port\) : 10879;\s*"
-                r"return new URL\(`http://127\.0\.0\.1:\$\{vlessPort\}`\);"
-            )
-            replacement = (
-                "const hubRoutePort = 10880;\n"
-                "        const gateHost = url.hostname === 'daily-cloudcode-pa.googleapis.com' || "
-                "url.hostname === 'cloudcode-pa.googleapis.com';\n"
-                "        const vlessPort = Number(parsed.vless_http_port) > 0 ? Number(parsed.vless_http_port) : 10879;\n"
-                "        return new URL(`http://127.0.0.1:${gateHost ? hubRoutePort : vlessPort}`);"
-            )
-            updated, count = pattern.subn(replacement, source, count=1)
-            if count:
+            if marker not in source:
+                pattern = re.compile(
+                    r"const vlessPort = Number\(parsed\.vless_http_port\) > 0 \? Number\(parsed\.vless_http_port\) : 10879;\s*"
+                    r"return new URL\(`http://127\.0\.0\.1:\$\{vlessPort\}`\);"
+                )
+                replacement = (
+                    "const hubRoutePort = 10880;\n"
+                    "        const gateHost = url.hostname === 'daily-cloudcode-pa.googleapis.com' || "
+                    "url.hostname === 'cloudcode-pa.googleapis.com';\n"
+                    "        const vlessPort = Number(parsed.vless_http_port) > 0 ? Number(parsed.vless_http_port) : 10879;\n"
+                    "        return new URL(`http://127.0.0.1:${gateHost ? hubRoutePort : vlessPort}`);"
+                )
+                source, count = pattern.subn(replacement, source, count=1)
+                if count:
+                    changed = True
+
+            # 2. Do not hang in retry loop on fatal 404 (model not found)
+            if "response.status === 404" in source and "/* no retry on 404 */" not in source:
+                old_retry = "const shouldRetryEndpoint = geoBlockedLocation || response.status === 403 || response.status === 404 || response.status >= 500;"
+                new_retry = "const shouldRetryEndpoint = geoBlockedLocation || response.status === 403 || response.status >= 500; /* no retry on 404 */"
+                if old_retry in source:
+                    source = source.replace(old_retry, new_retry, 1)
+                    changed = True
+
+            if changed:
                 backup = path.with_suffix(path.suffix + ".hub-route.bak")
                 if not backup.exists():
-                    backup.write_text(source, encoding="utf-8")
-                path.write_text(updated, encoding="utf-8")
+                    backup.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+                path.write_text(source, encoding="utf-8")
                 patched = True
         except OSError:
             continue
