@@ -506,7 +506,11 @@
     <!-- Status Bar -->
     <footer class="statusbar">
       <div id="status-left">Готов к работе</div>
-      <div id="status-right" style="color: var(--accent-amber-light);">Состояние: 10 с · лимиты: 5 мин</div>
+      <div id="status-right" style="color: var(--accent-amber-light); display: flex; align-items: center; gap: 10px;">
+        <span id="status-timing">Состояние: 10 с · лимиты: 5 мин</span>
+        <span style="opacity: 0.35;">•</span>
+        <span id="status-version" style="color: var(--text-secondary); font-weight: 600;">v2.0.0</span>
+      </div>
     </footer>
   </main>
 </div>

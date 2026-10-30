@@ -100,6 +100,7 @@ async function refreshState() {
 
 function renderAll() {
   renderSidebar();
+  renderStatusbar();
   renderNetworkTab();
   renderGoogleTab();
   renderOpenAiTab();
@@ -110,6 +111,13 @@ function renderAll() {
   renderActiveAccounts();
   renderProviderDiagnostics();
   applyProviderVisibility();
+}
+
+function renderStatusbar() {
+  const verEl = document.getElementById('status-version');
+  if (verEl && appState.appVersion) {
+    verEl.textContent = appState.appVersion;
+  }
 }
 
 // --- Sidebar ---

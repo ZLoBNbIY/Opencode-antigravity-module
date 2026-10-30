@@ -167,6 +167,7 @@ class HubApi:
             "routes": routes,
             "config": cfg,
             "opencodeRunning": self.is_opencode_running(),
+            "appVersion": "v2.0.0",
             "diagnostics": self.get_cached_diagnostics(),
             "network": self.get_network_state(),
             "providers": self.get_provider_state(),
@@ -768,25 +769,46 @@ def run_webview_app():
 
     window.events.closing += on_window_closing
 
-    # Ensure custom window & taskbar icon via Win32 WM_SETICON
-    def apply_native_window_icon():
-        time.sleep(1.5)
-        if sys.platform != "win32" or not icon_str:
-            return
-        try:
-            import ctypes
-            hwnd = ctypes.windll.user32.FindWindowW(None, "Antigravity Hub - AI аккаунты и сеть для Windows")
-            if hwnd:
-                h_icon = ctypes.windll.user32.LoadImageW(
-                    None, icon_str, 1, 0, 0, 0x00000010 | 0x00000040
-                )
-                if h_icon:
-                    ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 1, h_icon)  # ICON_BIG
-                    ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 0, h_icon)  # ICON_SMALL
-        except Exception:
-            pass
+    # Ensure custom window & taskbar icon via Win32 WM_SETICON and dark title bar
+    def apply_native_window_styling():
+        for _ in range(10):
+            time.sleep(0.5)
+            if sys.platform != "win32":
+                return
+            try:
+                import ctypes
+                hwnd = ctypes.windll.user32.FindWindowW(None, "Antigravity Hub - AI аккаунты и сеть для Windows")
+                if hwnd:
+                    # 1. Dark title bar matching the interface background (#090d12)
+                    dwmapi = ctypes.windll.dwmapi
+                    c_int = ctypes.c_int
+                    # DWMWA_USE_IMMERSIVE_DARK_MODE (20 on Win11/Win10 20H1+, 19 on older Win10)
+                    dark = c_int(1)
+                    dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(dark), ctypes.sizeof(dark))
+                    dwmapi.DwmSetWindowAttribute(hwnd, 19, ctypes.byref(dark), ctypes.sizeof(dark))
+                    # DWMWA_CAPTION_COLOR = 35 (BGR: 0x00120d09 for #090d12)
+                    caption_color = c_int(0x00120d09)
+                    dwmapi.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(caption_color), ctypes.sizeof(caption_color))
+                    # DWMWA_TEXT_COLOR = 36 (white text)
+                    text_color = c_int(0x00f8f5f2)
+                    dwmapi.DwmSetWindowAttribute(hwnd, 36, ctypes.byref(text_color), ctypes.sizeof(text_color))
+                    # DWMWA_BORDER_COLOR = 34 (dark graphite border #141a22)
+                    border_color = c_int(0x00221a14)
+                    dwmapi.DwmSetWindowAttribute(hwnd, 34, ctypes.byref(border_color), ctypes.sizeof(border_color))
 
-    threading.Thread(target=apply_native_window_icon, daemon=True).start()
+                    # 2. Window and Taskbar icon
+                    if icon_str:
+                        h_icon = ctypes.windll.user32.LoadImageW(
+                            None, icon_str, 1, 0, 0, 0x00000010 | 0x00000040
+                        )
+                        if h_icon:
+                            ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 1, h_icon)  # ICON_BIG
+                            ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 0, h_icon)  # ICON_SMALL
+                    break
+            except Exception:
+                pass
+
+    threading.Thread(target=apply_native_window_styling, daemon=True).start()
 
     # Run background token refresh thread
     def bg_refresher():
