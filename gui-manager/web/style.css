@@ -758,6 +758,11 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 /* Functional network settings */
 .network-settings-grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; margin-bottom:18px; }
 .network-panel { padding:22px; min-width:0; }

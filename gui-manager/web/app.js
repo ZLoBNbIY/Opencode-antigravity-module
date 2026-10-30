@@ -1236,6 +1236,12 @@ async function addClaudeAccount() {
 
 async function checkUpdates() {
   if (!window.pywebview?.api) return;
+  const btn = document.getElementById('btn-check-updates');
+  const originalHtml = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block; vertical-align:middle; margin-right:6px; animation: spin 1s linear infinite;"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg><span>Проверка...</span>`;
+  }
   showToast("Проверка обновлений с GitHub...");
   try {
     const res = await window.pywebview.api.check_updates();
@@ -1254,6 +1260,11 @@ async function checkUpdates() {
     }
   } catch (e) {
     showToast(`Ошибка проверки обновлений: ${e}`);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = originalHtml;
+    }
   }
 }
 
