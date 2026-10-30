@@ -63,16 +63,16 @@ if not defined PY_EXE (
     echo   [ОШИБКА] Python 3 не обнаружен на вашем компьютере!
     echo ================================================================
     echo.
-    echo   Для работы Antigravity Hub требуется установленный Python 3 (3.10+).
+    echo   Для работы Antigravity Hub требуется установленный Python 3 ^(3.10+^).
     echo.
     echo   Рекомендации по установке:
     echo     1. Скачайте официальный установщик Python:
     echo        https://www.python.org/downloads/
-    echo        (или в PowerShell: winget install Python.Python.3.12)
+    echo        ^(или в PowerShell: winget install Python.Python.3.12^)
     echo.
     echo     2. ВАЖНО при установке:
     echo        Обязательно отметьте галочку:
-    echo        [X] "Add python.exe to PATH" ("Добавить Python в PATH")
+    echo        [X] "Add python.exe to PATH" ^("Добавить Python в PATH"^)
     echo.
     echo     3. Если Python уже установлен:
     echo        Убедитесь, что путь к нему добавлен в системную переменную PATH,
@@ -98,7 +98,7 @@ if exist "!PY_DIR!pythonw.exe" (
 )
 
 :: Проверка зависимостей интерфейса (customtkinter, pillow и т.д.)
-"!PY_EXE!" -c "import customtkinter, PIL, pywinstyles, httpx" >nul 2>nul
+"!PY_EXE!" -c "import customtkinter, PIL, pywinstyles, httpx, webview" >nul 2>nul
 if !ERRORLEVEL! neq 0 (
     echo [*] Первый запуск: установка необходимых библиотек GUI...
     "!PY_EXE!" -m pip install -r "%~dp0requirements.txt"

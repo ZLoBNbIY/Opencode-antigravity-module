@@ -8,6 +8,7 @@ import os
 import select
 import socket
 import threading
+import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -94,7 +95,7 @@ def select_upstream(host: str, hub_config: dict | None = None,
         if host.lower().rstrip(".") in GATE_HOSTS:
             return "smartdns://google"
         # OAuth and other Google hosts keep the normal route.
-        mode = "default"
+        return _legacy_upstream(hub)
 
     if mode == "direct":
         return None
@@ -105,13 +106,34 @@ def select_upstream(host: str, hub_config: dict | None = None,
     if mode == "dns":
         return "dns://hub"
 
+    if provider:
+        from auto_router import router
+        router.refresh(provider, hub, oc)
+        return router.selected_upstream(provider, hub, oc)
+    return _legacy_upstream(hub)
+
+
+def _legacy_upstream(hub):
+    # Unknown, non-provider hosts retain the Hub's ordinary system routing.
     if hub.get("vless_enabled") and hub.get("vless_url"):
-        return f"http://127.0.0.1:{http_port}"
+        return f"http://127.0.0.1:{hub.get('vless_http_port', 10879)}"
     if external := _hub_upstream_proxy(hub):
         return external
     if hub.get("dns_mode") in ("standard", "dot", "doh"):
         return "dns://hub"
     return None
+
+
+def connect_routed(host, port, hub_config=None, opencode_config=None):
+    hub = hub_config if isinstance(hub_config, dict) else _read_json(CONFIG_DIR / "antigravity.json")
+    oc = opencode_config if isinstance(opencode_config, dict) else _read_json(CONFIG_DIR / "opencode.json")
+    provider = provider_for_host(host, oc)
+    mode = hub.get("provider_routes", {}).get(provider, "default")
+    if provider and mode in ("default", "auto"):
+        from auto_router import router
+        return router.connect(provider, host, port, hub, oc)
+    upstream = select_upstream(host, hub, oc)
+    return _connect_upstream(upstream, host, port, hub_config=hub), upstream
 
 
 def _hub_upstream_proxy(hub: dict) -> str | None:
@@ -126,81 +148,90 @@ def _hub_upstream_proxy(hub: dict) -> str | None:
     return external
 
 
-def _resolve_with_hub_dns(host: str) -> str:
+def _resolve_with_hub_dns(host: str, hub_config=None, timeout=8) -> str:
     import dns_tester
 
-    hub = _read_json(CONFIG_DIR / "antigravity.json")
+    hub = hub_config if isinstance(hub_config, dict) else _read_json(CONFIG_DIR / "antigravity.json")
     mode = hub.get("dns_mode", "system")
     if mode == "system":
         return host
-    with _dns_lock:
-        previous = dns_tester.DOMAIN_TO_TEST
-        dns_tester.DOMAIN_TO_TEST = host
-        try:
-            if mode == "doh":
-                url = str(hub.get("doh_url", "")).strip()
-                query = dns_tester._build_dns_query(host)
-                request = urllib.request.Request(
-                    url, data=query,
-                    headers={"Content-Type": "application/dns-message", "Accept": "application/dns-message"},
-                    method="POST",
-                )
-                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-                with opener.open(request, timeout=8) as response:
-                    answer = dns_tester._parse_a_record_ip(response.read())
-                result = {"ok": bool(answer), "resolved_ip": answer}
-            elif mode == "dot":
-                result = dns_tester.test_dot_endpoint(hub.get("dot_host", ""), timeout=8)
-            else:
-                servers = hub.get("custom_dns", [])
-                server = servers[0] if servers else "143.20.64.55"
-                result = dns_tester.test_standard_dns(server, timeout=5)
-        finally:
-            dns_tester.DOMAIN_TO_TEST = previous
+    deadline = time.monotonic() + timeout
+    if mode == "doh":
+        query = dns_tester._build_dns_query(host)
+        request = urllib.request.Request(hub.get("doh_url", ""), data=query,
+            headers={"Content-Type": "application/dns-message", "Accept": "application/dns-message"}, method="POST")
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=timeout) as response:
+            answer = dns_tester._parse_a_record_ip(response.read())
+        result = {"ok": bool(answer), "resolved_ip": answer}
+    elif mode == "dot":
+        result = dns_tester.test_dot_endpoint(hub.get("dot_host", ""), timeout=timeout, domain=host)
+    else:
+        servers = hub.get("custom_dns") or ["143.20.64.55"]
+        result = {}
+        for server in servers:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            result = dns_tester.test_standard_dns(server, timeout=min(3, remaining), domain=host)
+            if result.get("ok") and result.get("resolved_ip") not in (None, "OK"):
+                break
     resolved = result.get("resolved_ip") if isinstance(result, dict) and result.get("ok") else None
     if not resolved or resolved == "OK":
         raise OSError("Hub DNS could not resolve target")
     return resolved
 
 
-def _connect_upstream(proxy_url: str | None, target_host: str, target_port: int) -> socket.socket:
+def _connect_upstream(proxy_url: str | None, target_host: str, target_port: int,
+                      hub_config=None, timeout=20) -> socket.socket:
     if proxy_url == "smartdns://google":
         import google_smart_dns
-        return google_smart_dns.connect(target_host, target_port, _read_json(CONFIG_DIR / "antigravity.json"))
-    if not proxy_url:
-        upstream = socket.create_connection((target_host, target_port), timeout=20)
+        return google_smart_dns.connect(target_host, target_port,
+            hub_config if isinstance(hub_config, dict) else _read_json(CONFIG_DIR / "antigravity.json"))
+    deadline = time.monotonic() + timeout
+    upstream = None
+    def remaining():
+        budget = deadline - time.monotonic()
+        if budget <= 0:
+            raise TimeoutError("Upstream connection timed out")
+        return budget
+    try:
+        if not proxy_url or proxy_url == "dns://hub":
+            resolved = _resolve_with_hub_dns(target_host, hub_config, remaining()) if proxy_url else target_host
+            upstream = socket.create_connection((resolved, target_port), timeout=remaining())
+        else:
+            parsed = urlparse(proxy_url)
+            proxy_host = parsed.hostname or "127.0.0.1"
+            proxy_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            upstream = socket.create_connection((proxy_host, proxy_port), timeout=remaining())
+            if parsed.scheme == "https":
+                import ssl
+                upstream.settimeout(remaining())
+                upstream = ssl.create_default_context().wrap_socket(upstream, server_hostname=proxy_host)
+            auth = ""
+            if parsed.username is not None:
+                from urllib.parse import unquote
+                credentials = f"{unquote(parsed.username)}:{unquote(parsed.password or '')}".encode()
+                auth = "Proxy-Authorization: Basic " + base64.b64encode(credentials).decode("ascii") + "\r\n"
+            request = (f"CONNECT {target_host}:{target_port} HTTP/1.1\r\n"
+                       f"Host: {target_host}:{target_port}\r\n{auth}Connection: Keep-Alive\r\n\r\n")
+            upstream.settimeout(remaining())
+            upstream.sendall(request.encode("ascii"))
+            response = b""
+            while b"\r\n\r\n" not in response and len(response) < 65536:
+                upstream.settimeout(remaining())
+                part = upstream.recv(4096)
+                if not part:
+                    break
+                response += part
+            if not response.startswith(b"HTTP/1.0 200") and not response.startswith(b"HTTP/1.1 200"):
+                raise OSError("Upstream proxy refused CONNECT")
         upstream.settimeout(None)
         return upstream
-    if proxy_url == "dns://hub":
-        resolved = _resolve_with_hub_dns(target_host)
-        upstream = socket.create_connection((resolved, target_port), timeout=20)
-        upstream.settimeout(None)
-        return upstream
-    parsed = urlparse(proxy_url)
-    proxy_host = parsed.hostname or "127.0.0.1"
-    proxy_port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    upstream = socket.create_connection((proxy_host, proxy_port), timeout=20)
-    if parsed.scheme == "https":
-        import ssl
-        upstream = ssl.create_default_context().wrap_socket(upstream, server_hostname=proxy_host)
-    auth = ""
-    if parsed.username is not None:
-        credentials = f"{parsed.username}:{parsed.password or ''}".encode()
-        auth = "Proxy-Authorization: Basic " + base64.b64encode(credentials).decode("ascii") + "\r\n"
-    request = (f"CONNECT {target_host}:{target_port} HTTP/1.1\r\n"
-               f"Host: {target_host}:{target_port}\r\n{auth}Connection: Keep-Alive\r\n\r\n")
-    upstream.sendall(request.encode("ascii"))
-    response = b""
-    while b"\r\n\r\n" not in response and len(response) < 65536:
-        part = upstream.recv(4096)
-        if not part:
-            break
-        response += part
-    if not response.startswith(b"HTTP/1.0 200") and not response.startswith(b"HTTP/1.1 200"):
-        upstream.close()
-        raise OSError("Upstream proxy refused CONNECT")
-    upstream.settimeout(None)
-    return upstream
+    except Exception:
+        if upstream is not None:
+            upstream.close()
+        raise
 
 
 def _relay(left: socket.socket, right: socket.socket) -> None:
@@ -250,7 +281,7 @@ class _Handler(BaseHTTPRequestHandler):
             target_port = int(port) if port else 443
             if host in (HOST, "localhost") and target_port == PORT:
                 raise OSError("Proxy loop")
-            upstream = _connect_upstream(select_upstream(host), host, target_port)
+            upstream, _ = connect_routed(host, target_port)
             self.send_response(200, "Connection Established")
             self.end_headers()
             _relay(self.connection, upstream)
@@ -264,10 +295,9 @@ class _Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         host = parsed.hostname or self.headers.get("Host", "")
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        proxy = select_upstream(host)
         try:
-            upstream = _connect_upstream(proxy, host, port)
-            path = self.path if proxy else (parsed.path or "/") + (("?" + parsed.query) if parsed.query else "")
+            upstream, _ = connect_routed(host, port)
+            path = (parsed.path or "/") + (("?" + parsed.query) if parsed.query else "")
             request = f"{self.command} {path} {self.request_version}\r\n"
             for key, value in self.headers.items():
                 if key.lower() not in ("proxy-authorization", "proxy-connection"):
@@ -303,6 +333,7 @@ def start() -> bool:
         _server = _ThreadingServer((HOST, PORT), _Handler)
         _thread = threading.Thread(target=_server.serve_forever, daemon=True, name="provider-route-proxy")
         _thread.start()
+        threading.Thread(target=_maintain_auto_routes, daemon=True, name="provider-auto-routes").start()
         _install_process_proxy_environment()
         return True
     except OSError:
@@ -317,6 +348,23 @@ def start() -> bool:
         except OSError:
             pass
         return False
+
+
+def _maintain_auto_routes():
+    from auto_router import router
+    visibility_keys = {"google":"antigravity", "claude-pro":"claude", "openrouter-free":"openrouter"}
+    while True:
+        try:
+            hub = _read_json(CONFIG_DIR / "antigravity.json")
+            oc = _read_json(CONFIG_DIR / "opencode.json")
+            names = set(oc.get("provider", {})) | set(oc.get("providers", {}))
+            for name in names:
+                enabled = hub.get("providers_visibility", {}).get(visibility_keys.get(name, name), True)
+                if enabled and name not in oc.get("disabled_providers", []) and hub.get("provider_routes", {}).get(name, "default") in ("default", "auto"):
+                    router.refresh(name, hub, oc)
+        except Exception:
+            pass
+        time.sleep(5)
 
 
 def _install_process_proxy_environment() -> None:

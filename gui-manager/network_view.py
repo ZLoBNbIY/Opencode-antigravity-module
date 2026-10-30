@@ -31,6 +31,7 @@ except ImportError:
 
 
 PROVIDER_ROUTE_LABELS = {
+    "default": "Авто · лучший доступный маршрут",
     "direct": "Напрямую",
     "vless": "VLESS",
     "proxy": "Внешний прокси",
@@ -87,7 +88,7 @@ class NetworkView(ctk.CTkScrollableFrame):
         ).pack(fill="x", pady=(0, 10))
 
         # Disclaimer Banner: VLESS vs DNS priority
-        notice_banner = ctk.CTkFrame(self, fg_color=("#fffbeb", "#141d2e"), corner_radius=10, border_width=1, border_color="#f59e0b")
+        notice_banner = ctk.CTkFrame(self, fg_color=("#fffbeb", "#251e14"), corner_radius=10, border_width=1, border_color="#f59e0b")
         notice_banner.pack(fill="x", pady=(0, 12))
 
         nb_header = ctk.CTkFrame(notice_banner, fg_color="transparent")
@@ -112,8 +113,8 @@ class NetworkView(ctk.CTkScrollableFrame):
         # =====================================================================
         # CARD 1: VLESS TUNNEL
         # =====================================================================
-        vless_card = ctk.CTkFrame(self, fg_color=colors["card_bg"], corner_radius=12, border_width=1, border_color=colors["border"])
-        vless_card.pack(fill="x", pady=6)
+        vless_card = ctk.CTkFrame(self, fg_color=colors["card_bg"], corner_radius=16, border_width=1, border_color=colors["border"])
+        vless_card.pack(fill="x", padx=8, pady=7)
 
         vless_header_box = ctk.CTkFrame(vless_card, fg_color="transparent")
         vless_header_box.pack(fill="x", padx=16, pady=(12, 4))
@@ -221,11 +222,11 @@ class NetworkView(ctk.CTkScrollableFrame):
             core_box,
             text="⬇ Скачать sing-box (в 1 клик)",
             font=app.font(11, "bold"),
-            fg_color=("#0969da", "#1f6feb"),
-            hover_color=("#0550ae", "#388bfd"),
+            fg_color=("#0969da", "#c88635"),
+            hover_color=("#0550ae", "#e09a43"),
             text_color="#ffffff",
             height=28,
-            corner_radius=6,
+            corner_radius=10,
             command=self.download_core_action
         )
         self.btn_download_core.pack(side="right", padx=(4, 12), pady=6)
@@ -240,7 +241,7 @@ class NetworkView(ctk.CTkScrollableFrame):
             border_width=1,
             border_color=colors["border"],
             height=28,
-            corner_radius=6,
+            corner_radius=10,
             command=self.select_custom_core_action
         )
         self.btn_custom_core.pack(side="right", padx=(0, 4), pady=6)
@@ -257,7 +258,7 @@ class NetworkView(ctk.CTkScrollableFrame):
             hover_color="#2ea043",
             text_color="#ffffff",
             height=32,
-            corner_radius=6,
+            corner_radius=10,
             command=self.start_vless_action
         )
         self.btn_vless_start.pack(side="left", padx=(0, 8))
@@ -270,7 +271,7 @@ class NetworkView(ctk.CTkScrollableFrame):
             hover_color="#a40e26",
             text_color="#ffffff",
             height=32,
-            corner_radius=6,
+            corner_radius=10,
             command=self.stop_vless_action
         )
         self.btn_vless_stop.pack(side="left", padx=(0, 8))
@@ -279,11 +280,11 @@ class NetworkView(ctk.CTkScrollableFrame):
             action_row,
             text="🩺 Проверить подключение и IP",
             font=app.font(12, "bold"),
-            fg_color=("#0969da", "#1f6feb"),
-            hover_color=("#0550ae", "#388bfd"),
+            fg_color=("#0969da", "#c88635"),
+            hover_color=("#0550ae", "#e09a43"),
             text_color="#ffffff",
             height=32,
-            corner_radius=6,
+            corner_radius=10,
             command=self.test_vless_action
         )
         self.btn_vless_test.pack(side="left", padx=(0, 8))
@@ -294,8 +295,8 @@ class NetworkView(ctk.CTkScrollableFrame):
         # =====================================================================
         # CARD 2: CUSTOM DNS & SMARTDNS (FOR USERS WITHOUT VLESS)
         # =====================================================================
-        dns_card = ctk.CTkFrame(self, fg_color=colors["card_bg"], corner_radius=12, border_width=1, border_color=colors["border"])
-        dns_card.pack(fill="x", pady=6)
+        dns_card = ctk.CTkFrame(self, fg_color=colors["card_bg"], corner_radius=16, border_width=1, border_color=colors["border"])
+        dns_card.pack(fill="x", padx=8, pady=7)
 
         ctk.CTkLabel(
             dns_card,
@@ -312,7 +313,7 @@ class NetworkView(ctk.CTkScrollableFrame):
         ).pack(anchor="w", padx=16, pady=(0, 10))
 
         # DNS Disclaimer Box
-        dns_disclaimer = ctk.CTkFrame(dns_card, fg_color=("#fffbeb", "#141d2e"), corner_radius=8, border_width=1, border_color=("#fde68a", "#2a3749"))
+        dns_disclaimer = ctk.CTkFrame(dns_card, fg_color=("#fffbeb", "#251e14"), corner_radius=8, border_width=1, border_color=("#fde68a", "#2a3749"))
         dns_disclaimer.pack(fill="x", padx=16, pady=(0, 10))
         ctk.CTkLabel(
             dns_disclaimer,
@@ -336,8 +337,8 @@ class NetworkView(ctk.CTkScrollableFrame):
             values=["Обычный DNS", "DNS-over-TLS (DoT)", "DNS-over-HTTPS (DoH)", "Системный DNS"],
             variable=self.dns_mode_var,
             font=app.font(11, "bold"),
-            selected_color=("#0969da", "#1f6feb"),
-            selected_hover_color=("#0550ae", "#388bfd"),
+            selected_color=("#0969da", "#a96e2c"),
+            selected_hover_color=("#0550ae", "#c88635"),
             unselected_color=("#eaeef2", "#21262d"),
             unselected_hover_color=("#d0d7de", "#30363d"),
             corner_radius=6,
@@ -477,9 +478,9 @@ class NetworkView(ctk.CTkScrollableFrame):
         # Per-provider routes. These are written to each provider's OpenCode
         # options, while leaving the Hub-wide defaults available as fallback.
         self.provider_route_vars = {}
-        provider_routes_card = ctk.CTkFrame(self, fg_color=colors["card_bg"], corner_radius=12,
+        provider_routes_card = ctk.CTkFrame(self, fg_color=colors["card_bg"], corner_radius=16,
                                             border_width=1, border_color=colors["border"])
-        provider_routes_card.pack(fill="x", pady=6)
+        provider_routes_card.pack(fill="x", padx=8, pady=7)
         ctk.CTkLabel(
             provider_routes_card,
             text="🧭 Маршрут для каждого провайдера",
@@ -511,9 +512,9 @@ class NetworkView(ctk.CTkScrollableFrame):
             route_row.pack(fill="x", padx=16, pady=3)
             ctk.CTkLabel(route_row, text=provider_name, font=app.font(11, "bold"),
                          text_color=colors["text_primary"], anchor="w", width=220).pack(side="left")
-            mode = saved_routes.get(provider_name, "direct")
-            if mode not in PROVIDER_ROUTE_MODES or mode == "default":
-                mode = "direct"
+            mode = saved_routes.get(provider_name, "default")
+            if mode == "auto" or mode not in PROVIDER_ROUTE_LABELS:
+                mode = "default"
             variable = tk.StringVar(value=PROVIDER_ROUTE_LABELS[mode])
             self.provider_route_vars[provider_name] = variable
 
@@ -543,7 +544,7 @@ class NetworkView(ctk.CTkScrollableFrame):
 
         # Сворачиваемый блок для экспериментальной функции Google SmartDNS
         self.smart_dns_expanded = False
-        self.smart_dns_card = ctk.CTkFrame(provider_routes_card, fg_color=colors["subbox_bg"], corner_radius=8,
+        self.smart_dns_card = ctk.CTkFrame(provider_routes_card, fg_color=colors["subbox_bg"], corner_radius=12,
                                          border_width=1, border_color=colors["border"])
         self.smart_dns_card.pack(fill="x", padx=16, pady=(10, 4))
 
@@ -617,14 +618,14 @@ class NetworkView(ctk.CTkScrollableFrame):
             self,
             text="💾 Сохранить настройки сети",
             font=app.font(13, "bold"),
-            fg_color="#238636",
-            hover_color="#2ea043",
+            fg_color="#a96e2c",
+            hover_color="#c88635",
             text_color="#ffffff",
             height=36,
-            corner_radius=6,
+            corner_radius=12,
             command=self.save_network_settings
         )
-        save_btn.pack(anchor="w", pady=(8, 16))
+        save_btn.pack(anchor="w", padx=8, pady=(10, 20))
 
         self.update_core_status()
         self.update_vless_status()

@@ -187,26 +187,27 @@ class VlessManager:
         local_bin.mkdir(parents=True, exist_ok=True)
         return local_bin
 
-    def find_core_executable(self, custom_path: Optional[str] = None) -> Optional[Path]:
+    def find_core_executable(self, custom_path: Optional[str] = None, core_type: Optional[str] = None) -> Optional[Path]:
         if custom_path and os.path.exists(custom_path) and os.path.isfile(custom_path):
             return Path(custom_path)
 
         # Check local module bin
         bin_dir = self.get_bin_dir()
-        for name in ("xray.exe", "sing-box.exe", "xray", "sing-box"):
+        names = (f"{core_type}.exe", core_type) if core_type else ("xray.exe", "sing-box.exe", "xray", "sing-box")
+        for name in names:
             cand = bin_dir / name
             if cand.exists():
                 return cand
 
         # Check user config bin
         user_bin = CONFIG_DIR / "bin"
-        for name in ("xray.exe", "sing-box.exe", "xray", "sing-box"):
+        for name in names:
             cand = user_bin / name
             if cand.exists():
                 return cand
 
         # Check system PATH
-        for cmd in ("xray", "sing-box", "xray.exe", "sing-box.exe"):
+        for cmd in names:
             found = shutil.which(cmd)
             if found:
                 return Path(found)
@@ -219,7 +220,9 @@ class VlessManager:
     def download_core(self, core_type: str = "sing-box", progress_callback=None) -> Tuple[bool, str]:
         """Downloads sing-box or xray-core into bin folder, bypassing dead local proxies."""
         bin_dir = self.get_bin_dir()
-        existing = self.find_core_executable()
+        if core_type not in ("sing-box", "xray"):
+            return False, "Неизвестное ядро"
+        existing = self.find_core_executable(core_type=core_type)
         if existing:
             return True, f"Ядро уже установлено: {existing.name}"
 
@@ -283,7 +286,7 @@ class VlessManager:
                 except Exception:
                     pass
 
-                found = self.find_core_executable()
+                found = self.find_core_executable(core_type=core_type)
                 if found:
                     return True, f"Ядро успешно установлено: {found.name}"
             except Exception as e:

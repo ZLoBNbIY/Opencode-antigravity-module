@@ -61,11 +61,11 @@ def _parse_a_record_ip(data):
         pass
     return None
 
-def test_standard_dns(ip_address, timeout=4) -> dict:
+def test_standard_dns(ip_address, timeout=4, domain=None) -> dict:
     ip = ip_address.strip()
     if not ip:
         return {"ok": False, "message": "IP не указан"}
-    query = _build_dns_query(DOMAIN_TO_TEST)
+    query = _build_dns_query(domain or DOMAIN_TO_TEST)
     t0 = time.perf_counter()
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -86,13 +86,13 @@ def test_standard_dns(ip_address, timeout=4) -> dict:
     except Exception as e:
         return {"ok": False, "message": f"Ошибка: {str(e)[:60]}"}
 
-def test_doh_endpoint(url, timeout=5) -> dict:
+def test_doh_endpoint(url, timeout=5, domain=None) -> dict:
     url = url.strip()
     if not url:
         return {"ok": False, "message": "URL не указан"}
     if not url.startswith("http"):
         url = "https://" + url
-    query = _build_dns_query(DOMAIN_TO_TEST)
+    query = _build_dns_query(domain or DOMAIN_TO_TEST)
     ctx = ssl.create_default_context()
     t0 = time.perf_counter()
     try:
@@ -105,7 +105,9 @@ def test_doh_endpoint(url, timeout=5) -> dict:
             },
             method="POST"
         )
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+        # Resolver availability must not depend on the selected AI provider proxy.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ctx))
+        with opener.open(req, timeout=timeout) as resp:
             elapsed = round((time.perf_counter() - t0) * 1000)
             data = resp.read()
             resolved_ip = _parse_a_record_ip(data)
@@ -118,7 +120,7 @@ def test_doh_endpoint(url, timeout=5) -> dict:
     except Exception as e:
         return {"ok": False, "message": f"Ошибка DoH: {str(e)[:60]}"}
 
-def test_dot_endpoint(host, port=853, timeout=5) -> dict:
+def test_dot_endpoint(host, port=853, timeout=5, domain=None) -> dict:
     host = host.strip()
     if not host:
         return {"ok": False, "message": "Хост не указан"}
@@ -127,7 +129,7 @@ def test_dot_endpoint(host, port=853, timeout=5) -> dict:
         host = parts[0]
         try: port = int(parts[1])
         except Exception: pass
-    query = _build_dns_query(DOMAIN_TO_TEST)
+    query = _build_dns_query(domain or DOMAIN_TO_TEST)
     dot_msg = struct.pack("!H", len(query)) + query
     ctx = ssl.create_default_context()
     t0 = time.perf_counter()

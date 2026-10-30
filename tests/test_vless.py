@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import sys
 import unittest
+import tempfile
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gui-manager"))
@@ -10,6 +11,26 @@ from vless_manager import VlessParser, vless_service
 
 
 class VlessManagerTests(unittest.TestCase):
+    def test_core_status_and_download_check_the_requested_engine(self):
+        root = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory(dir=root) as directory:
+            folder = Path(directory)
+            self.assertEqual(folder.resolve().parent, root)
+            (folder / 'sing-box.exe').touch()
+            manager = vless_manager.VlessManager()
+            with mock.patch.object(manager, 'get_bin_dir', return_value=folder), \
+                 mock.patch.object(vless_manager, 'CONFIG_DIR', folder), \
+                 mock.patch('vless_manager.shutil.which', return_value=None), \
+                 mock.patch('vless_manager.urllib.request.build_opener', side_effect=OSError('offline')) as opener:
+                self.assertEqual(manager.find_core_executable(core_type='sing-box'), folder / 'sing-box.exe')
+                self.assertIsNone(manager.find_core_executable(core_type='xray'))
+                ok, _ = manager.download_core('sing-box')
+                self.assertTrue(ok)
+                opener.assert_not_called()
+                ok, _ = manager.download_core('xray')
+                self.assertFalse(ok)
+                self.assertGreater(opener.call_count, 0)
+
     def test_parse_vless_reality(self):
         url = (
             "vless://12345678-1234-1234-1234-123456789abc@198.51.100.1:443"

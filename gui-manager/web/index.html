@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Antigravity Hub</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="app">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div>
+      <div class="brand">
+        <div class="brand-icon">✨</div>
+        <div>
+          <div class="brand-title">Antigravity Hub</div>
+          <div class="brand-subtitle">AI аккаунты и сеть для Windows</div>
+        </div>
+      </div>
+
+      <nav class="nav-list">
+        <div class="nav-item active" data-tab="dashboard" onclick="switchTab('dashboard')">
+          <span class="nav-icon">◈</span><div class="nav-text"><span>Dashboard</span><span class="nav-sub">Обзор · Лимиты · Состояние</span></div>
+        </div>
+
+        <div class="nav-item" data-tab="google" onclick="switchTab('google')">
+          <span class="nav-icon">🚀</span>
+          <div class="nav-text">
+            <span>Google Antigravity</span>
+            <span class="nav-sub">Cloud Code · Gemini · APIs</span>
+          </div>
+        </div>
+
+        <div class="nav-item" data-tab="openai" onclick="switchTab('openai')">
+          <span class="nav-icon">🟢</span>
+          <div class="nav-text">
+            <span>ChatGPT</span>
+            <span class="nav-sub">Аккаунты · Доступ</span>
+          </div>
+        </div>
+
+        <div class="nav-item" data-tab="claude" onclick="switchTab('claude')">
+          <span class="nav-icon">🟠</span>
+          <div class="nav-text">
+            <span>Claude</span>
+            <span class="nav-sub">Pro · Аккаунты</span>
+          </div>
+        </div>
+
+        <div class="nav-item" data-tab="xpiki" onclick="switchTab('xpiki')"><span class="nav-icon">⚡</span><div class="nav-text"><span>Claude API · Xpiki</span><span class="nav-sub">Ключ · Модели · Квота</span></div></div>
+
+        <div class="nav-item" data-tab="openrouter" onclick="switchTab('openrouter')">
+          <span class="nav-icon">🟣</span>
+          <div class="nav-text">
+            <span>OpenRouter Free</span>
+            <span class="nav-sub">Бесплатные модели</span>
+          </div>
+        </div>
+
+        <div class="nav-item" data-tab="network" onclick="switchTab('network')">
+          <span class="nav-icon">🌐</span>
+          <div class="nav-text">
+            <span>Сеть, DNS и VLESS</span>
+            <span class="nav-sub">Маршруты · VLESS · DNS</span>
+          </div>
+        </div>
+
+        <div class="nav-item" data-tab="diagnostics" onclick="switchTab('diagnostics')">
+          <span class="nav-icon">🩺</span><div class="nav-text"><span>Диагностика</span><span class="nav-sub">Домены всех провайдеров</span></div>
+        </div>
+
+        <div class="nav-item" data-tab="settings" onclick="switchTab('settings')">
+          <span class="nav-icon">⚙️</span>
+          <div class="nav-text">
+            <span>Настройки и система</span>
+            <span class="nav-sub">Провайдеры · OpenCode · Система</span>
+          </div>
+        </div>
+
+      </nav>
+    </div>
+
+    <div class="sidebar-footer">
+      <div class="status-badge" id="sidebar-opencode-status">
+        <span class="dot"></span>
+        <span>OpenCode: Окно открыто</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Content Area -->
+  <main class="content-area">
+    <div class="main-scroll" id="main-scroll">
+
+      <!-- ===============================================================
+           TAB 1: NETWORK & ROUTING (Variant 3 - Exact Layout)
+           =============================================================== -->
+      <section id="view-dashboard" class="view-tab active">
+        <div class="page-header dashboard-header">
+          <div class="header-left"><h1>◈ Dashboard</h1><p>Аккаунты, лимиты и подключения — в одном месте</p></div>
+          <div class="header-right"><span class="dashboard-updated" id="dashboard-updated">Обновление каждые 10 с</span><button class="btn-secondary" onclick="refreshState()">Обновить сводку</button><button class="btn-primary" id="dashboard-check" onclick="runAllDiagnostics()">Проверить домены</button></div>
+        </div>
+        <div class="dashboard-metrics" id="dashboard-metrics"></div>
+        <div class="dashboard-section-title"><div><h2>Провайдеры и лимиты</h2><p class="help-text">Активный доступ, остаток квоты и фактический маршрут</p></div><button class="btn-secondary" onclick="switchTab('settings')">Управлять провайдерами →</button></div>
+        <div class="dashboard-provider-grid" id="dashboard-providers"></div>
+        <div class="dashboard-bottom-grid">
+          <div class="glass-card dashboard-panel"><div class="dashboard-section-title"><h2>Сеть и подключение</h2><button class="btn-secondary" onclick="switchTab('network')">Настроить →</button></div><div id="dashboard-network"></div></div>
+          <div class="glass-card dashboard-panel"><div class="dashboard-section-title"><h2>Нужно внимание</h2><button class="btn-secondary" onclick="switchTab('diagnostics')">Диагностика →</button></div><div id="dashboard-attention" role="status"></div></div>
+        </div>
+      </section>
+
+      <section id="view-network" class="view-tab" style="display:none">
+        <div class="page-header"><div class="header-left"><h1>🌐 Сеть, DNS и VLESS</h1><p>Подключение и маршруты для каждого провайдера</p></div><div class="header-right"><span id="avg-latency-val">—</span></div></div>
+        <div class="network-settings-grid" id="network-settings">
+          <div class="glass-card network-panel">
+            <div class="panel-heading"><h2>VLESS-туннель</h2><span class="badge-pill badge-pool" id="vless-status">Проверка…</span></div>
+            <p class="help-text">Локальный туннель Xray / sing-box. Выберите VLESS в маршруте нужного провайдера.</p>
+            <label class="field-label" for="vless-url">Строка подключения</label><input id="vless-url" type="password" autocomplete="off" placeholder="vless://uuid@server:port?...">
+            <label class="field-label" for="vless-core-path">Свой путь к ядру (необязательно)</label><input id="vless-core-path" placeholder="C:\path\sing-box.exe">
+            <div class="core-list" id="vless-core-list"></div><p class="help-text" id="vless-core-status">Выбранное ядро: проверка…</p>
+            <label class="switch-label"><input class="switch-input" type="checkbox" id="vless-kill-switch">Kill Switch для Claude при обрыве VLESS</label>
+            <div class="button-row"><button class="btn-primary" id="btn-vless-start" onclick="vlessAction('start')">▶ Запустить</button><button class="btn-secondary" id="btn-vless-stop" onclick="vlessAction('stop')">■ Остановить</button><button class="btn-secondary" onclick="vlessAction('test')">Проверить IP</button></div>
+            <div class="button-row"><button class="btn-secondary" id="btn-download-sing-box" onclick="downloadCore('sing-box')">Скачать sing-box</button><button class="btn-secondary" id="btn-download-xray" onclick="downloadCore('xray')">Скачать Xray</button></div>
+            <p class="help-text" id="vless-result" role="status"></p>
+          </div>
+          <div class="glass-card network-panel" id="dns-settings">
+            <div class="panel-heading"><h2>DNS для маршрутов Hub</h2><span class="badge-pill badge-pool" id="dns-status" role="status">● Не проверен</span></div>
+            <p class="help-text">Выберите тип DNS и сервер, затем нажмите «Применить DNS». Используется провайдерами с маршрутом «DNS Hub». Доступность серверов проверяется автоматически раз в минуту.</p>
+            <label class="field-label">Какой DNS использовать</label><input type="hidden" id="dns-mode" value="system">
+            <div class="segmented-group dns-mode-group" role="radiogroup" aria-label="Тип DNS">
+              <button class="seg-btn" id="dns-mode-standard" role="radio" aria-checked="false" onclick="selectDnsMode('standard')">Обычный</button>
+              <button class="seg-btn" id="dns-mode-doh" role="radio" aria-checked="false" onclick="selectDnsMode('doh')">DoH</button>
+              <button class="seg-btn" id="dns-mode-dot" role="radio" aria-checked="false" onclick="selectDnsMode('dot')">DoT</button>
+              <button class="seg-btn" id="dns-mode-system" role="radio" aria-checked="false" onclick="selectDnsMode('system')">Системный</button>
+            </div>
+            <label class="field-label" for="dns-preset">DNS-сервер</label><select id="dns-preset" onchange="applyDnsPreset()"><option value="custom">Свой / текущий</option><option value="bezmezhau">Bezmezhau</option><option value="cloudflare">Cloudflare</option><option value="google">Google</option><option value="quad9">Quad9</option></select>
+            <div id="dns-standard-fields" class="field-grid">
+              <label class="field-label">Основной DNS<input id="dns-primary" placeholder="143.20.64.55" oninput="onDnsInput()"><span class="badge-pill badge-pool dns-address-status" id="dns-primary-status">● Не проверен</span></label>
+              <label class="field-label">Резервный DNS<input id="dns-secondary" placeholder="31.58.216.201" oninput="onDnsInput()"><span class="badge-pill badge-pool dns-address-status" id="dns-secondary-status">● Не проверен</span></label>
+            </div>
+            <label class="field-label" id="dns-dot-fields">Хост DNS-over-TLS<input id="dns-dot" placeholder="dns.bezmezhau.com" oninput="onDnsInput()"><span class="badge-pill badge-pool dns-address-status" id="dns-dot-status">● Не проверен</span></label>
+            <label class="field-label" id="dns-doh-fields">URL DNS-over-HTTPS<input id="dns-doh" placeholder="https://dns.bezmezhau.com/dns-query" oninput="onDnsInput()"><span class="badge-pill badge-pool dns-address-status" id="dns-doh-status">● Не проверен</span></label>
+            <p class="help-text" id="dns-active-summary"></p><p class="help-text" id="dns-selection-summary"></p>
+            <div class="button-row"><button class="btn-primary" id="btn-dns-apply" onclick="saveDnsSettings()">Применить DNS</button><button class="btn-secondary" id="btn-dns-test" onclick="testDns()">Проверить DNS</button></div>
+            <p class="help-text" id="dns-result" role="status"></p>
+          </div>
+        </div>
+        <div class="glass-card network-panel proxy-panel"><div class="panel-heading"><h2>HTTP(S)-прокси</h2><span class="connection-indicator idle" id="http-proxy-indicator"></span></div><p class="help-text">Отдельный внешний прокси для маршрута «Внешний прокси».</p><label class="field-label">Адрес HTTP(S)-прокси<input id="network-proxy" type="password" autocomplete="off" placeholder="http://host:port"></label><p class="help-text" id="http-proxy-status"></p></div>
+        <details class="glass-card experimental-panel"><summary>🧪 Google SmartDNS · экспериментальная функция</summary><p class="help-text">Отдельный экспериментальный TLS-маршрут только для Google Cloud Code. Включается явно в маршруте Google; не заменяет обычные настройки DNS.</p><label class="field-label">DoH-резолвер SmartDNS<input id="google-smart-doh" placeholder="https://dns.dns-ai.ru/dns-query"></label></details>
+        <div class="network-save-row"><button class="btn-primary" id="btn-network-save" onclick="saveNetworkSettings()">Сохранить настройки сети</button><span class="help-text" id="network-save-result" role="status"></span></div>
+        <div class="glass-card route-explanation"><h2>Выбор маршрута</h2><p class="help-text">Маршрут каждого провайдера настраивается справа от аккаунтов и лимитов в его вкладке.</p><p class="help-text"><strong>Авто → …</strong> — сравнивает настроенные маршруты, выбирает самый доступный и быстрый для этого провайдера и переключается при ошибке подключения. Ручной выбор закрепляет один маршрут.</p><p class="help-text" id="hub-auto-route"></p><p class="help-text">Auto перепроверяет маршруты раз в минуту; при отказе выбранного пробует другой доступный. Активная генерация не переотправляется. Индикаторы доменов показывают TCP-соединение, а не доступность конкретной модели.</p></div>
+      </section>
+
+      <section id="view-google" class="view-tab" style="display: none;">
+        <div class="page-header">
+          <div class="header-left">
+            <h1>🚀 Google Antigravity</h1>
+            <p>Управление аккаунтами Google, ротацией и лимитами Cloud Code</p>
+          </div>
+          <div class="header-right">
+            <button class="btn-primary" onclick="addGoogleAccount()">
+              <span>＋</span> Добавить аккаунт
+            </button>
+          </div>
+        </div>
+
+        <div class="provider-account-layout">
+          <div class="provider-account-content"><div id="google-accounts-list"></div></div>
+          <aside class="provider-route-sidebar" aria-label="Маршрут Google Antigravity">
+          <div class="glass-card service-card" data-provider-card="google">
+            <div class="service-card-header"><div class="service-name">Google Antigravity</div><span class="badge-pill badge-pool provider-status" id="provider-status-google" role="status"><span class="connection-indicator idle"></span> Не проверено</span></div>
+            <div class="route-section-title">Маршрут подключения</div><div class="segmented-group" id="seg-group-google"></div>
+            <p class="help-text provider-route-description" id="card-route-google"></p>
+            <details class="auto-comparison"><summary>Сравнение маршрутов Auto</summary><div id="auto-routes-google"></div><button class="btn-secondary" id="auto-check-google" onclick="refreshAutoRoutes('google')">Сравнить маршруты</button></details>
+            <div class="provider-check-row"><span class="help-text" id="card-check-time-google">Проверка ещё не запускалась</span><button class="btn-secondary" id="card-check-google" onclick="showDiagnostics('google')">Диагностика →</button></div>
+          </div>
+            <div class="glass-card" id="google-detail-panel">
+              <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 14px;">
+                Активный аккаунт
+              </div>
+              <div class="details-list" id="detail-info-rows">
+                <div class="detail-row">
+                  <span class="detail-key">Статус входа</span>
+                  <span class="detail-val status-good" id="detail-auth-status">Не определён</span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-key">Активный аккаунт</span>
+                  <span class="detail-val" id="detail-active-email">—</span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-key">Всего в пуле</span>
+                  <span class="detail-val" id="detail-total-count">0</span>
+                </div>
+              </div>
+
+
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ===============================================================
+           TAB 3: CHATGPT (OpenAI)
+           =============================================================== -->
+      <section id="view-openai" class="view-tab" style="display: none;">
+        <div class="page-header">
+          <div class="header-left">
+            <h1>🟢 ChatGPT (OpenAI)</h1>
+            <p>Аккаунты ChatGPT, остаток лимита за 5 часов и неделю</p>
+          </div>
+          <div class="header-right">
+            <button class="btn-secondary" id="btn-openai-refresh" onclick="refreshOpenAiQuotas()">Обновить лимиты</button>
+            <button class="btn-primary" onclick="addOpenAiAccount()">
+              <span>＋</span> Добавить ChatGPT
+            </button>
+          </div>
+        </div>
+        <div class="provider-account-layout">
+          <div class="provider-account-content">
+        <p class="help-text" id="openai-refresh-status" role="status"></p>
+        <div id="openai-accounts-container">
+          <!-- Rendered dynamically -->
+        </div>
+          </div>
+          <aside class="provider-route-sidebar" aria-label="Маршрут ChatGPT">
+          <div class="glass-card service-card" data-provider-card="openai">
+            <div class="service-card-header"><div class="service-name">ChatGPT</div><span class="badge-pill badge-pool provider-status" id="provider-status-openai" role="status"><span class="connection-indicator idle"></span> Не проверено</span></div>
+            <div class="route-section-title">Маршрут подключения</div><div class="segmented-group" id="seg-group-openai"></div>
+            <p class="help-text provider-route-description" id="card-route-openai"></p>
+            <details class="auto-comparison"><summary>Сравнение маршрутов Auto</summary><div id="auto-routes-openai"></div><button class="btn-secondary" id="auto-check-openai" onclick="refreshAutoRoutes('openai')">Сравнить маршруты</button></details>
+            <div class="provider-check-row"><span class="help-text" id="card-check-time-openai">Проверка ещё не запускалась</span><button class="btn-secondary" id="card-check-openai" onclick="showDiagnostics('openai')">Диагностика →</button></div>
+          </div>
+            <div class="glass-card active-account-panel">
+              <h2>Активный аккаунт</h2>
+              <div class="details-list">
+                <div class="detail-row"><span class="detail-key">Статус</span><span class="detail-val" id="active-status-openai">Не определён</span></div>
+                <div class="detail-row"><span class="detail-key">Аккаунт</span><span class="detail-val" id="active-account-openai">—</span></div>
+                <div class="detail-row"><span class="detail-key">Всего в пуле</span><span class="detail-val" id="active-count-openai">0</span></div>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ===============================================================
+           TAB 4: CLAUDE (Anthropic)
+           =============================================================== -->
+      <section id="view-claude" class="view-tab" style="display: none;">
+        <div class="page-header">
+          <div class="header-left">
+            <h1>🟠 Claude (Anthropic)</h1>
+            <p>Управление сессиями Claude Pro и доступом к моделям Sonnet / Opus</p>
+          </div>
+          <div class="header-right">
+            <button class="btn-primary" onclick="addClaudeAccount()">
+              <span>＋</span> Добавить Claude
+            </button>
+          </div>
+        </div>
+        <div class="provider-account-layout">
+          <div class="provider-account-content">
+        <div id="claude-accounts-container">
+          <!-- Rendered dynamically -->
+        </div>
+          </div>
+          <aside class="provider-route-sidebar" aria-label="Маршрут Claude">
+          <div class="glass-card service-card" data-provider-card="claude">
+            <div class="service-card-header"><div class="service-name">Claude Pro</div><span class="badge-pill badge-pool provider-status" id="provider-status-claude" role="status"><span class="connection-indicator idle"></span> Не проверено</span></div>
+            <div class="route-section-title">Маршрут подключения</div><div class="segmented-group" id="seg-group-claude"></div>
+            <p class="help-text provider-route-description" id="card-route-claude"></p>
+            <details class="auto-comparison"><summary>Сравнение маршрутов Auto</summary><div id="auto-routes-claude"></div><button class="btn-secondary" id="auto-check-claude" onclick="refreshAutoRoutes('claude')">Сравнить маршруты</button></details>
+            <div class="provider-check-row"><span class="help-text" id="card-check-time-claude">Проверка ещё не запускалась</span><button class="btn-secondary" id="card-check-claude" onclick="showDiagnostics('claude')">Диагностика →</button></div>
+          </div>
+            <div class="glass-card active-account-panel">
+              <h2>Активный аккаунт</h2>
+              <div class="details-list">
+                <div class="detail-row"><span class="detail-key">Статус</span><span class="detail-val" id="active-status-claude">Не определён</span></div>
+                <div class="detail-row"><span class="detail-key">Аккаунт</span><span class="detail-val" id="active-account-claude">—</span></div>
+                <div class="detail-row"><span class="detail-key">Всего в пуле</span><span class="detail-val" id="active-count-claude">0</span></div>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ===============================================================
+           TAB 5: OPENROUTER
+           =============================================================== -->
+      <section id="view-xpiki" class="view-tab" style="display:none">
+        <div class="page-header"><div class="header-left"><h1>⚡ Claude API · Xpiki</h1><p>Подключение шлюза, выбор моделей и остаток квоты</p></div><span class="badge-pill badge-pool" id="xpiki-connection-status">Загрузка…</span></div>
+        <div class="provider-account-layout">
+          <div class="provider-account-content">
+        <div class="glass-card network-panel" id="xpiki-quota"></div>
+        <div class="glass-card network-panel">
+          <label class="field-label">API-ключ<input id="xpiki-key" type="password" autocomplete="off" placeholder="Введите API-ключ"></label>
+          <label class="field-label">URL шлюза<input id="xpiki-base-url" value="https://api.xpiki.com/v1"></label>
+          <div class="model-picker" id="xpiki-models"></div>
+          <div class="button-row"><button class="btn-primary" onclick="configureXpiki()">Добавить выбранные в OpenCode</button><button class="btn-secondary" onclick="refreshXpikiQuota()">Обновить квоту</button><button class="btn-secondary" onclick="disconnectXpiki()">Отключить</button></div>
+          <p class="help-text" role="status" id="xpiki-result"></p>
+        </div>
+          </div>
+          <aside class="provider-route-sidebar" aria-label="Маршрут Xpiki">
+          <div class="glass-card service-card" data-provider-card="xpiki">
+            <div class="service-card-header"><div class="service-name">Claude API · Xpiki</div><span class="badge-pill badge-pool provider-status" id="provider-status-xpiki" role="status"><span class="connection-indicator idle"></span> Не проверено</span></div>
+            <div class="route-section-title">Маршрут подключения</div><div class="segmented-group" id="seg-group-xpiki"></div>
+            <p class="help-text provider-route-description" id="card-route-xpiki"></p>
+            <details class="auto-comparison"><summary>Сравнение маршрутов Auto</summary><div id="auto-routes-xpiki"></div><button class="btn-secondary" id="auto-check-xpiki" onclick="refreshAutoRoutes('xpiki')">Сравнить маршруты</button></details>
+            <div class="provider-check-row"><span class="help-text" id="card-check-time-xpiki">Проверка ещё не запускалась</span><button class="btn-secondary" id="card-check-xpiki" onclick="showDiagnostics('xpiki')">Диагностика →</button></div>
+          </div>
+            <div class="glass-card active-account-panel">
+              <h2>Активный доступ</h2>
+              <div class="details-list">
+                <div class="detail-row"><span class="detail-key">Статус</span><span class="detail-val" id="active-status-xpiki">Не определён</span></div>
+                <div class="detail-row"><span class="detail-key">API-ключ</span><span class="detail-val" id="active-account-xpiki">—</span></div>
+                <div class="detail-row"><span class="detail-key">Настроенных ключей</span><span class="detail-val" id="active-count-xpiki">0</span></div>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="view-openrouter" class="view-tab" style="display: none;">
+        <div class="page-header">
+          <div class="header-left">
+            <h1>🟣 OpenRouter Free</h1>
+            <p>Подключение бесплатных текстовых моделей через бесплатный API-ключ OpenRouter</p>
+          </div>
+        </div>
+
+        <div class="provider-account-layout">
+          <div class="provider-account-content">
+        <div class="glass-card" style="margin-bottom: 20px;">
+          <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 8px;">API-ключ OpenRouter</div>
+          <div class="openrouter-key-row" style="display: flex; gap: 10px; margin-bottom: 12px;">
+            <input type="password" id="openrouter-key-input" placeholder="sk-or-v1-..." style="flex:1; background: rgba(0,0,0,0.3); border: 1px solid var(--glass-border); border-radius: 10px; padding: 10px 14px; color:#fff; font-family: monospace;">
+            <button class="btn-primary" onclick="loadOpenRouterModels()">Проверить и загрузить модели</button>
+            <button class="btn-secondary" onclick="disconnectOpenRouter()" style="color: var(--accent-red);">Отключить</button>
+          </div>
+          <div id="openrouter-status-text" style="font-size: 12px; color: var(--text-muted);">
+            Ключ хранится локально в защищённом виде.
+          </div>
+        </div>
+
+        <div class="glass-card">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+            <div style="font-size: 14px; font-weight: 700; color: #fff;">Доступные бесплатные модели</div>
+            <button class="btn-primary" id="btn-apply-openrouter" onclick="applyOpenRouterModels()" disabled>
+              Добавить выбранные в OpenCode
+            </button>
+          </div>
+          <div id="openrouter-models-list" style="display: flex; flex-direction: column; gap: 8px; max-height: 340px; overflow-y: auto;">
+            <div style="color: var(--text-muted); font-size: 13px; text-align: center; padding: 30px;">
+              Введите API-ключ выше и нажмите «Проверить и загрузить модели».
+            </div>
+          </div>
+        </div>
+          </div>
+          <aside class="provider-route-sidebar" aria-label="Маршрут OpenRouter">
+          <div class="glass-card service-card" data-provider-card="openrouter">
+            <div class="service-card-header"><div class="service-name">OpenRouter Free</div><span class="badge-pill badge-pool provider-status" id="provider-status-openrouter" role="status"><span class="connection-indicator idle"></span> Не проверено</span></div>
+            <div class="route-section-title">Маршрут подключения</div><div class="segmented-group" id="seg-group-openrouter"></div>
+            <p class="help-text provider-route-description" id="card-route-openrouter"></p>
+            <details class="auto-comparison"><summary>Сравнение маршрутов Auto</summary><div id="auto-routes-openrouter"></div><button class="btn-secondary" id="auto-check-openrouter" onclick="refreshAutoRoutes('openrouter')">Сравнить маршруты</button></details>
+            <div class="provider-check-row"><span class="help-text" id="card-check-time-openrouter">Проверка ещё не запускалась</span><button class="btn-secondary" id="card-check-openrouter" onclick="showDiagnostics('openrouter')">Диагностика →</button></div>
+          </div>
+            <div class="glass-card active-account-panel">
+              <h2>Активный доступ</h2>
+              <div class="details-list">
+                <div class="detail-row"><span class="detail-key">Статус</span><span class="detail-val" id="active-status-openrouter">Не определён</span></div>
+                <div class="detail-row"><span class="detail-key">API-ключ</span><span class="detail-val" id="active-account-openrouter">—</span></div>
+                <div class="detail-row"><span class="detail-key">Настроенных ключей</span><span class="detail-val" id="active-count-openrouter">0</span></div>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ===============================================================
+           SETTINGS & SYSTEM
+           =============================================================== -->
+      <section id="view-diagnostics" class="view-tab" style="display:none">
+        <div class="page-header"><div class="header-left"><h1>🩺 Диагностика</h1><p>Домены Google, ChatGPT, Claude, Xpiki и OpenRouter через выбранные маршруты</p></div><div class="header-right"><button class="btn-primary" id="btn-diag-all" onclick="runAllDiagnostics()">Проверить все</button></div></div>
+        <p class="help-text">Автопроверка включённых провайдеров выполняется раз в минуту. Отключённые провайдеры можно включить в настройках.</p>
+        <div class="glass-card diag-card provider-diagnostics" id="diagnostics-google">
+          <div class="diag-header"><div><h2>Диагностика Google</h2><p class="help-text">Домены этого провайдера через его выбранный маршрут. Индикатор показывает доступность TCP; проверка не расходует токены.</p></div><button class="btn-primary" id="btn-diag-google" onclick="runDiagnostics('google')">Проверить домены</button></div>
+          <div class="diagnostic-scroll"><table class="diag-table"><thead><tr><th>Сервис / домен</th><th>Доступность</th><th>Задержка</th><th>Маршрут</th><th>IP соединения</th></tr></thead><tbody id="diag-tbody-google"></tbody></table></div>
+          <p class="help-text">● зелёный — TCP доступен · ● красный — ошибка · ● серый — ещё не проверялся. IP соединения может принадлежать локальному прокси.</p>
+        </div>
+        <div class="glass-card diag-card provider-diagnostics" id="diagnostics-openai">
+          <div class="diag-header"><div><h2>Диагностика ChatGPT</h2><p class="help-text">Домены этого провайдера через его выбранный маршрут. Индикатор показывает доступность TCP; проверка не расходует токены.</p></div><button class="btn-primary" id="btn-diag-openai" onclick="runDiagnostics('openai')">Проверить домены</button></div>
+          <div class="diagnostic-scroll"><table class="diag-table"><thead><tr><th>Сервис / домен</th><th>Доступность</th><th>Задержка</th><th>Маршрут</th><th>IP соединения</th></tr></thead><tbody id="diag-tbody-openai"></tbody></table></div>
+          <p class="help-text">● зелёный — TCP доступен · ● красный — ошибка · ● серый — ещё не проверялся. IP соединения может принадлежать локальному прокси.</p>
+        </div>
+        <div class="glass-card diag-card provider-diagnostics" id="diagnostics-claude">
+          <div class="diag-header"><div><h2>Диагностика Claude</h2><p class="help-text">Домены этого провайдера через его выбранный маршрут. Индикатор показывает доступность TCP; проверка не расходует токены.</p></div><button class="btn-primary" id="btn-diag-claude" onclick="runDiagnostics('claude')">Проверить домены</button></div>
+          <div class="diagnostic-scroll"><table class="diag-table"><thead><tr><th>Сервис / домен</th><th>Доступность</th><th>Задержка</th><th>Маршрут</th><th>IP соединения</th></tr></thead><tbody id="diag-tbody-claude"></tbody></table></div>
+          <p class="help-text">● зелёный — TCP доступен · ● красный — ошибка · ● серый — ещё не проверялся. IP соединения может принадлежать локальному прокси.</p>
+        </div>
+        <div class="glass-card diag-card provider-diagnostics" id="diagnostics-xpiki">
+          <div class="diag-header"><div><h2>Диагностика Xpiki</h2><p class="help-text">Домены этого провайдера через его выбранный маршрут. Индикатор показывает доступность TCP; проверка не расходует токены.</p></div><button class="btn-primary" id="btn-diag-xpiki" onclick="runDiagnostics('xpiki')">Проверить домены</button></div>
+          <div class="diagnostic-scroll"><table class="diag-table"><thead><tr><th>Сервис / домен</th><th>Доступность</th><th>Задержка</th><th>Маршрут</th><th>IP соединения</th></tr></thead><tbody id="diag-tbody-xpiki"></tbody></table></div>
+          <p class="help-text">● зелёный — TCP доступен · ● красный — ошибка · ● серый — ещё не проверялся. IP соединения может принадлежать локальному прокси.</p>
+        </div>
+        <div class="glass-card diag-card provider-diagnostics" id="diagnostics-openrouter">
+          <div class="diag-header"><div><h2>Диагностика OpenRouter</h2><p class="help-text">Домены этого провайдера через его выбранный маршрут. Индикатор показывает доступность TCP; проверка не расходует токены.</p></div><button class="btn-primary" id="btn-diag-openrouter" onclick="runDiagnostics('openrouter')">Проверить домены</button></div>
+          <div class="diagnostic-scroll"><table class="diag-table"><thead><tr><th>Сервис / домен</th><th>Доступность</th><th>Задержка</th><th>Маршрут</th><th>IP соединения</th></tr></thead><tbody id="diag-tbody-openrouter"></tbody></table></div>
+          <p class="help-text">● зелёный — TCP доступен · ● красный — ошибка · ● серый — ещё не проверялся. IP соединения может принадлежать локальному прокси.</p>
+        </div>
+      </section>
+
+      <section id="view-settings" class="view-tab" style="display: none;">
+        <div class="page-header">
+          <div class="header-left">
+            <h1>⚙️ Настройки и система</h1>
+            <p>Провайдеры, стратегия ротации, обновления и управление OpenCode</p>
+          </div>
+          <div class="header-right">
+            <button class="btn-primary" onclick="saveSettings()">
+              <span>💾</span> Сохранить настройки
+            </button>
+          </div>
+        </div>
+
+        <div class="glass-card provider-settings">
+          <h2>Провайдеры</h2><p class="help-text">Отключённый провайдер скрывается в Hub и из выбора моделей OpenCode. Аккаунты и ключи сохраняются. Нажмите «Сохранить настройки», чтобы применить изменения.</p>
+          <label class="provider-toggle-row"><span>Google Antigravity</span><input type="checkbox" class="switch-input" id="provider-enabled-antigravity" checked onchange="markSettingsDirty()" aria-label="Включить Google Antigravity"></label>
+          <label class="provider-toggle-row"><span>ChatGPT (OpenAI)</span><input type="checkbox" class="switch-input" id="provider-enabled-openai" checked onchange="markSettingsDirty()" aria-label="Включить ChatGPT (OpenAI)"></label>
+          <label class="provider-toggle-row"><span>Claude Pro</span><input type="checkbox" class="switch-input" id="provider-enabled-claude" checked onchange="markSettingsDirty()" aria-label="Включить Claude Pro"></label>
+          <label class="provider-toggle-row"><span>Claude API · Xpiki</span><input type="checkbox" class="switch-input" id="provider-enabled-xpiki" checked onchange="markSettingsDirty()" aria-label="Включить Claude API · Xpiki"></label>
+          <label class="provider-toggle-row"><span>OpenRouter Free</span><input type="checkbox" class="switch-input" id="provider-enabled-openrouter" checked onchange="markSettingsDirty()" aria-label="Включить OpenRouter Free"></label>
+          <p class="help-text" id="provider-settings-result" role="status"></p>
+        </div>
+        <div class="glass-card" style="margin-bottom: 16px;">
+          <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 6px;">Стратегия выбора аккаунтов</div>
+          <div class="segmented-group" style="max-width: 440px; margin-bottom: 10px;">
+            <button class="seg-btn active" id="strat-hybrid" onclick="selectStrategy('hybrid')">hybrid</button>
+            <button class="seg-btn" id="strat-sticky" onclick="selectStrategy('sticky')">sticky</button>
+            <button class="seg-btn" id="strat-round-robin" onclick="selectStrategy('round-robin')">round-robin</button>
+          </div>
+          <div id="strat-desc" style="font-size: 12px; color: var(--accent-amber-light);">
+            ⭐ Рекомендуется: сохраняет контекст сессии на одном аккаунте, но плавно ротирует при исчерпании лимитов.
+          </div>
+        </div>
+
+        <div class="glass-card" style="margin-bottom: 16px;">
+          <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 8px;">Переключение при Rate Limit (429)</div>
+          <label class="switch-label">
+            <input type="checkbox" class="switch-input" id="switch-rate-limit" onchange="markSettingsDirty()" checked>
+            <span>Мгновенно переключаться на следующий свободный аккаунт при получении ошибки 429</span>
+          </label>
+        </div>
+
+        <div class="glass-card">
+          <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 8px;">Обновление Antigravity Hub</div>
+          <button class="btn-secondary" onclick="checkUpdates()">
+            <span>🔄</span> Проверить обновления с GitHub
+          </button>
+        </div>
+        <h2 class="settings-section-heading">OpenCode и система</h2><p class="help-text">Управление приложением, подписи сессий и доступ к конфигурации и логам</p>
+        <div class="glass-card" style="margin-bottom: 16px;">
+          <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 12px;">Управление OpenCode</div>
+          <div style="display: flex; gap: 10px;">
+            <button class="btn-primary" onclick="restartOpenCode()">🔄 Перезапустить OpenCode</button>
+            <button class="btn-secondary" onclick="stopOpenCode()" style="color: var(--accent-red);">⏹ Остановить</button>
+            <button class="btn-secondary" onclick="startOpenCode()">▶ Запустить</button>
+          </div>
+        </div>
+
+        <div class="glass-card" style="margin-bottom: 16px;">
+          <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 6px;">Подпись сессий OpenCode</div>
+          <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
+            Именование новых сессий закреплено за бесплатной встроенной моделью Big Pickle (opencode/big-pickle).
+          </div>
+          <div style="display: flex; align-items: center; gap: 16px;">
+            <span class="badge-pill badge-available" id="session-title-badge">
+              <span class="dot"></span> Активна: opencode/big-pickle
+            </span>
+            <button class="btn-secondary" onclick="fixSessionTitle()">🩺 Проверить и исправить</button>
+          </div>
+        </div>
+
+        <div class="glass-card">
+          <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 12px;">Быстрый доступ к папкам</div>
+          <div style="display: flex; gap: 10px;">
+            <button class="btn-secondary" onclick="openFolder('config')">📂 Конфиги (~/.config/opencode)</button>
+            <button class="btn-secondary" onclick="openFolder('logs')">📂 Логи</button>
+          </div>
+        </div>
+      </section>
+
+
+
+
+    </div>
+
+    <!-- Status Bar -->
+    <footer class="statusbar">
+      <div id="status-left">Готов к работе</div>
+      <div id="status-right" style="color: var(--accent-amber-light);">Состояние: 10 с · лимиты: 5 мин</div>
+    </footer>
+  </main>
+</div>
+
+<!-- Toast Container -->
+<div class="toast-container" id="toasts"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

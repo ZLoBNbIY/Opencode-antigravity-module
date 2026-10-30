@@ -445,7 +445,7 @@ def refresh_openai_token(account: dict) -> tuple[bool, dict]:
         return False, account
 
 
-def fetch_openai_usage(account: dict) -> dict:
+def fetch_openai_usage(account: dict, _retried: bool = False) -> dict:
     # If token expires within 2 minutes, refresh it first
     now_ms = int(time.time() * 1000)
     if account.get("expires", 0) - now_ms < 120000:
@@ -471,21 +471,20 @@ def fetch_openai_usage(account: dict) -> dict:
             payload = json.loads(resp.read().decode("utf-8"))
             return _parse_usage_payload(payload, account)
     except urllib.error.HTTPError as he:
-        if he.code == 401:
+        if he.code == 401 and not _retried:
             # Token might have been revoked/expired - retry once with refresh
             ok, updated_acc = refresh_openai_token(account)
             if ok:
-                return fetch_openai_usage(updated_acc)
+                return fetch_openai_usage(updated_acc, _retried=True)
         print(f"[OpenAI Manager] HTTP error {he.code} fetching usage: {he}")
     except Exception as e:
         print(f"[OpenAI Manager] Error fetching usage for {account.get('email')}: {e}")
 
     # Return cached or default fallback
-    return account.get("quota") or {
-        "status": "error",
-        "primary": {"used_percent": 0, "remaining_percent": 100, "reset_label": "Недоступно"},
-        "secondary": {"used_percent": 0, "remaining_percent": 100, "reset_label": "Недоступно"},
-    }
+    cached = account.get("quota") or {}
+    if cached.get("status") in ("ok", "stale"):
+        return {**cached, "status": "stale"}
+    return {"status": "error", "primary": {}, "secondary": {}}
 
 
 def _parse_usage_payload(payload: dict, account: dict) -> dict:
@@ -512,6 +511,8 @@ def _parse_usage_payload(payload: dict, account: dict) -> dict:
         win_weekly = w2
 
     def parse_window(win: dict) -> dict:
+        if not win or win.get("used_percent") is None:
+            return {}
         used_pct = float(win.get("used_percent", 0.0))
         rem_pct = max(0.0, min(100.0, 100.0 - used_pct))
         reset_after = win.get("reset_after_seconds", 0)

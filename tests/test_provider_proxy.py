@@ -9,7 +9,20 @@ from google_routes import describe_route
 
 
 class ProviderRouteProxyTests(unittest.TestCase):
+    @patch("provider_proxy._read_json", return_value={"dns_mode": "standard", "custom_dns": ["192.0.2.1", "192.0.2.2"]})
+    @patch("dns_tester.test_standard_dns", side_effect=[{"ok": False}, {"ok": True, "resolved_ip": "203.0.113.8"}])
+    def test_standard_dns_uses_saved_secondary_when_primary_fails(self, query, read):
+        import provider_proxy
+        import dns_tester
+        previous = dns_tester.DOMAIN_TO_TEST
+        self.assertEqual(provider_proxy._resolve_with_hub_dns("chatgpt.com"), "203.0.113.8")
+        self.assertEqual([call.args[0] for call in query.call_args_list], ["192.0.2.1", "192.0.2.2"])
+        self.assertEqual(dns_tester.DOMAIN_TO_TEST, previous)
+
     def setUp(self):
+        self.auto_refresh = patch("auto_router.router.refresh").start()
+        self.auto_selected = patch("auto_router.router.selected_upstream", return_value="http://127.0.0.1:10879").start()
+        self.addCleanup(patch.stopall)
         self.opencode = {"provider": {
             "google": {"options": {}},
             "openai": {"options": {}},
@@ -51,10 +64,15 @@ class ProviderRouteProxyTests(unittest.TestCase):
         # connect back to itself for non-gate hosts.
         hub = {"proxy": "http://127.0.0.1:10880", "vless_enabled": False,
                "dns_mode": "system"}
-        self.assertIsNone(select_upstream("accounts.google.com", hub, self.opencode))
-        self.assertIsNone(select_upstream("api.openai.com", hub, self.opencode))
+        from auto_router import AutoRouteUnavailable
+        self.auto_selected.side_effect = AutoRouteUnavailable("no configured routes")
+        with self.assertRaises(AutoRouteUnavailable):
+            select_upstream("accounts.google.com", hub, self.opencode)
+        with self.assertRaises(AutoRouteUnavailable):
+            select_upstream("api.openai.com", hub, self.opencode)
 
     def test_external_proxy_still_used_when_it_is_not_the_dispatcher(self):
+        self.auto_selected.return_value = "http://proxy.example:3128"
         hub = {"proxy": "http://proxy.example:3128", "vless_enabled": False,
                "dns_mode": "system"}
         self.assertEqual(select_upstream("accounts.google.com", hub, self.opencode),
