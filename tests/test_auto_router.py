@@ -132,7 +132,7 @@ class AutoRouterTests(unittest.TestCase):
         connector = Mock(side_effect=[OSError('auxiliary host down'), Mock()])
         router = AutoRouter(connector, probe=probe)
         self.ready(router, 'google')
-        _, upstream = router.connect('google', 'containers.cloud.google.com', 443, self.hub, self.oc)
+        _, upstream = router.connect('google', 'clients6.google.com', 443, self.hub, self.oc)
         self.assertNotEqual(upstream, 'dns://hub')
         self.assertEqual(router.state('google', self.hub, self.oc)['selected'], 'dns')
 

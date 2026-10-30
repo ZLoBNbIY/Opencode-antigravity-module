@@ -685,7 +685,7 @@ async function setProviderRoute(provider, route) {
 
 const providerTabs = {google:'google', openai:'openai', claude:'claude-pro', xpiki:'xpiki', openrouter:'openrouter-free'};
 const diagnosticDomains = {
-  google:['daily-cloudcode-pa.googleapis.com','cloudcode-pa.googleapis.com','containers.cloud.google.com','oauth2.googleapis.com','clients6.google.com'],
+  google:['daily-cloudcode-pa.googleapis.com','cloudcode-pa.googleapis.com','oauth2.googleapis.com','clients6.google.com'],
   openai:['chatgpt.com','auth.openai.com','api.openai.com'],
   claude:['claude.ai','api.anthropic.com','console.anthropic.com'],
   xpiki:['api.xpiki.com'], openrouter:['openrouter.ai']

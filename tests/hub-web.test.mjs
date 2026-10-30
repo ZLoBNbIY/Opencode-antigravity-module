@@ -62,7 +62,7 @@ test('failed domains show error indicators and no invented milliseconds', () => 
   assert.match(row, /connection-indicator error/);
   assert.match(row, /TimeoutError/);
   assert.doesNotMatch(row, /\d+ мс/);
-  assert.equal(elements.get('diag-tbody-google').children.length, 5);
+  assert.equal(elements.get('diag-tbody-google').children.length, 4);
   assert.equal(elements.get('diag-tbody-claude').children.length, 3);
   assert.equal(elements.get('diag-tbody-xpiki').children.length, 1);
   assert.equal(elements.get('diag-tbody-openrouter').children.length, 1);
