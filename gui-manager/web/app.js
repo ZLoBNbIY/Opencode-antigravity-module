@@ -595,14 +595,18 @@ function dashboardAccess(tab) {
 function dashboardQuota(tab, active) {
   if (tab === 'google') {
     const windows = active?.groups?.find(group => group.name === 'gemini')?.windows || [];
-    return [{label:'5 часов',value:windows.find(w=>/5h|5.hour|5ч|short/i.test(String(w.window)))?.remainingPercent},
-      {label:'Неделя',value:windows.find(w=>/week|7d|нед/i.test(String(w.window)))?.remainingPercent}];
+    return [
+      {label:'5 часов', value:windows.find(w=>/5h|5.hour|5ч|short/i.test(String(w.window)))?.remainingPercent, variant:'5h'},
+      {label:'Неделя', value:windows.find(w=>/week|7d|нед/i.test(String(w.window)))?.remainingPercent, variant:'weekly'}
+    ];
   }
   if (tab === 'openai') {
     const quota = active?.quota || {};
     const valid = ['ok','stale'].includes(quota.status);
-    return [{label:'5 часов',value:valid ? (quota.window_5h || quota.primary)?.remaining_percent : null},
-      {label:'Неделя',value:valid ? (quota.window_weekly || quota.secondary)?.remaining_percent : null}];
+    return [
+      {label:'5 часов', value:valid ? (quota.window_5h || quota.primary)?.remaining_percent : null, variant:'5h'},
+      {label:'Неделя', value:valid ? (quota.window_weekly || quota.secondary)?.remaining_percent : null, variant:'weekly'}
+    ];
   }
   return [];
 }
@@ -611,7 +615,10 @@ function dashboardPercent(value) {
 }
 function dashboardQuotaHtml(item) {
   const value = dashboardPercent(item.value);
-  const tone = value == null ? 'muted' : value === 0 ? 'error' : value <= 20 ? 'warning' : 'ok';
+  let tone = value == null ? 'muted' : value === 0 ? 'error' : value <= 20 ? 'warning' : 'ok';
+  if (item.variant === 'weekly' && tone === 'ok') {
+    tone = 'weekly';
+  }
   return `<div class="dashboard-quota"><div><span>${html(item.label)}</span><strong class="dashboard-tone-${tone}">${value == null ? 'Нет данных' : `${value}%`}</strong></div><div class="dashboard-quota-track"><span class="dashboard-fill-${tone}" style="width:${value ?? 0}%"></span></div></div>`;
 }
 function dashboardDns() {
@@ -672,8 +679,27 @@ function renderDashboard() {
       const q = cfg.quota || {};
       const valid = ['ok','stale'].includes(q.status);
       const amount = value => value != null && Number.isFinite(Number(value)) ? Number(value).toLocaleString('ru-RU') : '—';
-      limits = `<div class="dashboard-token-balance"><span>Остаток токенов</span><strong>${valid ? amount(q.remaining_tokens) : 'Нет данных'}</strong><small>${valid ? `из ${amount(q.quota_limit)}${q.status === 'stale' ? ' · сохранённые данные' : ''}` : 'Обновите квоту во вкладке Xpiki'}</small></div>`;
-      if (valid && dashboardPercent(q.remaining_percent) != null && Number(q.remaining_percent) <= 20) alerts.push({priority:1,tab,text:`Xpiki: осталось ${q.remaining_percent}% квоты`});
+      let pct = null;
+      if (valid) {
+        if (q.remaining_percent != null && Number.isFinite(Number(q.remaining_percent))) {
+          pct = dashboardPercent(q.remaining_percent);
+        } else if (q.quota_limit > 0 && q.remaining_tokens != null) {
+          pct = dashboardPercent((q.remaining_tokens / q.quota_limit) * 100);
+        }
+      }
+      const tone = pct == null ? 'muted' : pct === 0 ? 'error' : pct <= 20 ? 'warning' : 'ok';
+      limits = `<div class="dashboard-token-balance">
+        <div style="display:flex; justify-content:space-between; align-items:baseline;">
+          <span>Остаток токенов</span>
+          <strong class="dashboard-tone-${tone}" style="font-size:11px; font-weight:700;">${pct != null ? `${pct}%` : ''}</strong>
+        </div>
+        <strong>${valid ? amount(q.remaining_tokens) : 'Нет данных'}</strong>
+        <div class="dashboard-quota-track" style="margin:5px 0 6px 0;">
+          <span class="dashboard-fill-${tone}" style="width:${pct ?? 0}%;"></span>
+        </div>
+        <small>${valid ? `из ${amount(q.quota_limit)}${q.status === 'stale' ? ' · сохранённые данные' : ''}` : 'Обновите квоту во вкладке Xpiki'}</small>
+      </div>`;
+      if (valid && pct != null && pct <= 20) alerts.push({priority:1,tab,text:`Xpiki: осталось ${pct}% квоты`});
     }
     if (tab === 'openrouter') limits = `<div class="dashboard-token-balance"><span>Моделей в OpenCode</span><strong>${cfg.selectedModels?.length || 0}</strong><small>Выбор каталога во вкладке OpenRouter</small></div>`;
     if (tab === 'claude') limits = `<div class="dashboard-token-balance"><span>Тариф</span><strong>${html(access.active?.plan || '—')}</strong><small>Данные о лимитах сессии не получены</small></div>`;
@@ -949,7 +975,35 @@ function renderXpikiTab() {
   const quota = cfg.quota || {};
   const valid = ['ok','stale'].includes(quota.status);
   const amount = value => value == null ? 'Нет данных' : Number(value).toLocaleString('ru-RU');
-  document.getElementById('xpiki-quota').innerHTML = `<h2>Квота Xpiki</h2><div class="quota-summary"><div class="help-text">Осталось<strong>${valid ? amount(quota.remaining_tokens) : 'Нет данных'}</strong></div><div class="help-text">Всего токенов<strong>${valid ? amount(quota.quota_limit) : '—'}</strong></div><div class="help-text">Использовано<strong>${valid ? amount(quota.quota_used) : '—'}</strong></div></div><p class="help-text">RPM: ${amount(quota.effective_rpm)} · TPM: ${amount(quota.effective_tpm)}${quota.status === 'stale' ? ' · сохранённые данные' : ''}</p>`;
+  let pct = null;
+  if (valid) {
+    if (quota.remaining_percent != null && Number.isFinite(Number(quota.remaining_percent))) {
+      pct = dashboardPercent(quota.remaining_percent);
+    } else if (quota.quota_limit > 0 && quota.remaining_tokens != null) {
+      pct = dashboardPercent((quota.remaining_tokens / quota.quota_limit) * 100);
+    }
+  }
+  const tone = pct == null ? 'muted' : pct === 0 ? 'error' : pct <= 20 ? 'warning' : 'ok';
+  document.getElementById('xpiki-quota').innerHTML = `
+    <h2>Квота Xpiki</h2>
+    <div class="quota-summary">
+      <div class="help-text">Осталось<strong>${valid ? amount(quota.remaining_tokens) : 'Нет данных'}</strong></div>
+      <div class="help-text">Всего токенов<strong>${valid ? amount(quota.quota_limit) : '—'}</strong></div>
+      <div class="help-text">Использовано<strong>${valid ? amount(quota.quota_used) : '—'}</strong></div>
+    </div>
+    ${valid && pct != null ? `
+      <div class="dashboard-quota" style="margin: 14px 0 10px 0;">
+        <div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:6px;">
+          <span style="color:var(--text-secondary);">Остаток лимита</span>
+          <strong class="dashboard-tone-${tone}">${pct}%</strong>
+        </div>
+        <div class="dashboard-quota-track">
+          <span class="dashboard-fill-${tone}" style="width:${pct}%;"></span>
+        </div>
+      </div>
+    ` : ''}
+    <p class="help-text">RPM: ${amount(quota.effective_rpm)} · TPM: ${amount(quota.effective_tpm)}${quota.status === 'stale' ? ' · сохранённые данные' : ''}</p>
+  `;
 }
 
 async function configureXpiki() {

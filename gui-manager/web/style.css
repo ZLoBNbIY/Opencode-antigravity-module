@@ -891,11 +891,13 @@ button:disabled { opacity:.5; cursor:wait; }
 .dashboard-quota-track { height:5px; border-radius:5px; background:rgba(255,255,255,.06); overflow:hidden; }
 .dashboard-quota-track > span { display:block; height:100%; border-radius:inherit; }
 .dashboard-tone-ok { color:var(--accent-emerald); }
+.dashboard-tone-weekly { color:var(--accent-amber-light); }
 .dashboard-tone-warning { color:var(--accent-amber-light); }
 .dashboard-tone-error { color:var(--accent-red); }
 .dashboard-tone-muted { color:var(--text-secondary); }
 .dashboard-tone-neutral { color:var(--text-primary); }
 .dashboard-fill-ok { background:var(--accent-emerald); }
+.dashboard-fill-weekly { background:var(--accent-amber); box-shadow:0 0 10px rgba(217, 154, 67, 0.45); }
 .dashboard-fill-warning { background:var(--accent-amber); }
 .dashboard-fill-error { background:var(--accent-red); }
 .dashboard-quota-note { font-size:10px; line-height:1.6; color:var(--text-muted); margin-top:14px; }
