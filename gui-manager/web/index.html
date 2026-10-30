@@ -135,7 +135,7 @@
               <button class="seg-btn" id="dns-mode-dot" role="radio" aria-checked="false" onclick="selectDnsMode('dot')">DoT</button>
               <button class="seg-btn" id="dns-mode-system" role="radio" aria-checked="false" onclick="selectDnsMode('system')">Системный</button>
             </div>
-            <label class="field-label" for="dns-preset">DNS-сервер</label><select id="dns-preset" onchange="applyDnsPreset()"><option value="custom">Свой / текущий</option><option value="bezmezhau">Bezmezhau</option><option value="cloudflare">Cloudflare</option><option value="google">Google</option><option value="quad9">Quad9</option></select>
+            <label class="field-label" for="dns-preset">DNS-сервер</label><select id="dns-preset" onchange="applyDnsPreset()"><option value="custom">Свой / текущий</option><option value="dns-ai">DNS-AI (dns-ai.ru)</option><option value="magicdns">MagicDNS (magicdns.ru)</option><option value="bezmezhau">Bezmezhau</option><option value="cloudflare">Cloudflare</option><option value="google">Google</option><option value="quad9">Quad9</option></select>
             <div id="dns-standard-fields" class="field-grid">
               <label class="field-label">Основной DNS<input id="dns-primary" placeholder="143.20.64.55" oninput="onDnsInput()"><span class="badge-pill badge-pool dns-address-status" id="dns-primary-status">● Не проверен</span></label>
               <label class="field-label">Резервный DNS<input id="dns-secondary" placeholder="31.58.216.201" oninput="onDnsInput()"><span class="badge-pill badge-pool dns-address-status" id="dns-secondary-status">● Не проверен</span></label>

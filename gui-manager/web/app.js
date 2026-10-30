@@ -250,7 +250,24 @@ function fillNetworkForm() {
   if (document.getElementById('switch-proxy-failover')) {
     document.getElementById('switch-proxy-failover').checked = cfg.proxy_failover !== false;
   }
-  document.getElementById('dns-preset').value = 'custom';
+  const primaryIp = (cfg.custom_dns || [])[0] || '';
+  const doh = cfg.doh_url || '';
+  const dot = cfg.dot_host || '';
+  let matchedPreset = 'custom';
+  if (doh.includes('dns-ai.ru') || dot.includes('dns-ai.ru') || primaryIp === '194.87.196.13') {
+    matchedPreset = 'dns-ai';
+  } else if (doh.includes('magicdns.ru') || dot.includes('magicdns.ru') || primaryIp === '109.120.132.43') {
+    matchedPreset = 'magicdns';
+  } else if (doh.includes('bezmezhau.com') || dot.includes('bezmezhau.com') || primaryIp === '143.20.64.55') {
+    matchedPreset = 'bezmezhau';
+  } else if (doh.includes('cloudflare-dns.com') || dot.includes('cloudflare-dns.com') || primaryIp === '1.1.1.1') {
+    matchedPreset = 'cloudflare';
+  } else if (doh.includes('dns.google') || dot.includes('dns.google') || primaryIp === '8.8.8.8') {
+    matchedPreset = 'google';
+  } else if (doh.includes('quad9.net') || dot.includes('quad9.net') || primaryIp === '9.9.9.9') {
+    matchedPreset = 'quad9';
+  }
+  document.getElementById('dns-preset').value = matchedPreset;
   networkFormInitialized = true;
   updateDnsFields();
 }
@@ -513,10 +530,12 @@ async function saveDnsSettings() {
 
 function applyDnsPreset() {
   const presets = {
-    bezmezhau:['143.20.64.55','31.58.216.201','dns.bezmezhau.com','https://dns.bezmezhau.com/dns-query'],
-    cloudflare:['1.1.1.1','1.0.0.1','cloudflare-dns.com','https://cloudflare-dns.com/dns-query'],
-    google:['8.8.8.8','8.8.4.4','dns.google','https://dns.google/dns-query'],
-    quad9:['9.9.9.9','149.112.112.112','dns.quad9.net','https://dns.quad9.net/dns-query']
+    'dns-ai': ['194.87.196.13', '45.151.102.219', 'dns.dns-ai.ru', 'https://dns.dns-ai.ru/dns-query'],
+    magicdns: ['109.120.132.43', '94.249.177.102', 'dns.magicdns.ru', 'https://dns.magicdns.ru/dns-query'],
+    bezmezhau: ['143.20.64.55', '31.58.216.201', 'dns.bezmezhau.com', 'https://dns.bezmezhau.com/dns-query'],
+    cloudflare: ['1.1.1.1', '1.0.0.1', 'cloudflare-dns.com', 'https://cloudflare-dns.com/dns-query'],
+    google: ['8.8.8.8', '8.8.4.4', 'dns.google', 'https://dns.google/dns-query'],
+    quad9: ['9.9.9.9', '149.112.112.112', 'dns.quad9.net', 'https://dns.quad9.net/dns-query']
   };
   const values = presets[document.getElementById('dns-preset').value];
   if (values) ['dns-primary','dns-secondary','dns-dot','dns-doh'].forEach((id,i) => document.getElementById(id).value = values[i]);
