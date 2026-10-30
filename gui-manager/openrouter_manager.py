@@ -141,8 +141,11 @@ def configure_models(models, config_dir=None):
     configured_models = {}
     for model in models:
         model_config = {
-            "name": model["name"],
-            "limit": {"context": model["context"], "output": model["output"]},
+            "name": model.get("name", model.get("id", "Model")),
+            "limit": {
+                "context": model.get("context") or model.get("limit", {}).get("context", 128000),
+                "output": model.get("output") or model.get("limit", {}).get("output", 4096),
+            },
         }
         configured_models[model["id"]] = model_config
     updated = deepseek_config.set_property(updated, ("provider", PROVIDER_ID), {

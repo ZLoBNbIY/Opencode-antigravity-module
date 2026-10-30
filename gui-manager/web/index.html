@@ -476,6 +476,22 @@
         </div>
 
         <div class="glass-card" style="margin-bottom: 16px;">
+          <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 4px;">Резервное копирование и перенос на другой ПК</div>
+          <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
+            Экспорт и импорт всех настроенных аккаунтов (Google, ChatGPT, Claude, Xpiki), API-ключей, маршрутов и параметров сети для быстрого переноса настроек Hub на новый компьютер.
+          </div>
+          <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <button class="btn-primary" onclick="exportBackup()">
+              <span>📥</span> Экспорт резервной копии
+            </button>
+            <button class="btn-secondary" onclick="importBackup()">
+              <span>📤</span> Импортировать из файла
+            </button>
+          </div>
+          <p class="help-text" id="backup-status-text" style="margin-top: 8px;"></p>
+        </div>
+
+        <div class="glass-card" style="margin-bottom: 16px;">
           <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px;">
             <div>
               <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 4px;">Обновление Antigravity Hub</div>

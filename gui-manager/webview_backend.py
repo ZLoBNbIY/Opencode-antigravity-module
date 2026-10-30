@@ -707,6 +707,271 @@ class HubApi:
             return True
         return False
 
+    def export_backup(self, target_path: str = None) -> dict:
+        try:
+            import webview
+            if not target_path and self._window_holder:
+                dialog_res = self._window_holder.create_file_dialog(
+                    webview.FileDialog.SAVE,
+                    save_filename="AntigravityHub_Backup.json",
+                    file_types=("JSON Backup (*.json)", "All files (*.*)")
+                )
+                if not dialog_res:
+                    return {"ok": False, "cancelled": True, "message": "Экспорт отменён"}
+                target_path = dialog_res[0] if isinstance(dialog_res, (list, tuple)) else dialog_res
+
+            if not target_path:
+                return {"ok": False, "message": "Не указан путь для сохранения файла"}
+
+            target = Path(target_path)
+            google_accs = antigravity_manager.export_google_accounts()
+            openai_accs = openai_manager.load_openai_accounts() if hasattr(openai_manager, "load_openai_accounts") else []
+            claude_accs = claude_service.load_accounts() if claude_service else []
+            xpiki_cfg = xpiki_manager.load_xpiki_config()
+            openrouter_key = openrouter_manager.load_api_key()
+
+            selected_or_models = []
+            try:
+                if OPENCODE_CONFIG_FILE.exists():
+                    oc = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8"))
+                    selected_or_models = list(oc.get("provider", {}).get("openrouter-free", {}).get("models", {}))
+            except Exception:
+                pass
+
+            backup_data = {
+                "schemaVersion": 2,
+                "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "app_version": "v2.0.0",
+                "google_accounts": google_accs,
+                "openai_accounts": openai_accs,
+                "claude_accounts": claude_accs,
+                "xpiki": {
+                    "api_key": xpiki_cfg.get("api_key", ""),
+                    "base_url": xpiki_cfg.get("base_url") or xpiki_manager.DEFAULT_BASE_URL,
+                    "enabled_models": xpiki_cfg.get("enabled_models", list(xpiki_manager.XPIKI_MODELS)),
+                    "connected": xpiki_cfg.get("connected", False),
+                },
+                "openrouter": {
+                    "api_key": openrouter_key or "",
+                    "selected_models": selected_or_models,
+                },
+                "config": self.load_config(),
+            }
+
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps(backup_data, indent=2, ensure_ascii=False), encoding="utf-8")
+            return {
+                "ok": True,
+                "path": str(target),
+                "message": f"Резервная копия сохранена в {target.name}",
+                "counts": {
+                    "google": len(google_accs),
+                    "openai": len(openai_accs),
+                    "claude": len(claude_accs),
+                }
+            }
+        except Exception as e:
+            return {"ok": False, "message": f"Ошибка экспорта: {e}"}
+
+    def import_backup(self, source_path: str = None) -> dict:
+        try:
+            import webview
+            import crypto_backup
+            if not source_path and self._window_holder:
+                dialog_res = self._window_holder.create_file_dialog(
+                    webview.FileDialog.OPEN,
+                    file_types=("Antigravity Backup (*.json;*.agb)", "All files (*.*)")
+                )
+                if not dialog_res:
+                    return {"ok": False, "cancelled": True, "message": "Импорт отменён"}
+                source_path = dialog_res[0] if isinstance(dialog_res, (list, tuple)) else dialog_res
+
+            if not source_path or not Path(source_path).exists():
+                return {"ok": False, "message": "Файл резервной копии не найден"}
+
+            source = Path(source_path)
+            raw = source.read_bytes()
+
+            if crypto_backup.is_encrypted_backup(raw):
+                return {"ok": False, "message": "Зашифрованные .agb файлы требуют пароля"}
+
+            data = json.loads(raw.decode("utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("Некорректная структура файла бэкапа")
+
+            imported_g = 0
+            imported_o = 0
+            imported_c = 0
+
+            # 1. Google accounts
+            g_list = data.get("google_accounts") or data.get("accounts") or []
+            if isinstance(g_list, list) and g_list:
+                imported_g = self._import_google_accounts_list(g_list)
+
+            # 2. OpenAI accounts
+            o_list = data.get("openai_accounts") or []
+            if isinstance(o_list, list) and o_list:
+                imported_o = openai_manager.import_openai_accounts(o_list)
+
+            # 3. Claude accounts
+            c_list = data.get("claude_accounts") or []
+            if isinstance(c_list, list) and c_list and claude_service:
+                existing = claude_service.load_accounts()
+                existing_emails = {a.get("email") for a in existing if a.get("email")}
+                for ca in c_list:
+                    if ca.get("email") not in existing_emails:
+                        existing.append(ca)
+                        imported_c += 1
+                claude_service.save_accounts(existing)
+
+            # 4. Xpiki
+            xpiki_data = data.get("xpiki")
+            if isinstance(xpiki_data, dict) and xpiki_data.get("api_key"):
+                x_cfg = xpiki_manager.load_xpiki_config()
+                x_cfg.update(
+                    api_key=xpiki_data["api_key"],
+                    base_url=xpiki_data.get("base_url") or xpiki_manager.DEFAULT_BASE_URL,
+                    enabled_models=xpiki_data.get("enabled_models", list(xpiki_manager.XPIKI_MODELS)),
+                    connected=True,
+                )
+                xpiki_manager.save_xpiki_config(x_cfg)
+                xpiki_manager.configure_opencode(
+                    x_cfg["api_key"], x_cfg["base_url"], x_cfg["enabled_models"]
+                )
+
+            # 5. OpenRouter
+            or_data = data.get("openrouter")
+            if isinstance(or_data, dict) and or_data.get("api_key"):
+                or_key = or_data["api_key"]
+                openrouter_manager.save_api_key(or_key)
+                openrouter_manager.sync_opencode_credential(or_key)
+                if or_data.get("selected_models"):
+                    models = [{"id": mid, "name": mid} for mid in or_data["selected_models"]]
+                    openrouter_manager.configure_models(models)
+
+            # 6. Hub Config (settings, routes, proxies, DNS)
+            backup_cfg = data.get("config")
+            if isinstance(backup_cfg, dict):
+                current_cfg = self.load_config()
+                for k, v in backup_cfg.items():
+                    if k not in ("$schema",):
+                        current_cfg[k] = v
+                self.save_config(current_cfg)
+                self._sync_routes(current_cfg)
+
+            summary = []
+            if imported_g: summary.append(f"Google: {imported_g}")
+            if imported_o: summary.append(f"OpenAI: {imported_o}")
+            if imported_c: summary.append(f"Claude: {imported_c}")
+            summary_str = ", ".join(summary) if summary else "настройки провайдеров и сети"
+
+            return {
+                "ok": True,
+                "message": f"Импорт завершён успешно! Восстановлено: {summary_str}",
+                "counts": {"google": imported_g, "openai": imported_o, "claude": imported_c}
+            }
+        except Exception as e:
+            return {"ok": False, "message": f"Ошибка импорта: {e}"}
+
+    def _import_google_accounts_list(self, accounts_list: list) -> int:
+        """Imports Google accounts into the active generation store and legacy store."""
+        import secrets
+        import uuid
+        count = 0
+        gen_dirs = list(CONFIG_DIR.glob("*.generation"))
+
+        if gen_dirs:
+            gen_dir = gen_dirs[0]
+            cfg_p = gen_dir / "config.json"
+            state_p = gen_dir / "state.json"
+            if cfg_p.exists() and state_p.exists():
+                try:
+                    cfg = json.loads(cfg_p.read_text(encoding="utf-8"))
+                    state = json.loads(state_p.read_text(encoding="utf-8"))
+                    cfg_accounts = cfg.setdefault("accounts", [])
+                    pool_rows = cfg.setdefault("commonAuthPool", {}).setdefault("rows", {})
+                    state_accounts = state.setdefault("accounts", {})
+
+                    existing_emails = set()
+                    for acc in cfg_accounts:
+                        aid = acc.get("id")
+                        st = state_accounts.get(aid, {})
+                        email = st.get("commonAuthProviderState", {}).get("metadata", {}).get("email")
+                        if email:
+                            existing_emails.add(email.lower())
+
+                    for item in accounts_list:
+                        email = item.get("email")
+                        refresh_token = item.get("refreshToken") or item.get("refresh")
+                        if not email or not refresh_token:
+                            continue
+                        if email.lower() in existing_emails:
+                            continue
+
+                        aid = item.get("id") or str(uuid.uuid4())
+                        added_at = item.get("addedAt") or int(time.time() * 1000)
+                        project_id = item.get("projectId") or "aicode-consumers"
+
+                        cfg_accounts.append({
+                            "id": aid,
+                            "type": "oauth",
+                            "addedAt": added_at,
+                            "enabled": True,
+                            "candidate": item.get("candidate", True)
+                        })
+                        pool_rows[aid] = {
+                            "candidate": item.get("candidate", True),
+                            "enabled": True,
+                            "usable": True
+                        }
+                        state_accounts[aid] = {
+                            "refresh": refresh_token,
+                            "access": item.get("accessToken", ""),
+                            "expires": item.get("expires", 0),
+                            "commonAuthProviderState": {
+                                "metadata": {
+                                    "email": email,
+                                    "projectId": project_id,
+                                    "addedAt": added_at,
+                                    "label": item.get("label", email.split("@")[0])
+                                }
+                            }
+                        }
+                        existing_emails.add(email.lower())
+                        count += 1
+
+                    cfg_p.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+                    state_p.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+                except Exception as e:
+                    print(f"Error importing into generation store: {e}")
+
+        # Also write to legacy antigravity-accounts.json as safety mirror
+        legacy_file = CONFIG_DIR / "antigravity-accounts.json"
+        try:
+            legacy_data = {"version": 4, "activeIndex": 0, "accounts": []}
+            if legacy_file.exists():
+                legacy_data = json.loads(legacy_file.read_text(encoding="utf-8"))
+            existing_leg = {a.get("email") for a in legacy_data.get("accounts", []) if a.get("email")}
+            for item in accounts_list:
+                email = item.get("email")
+                refresh = item.get("refreshToken") or item.get("refresh")
+                if email and refresh and email not in existing_leg:
+                    legacy_data.setdefault("accounts", []).append({
+                        "email": email,
+                        "refreshToken": refresh,
+                        "projectId": item.get("projectId", "aicode-consumers"),
+                        "addedAt": item.get("addedAt", int(time.time() * 1000)),
+                        "lastUsed": 0,
+                    })
+                    existing_leg.add(email)
+                    if not gen_dirs:
+                        count += 1
+            legacy_file.write_text(json.dumps(legacy_data, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
+        return count
+
     def check_updates(self) -> dict:
         try:
             repo_dir = CURRENT_DIR.parent

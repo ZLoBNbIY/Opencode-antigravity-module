@@ -1483,6 +1483,52 @@ async function checkUpdates() {
   }
 }
 
+// --- Backup & Profile Transfer ---
+async function exportBackup() {
+  if (!window.pywebview?.api?.export_backup) return;
+  const statusEl = document.getElementById('backup-status-text');
+  if (statusEl) statusEl.textContent = 'Сохранение резервной копии…';
+  showToast('Экспорт профилей и настроек…');
+  try {
+    const res = await window.pywebview.api.export_backup();
+    if (res && res.ok) {
+      if (statusEl) statusEl.textContent = res.message;
+      showToast(res.message);
+    } else if (res && res.cancelled) {
+      if (statusEl) statusEl.textContent = 'Экспорт отменён';
+    } else {
+      if (statusEl) statusEl.textContent = res?.message || 'Ошибка экспорта';
+      showToast(res?.message || 'Ошибка экспорта');
+    }
+  } catch (e) {
+    if (statusEl) statusEl.textContent = String(e);
+    showToast(`Ошибка экспорта: ${e}`);
+  }
+}
+
+async function importBackup() {
+  if (!window.pywebview?.api?.import_backup) return;
+  const statusEl = document.getElementById('backup-status-text');
+  if (statusEl) statusEl.textContent = 'Чтение файла резервной копии…';
+  try {
+    const res = await window.pywebview.api.import_backup();
+    if (res && res.ok) {
+      if (statusEl) statusEl.textContent = res.message;
+      showToast(res.message);
+      await refreshState();
+      alert(`${res.message}\n\nПрофили и настройки успешно перенесены!`);
+    } else if (res && res.cancelled) {
+      if (statusEl) statusEl.textContent = 'Импорт отменён';
+    } else {
+      if (statusEl) statusEl.textContent = res?.message || 'Ошибка импорта';
+      showToast(res?.message || 'Ошибка импорта');
+    }
+  } catch (e) {
+    if (statusEl) statusEl.textContent = String(e);
+    showToast(`Ошибка импорта: ${e}`);
+  }
+}
+
 // ============================================================================
 // INITIALIZATION
 // ============================================================================
