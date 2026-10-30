@@ -50,7 +50,6 @@ CLOUDCODE_ENDPOINTS = [
     "daily-cloudcode-pa.googleapis.com",
     "cloudcode-pa.googleapis.com",
     "containers.cloud.google.com",
-    "artifactregistry.googleapis.com",
     "oauth2.googleapis.com",
     "clients6.google.com",
 ]
