@@ -28,8 +28,35 @@ LOCAL_ROUTES = {"google": ("googleapis.com", "google.com", "googleusercontent.co
 _server = None
 _thread = None
 _dns_lock = threading.Lock()
+_proxy_pool_lock = threading.Lock()
+_proxy_pool_index = 0
+_proxy_failures = {}
 
 
+def _get_candidate_proxies(hub: dict) -> list[str]:
+    """Return a list of external proxies from the proxy pool or fallback proxy."""
+    pool = hub.get("proxy_pool")
+    candidates = []
+    if isinstance(pool, list):
+        for item in pool:
+            url = (item.get("url") if isinstance(item, dict) else str(item)).strip()
+            if url and url not in candidates and url != "http://127.0.0.1:51180" and url != f"http://{HOST}:{PORT}":
+                candidates.append(url)
+    fallback = str(hub.get("proxy") or "").strip()
+    if fallback and fallback not in candidates and fallback != "http://127.0.0.1:51180" and fallback != f"http://{HOST}:{PORT}":
+        candidates.append(fallback)
+    return candidates
+
+
+def _hub_upstream_proxy(hub: dict) -> str | None:
+    """Hub-level proxy from config, ignoring its own route dispatcher (no self-loop)."""
+    candidates = _get_candidate_proxies(hub)
+    if not candidates:
+        return None
+    global _proxy_pool_index
+    with _proxy_pool_lock:
+        idx = _proxy_pool_index % len(candidates)
+        return candidates[idx]
 def _read_json(path: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -132,20 +159,32 @@ def connect_routed(host, port, hub_config=None, opencode_config=None):
     if provider and mode in ("default", "auto"):
         from auto_router import router
         return router.connect(provider, host, port, hub, oc)
+
     upstream = select_upstream(host, hub, oc)
+
+    # If routing through external proxy and failover/rotation is enabled, try pool candidates
+    candidates = _get_candidate_proxies(hub)
+    if upstream in candidates and len(candidates) > 1 and hub.get("proxy_failover", True):
+        global _proxy_pool_index
+        last_error = None
+        with _proxy_pool_lock:
+            start_idx = _proxy_pool_index % len(candidates)
+
+        for attempt in range(len(candidates)):
+            cand_idx = (start_idx + attempt) % len(candidates)
+            cand_url = candidates[cand_idx]
+            try:
+                sock = _connect_upstream(cand_url, host, port, hub_config=hub)
+                with _proxy_pool_lock:
+                    _proxy_pool_index = cand_idx
+                return sock, cand_url
+            except Exception as e:
+                last_error = e
+                continue
+        if last_error:
+            raise last_error
+
     return _connect_upstream(upstream, host, port, hub_config=hub), upstream
-
-
-def _hub_upstream_proxy(hub: dict) -> str | None:
-    """Hub-level proxy from config, ignoring its own route dispatcher (no self-loop)."""
-    external = str(hub.get("proxy") or "").strip()
-    if not external or external == "http://127.0.0.1:51180":
-        return None
-    if external == f"http://{HOST}:{PORT}":
-        # OpenCode's plugin reads this same URL from antigravity.json; the
-        # dispatcher itself must not connect back to itself.
-        return None
-    return external
 
 
 def _resolve_with_hub_dns(host: str, hub_config=None, timeout=8) -> str:

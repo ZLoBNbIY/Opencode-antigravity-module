@@ -659,6 +659,28 @@ body {
   border-radius: 3px;
 }
 
+.progress-fill-cyan {
+  height: 100%;
+  background: linear-gradient(90deg, #0284c7, #38bdf8);
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.45);
+  border-radius: 3px;
+}
+
+.progress-fill-purple {
+  height: 100%;
+  background: linear-gradient(90deg, #8b5cf6, #c084fc);
+  box-shadow: 0 0 10px rgba(168, 85, 247, 0.45);
+  border-radius: 3px;
+}
+
+.quota-percent.cyan {
+  color: #38bdf8;
+}
+
+.quota-percent.purple {
+  color: #c084fc;
+}
+
 .acc-footer {
   display: flex;
   justify-content: space-between;

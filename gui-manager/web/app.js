@@ -219,12 +219,14 @@ function renderNetworkTab() {
     button.disabled = !!core.installed;
     button.textContent = core.installed ? `${kind === 'xray' ? 'Xray' : kind} установлен` : `Скачать ${kind === 'xray' ? 'Xray' : kind}`;
   }
-  const proxyConfigured = !!appState.config?.proxy;
+  const proxyPool = appState.config?.proxy_pool || (appState.config?.proxy ? [appState.config.proxy] : []);
+  const proxyConfigured = proxyPool.length > 0;
   document.getElementById('http-proxy-indicator').className = `connection-indicator ${proxyConfigured ? 'ok' : 'idle'}`;
   document.getElementById('http-proxy-indicator').setAttribute('aria-label', proxyConfigured ? 'Прокси настроен' : 'Прокси не задан');
-  document.getElementById('http-proxy-status').textContent = proxyConfigured ? 'Адрес сохранён. Доступность проверяется во вкладке провайдера.' : 'Прокси не настроен';
+  document.getElementById('http-proxy-status').textContent = proxyConfigured ? `В пуле: ${proxyPool.length} узлов. Ротация включена.` : 'Прокси не настроены';
   document.getElementById('btn-vless-start').disabled = !!net.vlessRunning;
   document.getElementById('btn-vless-stop').disabled = !net.vlessRunning;
+  renderProxyPool();
   if (!networkFormInitialized) fillNetworkForm();
   const cfg = appState.config || {};
   const mode = cfg.dns_mode || 'system';
@@ -247,6 +249,87 @@ function fillNetworkForm() {
   document.getElementById('dns-preset').value = 'custom';
   networkFormInitialized = true;
   updateDnsFields();
+}
+
+const proxyChecks = new Map();
+
+function renderProxyPool() {
+  const container = document.getElementById('proxy-pool-container');
+  if (!container) return;
+  const pool = (appState.config?.proxy_pool || (appState.config?.proxy ? [appState.config.proxy] : [])).filter(Boolean);
+  container.innerHTML = '';
+  if (!pool.length) {
+    container.innerHTML = '<div style="color:var(--text-muted); font-size:11px; padding:6px 0;">Прокси ещё не добавлены. Введите URL выше и нажмите «＋ Добавить».</div>';
+    return;
+  }
+  pool.forEach((proxyUrl, idx) => {
+    const check = proxyChecks.get(proxyUrl);
+    const statusText = check ? (check.ok ? `● ${check.latency_ms} мс` : '● Ошибка') : '● Не проверен';
+    const statusClass = check ? (check.ok ? 'badge-available' : 'badge-error') : 'badge-pool';
+    const row = document.createElement('div');
+    row.style = 'display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 10px; background:rgba(255,255,255,0.03); border:1px solid var(--glass-border); border-radius:8px; font-size:11px;';
+    row.innerHTML = `
+      <div style="display:flex; align-items:center; gap:8px; flex:1; min-width:0;">
+        <span class="badge-pill ${statusClass}" style="font-size:10px; padding:2px 6px;">${html(statusText)}</span>
+        <span style="font-family:Consolas, monospace; color:#fff; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${html(proxyUrl)}</span>
+      </div>
+      <div style="display:flex; gap:6px;">
+        <button class="btn-secondary" style="padding:4px 8px; font-size:10px;" data-action="test">🩺</button>
+        <button class="btn-secondary" style="padding:4px 8px; font-size:10px; color:var(--accent-red);" data-action="delete">🗑</button>
+      </div>
+    `;
+    row.querySelector('[data-action="test"]')?.addEventListener('click', () => testProxyItem(proxyUrl));
+    row.querySelector('[data-action="delete"]')?.addEventListener('click', () => removeProxyItem(idx));
+    container.appendChild(row);
+  });
+}
+
+async function addProxyToPool() {
+  const input = document.getElementById('network-proxy');
+  const url = (input.value || '').trim();
+  if (!url) {
+    showToast('Введите адрес прокси (http://host:port)');
+    return;
+  }
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    showToast('Адрес прокси должен начинаться с http:// или https://');
+    return;
+  }
+  if (!appState.config) appState.config = {};
+  const pool = (appState.config.proxy_pool || []).filter(Boolean);
+  if (!pool.includes(url)) {
+    pool.push(url);
+    appState.config.proxy_pool = pool;
+    if (!appState.config.proxy) appState.config.proxy = url;
+  }
+  input.value = '';
+  renderProxyPool();
+  showToast('Прокси добавлен в пул. Сохраните настройки сети.');
+  await saveNetworkSettings();
+}
+
+async function removeProxyItem(idx) {
+  if (!appState.config?.proxy_pool) return;
+  appState.config.proxy_pool.splice(idx, 1);
+  if (appState.config.proxy && !appState.config.proxy_pool.includes(appState.config.proxy)) {
+    appState.config.proxy = appState.config.proxy_pool[0] || '';
+  }
+  renderProxyPool();
+  showToast('Прокси удалён из пула');
+  await saveNetworkSettings();
+}
+
+async function testProxyItem(proxyUrl) {
+  if (!window.pywebview?.api?.test_proxy) return;
+  showToast(`Проверка прокси ${proxyUrl}...`);
+  try {
+    const res = await window.pywebview.api.test_proxy(proxyUrl);
+    proxyChecks.set(proxyUrl, res);
+    renderProxyPool();
+    showToast(res.message || (res.ok ? 'Прокси доступен' : 'Ошибка соединения'));
+  } catch (e) {
+    showToast(`Ошибка проверки: ${e}`);
+  }
 }
 
 const dnsModeLabels = {standard:'Обычный DNS',doh:'DNS-over-HTTPS (DoH)',dot:'DNS-over-TLS (DoT)',system:'Системный DNS'};
@@ -351,11 +434,16 @@ async function saveNetworkSettings() {
   const button = document.getElementById('btn-network-save');
   button.disabled = true;
   try {
+    const pool = (appState.config?.proxy_pool || []).filter(Boolean);
+    const primaryProxy = value('network-proxy') || pool[0] || '';
     const result = await window.pywebview.api.save_network_settings({
       vless_url:value('vless-url'), vless_core_path:value('vless-core-path') || null,
       vless_kill_switch:document.getElementById('vless-kill-switch').checked,
       dns_mode:value('dns-mode'), custom_dns:[value('dns-primary'),value('dns-secondary')].filter(Boolean),
-      dot_host:value('dns-dot'), doh_url:value('dns-doh'), google_smart_doh:value('google-smart-doh'), proxy:value('network-proxy')
+      dot_host:value('dns-dot'), doh_url:value('dns-doh'), google_smart_doh:value('google-smart-doh'),
+      proxy: primaryProxy,
+      proxy_pool: pool,
+      proxy_failover: document.getElementById('switch-proxy-failover')?.checked !== false
     });
     if (!result.ok) throw new Error(result.message);
     networkDirty = false;
@@ -579,7 +667,8 @@ function quotaMarkup(title, window, color, available = true) {
   const raw = window?.remaining_percent ?? window?.remainingPercent;
   const known = available && raw != null && Number.isFinite(Number(raw));
   const percent = known ? Math.max(0, Math.min(100, Number(raw))) : null;
-  return `<div class="quota-row"><div class="quota-meta"><span class="quota-title">${html(title)}</span><span class="quota-percent ${known ? color : 'quota-unknown'}">${known ? `${percent}% осталось` : 'Нет данных'}</span></div><div class="progress-track"><div class="progress-fill-${color === 'green' ? 'emerald' : 'amber'}" style="width:${percent ?? 0}%"></div></div><div class="quota-reset">${known ? html(resetLabel(window)) : 'Обновите лимиты, чтобы получить данные'}</div></div>`;
+  const fillClass = color === 'green' ? 'emerald' : color === 'cyan' ? 'cyan' : color === 'purple' ? 'purple' : 'amber';
+  return `<div class="quota-row"><div class="quota-meta"><span class="quota-title">${html(title)}</span><span class="quota-percent ${known ? color : 'quota-unknown'}">${known ? `${percent}% осталось` : 'Нет данных'}</span></div><div class="progress-track"><div class="progress-fill-${fillClass}" style="width:${percent ?? 0}%"></div></div><div class="quota-reset">${known ? html(resetLabel(window)) : 'Обновите лимиты, чтобы получить данные'}</div></div>`;
 }
 
 const dashboardProviderInfo = {
@@ -795,6 +884,13 @@ function renderGoogleTab() {
     const fiveHour = windows.find(w => /5h|5.hour|5ч|short/i.test(String(w.window)));
     const weekly = windows.find(w => /week|7d|нед/i.test(String(w.window)));
 
+    // Extract Claude (Opus / Sonnet) quotas from non-gemini group
+    const claudeGroup = (acc.groups || []).find(g => g.name === "non-gemini") || {};
+    const claudeWindows = claudeGroup.windows || [];
+    const claude5h = claudeWindows.find(w => /5h|5.hour|5ч|short/i.test(String(w.window)))
+      || (claudeGroup.remainingPercent != null ? { remainingPercent: claudeGroup.remainingPercent, resetTime: claudeGroup.resetTime } : null);
+    const claudeWeekly = claudeWindows.find(w => /week|7d|нед/i.test(String(w.window)));
+
     const card = document.createElement("div");
     card.className = `glass-card acc-card ${isAct ? 'is-active' : ''}`;
     if (isAct) {
@@ -821,6 +917,8 @@ function renderGoogleTab() {
       <div class="quotas-box">
         ${quotaMarkup('Gemini · 5 часов', fiveHour, 'green')}
         ${quotaMarkup('Gemini · неделя', weekly, 'amber')}
+        ${claude5h ? quotaMarkup('Claude (Opus / Sonnet) · 5 часов', claude5h, 'cyan') : ''}
+        ${claudeWeekly ? quotaMarkup('Claude (Opus / Sonnet) · неделя', claudeWeekly, 'purple') : ''}
       </div>
 
       <div class="acc-footer">

@@ -348,6 +348,24 @@ class HubApi:
                 if parsed.hostname in ("localhost", "127.0.0.1") and parsed.port == provider_proxy.PORT:
                     raise ValueError("Нельзя использовать собственный маршрутизатор как внешний прокси")
             cfg["proxy"] = proxy
+
+            # Handle proxy pool validation
+            pool = cfg.get("proxy_pool", [])
+            valid_pool = []
+            if isinstance(pool, list):
+                for p in pool:
+                    p_str = str(p or "").strip()
+                    if p_str:
+                        p_parsed = urlparse(p_str)
+                        if p_parsed.scheme in ("http", "https") and p_parsed.hostname:
+                            if not (p_parsed.hostname in ("localhost", "127.0.0.1") and p_parsed.port == provider_proxy.PORT):
+                                if p_str not in valid_pool:
+                                    valid_pool.append(p_str)
+            if proxy and proxy not in valid_pool:
+                valid_pool.insert(0, proxy)
+            cfg["proxy_pool"] = valid_pool
+            if not proxy and valid_pool:
+                cfg["proxy"] = valid_pool[0]
             if vless_service.is_running() and any(cfg.get(k) != previous.get(k) for k in
                     ("vless_url", "vless_core_path", "vless_http_port", "vless_socks_port")):
                 raise ValueError("Остановите туннель перед изменением ссылки, ядра или портов")
@@ -403,6 +421,22 @@ class HubApi:
         if mode == "doh":
             return dns_tester.test_doh_endpoint(value, domain=domain)
         raise ValueError("Для проверки выберите обычный DNS, DoT или DoH")
+
+    def test_proxy(self, proxy_url: str) -> dict:
+        proxy_url = str(proxy_url or "").strip()
+        if not proxy_url:
+            return {"ok": False, "message": "Укажите адрес прокси"}
+        try:
+            parsed = urlparse(proxy_url)
+            if parsed.scheme not in ("http", "https") or not parsed.hostname:
+                return {"ok": False, "message": "Неверный формат адреса прокси (требуется http:// или https://)"}
+            t0 = time.perf_counter()
+            s = provider_proxy._connect_upstream(proxy_url, "cloudcode-pa.googleapis.com", 443, timeout=6)
+            s.close()
+            latency = round((time.perf_counter() - t0) * 1000)
+            return {"ok": True, "latency_ms": latency, "message": f"Прокси доступен ({latency} мс)"}
+        except Exception as e:
+            return {"ok": False, "message": f"Ошибка соединения: {e}"}
 
     def refresh_openai_quotas(self) -> dict:
         with self._quota_lock:

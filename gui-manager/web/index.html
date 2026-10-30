@@ -147,7 +147,22 @@
             <p class="help-text" id="dns-result" role="status"></p>
           </div>
         </div>
-        <div class="glass-card network-panel proxy-panel"><div class="panel-heading"><h2>HTTP(S)-прокси</h2><span class="connection-indicator idle" id="http-proxy-indicator"></span></div><p class="help-text">Отдельный внешний прокси для маршрута «Внешний прокси».</p><label class="field-label">Адрес HTTP(S)-прокси<input id="network-proxy" type="password" autocomplete="off" placeholder="http://host:port"></label><p class="help-text" id="http-proxy-status"></p></div>
+        <div class="glass-card network-panel proxy-panel">
+          <div class="panel-heading"><h2>HTTP(S)-прокси и ротация пула</h2><span class="connection-indicator idle" id="http-proxy-indicator"></span></div>
+          <p class="help-text">Внешние прокси для маршрута «Внешний прокси». Можно указать один или несколько узлов. При сбое активного прокси Hub автоматически переключается на следующий свободный узел из пула.</p>
+          <div style="display: flex; gap: 8px; margin-bottom: 10px;">
+            <input id="network-proxy" type="text" autocomplete="off" placeholder="http://host:port или http://user:pass@host:port" style="flex:1; font-family: Consolas, monospace; font-size:12px; padding: 9px 12px; background: rgba(0,0,0,0.3); border: 1px solid var(--glass-border); border-radius: 8px; color: #fff;">
+            <button class="btn-primary" type="button" onclick="addProxyToPool()" style="white-space: nowrap; padding: 8px 14px; font-size: 11px;">＋ Добавить</button>
+          </div>
+          <div id="proxy-pool-container" style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; max-height: 180px; overflow-y: auto;">
+            <!-- Rendered dynamically -->
+          </div>
+          <label class="switch-label" style="margin-top: 4px;">
+            <input type="checkbox" class="switch-input" id="switch-proxy-failover" onchange="markSettingsDirty()" checked>
+            <span>Автоматическая ротация и переключение на следующий прокси при отказе (Failover)</span>
+          </label>
+          <p class="help-text" id="http-proxy-status" style="margin-top: 6px;"></p>
+        </div>
         <details class="glass-card experimental-panel"><summary>🧪 Google SmartDNS · экспериментальная функция</summary><p class="help-text">Отдельный экспериментальный TLS-маршрут только для Google Cloud Code. Включается явно в маршруте Google; не заменяет обычные настройки DNS.</p><label class="field-label">DoH-резолвер SmartDNS<input id="google-smart-doh" placeholder="https://dns.dns-ai.ru/dns-query"></label></details>
         <div class="network-save-row"><button class="btn-primary" id="btn-network-save" onclick="saveNetworkSettings()">Сохранить настройки сети</button><span class="help-text" id="network-save-result" role="status"></span></div>
         <div class="glass-card route-explanation"><h2>Выбор маршрута</h2><p class="help-text">Маршрут каждого провайдера настраивается справа от аккаунтов и лимитов в его вкладке.</p><p class="help-text"><strong>Авто → …</strong> — сравнивает настроенные маршруты, выбирает самый доступный и быстрый для этого провайдера и переключается при ошибке подключения. Ручной выбор закрепляет один маршрут.</p><p class="help-text" id="hub-auto-route"></p><p class="help-text">Auto перепроверяет маршруты раз в минуту; при отказе выбранного пробует другой доступный. Активная генерация не переотправляется. Индикаторы доменов показывают TCP-соединение, а не доступность конкретной модели.</p></div>
