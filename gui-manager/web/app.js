@@ -90,6 +90,7 @@ async function refreshState() {
     renderAll();
     void refreshEnabledDiagnostics();
     void refreshDnsChecks();
+    void refreshProxyChecks();
   } catch (e) {
     console.error("Failed to refresh state:", e);
     document.getElementById('status-left').textContent = 'Ошибка загрузки: ' + e;
@@ -255,6 +256,60 @@ function fillNetworkForm() {
 }
 
 const proxyChecks = new Map();
+const proxyPending = new Set();
+let proxyAutoTimer = null;
+
+function scheduleProxyChecks() {
+  if (!window.pywebview?.api) return;
+  if (proxyAutoTimer !== null) clearTimeout(proxyAutoTimer);
+  proxyAutoTimer = setTimeout(() => { proxyAutoTimer = null; void refreshProxyChecks(); }, 800);
+}
+
+async function refreshProxyChecks(force = false) {
+  if (!window.pywebview?.api?.test_proxy) return;
+  const pool = (appState.config?.proxy_pool || (appState.config?.proxy ? [appState.config.proxy] : [])).filter(Boolean);
+  if (!pool.length) return;
+
+  const now = Date.now();
+  const due = pool.filter(url => {
+    const cached = proxyChecks.get(url);
+    return proxyPending.has(url) || force || !cached?.checkedAt || now - cached.checkedAt >= 60000;
+  });
+  if (!due.length) return;
+
+  await Promise.all(due.map(async url => {
+    if (proxyPending.has(url)) return;
+    proxyPending.add(url);
+    try {
+      const res = await window.pywebview.api.test_proxy(url);
+      proxyChecks.set(url, { ...res, checkedAt: Date.now() });
+    } catch (e) {
+      proxyChecks.set(url, { ok: false, message: String(e), checkedAt: Date.now() });
+    } finally {
+      proxyPending.delete(url);
+    }
+  }));
+
+  renderProxyPool();
+  renderDashboard();
+}
+
+function dashboardProxyStatus() {
+  const pool = (appState.config?.proxy_pool || (appState.config?.proxy ? [appState.config.proxy] : [])).filter(Boolean);
+  if (!pool.length) {
+    return { status: 'none', label: 'Не настроен', badge: 'badge-pool' };
+  }
+  const activeProxy = appState.config?.proxy || pool[0];
+  const check = proxyChecks.get(activeProxy);
+  if (!check) {
+    return { status: 'checking', label: 'Проверка…', badge: 'badge-checking' };
+  }
+  if (check.ok) {
+    const lat = check.latency_ms != null ? ` (${check.latency_ms} мс)` : '';
+    return { status: 'ok', label: `Доступен${lat}`, badge: 'badge-available' };
+  }
+  return { status: 'error', label: 'Ошибка', badge: 'badge-error' };
+}
 
 function renderProxyPool() {
   const container = document.getElementById('proxy-pool-container');
@@ -267,8 +322,8 @@ function renderProxyPool() {
   }
   pool.forEach((proxyUrl, idx) => {
     const check = proxyChecks.get(proxyUrl);
-    const statusText = check ? (check.ok ? `● ${check.latency_ms} мс` : '● Ошибка') : '● Не проверен';
-    const statusClass = check ? (check.ok ? 'badge-available' : 'badge-error') : 'badge-pool';
+    const statusText = check ? (check.ok ? `● ${check.latency_ms} мс` : '● Ошибка') : '● Проверка…';
+    const statusClass = check ? (check.ok ? 'badge-available' : 'badge-error') : 'badge-checking';
     const row = document.createElement('div');
     row.style = 'display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 10px; background:rgba(255,255,255,0.03); border:1px solid var(--glass-border); border-radius:8px; font-size:11px;';
     row.innerHTML = `
@@ -868,7 +923,8 @@ function renderDashboard() {
     const url = new URL(appState.config?.proxy || '');
     if (!(['127.0.0.1','localhost','[::1]'].includes(url.hostname) && ['10880','51180'].includes(url.port))) proxy=url.hostname+(url.port ? `:${url.port}` : '');
   } catch {}
-  document.getElementById('dashboard-network').innerHTML = `<div class="dashboard-network-row"><div><strong>VLESS</strong><span>${html(core)}</span></div><span class="badge-pill ${net.vlessRunning ? 'badge-available' : 'badge-pool'}">● ${net.vlessRunning ? 'Работает' : 'Остановлен'}</span></div><div class="dashboard-network-row"><div><strong>${html(dnsModeLabels[dns.mode] || 'DNS')}</strong><span>${html(dns.server)}</span></div><span class="badge-pill ${dns.status === 'ok' ? 'badge-available' : dns.status === 'error' ? 'badge-error' : dns.status === 'checking' ? 'badge-checking' : 'badge-pool'}">● ${html(dns.label)}</span></div><div class="dashboard-network-row"><div><strong>HTTP(S)-прокси</strong><span>${html(proxy)}</span></div></div><p class="dashboard-quota-note">Auto сравнивает настроенные маршруты по HTTPS. Прямое подключение исключено.</p>`;
+  const proxyStat = dashboardProxyStatus();
+  document.getElementById('dashboard-network').innerHTML = `<div class="dashboard-network-row"><div><strong>VLESS</strong><span>${html(core)}</span></div><span class="badge-pill ${net.vlessRunning ? 'badge-available' : 'badge-pool'}">● ${net.vlessRunning ? 'Работает' : 'Остановлен'}</span></div><div class="dashboard-network-row"><div><strong>${html(dnsModeLabels[dns.mode] || 'DNS')}</strong><span>${html(dns.server)}</span></div><span class="badge-pill ${dns.status === 'ok' ? 'badge-available' : dns.status === 'error' ? 'badge-error' : dns.status === 'checking' ? 'badge-checking' : 'badge-pool'}">● ${html(dns.label)}</span></div><div class="dashboard-network-row"><div><strong>HTTP(S)-прокси</strong><span>${html(proxy)}</span></div><span class="badge-pill ${proxyStat.badge}">● ${html(proxyStat.label)}</span></div><p class="dashboard-quota-note">Auto сравнивает настроенные маршруты по HTTPS. Прямое подключение исключено.</p>`;
   const usesVless = tabs.some(tab=>appState.routes?.[providerTabs[tab]] === 'vless' || (['default','auto'].includes(appState.routes?.[providerTabs[tab]] || 'default') && autoRouteState(providerTabs[tab]).selected === 'vless'));
   if (!net.vlessRunning && (usesVless || appState.config?.vless_enabled)) alerts.push({priority:0,network:true,text:'VLESS нужен для выбранного маршрута, но туннель остановлен'});
   if (dns.status === 'error') alerts.push({priority:2,network:true,text:'Сохранённый DNS-сервер не прошёл проверку доступности'});
