@@ -26,6 +26,7 @@ from proxy_config import sync_provider_routes
 import opencode_config
 import auto_updater
 import openai_manager
+import win_tray
 try:
     import claude_manager
     claude_service = claude_manager.claude_service
@@ -647,11 +648,20 @@ class HubApi:
 
 
 def run_webview_app():
-    """Starts the native WebView2 Frosted Glass UI."""
+    """Starts the native WebView2 Frosted Glass UI with taskbar icon and system tray."""
     import webview
 
     html_file = CURRENT_DIR / "web" / "index.html"
+    icon_file = CURRENT_DIR / "icon.ico"
+    icon_str = str(icon_file.resolve()) if icon_file.exists() else None
+
     api = HubApi()
+
+    # Ensure Windows taskbar groups windows under Antigravity Hub, not Python
+    try:
+        antigravity_manager.set_windows_taskbar_identity()
+    except Exception:
+        pass
 
     window = webview.create_window(
         title="Antigravity Hub - AI аккаунты и сеть для Windows",
@@ -663,6 +673,100 @@ def run_webview_app():
         background_color="#090d12",
     )
     api._window_holder = window
+
+    # System Tray & Close-to-Tray setup
+    tray = None
+    balloon_shown = [False]
+
+    def on_tray_show():
+        try:
+            window.show()
+            window.restore()
+        except Exception:
+            pass
+
+    def on_tray_refresh():
+        try:
+            api.refresh_all_quotas()
+        except Exception:
+            pass
+
+    def on_tray_exit():
+        try:
+            if tray:
+                tray.remove()
+        except Exception:
+            pass
+        try:
+            vless_service.stop_tunnel()
+        except Exception:
+            pass
+        try:
+            window.destroy()
+        except Exception:
+            pass
+        os._exit(0)
+
+    try:
+        tray = win_tray.WindowsTrayIcon(
+            title="Antigravity Hub",
+            icon_path=icon_str,
+            on_show=on_tray_show,
+            on_refresh=on_tray_refresh,
+            on_exit=on_tray_exit,
+        )
+        tray.start()
+    except Exception as e:
+        print(f"Tray initialization warning: {e}")
+
+    def on_window_closing():
+        cfg = api.load_config()
+        close_to_tray = cfg.get("close_to_tray", True)
+        if close_to_tray:
+            try:
+                window.hide()
+                if tray and not balloon_shown[0]:
+                    balloon_shown[0] = True
+                    tray.show_balloon(
+                        "Antigravity Hub свёрнут",
+                        "Приложение работает в трее. Кликните левой кнопкой для открытия или правой для меню.",
+                    )
+            except Exception:
+                pass
+            return False
+        else:
+            try:
+                if tray:
+                    tray.remove()
+            except Exception:
+                pass
+            try:
+                vless_service.stop_tunnel()
+            except Exception:
+                pass
+            return True
+
+    window.events.closing += on_window_closing
+
+    # Ensure custom window & taskbar icon via Win32 WM_SETICON
+    def apply_native_window_icon():
+        time.sleep(1.5)
+        if sys.platform != "win32" or not icon_str:
+            return
+        try:
+            import ctypes
+            hwnd = ctypes.windll.user32.FindWindowW(None, "Antigravity Hub - AI аккаунты и сеть для Windows")
+            if hwnd:
+                h_icon = ctypes.windll.user32.LoadImageW(
+                    None, icon_str, 1, 0, 0, 0x00000010 | 0x00000040
+                )
+                if h_icon:
+                    ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 1, h_icon)  # ICON_BIG
+                    ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 0, h_icon)  # ICON_SMALL
+        except Exception:
+            pass
+
+    threading.Thread(target=apply_native_window_icon, daemon=True).start()
 
     # Run background token refresh thread
     def bg_refresher():
@@ -691,7 +795,7 @@ def run_webview_app():
 
     threading.Thread(target=bg_refresher, daemon=True).start()
 
-    webview.start()
+    webview.start(icon=icon_str)
 
 
 if __name__ == "__main__":

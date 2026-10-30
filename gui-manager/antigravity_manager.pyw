@@ -281,6 +281,7 @@ DEFAULT_CONFIG = {
         "openrouter": True,
         "xpiki": True,
     },
+    "close_to_tray": True,
     "max_rate_limit_wait_seconds": 300,
 }
 

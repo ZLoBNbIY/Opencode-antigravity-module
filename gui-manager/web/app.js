@@ -1091,6 +1091,8 @@ function renderSettingsTab() {
 
   const swRate = document.getElementById("switch-rate-limit");
   if (swRate) swRate.checked = cfg.switch_on_first_rate_limit !== false;
+  const swTray = document.getElementById("switch-close-to-tray");
+  if (swTray) swTray.checked = cfg.close_to_tray !== false;
   for (const item of Object.values(providerSettings)) document.getElementById(`provider-enabled-${item.key}`).checked = cfg.providers_visibility?.[item.key] !== false;
 }
 
@@ -1120,8 +1122,11 @@ async function saveSettings() {
   const swRate = document.getElementById("switch-rate-limit");
   try {
     const visibility = Object.fromEntries(Object.values(providerSettings).map(item=>[item.key, document.getElementById(`provider-enabled-${item.key}`).checked]));
+    const swTray = document.getElementById("switch-close-to-tray");
     const ok = await window.pywebview.api.save_general_settings({
-      switch_on_first_rate_limit: swRate ? swRate.checked : true, providers_visibility:visibility
+      switch_on_first_rate_limit: swRate ? swRate.checked : true,
+      close_to_tray: swTray ? swTray.checked : true,
+      providers_visibility: visibility
     });
     if (!ok) throw new Error('Не удалось сохранить настройки');
     settingsDirty = false;

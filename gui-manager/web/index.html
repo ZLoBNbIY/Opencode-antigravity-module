@@ -452,6 +452,14 @@
           </label>
         </div>
 
+        <div class="glass-card" style="margin-bottom: 16px;">
+          <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 8px;">Поведение при закрытии окна</div>
+          <label class="switch-label">
+            <input type="checkbox" class="switch-input" id="switch-close-to-tray" onchange="markSettingsDirty()" checked>
+            <span>Сворачивать в системный трей вместо выхода из приложения (при клике на крестик)</span>
+          </label>
+        </div>
+
         <div class="glass-card">
           <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 8px;">Обновление Antigravity Hub</div>
           <button class="btn-secondary" onclick="checkUpdates()">
