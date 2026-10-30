@@ -1229,8 +1229,24 @@ async function addClaudeAccount() {
 async function checkUpdates() {
   if (!window.pywebview?.api) return;
   showToast("Проверка обновлений с GitHub...");
-  const res = await window.pywebview.api.check_updates();
-  showToast(res || "У вас актуальная версия");
+  try {
+    const res = await window.pywebview.api.check_updates();
+    if (res && res.has_update) {
+      if (confirm(`${res.message}\n\nЗагрузить и применить обновление сейчас?`)) {
+        showToast("Установка обновления с GitHub...");
+        const updateRes = await window.pywebview.api.apply_update();
+        if (updateRes && updateRes.ok) {
+          alert("Обновление установлено!\n\nПерезапустите Antigravity Hub, чтобы применить изменения.");
+        } else {
+          alert(`Не удалось установить обновление:\n${updateRes?.message || 'Ошибка git'}`);
+        }
+      }
+    } else {
+      showToast(res?.message || "У вас установлена последняя версия");
+    }
+  } catch (e) {
+    showToast(`Ошибка проверки обновлений: ${e}`);
+  }
 }
 
 // ============================================================================

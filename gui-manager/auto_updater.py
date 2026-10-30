@@ -127,6 +127,34 @@ def check_for_updates(repo_dir: Path, timeout=12) -> dict:
             last_err = e
             continue
 
+    # If GitHub REST API is throttled (403 rate limit), fall back to git ls-remote directly
+    try:
+        flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+        direct_env = _direct_git_env()
+        proc = subprocess.run(
+            ["git", "ls-remote", "origin", f"refs/heads/{BRANCH}"],
+            cwd=str(repo_dir),
+            capture_output=True,
+            text=True,
+            creationflags=flags,
+            timeout=10,
+            env=direct_env,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            remote_sha = proc.stdout.strip().split()[0]
+            has_update = _has_newer_remote_commit(repo_dir, local_sha, remote_sha)
+            return {
+                "has_update": has_update,
+                "local_sha": local_sha[:7] if local_sha else "unknown",
+                "remote_sha": remote_sha[:7],
+                "message": "Обновление ветки V2",
+                "date": "",
+                "author": "GitHub",
+                "error": None,
+            }
+    except Exception:
+        pass
+
     return {
         "has_update": False,
         "local_sha": local_sha[:7] if local_sha else "unknown",

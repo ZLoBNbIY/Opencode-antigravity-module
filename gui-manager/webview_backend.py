@@ -636,15 +636,35 @@ class HubApi:
             return True
         return False
 
-    def check_updates(self) -> str:
+    def check_updates(self) -> dict:
         try:
             repo_dir = CURRENT_DIR.parent
-            info = auto_updater.check_update_git(repo_dir)
-            if info and info.get("has_update"):
-                return f"Доступно обновление: {info.get('remote_sha', '')[:7]}"
-            return "Установлена последняя версия"
+            info = auto_updater.check_for_updates(repo_dir)
+            if info.get("error") and not info.get("remote_sha"):
+                return {"status": "error", "message": f"Ошибка проверки: {info['error']}"}
+            if info.get("has_update"):
+                return {
+                    "status": "update_available",
+                    "has_update": True,
+                    "remote_sha": info.get("remote_sha", "")[:7],
+                    "message": f"Доступно обновление: {info.get('remote_sha', '')[:7]} — {info.get('message', '')}",
+                }
+            return {
+                "status": "up_to_date",
+                "has_update": False,
+                "remote_sha": info.get("remote_sha", "")[:7] or info.get("local_sha", "")[:7],
+                "message": f"Установлена последняя версия ({info.get('local_sha', '')[:7]})",
+            }
         except Exception as e:
-            return f"Проверка обновлений: {e}"
+            return {"status": "error", "message": f"Проверка обновлений: {e}"}
+
+    def apply_update(self) -> dict:
+        try:
+            repo_dir = CURRENT_DIR.parent
+            ok, msg = auto_updater.apply_update_git(repo_dir)
+            return {"ok": ok, "message": msg}
+        except Exception as e:
+            return {"ok": False, "message": f"Ошибка установки обновления: {e}"}
 
 
 def run_webview_app():
