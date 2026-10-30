@@ -243,9 +243,12 @@ function fillNetworkForm() {
     'dns-mode':cfg.dns_mode || 'system', 'dns-primary':(cfg.custom_dns || ['143.20.64.55'])[0] || '',
     'dns-secondary':(cfg.custom_dns || ['143.20.64.55','31.58.216.201'])[1] || '',
     'dns-dot':cfg.dot_host || 'dns.bezmezhau.com', 'dns-doh':cfg.doh_url || 'https://dns.bezmezhau.com/dns-query',
-    'google-smart-doh':cfg.google_smart_doh || 'https://dns.dns-ai.ru/dns-query', 'network-proxy':cfg.proxy || ''};
+    'google-smart-doh':cfg.google_smart_doh || 'https://dns.dns-ai.ru/dns-query', 'network-proxy': ''};
   for (const [id, value] of Object.entries(values)) document.getElementById(id).value = value;
   document.getElementById('vless-kill-switch').checked = cfg.vless_kill_switch !== false;
+  if (document.getElementById('switch-proxy-failover')) {
+    document.getElementById('switch-proxy-failover').checked = cfg.proxy_failover !== false;
+  }
   document.getElementById('dns-preset').value = 'custom';
   networkFormInitialized = true;
   updateDnsFields();
@@ -295,28 +298,67 @@ async function addProxyToPool() {
     showToast('Адрес прокси должен начинаться с http:// или https://');
     return;
   }
-  if (!appState.config) appState.config = {};
-  const pool = (appState.config.proxy_pool || []).filter(Boolean);
-  if (!pool.includes(url)) {
-    pool.push(url);
-    appState.config.proxy_pool = pool;
-    if (!appState.config.proxy) appState.config.proxy = url;
+  if (window.pywebview?.api?.add_proxy_pool) {
+    try {
+      const res = await window.pywebview.api.add_proxy_pool(url);
+      if (res && res.ok) {
+        if (!appState.config) appState.config = {};
+        appState.config.proxy_pool = res.pool || [];
+        if (!appState.config.proxy && res.pool?.length) appState.config.proxy = res.pool[0];
+        input.value = '';
+        renderProxyPool();
+        showToast('Прокси успешно добавлен в пул');
+      } else {
+        showToast(res?.message || 'Не удалось добавить прокси');
+      }
+    } catch (e) {
+      showToast(`Ошибка добавления прокси: ${e}`);
+    }
+  } else {
+    if (!appState.config) appState.config = {};
+    const pool = (appState.config.proxy_pool || []).filter(Boolean);
+    if (!pool.includes(url)) {
+      pool.push(url);
+      appState.config.proxy_pool = pool;
+      if (!appState.config.proxy) appState.config.proxy = url;
+    }
+    input.value = '';
+    renderProxyPool();
+    await saveNetworkSettings();
   }
-  input.value = '';
-  renderProxyPool();
-  showToast('Прокси добавлен в пул. Сохраните настройки сети.');
-  await saveNetworkSettings();
 }
 
 async function removeProxyItem(idx) {
-  if (!appState.config?.proxy_pool) return;
-  appState.config.proxy_pool.splice(idx, 1);
-  if (appState.config.proxy && !appState.config.proxy_pool.includes(appState.config.proxy)) {
-    appState.config.proxy = appState.config.proxy_pool[0] || '';
+  const pool = (appState.config?.proxy_pool || []).filter(Boolean);
+  const targetUrl = pool[idx];
+  if (!targetUrl) return;
+
+  if (window.pywebview?.api?.delete_proxy_pool) {
+    try {
+      const res = await window.pywebview.api.delete_proxy_pool(targetUrl);
+      if (res && res.ok) {
+        appState.config.proxy_pool = res.pool || [];
+        if (appState.config.proxy === targetUrl) {
+          appState.config.proxy = res.pool?.[0] || '';
+        }
+        proxyChecks.delete(targetUrl);
+        renderProxyPool();
+        showToast('Прокси удалён из пула');
+      } else {
+        showToast(res?.message || 'Не удалось удалить прокси');
+      }
+    } catch (e) {
+      showToast(`Ошибка удаления: ${e}`);
+    }
+  } else {
+    appState.config.proxy_pool.splice(idx, 1);
+    if (appState.config.proxy === targetUrl) {
+      appState.config.proxy = appState.config.proxy_pool[0] || '';
+    }
+    proxyChecks.delete(targetUrl);
+    renderProxyPool();
+    await saveNetworkSettings();
   }
-  renderProxyPool();
-  showToast('Прокси удалён из пула');
-  await saveNetworkSettings();
 }
 
 async function testProxyItem(proxyUrl) {

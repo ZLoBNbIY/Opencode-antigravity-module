@@ -361,11 +361,12 @@ class HubApi:
                             if not (p_parsed.hostname in ("localhost", "127.0.0.1") and p_parsed.port == provider_proxy.PORT):
                                 if p_str not in valid_pool:
                                     valid_pool.append(p_str)
-            if proxy and proxy not in valid_pool:
-                valid_pool.insert(0, proxy)
             cfg["proxy_pool"] = valid_pool
-            if not proxy and valid_pool:
-                cfg["proxy"] = valid_pool[0]
+            if valid_pool:
+                if not proxy or proxy not in valid_pool:
+                    cfg["proxy"] = valid_pool[0]
+            else:
+                cfg["proxy"] = proxy
             if vless_service.is_running() and any(cfg.get(k) != previous.get(k) for k in
                     ("vless_url", "vless_core_path", "vless_http_port", "vless_socks_port")):
                 raise ValueError("Остановите туннель перед изменением ссылки, ядра или портов")
@@ -421,6 +422,42 @@ class HubApi:
         if mode == "doh":
             return dns_tester.test_doh_endpoint(value, domain=domain)
         raise ValueError("Для проверки выберите обычный DNS, DoT или DoH")
+
+    def add_proxy_pool(self, proxy_url: str) -> dict:
+        proxy_url = str(proxy_url or "").strip()
+        if not proxy_url:
+            return {"ok": False, "message": "Укажите адрес прокси (http://host:port)"}
+        parsed = urlparse(proxy_url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return {"ok": False, "message": "Неверный формат адреса: требуется http:// или https://"}
+        if parsed.hostname in ("localhost", "127.0.0.1") and parsed.port == provider_proxy.PORT:
+            return {"ok": False, "message": "Нельзя использовать собственный маршрутизатор как внешний прокси"}
+
+        with self._config_lock:
+            cfg = self.load_config()
+            pool = list(cfg.get("proxy_pool") or [])
+            if proxy_url not in pool:
+                pool.append(proxy_url)
+            cfg["proxy_pool"] = pool
+            if not cfg.get("proxy"):
+                cfg["proxy"] = pool[0]
+            if not self.save_config(cfg):
+                return {"ok": False, "message": "Не удалось сохранить настройки"}
+            self._sync_routes(cfg)
+        return {"ok": True, "message": "Прокси добавлен в пул", "pool": pool}
+
+    def delete_proxy_pool(self, proxy_url: str) -> dict:
+        proxy_url = str(proxy_url or "").strip()
+        with self._config_lock:
+            cfg = self.load_config()
+            pool = [p for p in (cfg.get("proxy_pool") or []) if p != proxy_url]
+            cfg["proxy_pool"] = pool
+            if cfg.get("proxy") == proxy_url:
+                cfg["proxy"] = pool[0] if pool else ""
+            if not self.save_config(cfg):
+                return {"ok": False, "message": "Не удалось сохранить изменения"}
+            self._sync_routes(cfg)
+        return {"ok": True, "message": "Прокси удалён из пула", "pool": pool}
 
     def test_proxy(self, proxy_url: str) -> dict:
         proxy_url = str(proxy_url or "").strip()
