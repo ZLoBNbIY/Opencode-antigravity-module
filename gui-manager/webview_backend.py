@@ -76,6 +76,7 @@ class HubApi:
         self._quota_lock = threading.Lock()
         self._quota_refreshing = False
         self._quota_error = None
+        self._openai_login_last = None
         self._diagnostics = {}
         self._diagnostic_signatures = {}
         self._diagnostic_checked = {}
@@ -157,7 +158,7 @@ class HubApi:
             "accounts": [{k: a[k] for k in ("id", "email", "index", "is_active", "groups", "candidate", "status") if k in a} for a in accounts],
             "activeIndex": active_index,
             "activeGoogleId": active.get("id") if active else None,
-            "openaiAccounts": [{k: a[k] for k in ("id", "accountId", "email", "plan_type", "is_active", "quota") if k in a} for a in openai_accs],
+            "openaiAccounts": [{k: a[k] for k in ("id", "accountId", "email", "plan_type", "is_active", "quota", "models") if k in a} for a in openai_accs],
             "claudeAccounts": [{**{k: a[k] for k in ("id", "email", "name", "plan") if k in a},
                                 "is_active": index == claude_active} for index, a in enumerate(claude_accs)],
             "openaiRefreshing": self._quota_refreshing,
@@ -484,6 +485,12 @@ class HubApi:
                 accounts = openai_manager.load_openai_accounts()
                 for account in accounts:
                     account["quota"] = openai_manager.fetch_openai_usage(account)
+                    if account.get("clientID"):
+                        # Token-sharing accounts: re-read the account's model list too.
+                        try:
+                            openai_manager.fetch_openai_models(account)
+                        except Exception as model_err:
+                            print(f"[OpenAI Manager] Models refresh failed for {account.get('email')}: {model_err}")
                 if accounts and not openai_manager.save_openai_accounts(accounts):
                     raise OSError("Не удалось сохранить лимиты ChatGPT")
             except Exception as exc:
@@ -615,8 +622,41 @@ class HubApi:
 
     def add_openai_account(self) -> bool:
         def _bg():
-            openai_manager.login_openai_browser(timeout=300)
+            ok, message, _account = openai_manager.login_openai_browser(timeout=300)
+            openai_manager.log_openai_event(f"ui: add_openai_account result ok={ok}: {message}")
+            self._openai_login_last = {"ok": ok, "message": message}
         threading.Thread(target=_bg, daemon=True).start()
+        return True
+
+    def get_openai_login_status(self) -> dict:
+        status = self._openai_login_last or {"ok": None, "message": None}
+        self._openai_login_last = None
+        return status
+
+    def remove_openai_account(self, account_id: str) -> bool:
+        account_id = str(account_id or "").strip()
+        if not account_id:
+            raise ValueError("Не указан аккаунт OpenAI")
+        accounts = openai_manager.load_openai_accounts()
+        if not any(
+            acc.get("id") == account_id or acc.get("accountId") == account_id
+            for acc in accounts
+        ):
+            raise ValueError("Аккаунт OpenAI не найден")
+        return openai_manager.remove_openai_account(account_id)
+
+    def set_openai_active_account(self, account_id: str) -> bool:
+        account_id = str(account_id or "").strip()
+        if not account_id:
+            raise ValueError("Не указан аккаунт OpenAI")
+        accounts = openai_manager.load_openai_accounts()
+        if not any(
+            acc.get("id") == account_id or acc.get("accountId") == account_id
+            for acc in accounts
+        ):
+            raise ValueError("Аккаунт OpenAI не найден")
+        if not openai_manager.set_active_openai_account(account_id):
+            raise RuntimeError("Не удалось переключить активный OpenAI-аккаунт")
         return True
 
     def add_claude_account(self) -> bool:

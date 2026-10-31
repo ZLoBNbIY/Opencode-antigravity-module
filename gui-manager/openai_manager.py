@@ -9,6 +9,7 @@ import time
 import base64
 import secrets
 import hashlib
+import datetime
 import webbrowser
 import threading
 import subprocess
@@ -18,14 +19,41 @@ from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import urllib.request
 import urllib.parse
+import uuid
 
 OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 OPENAI_ISSUER = "https://auth.openai.com"
+# OpenCode 2.2.x ChatGPT integration contract (token sharing):
+# https://github.com/anomalyco/opencode — packages/core/src/plugin/provider/chatgpt.ts
+OPENAI_AUTHORIZE_URL = f"{OPENAI_ISSUER}/api/accounts/authorize"
+OPENAI_TOKEN_URL = f"{OPENAI_ISSUER}/api/accounts/oauth/token"
+OPENAI_LEGACY_TOKEN_URL = f"{OPENAI_ISSUER}/oauth/token"
+OPENAI_RESOURCE = "https://api.openai.com/v1"
+REGISTRATION_CLIENT_ID = "dynamic_agent_client"
+TOKEN_SHARING_SCOPE = "chatgpt.tokens.use.direct"
+TOKEN_SHARING_METHOD = "chatgpt-token-sharing"
+LEGACY_BROWSER_METHOD = "chatgpt-browser"
+OPENAI_MODELS_URL = f"{OPENAI_RESOURCE}/models"
+OPENAI_TASK_AGENT = "OpenCode"
 OPENAI_CALLBACK_PORT = 1455
 OPENAI_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 
 CONFIG_DIR = Path(os.path.expanduser("~/.config/opencode"))
 OPENAI_ACCOUNTS_FILE = CONFIG_DIR / "openai-accounts.json"
+OPENAI_LOGIN_LOG_FILE = CONFIG_DIR / "hub-openai-login.log"
+
+
+def log_openai_event(message: str) -> None:
+    """Append timestamped login/refresh diagnostics; pythonw has no console."""
+    try:
+        OPENAI_LOGIN_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with OPENAI_LOGIN_LOG_FILE.open("a", encoding="utf-8") as fh:
+            fh.write(f"[{stamp}] {message}\n")
+    except Exception:
+        pass
+
+
 AUTH_FILES = [
     Path(os.path.expanduser("~/.local/share/opencode/auth.json")),
     Path(os.path.expanduser("~/.opencode/auth.json")),
@@ -65,6 +93,25 @@ def get_openai_cred_id() -> str:
     return "cred_openai_active"
 
 
+def _openai_method_for(account: dict) -> str:
+    """Token-sharing accounts carry a client ID from the OpenAI OAuth flow."""
+    return TOKEN_SHARING_METHOD if account.get("clientID") else LEGACY_BROWSER_METHOD
+
+
+def _openai_credential_metadata(account: dict) -> dict:
+    if account.get("clientID"):
+        return {
+            "clientID": account.get("clientID", ""),
+            "scopes": list(account.get("scopes") or []),
+            "accountID": account.get("accountId", ""),
+            "email": account.get("email", ""),
+        }
+    return {
+        "accountID": account.get("accountId", ""),
+        "email": account.get("email", ""),
+    }
+
+
 def sync_opencode_db_openai(account: dict | None):
     """Sync OpenAI credential directly into opencode.db SQLite database."""
     if not OPENCODE_DB_FILE.exists():
@@ -80,14 +127,11 @@ def sync_opencode_db_openai(account: dict | None):
         if account:
             val_json = json.dumps({
                 "type": "oauth",
-                "methodID": "chatgpt-browser",
+                "methodID": _openai_method_for(account),
                 "refresh": account.get("refresh", ""),
                 "access": account.get("access", ""),
                 "expires": account.get("expires", 0),
-                "metadata": {
-                    "accountID": account.get("accountId", ""),
-                    "email": account.get("email", ""),
-                }
+                "metadata": _openai_credential_metadata(account),
             }, ensure_ascii=False)
             label = account.get("name") or account.get("email") or "ChatGPT OAuth"
             now_ms = int(time.time() * 1000)
@@ -131,14 +175,11 @@ def sync_opencode_cli_openai(account: dict | None):
                     "active": True,
                     "value": {
                         "type": "oauth",
-                        "methodID": "chatgpt-browser",
+                        "methodID": _openai_method_for(account),
                         "refresh": account.get("refresh", ""),
                         "access": account.get("access", ""),
                         "expires": account.get("expires", 0),
-                        "metadata": {
-                            "accountID": account.get("accountId", ""),
-                            "email": account.get("email", ""),
-                        }
+                        "metadata": _openai_credential_metadata(account),
                     }
                 }
             ]
@@ -167,6 +208,14 @@ def decode_jwt_payload(jwt_token: str) -> dict:
     except Exception:
         pass
     return {}
+
+
+def generate_pkce() -> tuple[str, str]:
+    """PKCE verifier/S256 challenge for the OpenAI token-sharing authorize flow."""
+    verifier = secrets.token_urlsafe(43)
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    challenge = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+    return verifier, challenge
 
 
 def extract_claims_info(id_token: str, access_token: str) -> dict:
@@ -363,21 +412,29 @@ def set_active_openai_account(account_id: str) -> bool:
 
 def remove_openai_account(account_id: str) -> bool:
     accounts = load_openai_accounts()
+    removed_was_active = next(
+        (
+            acc
+            for acc in accounts
+            if (acc.get("id") == account_id or acc.get("accountId") == account_id) and acc.get("is_active")
+        ),
+        None,
+    )
     remaining = [
         acc for acc in accounts
         if acc.get("id") != account_id and acc.get("accountId") != account_id
     ]
 
-    was_active = any(
-        (acc.get("id") == account_id or acc.get("accountId") == account_id) and acc.get("is_active")
-        for acc in accounts
-    )
-
-    if remaining and was_active:
+    if removed_was_active is not None:
+        # The active credential is being removed: point OpenCode at the next
+        # remaining account (or clear auth entirely when the pool is empty).
+        next_active = next((acc for acc in remaining if acc.get("is_active")), None) or (remaining[0] if remaining else None)
+        for acc in remaining:
+            acc["is_active"] = (acc is next_active)
+        write_active_auth_openai(next_active)
+    elif remaining and not any(acc.get("is_active") for acc in remaining):
         remaining[0]["is_active"] = True
         write_active_auth_openai(remaining[0])
-    elif not remaining and was_active:
-        write_active_auth_openai(None)
 
     save_openai_accounts(remaining)
     return True
@@ -402,14 +459,26 @@ def refresh_openai_token(account: dict) -> tuple[bool, dict]:
     if not refresh_token:
         return False, account
 
-    form_data = urllib.parse.urlencode({
-        "grant_type": "refresh_token",
-        "refresh_token": refresh_token,
-        "client_id": OPENAI_CLIENT_ID,
-    }).encode("utf-8")
+    client_id = account.get("clientID") or ""
+    if client_id:
+        token_url = OPENAI_TOKEN_URL
+        form_data = urllib.parse.urlencode({
+            "grant_type": "refresh_token",
+            "client_id": client_id,
+            "refresh_token": refresh_token,
+            "resource": OPENAI_RESOURCE,
+        }).encode("utf-8")
+    else:
+        # Legacy login (old Codex-CLI client): keep refreshing against the old issuer path.
+        token_url = OPENAI_LEGACY_TOKEN_URL
+        form_data = urllib.parse.urlencode({
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": OPENAI_CLIENT_ID,
+        }).encode("utf-8")
 
     req = urllib.request.Request(
-        f"{OPENAI_ISSUER}/oauth/token",
+        token_url,
         data=form_data,
         headers={
             "Content-Type": "application/x-www-form-urlencoded",
@@ -435,6 +504,8 @@ def refresh_openai_token(account: dict) -> tuple[bool, dict]:
                 account["email"] = claims["email"]
             if claims.get("plan_type"):
                 account["plan_type"] = claims["plan_type"]
+            if tokens.get("scope"):
+                account["scopes"] = tokens["scope"].split()
 
             if account.get("is_active"):
                 write_active_auth_openai(account)
@@ -560,6 +631,75 @@ def _parse_usage_payload(payload: dict, account: dict) -> dict:
     return quota_data
 
 
+def fetch_openai_models(account: dict, timeout: int = 15) -> list[dict]:
+    """Fetch the models this account token can actually use.
+
+    Mirrors OpenCode's ChatGPT plugin (`GET {resource}/models` with the bearer
+    token): the token-sharing endpoint returns `{models: [...]}` where each item
+    has slug/display_name/visibility/supported_in_api. The platform-style
+    `{data: [...]}` shape is accepted as fallback. The result drives the Hub's
+    OpenAI card display; OpenCode itself re-reads the list automatically from
+    the same endpoint whenever the credential becomes active.
+    """
+    now_ms = int(time.time() * 1000)
+    if account.get("expires", 0) - now_ms < 120000:
+        refresh_openai_token(account)
+
+    access_token = account.get("access", "")
+    if not access_token:
+        account["models"] = []
+        return []
+
+    req = urllib.request.Request(
+        OPENAI_MODELS_URL,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "User-Agent": OPENAI_BROWSER_UA,
+            "Accept": "application/json",
+        },
+    )
+
+    try:
+        with _get_http_opener(timeout=timeout).open(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        print(f"[OpenAI Manager] Error fetching models for {account.get('email')}: {e}")
+        models = account.get("models")
+        return models if isinstance(models, list) else []
+
+    if isinstance(payload, dict):
+        items = payload.get("models")
+        if items is None:
+            items = payload.get("data")
+        if items is None:
+            items = []
+    elif isinstance(payload, list):
+        items = payload
+    else:
+        items = []
+
+    models = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        slug = item.get("slug") or item.get("id")
+        if not isinstance(slug, str) or not slug.strip():
+            continue
+        if item.get("visibility") == "hidden":
+            continue
+        if item.get("supported_in_api") is False:
+            continue
+        models.append({
+            "id": slug.strip(),
+            "name": item.get("display_name") or slug.strip(),
+            "context": item.get("context_window") or 0,
+        })
+
+    models.sort(key=lambda m: m["id"].lower())
+    account["models"] = models
+    return models
+
+
 def check_and_auto_rotate_openai(accounts: list[dict]) -> tuple[bool, str]:
     """
     Checks if active OpenAI account has exhausted its quota (5h or weekly), and if so,
@@ -639,6 +779,7 @@ class _OAuthCallbackHandler(BaseHTTPRequestHandler):
         error = params.get("error_description", [None])[0] or params.get("error", [None])[0]
         code = params.get("code", [None])[0]
         state = params.get("state", [None])[0]
+        client_id = params.get("client_id", [None])[0]
 
         server: _OAuthServer = self.server  # type: ignore
 
@@ -655,8 +796,19 @@ class _OAuthCallbackHandler(BaseHTTPRequestHandler):
             server.done_event.set()
             return
 
+        if not client_id:
+            # OpenAI returns the issued (per-user) client id on the callback in
+            # the token-sharing flow; without it OpenCode cannot refresh the
+            # credential.
+            err_msg = "OpenAI не вернул client_id в callback — повторите вход."
+            server.auth_error = err_msg
+            self._render_page(False, err_msg)
+            server.done_event.set()
+            return
+
         server.auth_code = code
-        self._render_page(True, "Авторизация успешно завершена! Вы можете закрыть эту вкладку браузера.")
+        server.auth_client_id = client_id
+        self._render_page(True, "Авторизация успешно завершена! Модели аккаунта будут загружены автоматически.")
         server.done_event.set()
 
     def _render_page(self, success: bool, message: str):
@@ -723,44 +875,54 @@ class _OAuthServer(HTTPServer):
         super().__init__(server_address, _OAuthCallbackHandler)
         self.expected_state = expected_state
         self.auth_code: str | None = None
+        self.auth_client_id: str | None = None
         self.auth_error: str | None = None
         self.done_event = threading.Event()
 
 
 def login_openai_browser(timeout: int = 300) -> tuple[bool, str, dict | None]:
     """
-    Initiates browser-based OAuth PKCE login for ChatGPT/OpenAI,
-    listens for callback on localhost:1455, exchanges tokens,
-    fetches quota, and saves account.
+    Initiates browser-based OAuth PKCE login for ChatGPT (OpenCode token-sharing
+    flow), listens for callback on a free loopback port, exchanges tokens,
+    verifies the token-sharing scope, fetches available models + quota, and
+    saves the account.
     """
-    code_verifier = secrets.token_urlsafe(32)
-    digest = hashlib.sha256(code_verifier.encode("utf-8")).digest()
-    code_challenge = base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
-    state = secrets.token_urlsafe(24)
-
-    redirect_uri = f"http://localhost:{OPENAI_CALLBACK_PORT}/auth/callback"
+    code_verifier, code_challenge = generate_pkce()
+    state = secrets.token_hex(16)
+    nonce = secrets.token_hex(16)
+    host_id = f"urn:uuid:{uuid.uuid4()}"
 
     try:
-        server = _OAuthServer(("localhost", OPENAI_CALLBACK_PORT), state)
+        import provider_proxy
+        log_openai_event(f"login: start, hub proxy = {provider_proxy.proxy_url_for_hub_requests()}")
+    except Exception as proxy_err:
+        log_openai_event(f"login: start, hub proxy unknown ({proxy_err})")
+
+    try:
+        server = _OAuthServer(("127.0.0.1", 0), state)
+        port = server.server_address[1]
     except Exception as e:
-        return False, f"Не удалось запустить локальный сервер на порту {OPENAI_CALLBACK_PORT}: {e}", None
+        return False, f"Не удалось открыть локальный callback-порт: {e}", None
+
+    redirect_uri = f"http://127.0.0.1:{port}/auth/callback"
 
     server_thread = threading.Thread(target=server.handle_request, daemon=True)
     server_thread.start()
 
     auth_url = (
-        f"{OPENAI_ISSUER}/oauth/authorize?"
+        f"{OPENAI_AUTHORIZE_URL}?"
         + urllib.parse.urlencode({
+            "client_id": REGISTRATION_CLIENT_ID,
+            "agent_name_hint": OPENAI_TASK_AGENT,
+            "ext_agent_host_id": host_id,
             "response_type": "code",
-            "client_id": OPENAI_CLIENT_ID,
             "redirect_uri": redirect_uri,
-            "scope": "openid profile email offline_access",
+            "scope": f"openid profile email offline_access resource.invoke {TOKEN_SHARING_SCOPE}",
+            "resource": OPENAI_RESOURCE,
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
-            "id_token_add_organizations": "true",
-            "codex_cli_simplified_flow": "true",
             "state": state,
-            "originator": "opencode",
+            "nonce": nonce,
         })
     )
 
@@ -775,22 +937,28 @@ def login_openai_browser(timeout: int = 300) -> tuple[bool, str, dict | None]:
     server.server_close()
 
     if not finished:
+        log_openai_event("login: timeout waiting for callback")
         return False, "Время ожидания авторизации в браузере истекло.", None
 
     if server.auth_error or not server.auth_code:
+        log_openai_event(f"login: callback error={server.auth_error!r}")
         return False, server.auth_error or "Авторизация была отменена.", None
 
-    # Exchange code for tokens
+    client_id = server.auth_client_id or ""
+    log_openai_event(f"login: callback received, client_id={'yes' if client_id else 'NO'}")
+
+    # Exchange code for tokens (token endpoint issues a per-user client on first login)
     form_data = urllib.parse.urlencode({
         "grant_type": "authorization_code",
         "code": server.auth_code,
+        "client_id": client_id,
         "redirect_uri": redirect_uri,
-        "client_id": OPENAI_CLIENT_ID,
+        "resource": OPENAI_RESOURCE,
         "code_verifier": code_verifier,
     }).encode("utf-8")
 
     token_req = urllib.request.Request(
-        f"{OPENAI_ISSUER}/oauth/token",
+        OPENAI_TOKEN_URL,
         data=form_data,
         headers={
             "Content-Type": "application/x-www-form-urlencoded",
@@ -804,13 +972,44 @@ def login_openai_browser(timeout: int = 300) -> tuple[bool, str, dict | None]:
         with opener.open(token_req, timeout=15) as resp:
             tokens = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
+        log_openai_event(f"login: token exchange failed: {e}")
         return False, f"Ошибка обмена кода на токены: {e}", None
+
+    if tokens.get("error"):
+        log_openai_event(f"login: token endpoint returned error={tokens.get('error')} desc={tokens.get('error_description')}")
+        return False, f"OpenAI вернул ошибку обмена токена: {tokens.get('error_description') or tokens.get('error')}", None
+
+    granted_scopes = (tokens.get("scope") or "").split()
+    if TOKEN_SHARING_SCOPE not in granted_scopes:
+        log_openai_event(f"login: token sharing scope missing, granted={granted_scopes}")
+        return False, (
+            "OpenAI не выдал скоуп token sharing (chatgpt.tokens.use.direct). "
+            "Войдите заново и разрешите токен-шеринг, либо используйте платформенный API-ключ."
+        ), None
 
     access_token = tokens.get("access_token", "")
     refresh_token = tokens.get("refresh_token", "")
     id_token = tokens.get("id_token", "")
-    expires_in = tokens.get("expires_in", 86400)
 
+    # Best-effort ID token validation (issuer/audience/nonce), matching OpenCode's plugin.
+    id_claims = decode_jwt_payload(id_token)
+    if id_claims.get("iss") not in (OPENAI_ISSUER, f"{OPENAI_ISSUER}/"):
+        log_openai_event(f"login: bad id_token iss={id_claims.get('iss')}")
+        return False, "ChatGPT вернул недействительный ID token: неизвестный issuer.", None
+    aud_claims = id_claims.get("aud")
+    if client_id not in (aud_claims if isinstance(aud_claims, list) else [aud_claims]):
+        log_openai_event(f"login: id_token aud mismatch aud={aud_claims} expected={client_id}")
+        return False, "ChatGPT вернул ID token с другой аудиторией, чем ожидается. Повторите вход.", None
+    if id_claims.get("nonce") != nonce:
+        log_openai_event(f"login: id_token nonce mismatch")
+        return False, "ChatGPT вернул ID token с другим nonce. Повторите вход.", None
+    if not str(id_claims.get("sub", "")).strip():
+        log_openai_event("login: id_token has no subject")
+        return False, "ChatGPT sign-in вернул ID token без subject.", None
+
+    log_openai_event(f"login: tokens verified, email={id_claims.get('email')}, scopes={granted_scopes}")
+
+    expires_in = tokens.get("expires_in", 86400)
     claims = extract_claims_info(id_token, access_token)
     account_id = claims["accountId"] or f"openai_{secrets.token_hex(6)}"
 
@@ -823,16 +1022,29 @@ def login_openai_browser(timeout: int = 300) -> tuple[bool, str, dict | None]:
         "access": access_token,
         "refresh": refresh_token,
         "expires": int(time.time() * 1000) + (expires_in * 1000),
+        "clientID": client_id,
+        "scopes": granted_scopes,
+        "methodID": TOKEN_SHARING_METHOD,
         "added_at": int(time.time()),
         "last_used": int(time.time()),
         "is_active": True,
         "quota": None,
+        "models": None,
     }
 
-    # Fetch live usage immediately
+    # Read the models this account can actually use right away
+    try:
+        fetch_openai_models(new_account)
+        log_openai_event(f"login: models loaded for {new_account['email']}: {len(new_account.get('models') or [])}")
+    except Exception as e:
+        log_openai_event(f"login: models fetch error for {new_account.get('email')}: {e}")
+        print(f"[OpenAI Manager] Models fetch error after login: {e}")
+
+    # Fetch live usage immediately (best effort)
     try:
         new_account["quota"] = fetch_openai_usage(new_account)
     except Exception as e:
+        log_openai_event(f"login: usage fetch error for {new_account.get('email')}: {e}")
         print(f"[OpenAI Manager] Usage fetch error after login: {e}")
 
     # Add to accounts pool
@@ -843,6 +1055,7 @@ def login_openai_browser(timeout: int = 300) -> tuple[bool, str, dict | None]:
         None
     )
 
+    model_note = f", доступно моделей: {len(new_account.get('models') or [])}" if new_account.get("models") else ""
     if existing_idx is not None:
         accounts[existing_idx] = new_account
     else:
@@ -854,5 +1067,6 @@ def login_openai_browser(timeout: int = 300) -> tuple[bool, str, dict | None]:
 
     save_openai_accounts(accounts)
     write_active_auth_openai(new_account)
+    log_openai_event(f"login: success, account {new_account['email']} saved to pool (is_active)")
 
-    return True, f"Аккаунт {new_account['email']} успешно подключен!", new_account
+    return True, f"Аккаунт {new_account['email']} успешно подключен{model_note}!", new_account

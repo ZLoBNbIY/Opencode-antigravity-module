@@ -63,6 +63,24 @@ class WebviewBackendTests(unittest.TestCase):
         self.assertEqual(state["claudeAccounts"], [{"email": "test@example.com", "is_active": True}])
         self.claude.load_accounts.assert_called_once_with()
 
+    def test_remove_openai_account_validates_and_delegates(self):
+        self.openai.load_openai_accounts = Mock(return_value=[{"accountId": "acc-1", "id": "acc-1", "email": "a@b.c"}])
+        self.openai.remove_openai_account = Mock(return_value=True)
+        api = self.backend.HubApi()
+        self.assertTrue(api.remove_openai_account("acc-1"))
+        self.openai.remove_openai_account.assert_called_once_with("acc-1")
+        with self.assertRaises(ValueError):
+            api.remove_openai_account("unknown-id")
+
+    def test_set_openai_active_account_validates_and_delegates(self):
+        self.openai.load_openai_accounts = Mock(return_value=[{"accountId": "acc-1", "id": "acc-1", "email": "a@b.c"}])
+        self.openai.set_active_openai_account = Mock(return_value=True)
+        api = self.backend.HubApi()
+        self.assertTrue(api.set_openai_active_account("acc-1"))
+        self.openai.set_active_openai_account.assert_called_once_with("acc-1")
+        with self.assertRaises(ValueError):
+            api.set_openai_active_account("unknown-id")
+
     def test_claude_active_identity_uses_active_flag_without_exposing_session_keys(self):
         self.claude.load_accounts.return_value = [{'email':'idle@test','active':False,'session_key':'secret-cookie'},
                                                  {'email':'active@test','active':True,'session_key':'another-cookie'}]
