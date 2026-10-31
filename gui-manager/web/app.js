@@ -1120,14 +1120,7 @@ function renderOpenAiTab() {
     const primary = quota.window_5h || quota.primary;
     const secondary = quota.window_weekly || quota.secondary;
     const checked = quota.last_checked ? new Date(quota.last_checked * 1000).toLocaleString('ru-RU') : 'ещё не обновлялись';
-    const models = Array.isArray(acc.models) ? acc.models : [];
-    const modelNames = models.map(m => m.id).join(', ');
-    const modelsLine = models.length
-      ? `Модели аккаунта (${models.length}): ${html(modelNames)}`
-      : 'Список моделей будет загружен автоматически при обновлении';
-    card.innerHTML = `<div class="acc-top"><div class="acc-identity"><div class="acc-avatar" style="color:#10a37f">◎</div><div><div class="acc-email">${html(acc.email || 'ChatGPT Session')}</div><div class="acc-role">${html(acc.plan_type || quota.plan_type || 'Тариф неизвестен')}</div></div></div><span class="badge-pill ${acc.is_active ? 'badge-available' : 'badge-pool'}">${acc.is_active ? '● Активен' : 'В пуле'}</span></div><div class="quotas-box">${quotaMarkup('ChatGPT · 5 часов', primary, 'green', valid)}${quotaMarkup('ChatGPT · неделя', secondary, 'amber', valid)}</div><div class="help-text">Проверено: ${html(checked)}${quota.status === 'stale' ? ' · сохранённые данные, обновление не удалось' : quota.status === 'error' ? ' · запрос лимитов не удался' : ''}${quota.limit_reached ? ' · Лимит исчерпан' : ''}</div><div class="help-text" style="margin-top:4px;">${modelsLine}</div><div class="acc-footer"><div class="acc-actions">${!acc.is_active ? `<button class="btn-primary" style="padding:6px 14px; font-size:11px;" data-action="activate">⭐ Сделать активным</button>` : ''}<button class="btn-secondary" style="padding:6px 10px; font-size:11px; color:var(--accent-red);" data-action="delete">🗑</button></div></div>`;
-    card.querySelector('[data-action="activate"]')?.addEventListener('click', () => setOpenAiActive(acc.accountId || acc.id));
-    card.querySelector('[data-action="delete"]')?.addEventListener('click', () => deleteOpenAiAccount(acc.accountId || acc.id, acc.email));
+    card.innerHTML = `<div class="acc-top"><div class="acc-identity"><div class="acc-avatar" style="color:#10a37f">◎</div><div><div class="acc-email">${html(acc.email || 'ChatGPT Session')}</div><div class="acc-role">${html(acc.plan_type || quota.plan_type || 'Тариф неизвестен')}</div></div></div><span class="badge-pill ${acc.is_active ? 'badge-available' : 'badge-pool'}">${acc.is_active ? '● Активен' : 'В пуле'}</span></div><div class="quotas-box">${quotaMarkup('ChatGPT · 5 часов', primary, 'green', valid)}${quotaMarkup('ChatGPT · неделя', secondary, 'amber', valid)}</div><div class="help-text">Проверено: ${html(checked)}${quota.status === 'stale' ? ' · сохранённые данные, обновление не удалось' : quota.status === 'error' ? ' · запрос лимитов не удался' : ''}${quota.limit_reached ? ' · Лимит исчерпан' : ''}</div>`;
     container.appendChild(card);
   });
 }
@@ -1138,25 +1131,6 @@ async function refreshOpenAiQuotas() {
     await refreshState();
     setTimeout(refreshState, 2000);
   } catch (e) { showToast(`Ошибка обновления лимитов: ${e}`); }
-}
-
-async function setOpenAiActive(id) {
-  if (!window.pywebview?.api || !id) return;
-  try {
-    await window.pywebview.api.set_openai_active_account(id);
-    await refreshState();
-    showToast('Активный ChatGPT-аккаунт переключён, модели перечитываются');
-  } catch (e) { showToast(`Ошибка переключения: ${e}`); }
-}
-
-async function deleteOpenAiAccount(id, email) {
-  if (!window.pywebview?.api || !id) return;
-  if (!confirm(`Удалить аккаунт ChatGPT (${email || id}) из Hub? Токены будут удалены локально.`)) return;
-  try {
-    await window.pywebview.api.remove_openai_account(id);
-    await refreshState();
-    showToast('Аккаунт ChatGPT удалён из Hub');
-  } catch (e) { showToast(`Ошибка удаления: ${e}`); }
 }
 
 // --- Claude Tab ---
@@ -1466,18 +1440,6 @@ async function addOpenAiAccount() {
   showToast("Запуск браузера для входа ChatGPT...");
   await window.pywebview.api.add_openai_account();
   refreshState();
-  // The login completes asynchronously in the browser; poll the backend for the
-  // final result so real failures (token exchange, scope) are surfaced, not swallowed.
-  for (let attempt = 0; attempt < 120; attempt++) {
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    let status = null;
-    try { status = await window.pywebview.api.get_openai_login_status(); } catch { return; }
-    if (status && status.message !== null && status.message !== undefined) {
-      showToast(status.ok === false ? `Вход ChatGPT не удался: ${status.message}` : status.message);
-      await refreshState();
-      return;
-    }
-  }
 }
 
 async function addClaudeAccount() {
