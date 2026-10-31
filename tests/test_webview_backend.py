@@ -101,6 +101,45 @@ class WebviewBackendTests(unittest.TestCase):
         self.assertFalse(state['config']['providers_visibility']['openrouter'])
         self.assertIn('network', state)
 
+    def test_restart_restarts_background_service_before_reopening_desktop(self):
+        self.manager.get_opencode_cli = Mock(return_value='cli.exe')
+        self.manager.get_opencode_exe = Mock(return_value='OpenCode.exe')
+        result = SimpleNamespace(returncode=0, stdout='', stderr='')
+        self.manager.run_silent_cmd = Mock(return_value=result)
+        api = self.backend.HubApi()
+        calls = Mock()
+        calls.attach_mock(self.manager.run_silent_cmd, 'service')
+        with patch.object(self.backend.os.path, 'exists', return_value=True), \
+             patch.object(api, 'stop_opencode', return_value=True) as stop, \
+             patch.object(api, 'start_opencode', return_value=True) as start:
+            calls.attach_mock(stop, 'stop')
+            calls.attach_mock(start, 'start')
+            self.assertTrue(api.restart_opencode())
+        self.assertEqual([c[0] for c in calls.mock_calls], ['stop', 'service', 'start'])
+        self.manager.run_silent_cmd.assert_called_once_with(['cli.exe', 'service', 'restart'], timeout=45)
+
+    def test_restart_service_failure_is_reported_and_retry_is_possible(self):
+        self.manager.get_opencode_cli = Mock(return_value='cli.exe')
+        self.manager.get_opencode_exe = Mock(return_value='OpenCode.exe')
+        self.manager.run_silent_cmd = Mock(return_value=SimpleNamespace(returncode=1, stdout='', stderr='service failed'))
+        api = self.backend.HubApi()
+        with patch.object(self.backend.os.path, 'exists', return_value=True), \
+             patch.object(api, 'stop_opencode', return_value=True), \
+             patch.object(api, 'start_opencode', return_value=True) as start:
+            with self.assertRaisesRegex(RuntimeError, 'service failed'):
+                api.restart_opencode()
+            start.assert_not_called()
+            self.manager.run_silent_cmd.return_value.returncode = 0
+            self.assertTrue(api.restart_opencode())
+
+    def test_restart_without_cli_preserves_running_desktop(self):
+        self.manager.get_opencode_cli = Mock(return_value=None)
+        api = self.backend.HubApi()
+        with patch.object(api, 'stop_opencode') as stop:
+            with self.assertRaisesRegex(RuntimeError, 'CLI OpenCode'):
+                api.restart_opencode()
+        stop.assert_not_called()
+
     def test_state_uses_existing_claude_account_service(self):
         api = self.backend.HubApi()
         with patch.object(api, "load_config", return_value={}), patch.object(api, "is_opencode_running", return_value=False):

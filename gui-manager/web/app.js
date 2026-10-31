@@ -1364,9 +1364,16 @@ async function saveSettings() {
 // --- OpenCode system actions ---
 async function restartOpenCode() {
   if (!window.pywebview?.api) return;
-  showToast("Перезапуск OpenCode...");
-  await window.pywebview.api.restart_opencode();
-  setTimeout(refreshState, 1500);
+  showToast("Перезапуск окна и фонового сервера OpenCode...");
+  try {
+    const ok = await window.pywebview.api.restart_opencode();
+    if (!ok) throw new Error('Перезапуск не завершён');
+    showToast('OpenCode и фоновый сервер перезапущены');
+  } catch (e) {
+    showToast(`Ошибка перезапуска OpenCode: ${e}`);
+  } finally {
+    setTimeout(refreshState, 1500);
+  }
 }
 
 async function stopOpenCode() {

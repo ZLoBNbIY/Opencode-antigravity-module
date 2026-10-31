@@ -84,6 +84,7 @@ class HubApi:
         self._openrouter_models = []
         self._provider_lock = threading.RLock()
         self._core_lock = threading.Lock()
+        self._restart_lock = threading.Lock()
         self._login_locks = {name: threading.Lock() for name in ("google", "openai")}
 
     def load_config(self) -> dict:
@@ -692,9 +693,27 @@ class HubApi:
             return True
 
     def restart_opencode(self) -> bool:
-        self.stop_opencode()
-        time.sleep(1)
-        return self.start_opencode()
+        if not self._restart_lock.acquire(blocking=False):
+            raise RuntimeError("Перезапуск OpenCode уже выполняется")
+        try:
+            cli = antigravity_manager.get_opencode_cli()
+            if not cli:
+                raise RuntimeError("CLI OpenCode не найден: невозможно перезапустить фоновый сервер")
+            if not os.path.exists(antigravity_manager.get_opencode_exe()):
+                raise RuntimeError("Приложение OpenCode не найдено")
+            if not self.stop_opencode():
+                raise RuntimeError("Не удалось закрыть окно OpenCode")
+            # Closing the desktop app leaves the v2 background service alive.
+            # Restart it through its CLI so loaded plugins and OAuth state reset.
+            result = antigravity_manager.run_silent_cmd([cli, "service", "restart"], timeout=45)
+            if result.returncode != 0:
+                raise RuntimeError("Не удалось перезапустить фоновый сервер OpenCode: " +
+                                   (result.stderr or result.stdout or "неизвестная ошибка"))
+            if not self.start_opencode():
+                raise RuntimeError("Сервер перезапущен, но не удалось открыть окно OpenCode")
+            return True
+        finally:
+            self._restart_lock.release()
 
     def stop_opencode(self) -> bool:
         if sys.platform != "win32":
