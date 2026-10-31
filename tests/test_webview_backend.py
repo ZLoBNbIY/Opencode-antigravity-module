@@ -56,6 +56,51 @@ class WebviewBackendTests(unittest.TestCase):
         self.backend.ANTIGRAVITY_CONFIG_FILE = Path(self.temp.name) / 'antigravity.json'
         self.backend.OPENCODE_CONFIG_FILE = Path(self.temp.name) / 'opencode.json'
 
+    def test_google_login_waits_and_migrates_before_reporting_success(self):
+        self.manager.get_node_executable = Mock(return_value="node")
+        self.manager.get_cli_js = Mock(return_value="cli.js")
+        self.manager.repair_legacy_google_account_file = Mock(return_value=None)
+        self.manager.run_silent_cmd = Mock(return_value=SimpleNamespace(returncode=0, stdout="", stderr=""))
+        with patch.object(self.backend.os.path, "exists", return_value=True):
+            result = self.backend.HubApi().add_google_account()
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual([c.args[0] for c in self.manager.run_silent_cmd.call_args_list],
+                         [["node", "cli.js", "login"], ["node", "cli.js", "migrate", "--offline", "--yes"]])
+
+    def test_google_login_failure_is_reported_without_migration(self):
+        self.manager.get_node_executable = Mock(return_value="node")
+        self.manager.get_cli_js = Mock(return_value="cli.js")
+        self.manager.repair_legacy_google_account_file = Mock(return_value=None)
+        self.manager.run_silent_cmd = Mock(return_value=SimpleNamespace(returncode=1, stdout="", stderr="login failed"))
+        with patch.object(self.backend.os.path, "exists", return_value=True):
+            result = self.backend.HubApi().add_google_account()
+        self.assertEqual(result, {'status':'error', 'message':'login failed'})
+        self.manager.run_silent_cmd.assert_called_once()
+
+    def test_openai_failure_and_exception_reach_frontend_and_unlock_retry(self):
+        self.openai.login_openai_browser = Mock(side_effect=[(False, 'token exchange failed', None),
+                                                           RuntimeError('network unavailable'),
+                                                           (True, 'saved', {'id':'test'})])
+        api = self.backend.HubApi()
+        self.assertEqual(api.add_openai_account(), {'status':'error', 'message':'token exchange failed'})
+        self.assertEqual(api.add_openai_account(), {'status':'error', 'message':'network unavailable'})
+        self.assertEqual(api.add_openai_account(), {'status':'ok', 'message':'saved'})
+
+    def test_windows_bom_configs_do_not_hide_saved_accounts(self):
+        self.backend.OPENCODE_CONFIG_FILE.write_text('{"disabled_providers": ["openrouter-free"]}', encoding='utf-8-sig')
+        self.backend.ANTIGRAVITY_CONFIG_FILE.write_text('{"provider_routes": {"google": "dns"}}', encoding='utf-8-sig')
+        self.manager.export_google_accounts.return_value = [{'id':'google-saved', 'email':'google@test'}]
+        self.manager.enrich_google_accounts_with_generation_store.side_effect = lambda rows: rows
+        self.openai.load_openai_accounts.return_value = [{'id':'openai-saved', 'email':'openai@test'}]
+        api = self.backend.HubApi()
+        with patch.object(api, 'is_opencode_running', return_value=False):
+            state = api.get_state()
+        self.assertEqual(len(state['accounts']), 1)
+        self.assertEqual(len(state['openaiAccounts']), 1)
+        self.assertEqual(state['routes'], {'google':'dns'})
+        self.assertFalse(state['config']['providers_visibility']['openrouter'])
+        self.assertIn('network', state)
+
     def test_state_uses_existing_claude_account_service(self):
         api = self.backend.HubApi()
         with patch.object(api, "load_config", return_value={}), patch.object(api, "is_opencode_running", return_value=False):

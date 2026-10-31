@@ -84,12 +84,13 @@ class HubApi:
         self._openrouter_models = []
         self._provider_lock = threading.RLock()
         self._core_lock = threading.Lock()
+        self._login_locks = {name: threading.Lock() for name in ("google", "openai")}
 
     def load_config(self) -> dict:
         if ANTIGRAVITY_CONFIG_FILE.exists():
             try:
                 return {**copy.deepcopy(antigravity_manager.DEFAULT_CONFIG),
-                        **json.loads(ANTIGRAVITY_CONFIG_FILE.read_text(encoding="utf-8"))}
+                        **json.loads(ANTIGRAVITY_CONFIG_FILE.read_text(encoding="utf-8-sig"))}
             except Exception:
                 pass
         return copy.deepcopy(antigravity_manager.DEFAULT_CONFIG)
@@ -138,7 +139,7 @@ class HubApi:
         cfg = self.load_config()
         routes = cfg.get("provider_routes", {})
         try:
-            oc = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8")) if OPENCODE_CONFIG_FILE.exists() else {}
+            oc = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8-sig")) if OPENCODE_CONFIG_FILE.exists() else {}
             disabled = oc.get("disabled_providers", [])
             visibility = dict(cfg.get("providers_visibility", {}))
             for key, provider_id in PROVIDER_SETTING_IDS.items():
@@ -173,7 +174,7 @@ class HubApi:
 
     def get_network_state(self) -> dict:
         cfg = self.load_config()
-        oc = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8")) if OPENCODE_CONFIG_FILE.exists() else {}
+        oc = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8-sig")) if OPENCODE_CONFIG_FILE.exists() else {}
         auto_states = {}
         for provider in PROVIDER_DOMAINS:
             visibility_key = {"google":"antigravity", "claude-pro":"claude", "openrouter-free":"openrouter"}.get(provider, provider)
@@ -197,13 +198,13 @@ class HubApi:
         if provider not in PROVIDER_DOMAINS:
             raise ValueError("Неизвестный провайдер")
         cfg = self.load_config()
-        oc = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8")) if OPENCODE_CONFIG_FILE.exists() else {}
+        oc = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8-sig")) if OPENCODE_CONFIG_FILE.exists() else {}
         auto_router.router.refresh(provider, cfg, oc, force=True)
         return True
 
     def _sync_routes(self, cfg):
         if OPENCODE_CONFIG_FILE.exists():
-            oc_data = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8"))
+            oc_data = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8-sig"))
             sync_provider_routes(oc_data, cfg, get_http_port(), cfg.get("provider_routes", {}))
             pending = OPENCODE_CONFIG_FILE.with_suffix(".json.hub.tmp")
             pending.write_text(json.dumps(oc_data, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -248,7 +249,7 @@ class HubApi:
             if host:
                 domains = [host]
         try:
-            oc = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8")) if OPENCODE_CONFIG_FILE.exists() else {}
+            oc = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8-sig")) if OPENCODE_CONFIG_FILE.exists() else {}
             oc = copy.deepcopy(oc)
             entry = oc.setdefault("provider", {}).setdefault(provider, {})
             if provider == "xpiki":
@@ -503,7 +504,7 @@ class HubApi:
         selected = []
         try:
             if OPENCODE_CONFIG_FILE.exists():
-                oc = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8"))
+                oc = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8-sig"))
                 selected = list(oc.get("provider", {}).get("openrouter-free", {}).get("models", {}))
         except (OSError, ValueError):
             pass
@@ -575,14 +576,31 @@ class HubApi:
         return True
 
     def add_google_account(self) -> dict:
-        node_exe = antigravity_manager.get_node_executable()
-        cli_js = antigravity_manager.get_cli_js()
-        if not (os.path.exists(node_exe) and os.path.exists(cli_js)):
-            return {"status": "error", "message": "Файлы Node/CLI не найдены"}
-
-        # Launch auth in browser
-        subprocess.Popen([node_exe, cli_js, "auth"])
-        return {"status": "ok", "message": "Браузер запущен. Завершите вход в Google"}
+        if not self._login_locks["google"].acquire(blocking=False):
+            return {"status": "error", "message": "Вход в Google уже выполняется"}
+        try:
+            node_exe = antigravity_manager.get_node_executable()
+            cli_js = antigravity_manager.get_cli_js()
+            if not os.path.exists(cli_js):
+                raise RuntimeError("Файл CLI не найден")
+            repair_error = antigravity_manager.repair_legacy_google_account_file()
+            if repair_error:
+                raise RuntimeError(repair_error)
+            result = antigravity_manager.run_silent_cmd([node_exe, cli_js, "login"], timeout=300)
+            if result.returncode:
+                raise RuntimeError(result.stderr or result.stdout or "Не удалось завершить вход в Google")
+            repair_error = antigravity_manager.repair_legacy_google_account_file()
+            if repair_error:
+                raise RuntimeError(repair_error)
+            result = antigravity_manager.run_silent_cmd(
+                [node_exe, cli_js, "migrate", "--offline", "--yes"], timeout=30)
+            if result.returncode:
+                raise RuntimeError("Миграция аккаунта не завершилась: " + (result.stderr or result.stdout))
+            return {"status": "ok", "message": "Google аккаунт добавлен в пул"}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+        finally:
+            self._login_locks["google"].release()
 
     def activate_google_account(self, idx: int) -> bool:
         if not isinstance(idx, int) or idx < 0:
@@ -613,11 +631,16 @@ class HubApi:
     def toggle_google_candidate(self, aid_or_email: str, enabled: bool) -> bool:
         return antigravity_manager.set_google_account_candidate(aid_or_email, enabled)
 
-    def add_openai_account(self) -> bool:
-        def _bg():
-            openai_manager.login_openai_browser(timeout=300)
-        threading.Thread(target=_bg, daemon=True).start()
-        return True
+    def add_openai_account(self) -> dict:
+        if not self._login_locks["openai"].acquire(blocking=False):
+            return {"status": "error", "message": "Вход в ChatGPT уже выполняется"}
+        try:
+            success, message, account = openai_manager.login_openai_browser(timeout=300)
+            return {"status": "ok" if success and account else "error", "message": message}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+        finally:
+            self._login_locks["openai"].release()
 
     def add_claude_account(self) -> bool:
         if not claude_service:
@@ -644,7 +667,7 @@ class HubApi:
                 if not isinstance(visibility, dict) or any(key not in PROVIDER_SETTING_IDS or not isinstance(value, bool)
                                                           for key, value in visibility.items()):
                     raise ValueError("Неверные настройки провайдеров")
-                oc = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8")) if OPENCODE_CONFIG_FILE.exists() else {}
+                oc = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8-sig")) if OPENCODE_CONFIG_FILE.exists() else {}
                 disabled = oc.get("disabled_providers", [])
                 if not isinstance(disabled, list):
                     raise ValueError("disabled_providers должен быть списком")
@@ -732,7 +755,7 @@ class HubApi:
             selected_or_models = []
             try:
                 if OPENCODE_CONFIG_FILE.exists():
-                    oc = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8"))
+                    oc = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8-sig"))
                     selected_or_models = list(oc.get("provider", {}).get("openrouter-free", {}).get("models", {}))
             except Exception:
                 pass
@@ -885,8 +908,8 @@ class HubApi:
             state_p = gen_dir / "state.json"
             if cfg_p.exists() and state_p.exists():
                 try:
-                    cfg = json.loads(cfg_p.read_text(encoding="utf-8"))
-                    state = json.loads(state_p.read_text(encoding="utf-8"))
+                    cfg = json.loads(cfg_p.read_text(encoding="utf-8-sig"))
+                    state = json.loads(state_p.read_text(encoding="utf-8-sig"))
                     cfg_accounts = cfg.setdefault("accounts", [])
                     pool_rows = cfg.setdefault("commonAuthPool", {}).setdefault("rows", {})
                     state_accounts = state.setdefault("accounts", {})
@@ -949,7 +972,7 @@ class HubApi:
         try:
             legacy_data = {"version": 4, "activeIndex": 0, "accounts": []}
             if legacy_file.exists():
-                legacy_data = json.loads(legacy_file.read_text(encoding="utf-8"))
+                legacy_data = json.loads(legacy_file.read_text(encoding="utf-8-sig"))
             existing_leg = {a.get("email") for a in legacy_data.get("accounts", []) if a.get("email")}
             for item in accounts_list:
                 email = item.get("email")

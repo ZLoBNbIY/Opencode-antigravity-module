@@ -34,6 +34,23 @@ class ProviderRouteProxyTests(unittest.TestCase):
         self.assertEqual(provider_for_host("api.openai.com", self.opencode), "openai")
         self.assertEqual(provider_for_host("api.mwapi.dev", self.opencode), "mwapi")
 
+    def test_builtin_openai_direct_route_without_provider_config(self):
+        hub = {"provider_routes": {"openai": "direct"}, "dns_mode": "standard",
+               "vless_enabled": True, "vless_url": "vless://example"}
+        import provider_proxy
+        for host in ('chatgpt.com', 'auth.openai.com', 'api.openai.com'):
+            self.assertEqual(provider_for_host(host, {}), 'openai')
+            self.assertIsNone(select_upstream(host, hub, {}))
+            with patch('provider_proxy._connect_upstream') as connect:
+                provider_proxy.connect_routed(host, 443, hub, {})
+            self.assertIsNone(connect.call_args.args[0])
+        self.assertIsNone(provider_for_host('chatgpt.com.evil.test', {}))
+        self.auto_refresh.assert_not_called()
+
+    def test_configured_custom_endpoint_keeps_priority_over_builtin_fallback(self):
+        config = {'provider': {'custom': {'options': {'baseURL': 'https://chatgpt.com/api'}}}}
+        self.assertEqual(provider_for_host('chatgpt.com', config), 'custom')
+
     def test_routes_can_select_different_upstreams(self):
         hub = {"provider_routes": {"google": "dns", "openai": "vless"},
                "vless_http_port": 10879, "vless_enabled": True,

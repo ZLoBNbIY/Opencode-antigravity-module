@@ -279,3 +279,36 @@ test('Dashboard handles all providers disabled and navigation places Network abo
   assert.match(elements.get('dashboard-metrics').innerHTML, /0 \/ 0/);
   assert.equal(elements.get('dashboard-check').disabled, true);
 });
+
+
+test('ChatGPT login waits for completion, suppresses double clicks, and shows failure', async () => {
+  const {elements, context} = frontend(state);
+  let finish;
+  let calls = 0;
+  context.window.pywebview = {api: {add_openai_account: () => {
+    calls++;
+    return new Promise(resolve => { finish = resolve; });
+  }}};
+  vm.runInContext('refreshState = async () => {};', context);
+  const pending = vm.runInContext('addOpenAiAccount()', context);
+  await vm.runInContext('addOpenAiAccount()', context);
+  assert.equal(calls, 1);
+  finish({status:'error', message:'token exchange failed'});
+  await pending;
+  assert.match(elements.get('toasts').children.at(-1).textContent, /Ошибка входа: token exchange failed/);
+});
+
+test('Google login refreshes accounts only after successful completion', async () => {
+  const {elements, context} = frontend(state);
+  let finish;
+  let refreshed = 0;
+  context.window.pywebview = {api: {add_google_account: () => new Promise(resolve => { finish = resolve; })}};
+  context.onRefresh = () => { refreshed++; };
+  vm.runInContext('refreshState = async () => onRefresh();', context);
+  const pending = vm.runInContext('addGoogleAccount()', context);
+  assert.equal(refreshed, 0);
+  finish({status:'ok', message:'Google аккаунт добавлен в пул'});
+  await pending;
+  assert.equal(refreshed, 1);
+  assert.match(elements.get('toasts').children.at(-1).textContent, /добавлен/);
+});

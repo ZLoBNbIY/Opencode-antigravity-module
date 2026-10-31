@@ -59,7 +59,7 @@ def _hub_upstream_proxy(hub: dict) -> str | None:
         return candidates[idx]
 def _read_json(path: Path) -> dict:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
@@ -104,7 +104,14 @@ def provider_for_host(host: str, opencode_config: dict | None = None) -> str | N
             domains[name].extend(LOCAL_ROUTES.get(name.lower(), ()))
     matches = [(len(domain), name) for name, values in domains.items()
                for domain in values if domain and _matches(host, domain)]
-    return max(matches)[1] if matches else None
+    if matches:
+        return max(matches)[1]
+    # Built-in providers may use OpenCode defaults and have no config entry.
+    # Explicit configured endpoints above retain priority. Ambiguous built-in
+    # aliases (e.g. two DeepSeek integrations) need a configured provider.
+    builtins = {name for name, values in LOCAL_ROUTES.items()
+                for domain in values if _matches(host, domain)}
+    return next(iter(builtins)) if len(builtins) == 1 else None
 
 
 def select_upstream(host: str, hub_config: dict | None = None,

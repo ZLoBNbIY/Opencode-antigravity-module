@@ -424,7 +424,7 @@ if (Test-Path -LiteralPath $OpencodeConfigFile) {
         }
 
         if ($modified) {
-            $cfg | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $OpencodeConfigFile -Encoding UTF8
+            [System.IO.File]::WriteAllText($OpencodeConfigFile, ($cfg | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
             Write-Success "Плагин Antigravity добавлен в существующий opencode.json"
         } else {
             Write-Info "opencode.json уже содержит корректную конфигурацию Antigravity"
@@ -478,7 +478,7 @@ if (Test-Path -LiteralPath $AntigravityConfigFile) {
         }
 
         if ($agMod) {
-            $agCfg | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $AntigravityConfigFile -Encoding UTF8
+            [System.IO.File]::WriteAllText($AntigravityConfigFile, ($agCfg | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
             Write-Success "Параметр soft_quota_threshold_percent установлен на 100% (защита от ошибок 412)"
         } else {
             Write-Info "antigravity.json уже оптимально настроен"
@@ -533,6 +533,28 @@ if (-not $SkipPython) {
 }
 
 # --- 8. Создание ярлыка на Рабочем столе ---
+$UninstallScript = Join-Path $ScriptDir "uninstall.ps1"
+if (Test-Path -LiteralPath $UninstallScript) {
+    try {
+        $UninstallDir = Join-Path $env:LOCALAPPDATA "Programs\Antigravity Hub"
+        New-Item -ItemType Directory -Path $UninstallDir -Force | Out-Null
+        $InstalledUninstaller = Join-Path $UninstallDir "uninstall.ps1"
+        Copy-Item -LiteralPath $UninstallScript -Destination $InstalledUninstaller -Force
+        $UninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AntigravityHub"
+        New-Item -Path $UninstallKey -Force | Out-Null
+        $UninstallCommand = '"' + (Get-Command powershell.exe).Source + '" -NoProfile -ExecutionPolicy Bypass -File "' + $InstalledUninstaller + '"'
+        New-ItemProperty -Path $UninstallKey -Name DisplayName -Value "Antigravity Hub" -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $UninstallKey -Name DisplayVersion -Value "2.0" -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $UninstallKey -Name Publisher -Value "Antigravity Hub" -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $UninstallKey -Name UninstallString -Value $UninstallCommand -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $UninstallKey -Name NoModify -Value 1 -PropertyType DWord -Force | Out-Null
+        New-ItemProperty -Path $UninstallKey -Name NoRepair -Value 1 -PropertyType DWord -Force | Out-Null
+        Write-Success "Registered Antigravity Hub in Windows Installed Apps."
+    } catch {
+        Write-WarningMsg "Could not register the Hub in Windows Installed Apps: $_"
+    }
+}
+
 if ($CreateShortcut) {
     Write-Step "Создание ярлыка на Рабочем столе..."
     try {

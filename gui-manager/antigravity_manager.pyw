@@ -1060,7 +1060,7 @@ class AntigravityManagerApp(ctk.CTk):
     def load_config(self):
         if CONFIG_FILE.exists():
             try:
-                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                with open(CONFIG_FILE, "r", encoding="utf-8-sig") as f:
                     data = json.load(f)
                     cfg = {**DEFAULT_CONFIG, **data}
                     if cfg.get("max_rate_limit_wait_seconds", 300) < 300:

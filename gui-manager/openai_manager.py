@@ -656,7 +656,7 @@ class _OAuthCallbackHandler(BaseHTTPRequestHandler):
             return
 
         server.auth_code = code
-        self._render_page(True, "Авторизация успешно завершена! Вы можете закрыть эту вкладку браузера.")
+        self._render_page(True, "Ответ получен. Вернитесь в Hub и дождитесь результата сохранения аккаунта.")
         server.done_event.set()
 
     def _render_page(self, success: bool, message: str):
@@ -745,7 +745,7 @@ def login_openai_browser(timeout: int = 300) -> tuple[bool, str, dict | None]:
     except Exception as e:
         return False, f"Не удалось запустить локальный сервер на порту {OPENAI_CALLBACK_PORT}: {e}", None
 
-    server_thread = threading.Thread(target=server.handle_request, daemon=True)
+    server_thread = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.1), daemon=True)
     server_thread.start()
 
     auth_url = (
@@ -765,14 +765,15 @@ def login_openai_browser(timeout: int = 300) -> tuple[bool, str, dict | None]:
     )
 
     try:
-        webbrowser.open(auth_url)
+        if not webbrowser.open(auth_url):
+            return False, "Не удалось открыть браузер по умолчанию.", None
+        finished = server.done_event.wait(timeout=timeout)
     except Exception as e:
-        server.server_close()
         return False, f"Не удалось открыть браузер: {e}", None
-
-    # Wait for callback or timeout
-    finished = server.done_event.wait(timeout=timeout)
-    server.server_close()
+    finally:
+        server.shutdown()
+        server_thread.join(timeout=2)
+        server.server_close()
 
     if not finished:
         return False, "Время ожидания авторизации в браузере истекло.", None
@@ -798,13 +799,15 @@ def login_openai_browser(timeout: int = 300) -> tuple[bool, str, dict | None]:
         },
     )
 
-    opener = _get_http_opener(timeout=15)
-
     try:
+        opener = _get_http_opener(timeout=15)
         with opener.open(token_req, timeout=15) as resp:
             tokens = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
         return False, f"Ошибка обмена кода на токены: {e}", None
+
+    if not tokens.get("access_token"):
+        return False, "Сервер авторизации не вернул access_token.", None
 
     access_token = tokens.get("access_token", "")
     refresh_token = tokens.get("refresh_token", "")
@@ -852,7 +855,9 @@ def login_openai_browser(timeout: int = 300) -> tuple[bool, str, dict | None]:
     for a in accounts:
         a["is_active"] = (a["accountId"] == account_id)
 
-    save_openai_accounts(accounts)
-    write_active_auth_openai(new_account)
+    if not save_openai_accounts(accounts):
+        return False, "Не удалось сохранить аккаунт ChatGPT на диск.", None
+    if not write_active_auth_openai(new_account):
+        return False, "Аккаунт сохранён в Hub, но не удалось активировать его в OpenCode.", new_account
 
     return True, f"Аккаунт {new_account['email']} успешно подключен!", new_account

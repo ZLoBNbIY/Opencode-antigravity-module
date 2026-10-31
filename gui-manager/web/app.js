@@ -1396,12 +1396,24 @@ async function openFolder(type) {
 }
 
 // --- Account Actions ---
+const accountLogins = new Set();
+async function loginAccount(provider, method, label) {
+  if (!window.pywebview?.api || accountLogins.has(provider)) return;
+  accountLogins.add(provider);
+  showToast(`Ожидание входа в ${label} через браузер...`);
+  try {
+    const result = await window.pywebview.api[method]();
+    showToast((result.status === 'error' ? 'Ошибка входа: ' : '') + result.message);
+    await refreshState();
+  } catch (e) {
+    showToast(`Ошибка входа: ${e}`);
+  } finally {
+    accountLogins.delete(provider);
+  }
+}
+
 async function addGoogleAccount() {
-  if (!window.pywebview?.api) return;
-  showToast("Открытие браузера для входа в Google...");
-  const res = await window.pywebview.api.add_google_account();
-  showToast(res.message || "Готово");
-  refreshState();
+  await loginAccount('google', 'add_google_account', 'Google');
 }
 
 async function activateGoogleAccount(idx) {
@@ -1436,10 +1448,7 @@ async function toggleCandidate(id, enabled) {
 }
 
 async function addOpenAiAccount() {
-  if (!window.pywebview?.api) return;
-  showToast("Запуск браузера для входа ChatGPT...");
-  await window.pywebview.api.add_openai_account();
-  refreshState();
+  await loginAccount('openai', 'add_openai_account', 'ChatGPT');
 }
 
 async function addClaudeAccount() {
