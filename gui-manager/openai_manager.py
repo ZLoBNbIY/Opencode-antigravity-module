@@ -311,6 +311,7 @@ def save_openai_accounts(accounts: list[dict]) -> bool:
 def import_openai_accounts(imported_list: list[dict]) -> int:
     """
     Imports and merges a list of OpenAI accounts into the local store.
+    Proactively refreshes access tokens and writes active auth to OpenCode.
     Returns the count of successfully imported/merged accounts.
     """
     if not imported_list:
@@ -329,16 +330,32 @@ def import_openai_accounts(imported_list: list[dict]) -> int:
             None
         )
         if idx is not None:
-            accounts[idx].update(new_acc)
+            for k, v in new_acc.items():
+                if v is not None:
+                    accounts[idx][k] = v
         else:
-            accounts.append(new_acc)
+            accounts.append(dict(new_acc))
         count += 1
 
     if accounts:
-        if not any(a.get("is_active") for a in accounts):
-            accounts[0]["is_active"] = True
-        save_openai_accounts(accounts)
+        # Determine which account should be active
         active_acc = next((a for a in accounts if a.get("is_active")), accounts[0])
+        for a in accounts:
+            a["is_active"] = (a.get("id") == active_acc.get("id") or a.get("accountId") == active_acc.get("accountId"))
+
+        # Proactively refresh tokens for accounts where token is missing, expired, or near expiry
+        now_ms = int(time.time() * 1000)
+        for acc in accounts:
+            expires = acc.get("expires", 0)
+            if not acc.get("access") or (expires - now_ms < 300000):
+                try:
+                    refresh_openai_token(acc)
+                except Exception as err:
+                    print(f"[OpenAI Manager] Refresh on import warning for {acc.get('email')}: {err}")
+
+        # Re-resolve active account after refresh and sync to OpenCode
+        active_acc = next((a for a in accounts if a.get("is_active")), accounts[0])
+        save_openai_accounts(accounts)
         write_active_auth_openai(active_acc)
 
     return count

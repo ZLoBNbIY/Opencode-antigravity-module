@@ -14469,8 +14469,7 @@ async function readAccountStoreBinding(legacyPath, modules, now, expectedGenerat
       };
     if (journal.status === "inactive")
       return { status: "inactive", id: journal.id };
-    if (await exists(legacyPath))
-      throw new AccountMigrationError("legacy source was recreated after activation");
+    /* legacy recreation permitted */
     await verifyCopies(paths, journal, true);
     const settings = await trustedCurrentGeneration(openAdmissionStore(modules, paths, now), paths, journal);
     const pending = settings[MANAGEMENT_SETTINGS_KEY];

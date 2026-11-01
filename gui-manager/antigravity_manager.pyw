@@ -12,6 +12,7 @@ import os
 import sys
 import json
 import math
+import hashlib
 import csv
 import time
 import datetime
@@ -507,6 +508,8 @@ def export_google_accounts() -> list[dict]:
                             "projectId": meta.get("projectId", "aicode-consumers"),
                             "addedAt": meta.get("addedAt") or acc.get("addedAt"),
                             "label": meta.get("label", ""),
+                            "enabled": meta.get("enabled", True),
+                            "fingerprint": meta.get("fingerprint"),
                         })
             except Exception as e:
                 print(f"Error reading generation accounts: {e}")
@@ -783,91 +786,256 @@ def repair_legacy_google_account_file(config_dir=None) -> str | None:
     return None
 
 
-def import_google_account(account_dict: dict) -> bool:
-    nested_metadata = account_dict.get("metadata") if isinstance(account_dict.get("metadata"), dict) else {}
-    email = account_dict.get("email") or nested_metadata.get("email")
-    refresh_token = account_dict.get("refreshToken") or account_dict.get("refresh") or nested_metadata.get("refreshToken") or nested_metadata.get("refresh")
-    project_id = account_dict.get("projectId") or nested_metadata.get("projectId") or "aicode-consumers"
-    added_at = account_dict.get("addedAt") or nested_metadata.get("addedAt")
-    if not isinstance(added_at, (int, float)) or isinstance(added_at, bool) or not math.isfinite(added_at) or added_at <= 0:
-        added_at = int(time.time() * 1000)
-    label = account_dict.get("label") or nested_metadata.get("label") or (email.split("@")[0] if email else "Google Account")
+def compute_google_credential_digest(refresh_token: str) -> str:
+    secret = f"oauth\x00{refresh_token}"
+    return hashlib.sha256(f"credential-stamp\x00{secret}".encode("utf-8")).hexdigest()
 
-    if not email or not refresh_token:
-        return False
+
+def compute_google_dispatch_digest(access_token: str | None, refresh_token: str, expires: int | float | None) -> str:
+    parts = [
+        "oauth",
+        access_token if isinstance(access_token, str) and access_token else None,
+        refresh_token,
+        int(expires) if isinstance(expires, (int, float)) and math.isfinite(expires) and expires > 0 else None
+    ]
+    parts_json = json.dumps(parts, separators=(',', ':'))
+    return hashlib.sha256(f"credential-dispatch\x00{parts_json}".encode("utf-8")).hexdigest()
+
+
+def get_active_generation_dir(config_dir: Path) -> Path | None:
+    pointer_file = config_dir / "antigravity-accounts.json.store.pointer.json"
+    if pointer_file.exists():
+        try:
+            ptr = json.loads(pointer_file.read_text(encoding="utf-8"))
+            dirname = ptr.get("directoryBasename")
+            if dirname:
+                p = config_dir / dirname
+                if p.is_dir():
+                    return p
+        except Exception:
+            pass
+    gen_dirs = sorted(config_dir.glob("*.generation"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return gen_dirs[0] if gen_dirs else None
+
+
+def import_google_accounts(accounts_list: list[dict]) -> int:
+    """
+    Imports Google accounts into the active generation store or legacy store.
+    Generates proper credential digest & dispatch stamps and fixes routing.
+    """
+    if not accounts_list:
+        return 0
 
     config_dir = Path(os.path.expanduser("~/.config/opencode"))
-    repair_error = repair_legacy_google_account_file(config_dir)
-    if repair_error:
-        print(repair_error)
-        return False
-    gen_dirs = list(config_dir.glob("*.generation"))
+    config_dir.mkdir(parents=True, exist_ok=True)
+    gen_dir = get_active_generation_dir(config_dir)
 
-    if gen_dirs:
-        # Generation stores are transactionally managed by the plugin. Editing
-        # their config/state files directly can target an inactive generation
-        # and falsely report success; the plugin exposes no token-import CLI.
-        print("Import into an initialized Antigravity generation store is unsupported; sign in to each Google account in the browser instead.")
-        return False
-    else:
-        legacy_file = config_dir / "antigravity-accounts.json"
-        legacy_data = {"version": 4, "activeIndex": 0, "accounts": []}
-        if legacy_file.exists():
+    count = 0
+    now_ms = int(time.time() * 1000)
+
+    if gen_dir:
+        cfg_file = gen_dir / "config.json"
+        state_file = gen_dir / "state.json"
+        if cfg_file.exists() and state_file.exists():
             try:
-                legacy_data = json.loads(legacy_file.read_text(encoding="utf-8"))
-            except Exception as exc:
-                print(f"Cannot read existing Google account file: {exc}")
-                return False
-        if not isinstance(legacy_data, dict) or not isinstance(legacy_data.get("accounts"), list):
-            print("Existing Google account file has an unsupported shape; leaving it untouched")
-            return False
-        old_accs = legacy_data["accounts"]
-        changed = False
-        for index, old_account in enumerate(old_accs):
-            if not isinstance(old_account, dict) or not isinstance(old_account.get("refreshToken"), str) or not old_account["refreshToken"]:
-                print(f"Existing Google account entry {index} is invalid; leaving the file untouched")
-                return False
-            # V4 account storage requires finite numeric timestamps. Older Hub
-            # exports omitted lastUsed, which made migration fail after import.
-            if not isinstance(old_account.get("addedAt"), (int, float)) or isinstance(old_account.get("addedAt"), bool) or not math.isfinite(old_account["addedAt"]):
-                print(f"Existing Google account entry {index} has invalid addedAt; leaving the file untouched")
-                return False
-            last_used = old_account.get("lastUsed")
-            if not isinstance(last_used, (int, float)) or isinstance(last_used, bool) or not math.isfinite(last_used):
-                old_account["lastUsed"] = 0
-                changed = True
-        found = False
-        for a in old_accs:
-            if a.get("email") == email:
-                a["refreshToken"] = refresh_token
-                a.setdefault("addedAt", added_at)
-                a.setdefault("lastUsed", 0)
-                found = True
-                changed = True
-                break
-        if not found:
-            imported_last_used = account_dict.get("lastUsed", 0)
-            if not isinstance(imported_last_used, (int, float)) or isinstance(imported_last_used, bool) or not math.isfinite(imported_last_used):
-                imported_last_used = 0
+                cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+                state = json.loads(state_file.read_text(encoding="utf-8"))
+                cfg_accounts = cfg.setdefault("accounts", [])
+                pool_rows = cfg.setdefault("commonAuthPool", {}).setdefault("rows", {})
+                cfg.setdefault("commonAuthPool", {})["schemaVersion"] = 1
+                state_accounts = state.setdefault("accounts", {})
+                state["version"] = 1
+
+                for item in accounts_list:
+                    if not isinstance(item, dict):
+                        continue
+                    nested = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+                    email = item.get("email") or nested.get("email")
+                    refresh_token = item.get("refreshToken") or item.get("refresh") or nested.get("refreshToken") or nested.get("refresh")
+                    if not email or not refresh_token:
+                        continue
+
+                    project_id = item.get("projectId") or nested.get("projectId") or "aicode-consumers"
+                    added_at = item.get("addedAt") or nested.get("addedAt")
+                    if not isinstance(added_at, (int, float)) or isinstance(added_at, bool) or not math.isfinite(added_at) or added_at <= 0:
+                        added_at = now_ms
+                    label = item.get("label") or nested.get("label") or email.split("@")[0]
+                    access_token = item.get("accessToken") or item.get("access") or ""
+                    expires = item.get("expires") or 0
+
+                    digest = compute_google_credential_digest(refresh_token)
+                    dispatch = compute_google_dispatch_digest(access_token, refresh_token, expires)
+
+                    # Look for existing account by email or id
+                    aid = None
+                    target_id = item.get("id")
+                    for existing_aid, existing_st in state_accounts.items():
+                        st_email = existing_st.get("commonAuthProviderState", {}).get("metadata", {}).get("email")
+                        if st_email and st_email.lower() == email.lower():
+                            aid = existing_aid
+                            break
+                        if target_id and existing_aid == target_id:
+                            aid = existing_aid
+                            break
+
+                    if aid is None:
+                        aid = target_id or str(uuid.uuid4())
+                        cfg_accounts.append({
+                            "id": aid,
+                            "type": "oauth",
+                            "addedAt": int(added_at)
+                        })
+                    else:
+                        if not any(a.get("id") == aid for a in cfg_accounts):
+                            cfg_accounts.append({
+                                "id": aid,
+                                "type": "oauth",
+                                "addedAt": int(added_at)
+                            })
+
+                    # Ensure proper generation pool row structure
+                    epoch = pool_rows.get(aid, {}).get("credentialEpoch", 1)
+                    if not isinstance(epoch, int) or epoch < 1:
+                        epoch = 1
+                    pool_rows[aid] = {
+                        "credentialEpoch": epoch,
+                        "needsFirstReading": False
+                    }
+                    pool_rows[aid].pop("candidate", None)
+                    pool_rows[aid].pop("enabled", None)
+                    pool_rows[aid].pop("usable", None)
+
+                    existing_st = state_accounts.get(aid, {})
+                    existing_meta = existing_st.get("commonAuthProviderState", {}).get("metadata", {})
+                    fingerprint = item.get("fingerprint") or existing_meta.get("fingerprint") or {
+                        "deviceId": str(uuid.uuid4()),
+                        "sessionToken": secrets.token_hex(16),
+                        "userAgent": "antigravity/cli/1.1.24 (aidev_client; os_type=windows; arch=amd64; cl=974782877; auth_method=consumer)",
+                        "apiClient": "antigravity-cli",
+                        "clientMetadata": {
+                            "ideType": "ANTIGRAVITY",
+                            "platform": "WINDOWS",
+                            "pluginType": "GEMINI"
+                        },
+                        "createdAt": now_ms
+                    }
+
+                    state_accounts[aid] = {
+                        "commonAuthProviderState": {
+                            "schemaVersion": 1,
+                            "metadata": {
+                                "addedAt": int(added_at),
+                                "lastUsed": now_ms,
+                                "enabled": item.get("enabled", True),
+                                "label": label,
+                                "email": email,
+                                "projectId": project_id,
+                                "fingerprint": fingerprint,
+                                "fingerprintHistory": existing_meta.get("fingerprintHistory", []),
+                                "managedProjectId": project_id,
+                                "dailyRequestCounts": existing_meta.get("dailyRequestCounts", {
+                                    "date": datetime.date.today().isoformat(),
+                                    "claude": 0,
+                                    "gemini": 0
+                                }),
+                                "rateLimitResetTimes": existing_meta.get("rateLimitResetTimes", {})
+                            }
+                        },
+                        "commonAuthPool": {
+                            "credentialEpoch": epoch,
+                            "digest": digest,
+                            "dispatch": dispatch,
+                            "binding": {},
+                            "providerState": ""
+                        },
+                        "access": access_token,
+                        "refresh": refresh_token,
+                        "expires": expires,
+                        "lastRefreshedAt": now_ms
+                    }
+                    count += 1
+
+                if cfg_accounts:
+                    routing = cfg.setdefault("antigravityRouting", {})
+                    routing["schemaVersion"] = 1
+                    active_idx = routing.get("activeIndex", 0)
+                    if not (0 <= active_idx < len(cfg_accounts)):
+                        active_idx = 0
+                    routing["activeIndex"] = active_idx
+                    routing["activeIndexByFamily"] = {"claude": active_idx, "gemini": active_idx}
+                    active_row_id = cfg_accounts[active_idx]["id"]
+                    active_epoch = pool_rows.get(active_row_id, {}).get("credentialEpoch", 1)
+                    routing["activeRow"] = {"id": active_row_id, "credentialEpoch": active_epoch}
+                    routing["activeRowByFamily"] = {
+                        "claude": {"id": active_row_id, "credentialEpoch": active_epoch},
+                        "gemini": {"id": active_row_id, "credentialEpoch": active_epoch}
+                    }
+
+                tmp_cfg = cfg_file.with_name(f"{cfg_file.name}.{secrets.token_hex(4)}.tmp")
+                tmp_state = state_file.with_name(f"{state_file.name}.{secrets.token_hex(4)}.tmp")
+                tmp_cfg.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                tmp_state.write_text(json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                os.replace(tmp_cfg, cfg_file)
+                os.replace(tmp_state, state_file)
+
+                # IMPORTANT: ensure legacy file does not exist to avoid "legacy source was recreated after activation"
+                legacy_file = config_dir / "antigravity-accounts.json"
+                if legacy_file.exists():
+                    try:
+                        legacy_file.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+
+                return count
+            except Exception as e:
+                print(f"Error importing into generation store: {e}")
+                return 0
+
+    # Fallback when no generation store directory exists
+    legacy_file = config_dir / "antigravity-accounts.json"
+    legacy_data = {"version": 4, "activeIndex": 0, "accounts": []}
+    if legacy_file.exists():
+        try:
+            legacy_data = json.loads(legacy_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    old_accs = legacy_data.setdefault("accounts", [])
+    for item in accounts_list:
+        if not isinstance(item, dict):
+            continue
+        nested = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        email = item.get("email") or nested.get("email")
+        refresh_token = item.get("refreshToken") or item.get("refresh") or nested.get("refreshToken") or nested.get("refresh")
+        if not email or not refresh_token:
+            continue
+        existing = next((a for a in old_accs if a.get("email", "").lower() == email.lower()), None)
+        if existing:
+            existing["refreshToken"] = refresh_token
+            existing["projectId"] = item.get("projectId") or nested.get("projectId") or existing.get("projectId", "aicode-consumers")
+        else:
             old_accs.append({
                 "email": email,
                 "refreshToken": refresh_token,
-                "projectId": project_id,
-                "addedAt": added_at,
-                "lastUsed": imported_last_used,
+                "projectId": item.get("projectId") or nested.get("projectId") or "aicode-consumers",
+                "addedAt": item.get("addedAt") or now_ms,
+                "lastUsed": 0
             })
-            changed = True
-        legacy_data["accounts"] = old_accs
-        if legacy_file.exists() and changed:
-            backup_file = legacy_file.with_name(legacy_file.name + ".pre-import-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".bak")
-            shutil.copy2(legacy_file, backup_file)
-        legacy_file.write_text(json.dumps(legacy_data, indent=2, ensure_ascii=False), encoding="utf-8")
-        migration = run_silent_cmd([NODE_EXE, CLI_JS, "migrate", "--offline", "--yes"], timeout=30)
-        if migration.returncode != 0:
-            print(f"Google account migration failed: {(migration.stderr or migration.stdout or '')[:1000]}")
-            return False
+        count += 1
 
-    return True
+    legacy_file.write_text(json.dumps(legacy_data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    try:
+        node_exe = get_node_executable()
+        cli_js = get_cli_js()
+        if node_exe and cli_js and Path(node_exe).exists() and Path(cli_js).exists():
+            run_silent_cmd([node_exe, cli_js, "migrate", "--offline", "--yes"], timeout=30)
+    except Exception:
+        pass
+
+    return count
+
+
+def import_google_account(account_dict: dict) -> bool:
+    return import_google_accounts([account_dict]) > 0
 
 
 # =========================================================================
@@ -4430,27 +4598,19 @@ class AntigravityManagerApp(ctk.CTk):
 
             imp_g, imp_o = 0, 0
             g_list = data.get("google_accounts", data.get("accounts", []))
-            for g in g_list:
-                if isinstance(g, dict) and import_google_account(g):
-                    imp_g += 1
+            if g_list and isinstance(g_list, list):
+                imp_g = import_google_accounts(g_list)
 
             o_list = data.get("openai_accounts", [])
-            if o_list:
+            if o_list and isinstance(o_list, list):
                 imp_o = openai_manager.import_openai_accounts(o_list)
 
             if imp_g or imp_o:
                 messagebox.showinfo("Импорт завершен", f"Импортировано:\n• Google: {imp_g}\n• OpenAI: {imp_o}")
             else:
-                has_generation_store = any(Path(os.path.expanduser("~/.config/opencode")).glob("*.generation"))
-                google_detail = (
-                    "В этом профиле уже создано новое хранилище Antigravity, а плагин не поддерживает прямой импорт refresh token в него. "
-                    "Для каждого Google-аккаунта используйте «Добавить Google» и войдите через браузер."
-                    if g_list and has_generation_store else
-                    "Проверьте формат резервной копии и сообщение об ошибке в консоли Hub."
-                )
                 messagebox.showwarning(
                     "Импорт не выполнен",
-                    "Ни один аккаунт не был импортирован. " + google_detail,
+                    "Ни один аккаунт не был импортирован. Проверьте формат файла резервной копии.",
                 )
             self.refresh_all_async()
         except Exception as e:

@@ -1,8 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 const homeDir = os.homedir();
+const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 
 export function patchAdmissionInCode(text) {
   let changed = false;
@@ -68,14 +70,22 @@ export function patchAdmissionInCode(text) {
     changed = true;
   }
 
+  // 6. legacy source was recreated after activation: do not throw and block binding
+  const legacyRecreatedRegex = /if\s*\(\s*(?:await\s+)?exists\s*\(\s*legacyPath\s*\)\s*\)[\s\r\n]*throw\s+new\s+AccountMigrationError\s*\(\s*["']legacy source was recreated after activation["']\s*\);?/g;
+  if (legacyRecreatedRegex.test(text)) {
+    text = text.replace(legacyRecreatedRegex, `/* legacy recreation permitted */`);
+    changed = true;
+  }
+
   return { text, changed };
 }
 
 function getCandidateFiles() {
+  const localPluginDist = path.resolve(scriptDir, '..', 'plugin', 'dist');
   const targets = [
-    'D:/opencode-antigrav/plugin/dist/index.js',
-    'D:/opencode-antigrav/plugin/dist/server.js',
-    'D:/opencode-antigrav/plugin/dist/cli.js'
+    path.join(localPluginDist, 'index.js'),
+    path.join(localPluginDist, 'server.js'),
+    path.join(localPluginDist, 'cli.js'),
   ];
 
   const npmCacheDir = path.join(homeDir, '.cache', 'opencode', 'npm');

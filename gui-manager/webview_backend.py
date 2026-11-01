@@ -915,103 +915,10 @@ class HubApi:
             return {"ok": False, "message": f"Ошибка импорта: {e}"}
 
     def _import_google_accounts_list(self, accounts_list: list) -> int:
-        """Imports Google accounts into the active generation store and legacy store."""
-        import secrets
-        import uuid
-        count = 0
-        gen_dirs = list(CONFIG_DIR.glob("*.generation"))
-
-        if gen_dirs:
-            gen_dir = gen_dirs[0]
-            cfg_p = gen_dir / "config.json"
-            state_p = gen_dir / "state.json"
-            if cfg_p.exists() and state_p.exists():
-                try:
-                    cfg = json.loads(cfg_p.read_text(encoding="utf-8-sig"))
-                    state = json.loads(state_p.read_text(encoding="utf-8-sig"))
-                    cfg_accounts = cfg.setdefault("accounts", [])
-                    pool_rows = cfg.setdefault("commonAuthPool", {}).setdefault("rows", {})
-                    state_accounts = state.setdefault("accounts", {})
-
-                    existing_emails = set()
-                    for acc in cfg_accounts:
-                        aid = acc.get("id")
-                        st = state_accounts.get(aid, {})
-                        email = st.get("commonAuthProviderState", {}).get("metadata", {}).get("email")
-                        if email:
-                            existing_emails.add(email.lower())
-
-                    for item in accounts_list:
-                        email = item.get("email")
-                        refresh_token = item.get("refreshToken") or item.get("refresh")
-                        if not email or not refresh_token:
-                            continue
-                        if email.lower() in existing_emails:
-                            continue
-
-                        aid = item.get("id") or str(uuid.uuid4())
-                        added_at = item.get("addedAt") or int(time.time() * 1000)
-                        project_id = item.get("projectId") or "aicode-consumers"
-
-                        cfg_accounts.append({
-                            "id": aid,
-                            "type": "oauth",
-                            "addedAt": added_at,
-                            "enabled": True,
-                            "candidate": item.get("candidate", True)
-                        })
-                        pool_rows[aid] = {
-                            "candidate": item.get("candidate", True),
-                            "enabled": True,
-                            "usable": True
-                        }
-                        state_accounts[aid] = {
-                            "refresh": refresh_token,
-                            "access": item.get("accessToken", ""),
-                            "expires": item.get("expires", 0),
-                            "commonAuthProviderState": {
-                                "metadata": {
-                                    "email": email,
-                                    "projectId": project_id,
-                                    "addedAt": added_at,
-                                    "label": item.get("label", email.split("@")[0])
-                                }
-                            }
-                        }
-                        existing_emails.add(email.lower())
-                        count += 1
-
-                    cfg_p.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
-                    state_p.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
-                except Exception as e:
-                    print(f"Error importing into generation store: {e}")
-
-        # Also write to legacy antigravity-accounts.json as safety mirror
-        legacy_file = CONFIG_DIR / "antigravity-accounts.json"
-        try:
-            legacy_data = {"version": 4, "activeIndex": 0, "accounts": []}
-            if legacy_file.exists():
-                legacy_data = json.loads(legacy_file.read_text(encoding="utf-8-sig"))
-            existing_leg = {a.get("email") for a in legacy_data.get("accounts", []) if a.get("email")}
-            for item in accounts_list:
-                email = item.get("email")
-                refresh = item.get("refreshToken") or item.get("refresh")
-                if email and refresh and email not in existing_leg:
-                    legacy_data.setdefault("accounts", []).append({
-                        "email": email,
-                        "refreshToken": refresh,
-                        "projectId": item.get("projectId", "aicode-consumers"),
-                        "addedAt": item.get("addedAt", int(time.time() * 1000)),
-                        "lastUsed": 0,
-                    })
-                    existing_leg.add(email)
-                    if not gen_dirs:
-                        count += 1
-            legacy_file.write_text(json.dumps(legacy_data, indent=2, ensure_ascii=False), encoding="utf-8")
-        except Exception:
-            pass
-
-        return count
+        """Imports Google accounts into the active generation store or legacy store."""
+        if hasattr(antigravity_manager, "import_google_accounts"):
+            return antigravity_manager.import_google_accounts(accounts_list)
+        return 0
 
     def check_updates(self) -> dict:
         try:
