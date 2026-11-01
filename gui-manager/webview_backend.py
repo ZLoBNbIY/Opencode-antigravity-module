@@ -49,8 +49,12 @@ LOG_DIR = CONFIG_DIR / "logs"
 CLOUDCODE_ENDPOINTS = [
     "daily-cloudcode-pa.googleapis.com",
     "cloudcode-pa.googleapis.com",
+    "cloudaicompanion.googleapis.com",
+    "generativelanguage.googleapis.com",
     "oauth2.googleapis.com",
+    "aiplatform.googleapis.com",
     "clients6.google.com",
+    "www.googleapis.com",
 ]
 
 

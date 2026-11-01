@@ -21999,8 +21999,10 @@ function getHttpsProxy(url) {
     if (existsSync5(configPath)) {
       const parsed = JSON.parse(readFileSync2(configPath, "utf-8"));
       if (parsed.vless_enabled && parsed.vless_url) {
+        const hubRoutePort = 10880;
+        const gateHost = url.hostname === 'daily-cloudcode-pa.googleapis.com' || url.hostname === 'cloudcode-pa.googleapis.com' || url.hostname === 'cloudaicompanion.googleapis.com' || url.hostname === 'generativelanguage.googleapis.com' || url.hostname === 'oauth2.googleapis.com' || url.hostname === 'aiplatform.googleapis.com' || url.hostname.endsWith('.googleapis.com') || url.hostname.endsWith('.google.com') || url.hostname.endsWith('.google');
         const vlessPort = Number(parsed.vless_http_port) > 0 ? Number(parsed.vless_http_port) : 10879;
-        return new URL(`http://127.0.0.1:${vlessPort}`);
+        return new URL(`http://127.0.0.1:${gateHost ? hubRoutePort : vlessPort}`);
       }
       if (parsed.proxy && typeof parsed.proxy === "string" && parsed.proxy.trim()) {
         return new URL(parsed.proxy.trim());

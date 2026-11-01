@@ -7,15 +7,33 @@ def patch_auth_plugin_transport(plugin_cache: Path | None = None) -> bool:
 
     root = plugin_cache or (Path.home() / ".cache" / "opencode" / "npm")
     candidates = list(root.glob("**/@cortexkit/opencode-antigravity-auth/dist/server.js"))
+    if plugin_cache is None:
+        local_server = Path(__file__).resolve().parent.parent / "plugin" / "dist" / "server.js"
+        if local_server.exists() and local_server not in candidates:
+            candidates.append(local_server)
+
     if not candidates:
         return False
     patched = False
+    new_gate = (
+        "const gateHost = url.hostname === 'daily-cloudcode-pa.googleapis.com' || "
+        "url.hostname === 'cloudcode-pa.googleapis.com' || "
+        "url.hostname === 'cloudaicompanion.googleapis.com' || "
+        "url.hostname === 'generativelanguage.googleapis.com' || "
+        "url.hostname === 'oauth2.googleapis.com' || "
+        "url.hostname === 'aiplatform.googleapis.com' || "
+        "url.hostname.endsWith('.googleapis.com') || "
+        "url.hostname.endsWith('.google.com') || "
+        "url.hostname.endsWith('.google');"
+    )
+    old_gate_exact = "const gateHost = url.hostname === 'daily-cloudcode-pa.googleapis.com' || url.hostname === 'cloudcode-pa.googleapis.com';"
+
     for path in candidates:
         try:
             source = path.read_text(encoding="utf-8")
             changed = False
 
-            # 1. Route Cloud Code to 10880
+            # 1. Route Cloud Code & all Gemini hosts to 10880
             marker = "const hubRoutePort = 10880;"
             if marker not in source:
                 pattern = re.compile(
@@ -24,14 +42,16 @@ def patch_auth_plugin_transport(plugin_cache: Path | None = None) -> bool:
                 )
                 replacement = (
                     "const hubRoutePort = 10880;\n"
-                    "        const gateHost = url.hostname === 'daily-cloudcode-pa.googleapis.com' || "
-                    "url.hostname === 'cloudcode-pa.googleapis.com';\n"
+                    f"        {new_gate}\n"
                     "        const vlessPort = Number(parsed.vless_http_port) > 0 ? Number(parsed.vless_http_port) : 10879;\n"
                     "        return new URL(`http://127.0.0.1:${gateHost ? hubRoutePort : vlessPort}`);"
                 )
                 source, count = pattern.subn(replacement, source, count=1)
                 if count:
                     changed = True
+            elif old_gate_exact in source:
+                source = source.replace(old_gate_exact, new_gate, 1)
+                changed = True
 
             # 2. Do not hang in retry loop on fatal 404 (model not found)
             if "response.status === 404" in source and "/* no retry on 404 */" not in source:

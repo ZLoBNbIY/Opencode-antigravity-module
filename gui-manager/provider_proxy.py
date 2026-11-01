@@ -17,14 +17,36 @@ from urllib.parse import urlparse
 HOST = "127.0.0.1"
 PORT = 10880
 CONFIG_DIR = Path.home() / ".config" / "opencode"
-LOCAL_ROUTES = {"google": ("googleapis.com", "google.com", "googleusercontent.com"),
-                "openai": ("openai.com", "chatgpt.com"),
-                "claude-pro": ("claude.ai", "anthropic.com"),
-                "openrouter-free": ("openrouter.ai",),
-                "mwapi": ("mwapi.dev",),
-                "xpiki": ("xpiki.com",),
-                "deepseek-account": ("deepseek.com",),
-                "deepseek-web": ("deepseek.com",)}
+LOCAL_ROUTES = {
+    "google": (
+        "googleapis.com",
+        "google.com",
+        "googleusercontent.com",
+        "gstatic.com",
+        "googlehosted.com",
+        "googlevideo.com",
+        "gvt1.com",
+        "gvt2.com",
+        "deepmind.com",
+        "google",
+    ),
+    "openai": (
+        "openai.com",
+        "chatgpt.com",
+        "oaistatic.com",
+        "oaiusercontent.com",
+    ),
+    "claude-pro": (
+        "claude.ai",
+        "anthropic.com",
+        "claudeusercontent.com",
+    ),
+    "openrouter-free": ("openrouter.ai",),
+    "mwapi": ("mwapi.dev",),
+    "xpiki": ("api.xpiki.com", "xpiki.com"),
+    "deepseek-account": ("api.deepseek.com", "deepseek.com"),
+    "deepseek-web": ("chat.deepseek.com", "deepseek.com"),
+}
 _server = None
 _thread = None
 _dns_lock = threading.Lock()
