@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 
 DEFAULT_HOSTS = {
     "google": ("daily-cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis.com"),
-    "openai": ("chatgpt.com",), "claude-pro": ("claude.ai",),
+    "openai": ("api.openai.com", "chatgpt.com"), "claude-pro": ("claude.ai",),
     "xpiki": ("api.xpiki.com",), "openrouter-free": ("openrouter.ai",),
 }
 REFRESH_SECONDS = 60
@@ -85,7 +85,7 @@ class AutoRouter:
             if remaining <= 0:
                 raise TimeoutError()
             tls.settimeout(remaining)
-            path = "/backend-api/wham/usage" if host == "chatgpt.com" else "/api/v1/models" if host == "openrouter.ai" else "/"
+            path = "/backend-api/wham/usage" if host == "chatgpt.com" else "/api/v1/models" if host == "openrouter.ai" else "/v1/models" if host == "api.openai.com" else "/"
             tls.sendall((f"GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: AntigravityHub-RouteProbe\r\nConnection: close\r\n\r\n").encode("ascii"))
             response = http.client.HTTPResponse(tls)
             response.begin()

@@ -15,7 +15,7 @@ class AutoRouterTests(unittest.TestCase):
         self.hub = {"vless_enabled": True, "vless_url": "vless://test", "vless_http_port": 10879,
                     "dns_mode": "standard", "custom_dns": ["192.0.2.1"],
                     "proxy": "http://user:secret-value@proxy.example:8080"}
-        self.oc = {"provider": {"google": {"options": {}}, "openai": {"options": {}}}}
+        self.oc = {"provider": {"google": {"options": {}}, "openai": {"options": {"baseURL": "https://chatgpt.com"}}}}
 
     def ready(self, router, provider="openai", hub=None):
         self.assertTrue(router.refresh(provider, hub or self.hub, self.oc).wait(2))
