@@ -287,6 +287,17 @@ class HubApi:
             with self._diagnostic_lock:
                 self._diagnostic_running.discard(provider)
 
+    def run_provider_deep_probe(self, provider: str) -> dict:
+        """
+        Manually triggers a lightweight end-to-end API/generation probe.
+        Checks real model answers, tokens, and geoblocks (e.g. Google Region not supported).
+        """
+        import health_checker
+        provider = {"claude": "claude-pro", "openrouter": "openrouter-free"}.get(provider, provider)
+        if provider not in ("google", "openai", "claude-pro", "xpiki", "openrouter-free"):
+            raise ValueError("Неизвестный провайдер")
+        return health_checker.test_provider_deep_probe(provider, timeout=20)
+
     def set_provider_route(self, provider: str, route: str) -> bool:
         provider = {"claude": "claude-pro", "openrouter": "openrouter-free"}.get(provider, provider)
         if provider not in ("google", "openai", "claude-pro", "xpiki", "openrouter-free"):

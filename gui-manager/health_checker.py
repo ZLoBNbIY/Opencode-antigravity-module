@@ -520,7 +520,114 @@ def _test_antigravity_model_once(account: dict, model_id: str, timeout=30, proxy
         "ok": False,
         "status": "geo_blocked",
         "latency_ms": 0,
-        "badge": "🔴 Ошибка региона Google",
+        "badge": "🔴 Ошибка региона Google (Region not supported)",
         "color": "#ef4444",
         "display_name": display_name,
     }
+
+
+def test_provider_deep_probe(provider: str, timeout: int = 15) -> dict:
+    """
+    Performs a deep, lightweight real API/generation probe through the provider's active route.
+    Tests whether actual token generation or authenticated API queries succeed,
+    catching HTTP 400 Region not supported, geoblocks, quota limits and auth failures.
+    Only triggered manually to preserve quotas and tokens.
+    """
+    provider = {"claude": "claude-pro", "openrouter": "openrouter-free"}.get(provider, provider)
+    
+    if provider == "google":
+        import antigravity_manager
+        accs = antigravity_manager.export_google_accounts()
+        if not accs:
+            return {"ok": False, "status": "no_account", "message": "Нет подключенных аккаунтов Google"}
+        idx = antigravity_manager.get_active_google_account_index()
+        acc = accs[idx] if (0 <= idx < len(accs)) else accs[0]
+        proxy = _effective_proxy_from_config("google")
+        res = _test_antigravity_model_once(acc, "antigravity-gemini-3.8-flash", timeout=timeout, proxy_url=proxy, prompt="ping")
+        if res.get("ok"):
+            text = (res.get("response_text") or "").strip()
+            msg = f"Генерация успешна ({res.get('latency_ms', 0)} мс)"
+            if text:
+                msg += f": «{text[:60]}»"
+            return {"ok": True, "status": "active", "message": msg, "latency_ms": res.get("latency_ms")}
+        status = res.get("status")
+        badge = res.get("badge", "Ошибка проверки модели")
+        if status == "geo_blocked" or "region" in badge.lower() or "location" in badge.lower():
+            return {"ok": False, "status": "geo_blocked", "message": "Google отклонил запрос: Регион не поддерживается (HTTP 400). Смените DNS или выберите VLESS."}
+        if status == "rate_limited":
+            return {"ok": False, "status": "rate_limited", "message": "Связь с Google есть, но лимит запросов модели исчерпан (429 Rate Limit)"}
+        return {"ok": False, "status": status, "message": f"{badge}"}
+
+    elif provider == "openai":
+        import openai_manager
+        accs = openai_manager.load_openai_accounts()
+        if not accs:
+            return {"ok": False, "status": "no_account", "message": "Нет подключенных аккаунтов ChatGPT"}
+        active = next((a for a in accs if a.get("is_active")), accs[0])
+        res = test_openai_account_health(active, timeout=timeout)
+        return res
+
+    elif provider == "claude-pro":
+        import claude_manager
+        accs = claude_manager.claude_service.load_accounts()
+        if not accs:
+            return {"ok": False, "status": "no_account", "message": "Нет подключенных аккаунтов Claude Pro"}
+        active = next((a for a in accs if a.get("is_active")), accs[0])
+        proxy = _effective_proxy_from_config("claude-pro")
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy} if proxy else {}))
+        session_key = active.get("session_key", "")
+        headers = {
+            "User-Agent": claude_manager.USER_AGENT,
+            "Cookie": f"sessionKey={session_key}",
+            "Accept": "application/json",
+        }
+        try:
+            t0 = time.perf_counter()
+            req = urllib.request.Request("https://claude.ai/api/organizations", headers=headers)
+            with opener.open(req, timeout=timeout) as resp:
+                elapsed = round((time.perf_counter() - t0) * 1000)
+                return {"ok": True, "status": "active", "message": f"Сессия Claude активна ({elapsed} мс)", "latency_ms": elapsed}
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                return {"ok": False, "status": "auth_failed", "message": f"Ошибка авторизации Claude ({e.code}): сессия истекла или заблокирована"}
+            return {"ok": False, "status": f"http_{e.code}", "message": f"Claude.ai вернул HTTP {e.code}: {e.reason}"}
+        except Exception as e:
+            return {"ok": False, "status": "network_error", "message": f"Ошибка связи с Claude: {str(e)[:100]}"}
+
+    elif provider == "xpiki":
+        import xpiki_manager
+        cfg = xpiki_manager.load_xpiki_config()
+        api_key = cfg.get("api_key")
+        if not api_key:
+            return {"ok": False, "status": "no_key", "message": "API-ключ Claude (Xpiki) не задан"}
+        base_url = cfg.get("base_url") or xpiki_manager.DEFAULT_BASE_URL
+        ok, msg, _ = xpiki_manager.test_xpiki_connection(api_key, base_url, timeout=timeout)
+        return {"ok": ok, "status": "active" if ok else "error", "message": msg}
+
+    elif provider == "openrouter-free":
+        import openrouter_manager
+        api_key = openrouter_manager.load_api_key()
+        if not api_key:
+            return {"ok": False, "status": "no_key", "message": "API-ключ OpenRouter не задан"}
+        proxy = _effective_proxy_from_config("openrouter-free")
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy} if proxy else {}))
+        req = urllib.request.Request("https://openrouter.ai/api/v1/auth/key", headers={
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent": "AntigravityHub-DeepProbe/1.0"
+        })
+        try:
+            t0 = time.perf_counter()
+            with opener.open(req, timeout=timeout) as resp:
+                elapsed = round((time.perf_counter() - t0) * 1000)
+                data = json.loads(resp.read().decode())
+                label = data.get("data", {}).get("label") or "Ключ активен"
+                return {"ok": True, "status": "active", "message": f"OpenRouter: {label} ({elapsed} мс)", "latency_ms": elapsed}
+        except urllib.error.HTTPError as e:
+            if e.code == 403:
+                return {"ok": False, "status": "forbidden", "message": "HTTP 403: Доступ запрещен (региональная блокировка OpenRouter или лимит ключа)"}
+            return {"ok": False, "status": f"http_{e.code}", "message": f"OpenRouter вернул HTTP {e.code}: {e.reason}"}
+        except Exception as e:
+            return {"ok": False, "status": "network_error", "message": f"Ошибка соединения с OpenRouter: {str(e)[:100]}"}
+
+    return {"ok": False, "status": "unknown_provider", "message": "Неизвестный провайдер"}
+

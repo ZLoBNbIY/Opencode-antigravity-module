@@ -261,6 +261,14 @@ class WebviewBackendTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             api.apply_openrouter_models(['paid/not-in-catalog'])
 
+    def test_run_provider_deep_probe_invokes_health_checker(self):
+        api = self.backend.HubApi()
+        with patch("health_checker.test_provider_deep_probe") as mocked:
+            mocked.return_value = {"ok": True, "status": "active", "message": "OK"}
+            result = api.run_provider_deep_probe("google")
+            mocked.assert_called_once_with("google", timeout=20)
+            self.assertTrue(result["ok"])
+
     @unittest.skipUnless(importlib.util.find_spec("webview"), "pywebview required")
     def test_bridge_finishes_without_inspecting_native_window(self):
         from webview.util import inject_pywebview

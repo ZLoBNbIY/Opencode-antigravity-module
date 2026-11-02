@@ -726,6 +726,33 @@ async function runDiagnostics(tab = 'google', automatic = false) {
   } finally { diagnosticBusy.delete(tab); renderProviderDiagnostics(); }
 }
 
+const deepProbeBusy = new Set();
+async function runDeepProbe(tab = 'google') {
+  if (deepProbeBusy.has(tab) || !window.pywebview?.api) return;
+  deepProbeBusy.add(tab);
+  const cardBtn = document.getElementById(`btn-deep-probe-card-${tab}`);
+  const diagBtn = document.getElementById(`btn-deep-diag-${tab}`);
+  const origCard = cardBtn ? cardBtn.textContent : '';
+  const origDiag = diagBtn ? diagBtn.textContent : '';
+  if (cardBtn) { cardBtn.disabled = true; cardBtn.textContent = '⏳ Проверка…'; }
+  if (diagBtn) { diagBtn.disabled = true; diagBtn.textContent = '⏳ Запрос модели…'; }
+  showToast(`Запуск углубленной проверки API / генерации для ${tab}…`);
+  try {
+    const res = await window.pywebview.api.run_provider_deep_probe(providerTabs[tab]);
+    if (res && res.ok) {
+      showToast(`🟢 ${res.message || 'Связь и генерация работают!'}`);
+    } else {
+      showToast(`🔴 ${res?.message || 'Ошибка генерации модели'}`);
+    }
+  } catch (e) {
+    showToast(`Ошибка проверки: ${e}`);
+  } finally {
+    deepProbeBusy.delete(tab);
+    if (cardBtn) { cardBtn.disabled = false; cardBtn.textContent = origCard; }
+    if (diagBtn) { diagBtn.disabled = false; diagBtn.textContent = origDiag; }
+  }
+}
+
 function renderProviderDiagnostics() {
   for (const [tab, provider] of Object.entries(providerTabs)) {
     const state = appState.diagnostics?.[provider] || {};
