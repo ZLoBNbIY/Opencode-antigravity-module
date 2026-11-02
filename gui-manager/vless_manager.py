@@ -30,8 +30,8 @@ DEFAULT_HTTP_PORT = 10879
 DEFAULT_SOCKS_PORT = 10878
 LOCAL_DNS_PROXY_PORT = 51180
 
-SING_BOX_DOWNLOAD_URL = "https://github.com/SagerNet/sing-box/releases/download/v1.10.7/sing-box-1.10.7-windows-amd64.zip"
-XRAY_DOWNLOAD_URL = "https://github.com/XTLS/Xray-core/releases/download/v24.11.30/Xray-windows-64.zip"
+SING_BOX_DOWNLOAD_URL = "https://github.com/SagerNet/sing-box/releases/latest/download/sing-box-windows-amd64.zip"
+XRAY_DOWNLOAD_URL = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip"
 
 
 def load_hub_config() -> Dict[str, Any]:
@@ -165,6 +165,7 @@ class VlessParser:
             "fingerprint": params.get("fp", "chrome"),
             "pbk": params.get("pbk", ""),
             "sid": params.get("sid", ""),
+            "spx": params.get("spx", ""),
             "flow": params.get("flow", ""),
             "type": params.get("type", "tcp"),
             "path": params.get("path", "/"),
@@ -314,7 +315,7 @@ class VlessManager:
                 "serverName": params["sni"],
                 "publicKey": params["pbk"],
                 "shortId": params["sid"],
-                "spiderX": "",
+                "spiderX": params.get("spx", ""),
             }
         elif params["security"] == "tls":
             stream_settings["tlsSettings"] = {
