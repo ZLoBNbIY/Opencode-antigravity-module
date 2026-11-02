@@ -14214,8 +14214,7 @@ function createAccountMigrationFactory(modules) {
           await assertPublishedAccountStoreGeneration(physical);
           const store = openMigrationStore(modules, physical, options.now, writeObserver(physical, lease, options.onBoundary));
           if (journal.status === "active") {
-            if (await exists(physical.legacyPath))
-              throw new AccountMigrationError("legacy source was recreated after activation");
+            /* legacy recreation permitted */
             await verifyCopies(physical, journal, true);
             await currentSuccessor(store, physical, journal);
             await management(store, journal, true);

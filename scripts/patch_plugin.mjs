@@ -202,6 +202,16 @@ function patchAdmissionInCode(text, file) {
     console.log(`✓ Patched planProviderStateIn stamp auto-creation in ${file}`);
   }
 
+  // A legacy file may be recreated by the Hub after store activation. Its
+  // presence must not block OAuth account binding; the generation store is
+  // already authoritative at this point.
+  const legacyRecreatedRegex = /if\s*\(\s*(?:await\s+)?exists\s*\(\s*(?:physical\.)?legacyPath\s*\)\s*\)[\s\r\n]*throw\s+new\s+AccountMigrationError\s*\(\s*["']legacy source was recreated after activation["']\s*\);?/g;
+  if (legacyRecreatedRegex.test(text)) {
+    text = text.replace(legacyRecreatedRegex, '/* legacy recreation permitted */');
+    changed = true;
+    console.log(`✓ Patched legacy-source recreation guard in ${file}`);
+  }
+
   return { content: text, changed };
 }
 

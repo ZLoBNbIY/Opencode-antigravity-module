@@ -71,7 +71,7 @@ export function patchAdmissionInCode(text) {
   }
 
   // 6. legacy source was recreated after activation: do not throw and block binding
-  const legacyRecreatedRegex = /if\s*\(\s*(?:await\s+)?exists\s*\(\s*legacyPath\s*\)\s*\)[\s\r\n]*throw\s+new\s+AccountMigrationError\s*\(\s*["']legacy source was recreated after activation["']\s*\);?/g;
+  const legacyRecreatedRegex = /if\s*\(\s*(?:await\s+)?exists\s*\(\s*(?:physical\.)?legacyPath\s*\)\s*\)[\s\r\n]*throw\s+new\s+AccountMigrationError\s*\(\s*["']legacy source was recreated after activation["']\s*\);?/g;
   if (legacyRecreatedRegex.test(text)) {
     text = text.replace(legacyRecreatedRegex, `/* legacy recreation permitted */`);
     changed = true;
