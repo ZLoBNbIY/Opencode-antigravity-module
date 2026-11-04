@@ -12,6 +12,7 @@ import threading
 import subprocess
 import copy
 import ipaddress
+import re
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 from pathlib import Path
@@ -324,11 +325,43 @@ class HubApi:
 
     def save_network_settings(self, settings: dict) -> dict:
         allowed = {"vless_url", "vless_core_path", "vless_kill_switch", "dns_mode", "custom_dns", "dot_host", "doh_url",
-                   "google_smart_doh", "proxy"}
+                   "google_smart_doh", "proxy", "dns_presets"}
         with self._config_lock:
             cfg = self.load_config()
             previous = dict(cfg)
             cfg.update({k: v for k, v in settings.items() if k in allowed})
+            if "dns_presets" in settings:
+                presets = settings["dns_presets"]
+                if not isinstance(presets, list) or len(presets) > 50:
+                    raise ValueError("Список DNS должен содержать не более 50 записей")
+                validated_presets = []
+                seen_names = set()
+                for preset in presets:
+                    if not isinstance(preset, dict):
+                        raise ValueError("Некорректная запись DNS")
+                    name = str(preset.get("name") or "").strip()
+                    if not name or len(name) > 60 or name.casefold() in seen_names:
+                        raise ValueError("Названия DNS должны быть непустыми, уникальными и не длиннее 60 символов")
+                    seen_names.add(name.casefold())
+                    standard = preset.get("standard", [])
+                    if not isinstance(standard, list) or len(standard) > 2:
+                        raise ValueError(f"В записи «{name}» допустимо не более двух IP-адресов")
+                    try:
+                        standard = [str(ipaddress.IPv4Address(str(address).strip())) for address in standard]
+                    except (ipaddress.AddressValueError, ValueError):
+                        raise ValueError(f"В записи «{name}» указан некорректный IPv4-адрес") from None
+                    dot = str(preset.get("dot") or "").strip()
+                    if dot and not re.fullmatch(r"[A-Za-z0-9.-]+(?::[0-9]{1,5})?", dot):
+                        raise ValueError(f"В записи «{name}» указан некорректный DoT-хост")
+                    doh = str(preset.get("doh") or "").strip()
+                    if doh:
+                        parsed_doh = urlparse(doh)
+                        if parsed_doh.scheme != "https" or not parsed_doh.hostname or parsed_doh.username or parsed_doh.password:
+                            raise ValueError(f"В записи «{name}» укажите корректный HTTPS URL DoH без логина и пароля")
+                    if not standard and not dot and not doh:
+                        raise ValueError(f"В записи «{name}» укажите хотя бы один адрес")
+                    validated_presets.append({"name": name, "standard": standard, "dot": dot, "doh": doh})
+                cfg["dns_presets"] = validated_presets
             mode = cfg.get("dns_mode", "system")
             if mode not in ("system", "standard", "dot", "doh"):
                 raise ValueError("Неизвестный режим DNS")

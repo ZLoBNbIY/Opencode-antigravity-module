@@ -250,24 +250,15 @@ function fillNetworkForm() {
   if (document.getElementById('switch-proxy-failover')) {
     document.getElementById('switch-proxy-failover').checked = cfg.proxy_failover !== false;
   }
-  const primaryIp = (cfg.custom_dns || [])[0] || '';
-  const doh = cfg.doh_url || '';
-  const dot = cfg.dot_host || '';
-  let matchedPreset = 'custom';
-  if (doh.includes('dns-ai.ru') || dot.includes('dns-ai.ru') || primaryIp === '194.87.196.13') {
-    matchedPreset = 'dns-ai';
-  } else if (doh.includes('magicdns.ru') || dot.includes('magicdns.ru') || primaryIp === '109.120.132.43') {
-    matchedPreset = 'magicdns';
-  } else if (doh.includes('bezmezhau.com') || dot.includes('bezmezhau.com') || primaryIp === '143.20.64.55') {
-    matchedPreset = 'bezmezhau';
-  } else if (doh.includes('cloudflare-dns.com') || dot.includes('cloudflare-dns.com') || primaryIp === '1.1.1.1') {
-    matchedPreset = 'cloudflare';
-  } else if (doh.includes('dns.google') || dot.includes('dns.google') || primaryIp === '8.8.8.8') {
-    matchedPreset = 'google';
-  } else if (doh.includes('quad9.net') || dot.includes('quad9.net') || primaryIp === '9.9.9.9') {
-    matchedPreset = 'quad9';
-  }
-  document.getElementById('dns-preset').value = matchedPreset;
+  const mode = cfg.dns_mode || 'system';
+  const standard = cfg.custom_dns || [];
+  const presets = dnsPresets();
+  let selectedPreset = 'custom';
+  const matched = presets.findIndex(p => mode === 'standard'
+    ? JSON.stringify(p.standard || []) === JSON.stringify(standard)
+    : mode === 'dot' ? p.dot === cfg.dot_host : mode === 'doh' ? p.doh === cfg.doh_url : false);
+  if (matched >= 0) selectedPreset = String(matched);
+  renderDnsPresetOptions(selectedPreset);
   networkFormInitialized = true;
   updateDnsFields();
 }
@@ -447,6 +438,25 @@ async function testProxyItem(proxyUrl) {
 }
 
 const dnsModeLabels = {standard:'Обычный DNS',doh:'DNS-over-HTTPS (DoH)',dot:'DNS-over-TLS (DoT)',system:'Системный DNS'};
+const DEFAULT_DNS_PRESETS = [
+  {name:'DNS-AI (dns-ai.ru)',standard:['194.87.196.13','45.151.102.219'],dot:'dns.dns-ai.ru',doh:'https://dns.dns-ai.ru/dns-query'},
+  {name:'MagicDNS (magicdns.ru)',standard:['109.120.132.43','94.249.177.102'],dot:'dns.magicdns.ru',doh:'https://dns.magicdns.ru/dns-query'},
+  {name:'Bezmezhau',standard:['143.20.64.55','31.58.216.201'],dot:'dns.bezmezhau.com',doh:'https://dns.bezmezhau.com/dns-query'},
+  {name:'Cloudflare',standard:['1.1.1.1','1.0.0.1'],dot:'cloudflare-dns.com',doh:'https://cloudflare-dns.com/dns-query'},
+  {name:'Google',standard:['8.8.8.8','8.8.4.4'],dot:'dns.google',doh:'https://dns.google/dns-query'},
+  {name:'Quad9',standard:['9.9.9.9','149.112.112.112'],dot:'dns.quad9.net',doh:'https://dns.quad9.net/dns-query'}
+];
+function dnsPresets() {
+  const saved = appState.config?.dns_presets;
+  return Array.isArray(saved) ? saved : DEFAULT_DNS_PRESETS;
+}
+function renderDnsPresetOptions(selected = 'custom') {
+  const select = document.getElementById('dns-preset');
+  const presets = dnsPresets();
+  select.innerHTML = '<option value="custom">Свой / текущий</option>' + presets.map((p,i) =>
+    `<option value="${i}">${html(p.name)}</option>`).join('');
+  select.value = selected;
+}
 const dnsChecks = new Map();
 const dnsPending = new Map();
 let dnsAutoTimer = null;
@@ -529,20 +539,75 @@ async function saveDnsSettings() {
 }
 
 function applyDnsPreset() {
-  const presets = {
-    'dns-ai': ['194.87.196.13', '45.151.102.219', 'dns.dns-ai.ru', 'https://dns.dns-ai.ru/dns-query'],
-    magicdns: ['109.120.132.43', '94.249.177.102', 'dns.magicdns.ru', 'https://dns.magicdns.ru/dns-query'],
-    bezmezhau: ['143.20.64.55', '31.58.216.201', 'dns.bezmezhau.com', 'https://dns.bezmezhau.com/dns-query'],
-    cloudflare: ['1.1.1.1', '1.0.0.1', 'cloudflare-dns.com', 'https://cloudflare-dns.com/dns-query'],
-    google: ['8.8.8.8', '8.8.4.4', 'dns.google', 'https://dns.google/dns-query'],
-    quad9: ['9.9.9.9', '149.112.112.112', 'dns.quad9.net', 'https://dns.quad9.net/dns-query']
-  };
-  const values = presets[document.getElementById('dns-preset').value];
-  if (values) ['dns-primary','dns-secondary','dns-dot','dns-doh'].forEach((id,i) => document.getElementById(id).value = values[i]);
+  const index = Number(document.getElementById('dns-preset').value);
+  const preset = dnsPresets()[index];
+  if (preset) {
+    const values = [preset.standard?.[0] || '', preset.standard?.[1] || '', preset.dot || '', preset.doh || ''];
+    ['dns-primary','dns-secondary','dns-dot','dns-doh'].forEach((id,i) => document.getElementById(id).value = values[i]);
+  }
   networkDirty = true;
   document.getElementById('dns-result').textContent = '';
   renderDnsStatus();
   scheduleDnsChecks();
+}
+
+function openDnsPresetEditor() {
+  renderDnsPresetEditor(dnsPresets());
+  document.getElementById('dns-preset-editor-status').textContent = '';
+  document.getElementById('dns-preset-modal').hidden = false;
+}
+function closeDnsPresetEditor() {
+  document.getElementById('dns-preset-modal').hidden = true;
+}
+function renderDnsPresetEditor(presets) {
+  const body = document.getElementById('dns-preset-rows');
+  body.innerHTML = presets.map(p => `<tr>
+    <td><input class="dns-preset-name" aria-label="Название DNS" value="${html(p.name || '')}"></td>
+    <td><input aria-label="Обычный DNS IP-адреса через запятую" value="${html((p.standard || []).join(', '))}" placeholder="1.1.1.1, 1.0.0.1"></td>
+    <td><input aria-label="DoT хост" value="${html(p.dot || '')}" placeholder="dns.example.net"></td>
+    <td><input aria-label="DoH URL" value="${html(p.doh || '')}" placeholder="https://dns.example.net/dns-query"></td>
+    <td><button class="btn-secondary dns-preset-delete" onclick="this.closest('tr').remove()">Удалить</button></td>
+  </tr>`).join('');
+}
+function addDnsPresetRow() {
+  const rows = document.getElementById('dns-preset-rows');
+  const tr = document.createElement('tr');
+  tr.innerHTML = '<td><input class="dns-preset-name" aria-label="Название DNS" placeholder="Мой DNS"></td><td><input aria-label="Обычный DNS IP-адреса через запятую" placeholder="1.1.1.1, 1.0.0.1"></td><td><input aria-label="DoT хост" placeholder="dns.example.net"></td><td><input aria-label="DoH URL" placeholder="https://dns.example.net/dns-query"></td><td><button class="btn-secondary dns-preset-delete" onclick="this.closest(\'tr\').remove()">Удалить</button></td>';
+  rows.appendChild(tr);
+  tr.querySelector('input').focus();
+}
+async function saveDnsPresetList() {
+  const button = document.getElementById('dns-preset-save');
+  const status = document.getElementById('dns-preset-editor-status');
+  const presets = [];
+  const names = new Set();
+  for (const row of document.querySelectorAll('#dns-preset-rows tr')) {
+    const inputs = [...row.querySelectorAll('input')];
+    const name = inputs[0].value.trim();
+    const standard = inputs[1].value.split(',').map(value => value.trim()).filter(Boolean);
+    const dot = inputs[2].value.trim();
+    const doh = inputs[3].value.trim();
+    if (!name) { status.textContent = 'Укажите название каждой записи.'; return; }
+    if (names.has(name.toLocaleLowerCase())) { status.textContent = `Название «${name}» повторяется.`; return; }
+    names.add(name.toLocaleLowerCase());
+    if (standard.length > 2 || standard.some(ip => !validDnsTarget({mode:'standard',value:ip}))) {
+      status.textContent = `В записи «${name}» укажите не более двух корректных IPv4-адресов.`; return;
+    }
+    if (dot && !validDnsTarget({mode:'dot',value:dot})) { status.textContent = `Некорректный DoT-хост в записи «${name}».`; return; }
+    if (doh && !validDnsTarget({mode:'doh',value:doh})) { status.textContent = `Некорректный HTTPS URL DoH в записи «${name}».`; return; }
+    if (!standard.length && !dot && !doh) { status.textContent = `Добавьте хотя бы один адрес для «${name}».`; return; }
+    presets.push({name,standard,dot,doh});
+  }
+  button.disabled = true;
+  try {
+    const result = await window.pywebview.api.save_network_settings({dns_presets:presets});
+    if (!result.ok) throw new Error(result.message);
+    await refreshState();
+    renderDnsPresetOptions('custom');
+    status.textContent = 'Список DNS сохранён.';
+    setTimeout(closeDnsPresetEditor, 700);
+  } catch (e) { status.textContent = `Не удалось сохранить: ${e?.message || e}`; }
+  finally { button.disabled = false; }
 }
 
 async function saveNetworkSettings() {

@@ -966,3 +966,15 @@ button:disabled { opacity:.5; cursor:wait; }
   .dashboard-metric { padding:8px 10px; }
   .dashboard-metric > strong { font-size:16px; }
 }
+.dns-preset-row { display:flex; gap:8px; align-items:center; }
+.dns-preset-row select { flex:1; min-width:0; }
+.modal-backdrop { position:fixed; inset:0; z-index:1000; display:flex; align-items:center; justify-content:center; padding:20px; background:rgba(0,0,0,.72); }
+.modal-backdrop[hidden] { display:none; }
+.modal-panel { width:min(1100px,96vw); max-height:90vh; overflow:auto; padding:20px; border:1px solid var(--glass-border); border-radius:16px; background:var(--bg-secondary,#10171d); box-shadow:0 20px 70px rgba(0,0,0,.55); }
+.dns-preset-table-wrap { overflow:auto; margin:14px 0; }
+.dns-preset-table { width:100%; border-collapse:separate; border-spacing:0 6px; min-width:800px; }
+.dns-preset-table th { padding:6px; text-align:left; color:var(--text-secondary); font-size:11px; }
+.dns-preset-table td { padding:3px; }
+.dns-preset-table input { width:100%; min-width:130px; padding:8px; color:var(--text-primary); background:rgba(0,0,0,.28); border:1px solid var(--glass-border); border-radius:7px; }
+.dns-preset-table .dns-preset-name { min-width:110px; }
+.dns-preset-table .dns-preset-delete { white-space:nowrap; color:var(--accent-red,#f85149); }

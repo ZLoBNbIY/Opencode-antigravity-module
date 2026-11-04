@@ -135,7 +135,7 @@
               <button class="seg-btn" id="dns-mode-dot" role="radio" aria-checked="false" onclick="selectDnsMode('dot')">DoT</button>
               <button class="seg-btn" id="dns-mode-system" role="radio" aria-checked="false" onclick="selectDnsMode('system')">Системный</button>
             </div>
-            <label class="field-label" for="dns-preset">DNS-сервер</label><select id="dns-preset" onchange="applyDnsPreset()"><option value="custom">Свой / текущий</option><option value="dns-ai">DNS-AI (dns-ai.ru)</option><option value="magicdns">MagicDNS (magicdns.ru)</option><option value="bezmezhau">Bezmezhau</option><option value="cloudflare">Cloudflare</option><option value="google">Google</option><option value="quad9">Quad9</option></select>
+            <label class="field-label" for="dns-preset">DNS-сервер</label><div class="dns-preset-row"><select id="dns-preset" onchange="applyDnsPreset()"><option value="custom">Свой / текущий</option></select><button class="btn-secondary" type="button" onclick="openDnsPresetEditor()">Управлять списком</button></div>
             <div id="dns-standard-fields" class="field-grid">
               <label class="field-label">Основной DNS<input id="dns-primary" placeholder="143.20.64.55" oninput="onDnsInput()"><span class="badge-pill badge-pool dns-address-status" id="dns-primary-status">● Не проверен</span></label>
               <label class="field-label">Резервный DNS<input id="dns-secondary" placeholder="31.58.216.201" oninput="onDnsInput()"><span class="badge-pill badge-pool dns-address-status" id="dns-secondary-status">● Не проверен</span></label>
@@ -553,6 +553,16 @@
 
 <!-- Toast Container -->
 <div class="toast-container" id="toasts"></div>
+
+<div class="modal-backdrop" id="dns-preset-modal" hidden onclick="if(event.target===this)closeDnsPresetEditor()">
+  <div class="modal-panel dns-preset-modal" role="dialog" aria-modal="true" aria-labelledby="dns-preset-title">
+    <div class="panel-heading"><h2 id="dns-preset-title">Список DNS-серверов</h2><button class="btn-secondary" onclick="closeDnsPresetEditor()">Закрыть</button></div>
+    <p class="help-text">Добавляйте, редактируйте и удаляйте серверы. Для каждого укажите имя и адреса протоколов, которыми пользуетесь.</p>
+    <div class="dns-preset-table-wrap"><table class="dns-preset-table"><thead><tr><th>Название</th><th>Обычный DNS (IP, до 2)</th><th>DoT (хост)</th><th>DoH (HTTPS URL)</th><th></th></tr></thead><tbody id="dns-preset-rows"></tbody></table></div>
+    <div class="button-row"><button class="btn-secondary" onclick="addDnsPresetRow()">＋ Добавить сервер</button><button class="btn-primary" id="dns-preset-save" onclick="saveDnsPresetList()">Сохранить список</button></div>
+    <p class="help-text" id="dns-preset-editor-status" role="status"></p>
+  </div>
+</div>
 
 <script src="app.js"></script>
 </body>
