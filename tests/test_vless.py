@@ -114,6 +114,15 @@ class VlessManagerTests(unittest.TestCase):
         self.assertEqual(cfg["inbounds"][0]["listen_port"], 10879)
         self.assertEqual(cfg["outbounds"][0]["type"], "vless")
         self.assertEqual(cfg["outbounds"][0]["tls"]["reality"]["public_key"], "test-pbk")
+        self.assertEqual(cfg["outbounds"][0]["flow"], "xtls-rprx-vision")
+
+        # Do not infer Vision for share links that intentionally omit `flow`.
+        params_without_flow = dict(params)
+        params_without_flow.pop("flow")
+        cfg_without_flow = vless_service.generate_sing_box_config(
+            params_without_flow, 10879, 10878
+        )
+        self.assertNotIn("flow", cfg_without_flow["outbounds"][0])
 
     def test_default_ports_are_isolated(self):
         # Non-standard isolated ports: must differ from the common 10808/10809

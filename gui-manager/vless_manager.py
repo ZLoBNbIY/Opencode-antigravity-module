@@ -432,9 +432,6 @@ class VlessManager:
             outbound["tls"] = tls_obj
 
         flow = params.get("flow", "").strip()
-        # For TCP Reality, xtls-rprx-vision is the universal standard
-        if params["security"] == "reality" and not flow and params["type"] == "tcp":
-            flow = "xtls-rprx-vision"
         if flow:
             outbound["flow"] = flow
 
