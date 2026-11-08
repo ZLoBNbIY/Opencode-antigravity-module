@@ -50,8 +50,6 @@ LOCAL_ROUTES = {
 _server = None
 _thread = None
 _dns_lock = threading.Lock()
-_proxy_pool_lock = threading.Lock()
-_proxy_pool_index = 0
 _proxy_failures = {}
 
 
@@ -71,14 +69,9 @@ def _get_candidate_proxies(hub: dict) -> list[str]:
 
 
 def _hub_upstream_proxy(hub: dict) -> str | None:
-    """Hub-level proxy from config, ignoring its own route dispatcher (no self-loop)."""
+    """Return the highest-priority configured proxy, ignoring the dispatcher itself."""
     candidates = _get_candidate_proxies(hub)
-    if not candidates:
-        return None
-    global _proxy_pool_index
-    with _proxy_pool_lock:
-        idx = _proxy_pool_index % len(candidates)
-        return candidates[idx]
+    return candidates[0] if candidates else None
 def _read_json(path: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -128,6 +121,11 @@ def provider_for_host(host: str, opencode_config: dict | None = None) -> str | N
                for domain in values if domain and _matches(host, domain)]
     if matches:
         return max(matches)[1]
+    # Gemini's maintained list also contains Google AI domains outside the
+    # usual googleapis.com/google.com suffixes (for example gemini.google).
+    import gemini_routes
+    if gemini_routes.matches(host):
+        return "google"
     # Built-in providers may use OpenCode defaults and have no config entry.
     # Explicit configured endpoints above retain priority. Ambiguous built-in
     # aliases (e.g. two DeepSeek integrations) need a configured provider.
@@ -145,13 +143,6 @@ def select_upstream(host: str, hub_config: dict | None = None,
     routes = hub.get("provider_routes", {})
     mode = routes.get(provider, "default") if isinstance(routes, dict) else "default"
     http_port = hub.get("vless_http_port", 10879)
-
-    if mode == "google-smart":
-        from google_smart_dns import GATE_HOSTS
-        if host.lower().rstrip(".") in GATE_HOSTS:
-            return "smartdns://google"
-        # OAuth and other Google hosts keep the normal route.
-        return _legacy_upstream(hub)
 
     if mode == "direct":
         return None
@@ -194,18 +185,10 @@ def connect_routed(host, port, hub_config=None, opencode_config=None):
     # If routing through external proxy and failover/rotation is enabled, try pool candidates
     candidates = _get_candidate_proxies(hub)
     if upstream in candidates and len(candidates) > 1 and hub.get("proxy_failover", True):
-        global _proxy_pool_index
         last_error = None
-        with _proxy_pool_lock:
-            start_idx = _proxy_pool_index % len(candidates)
-
-        for attempt in range(len(candidates)):
-            cand_idx = (start_idx + attempt) % len(candidates)
-            cand_url = candidates[cand_idx]
+        for cand_url in candidates:
             try:
                 sock = _connect_upstream(cand_url, host, port, hub_config=hub)
-                with _proxy_pool_lock:
-                    _proxy_pool_index = cand_idx
                 return sock, cand_url
             except Exception as e:
                 last_error = e
@@ -252,10 +235,6 @@ def _resolve_with_hub_dns(host: str, hub_config=None, timeout=8) -> str:
 
 def _connect_upstream(proxy_url: str | None, target_host: str, target_port: int,
                       hub_config=None, timeout=20) -> socket.socket:
-    if proxy_url == "smartdns://google":
-        import google_smart_dns
-        return google_smart_dns.connect(target_host, target_port,
-            hub_config if isinstance(hub_config, dict) else _read_json(CONFIG_DIR / "antigravity.json"))
     deadline = time.monotonic() + timeout
     upstream = None
     def remaining():
@@ -394,6 +373,8 @@ class _ThreadingServer(ThreadingHTTPServer):
 
 def start() -> bool:
     global _server, _thread
+    import gemini_routes
+    gemini_routes.refresh_async()
     if _server is not None:
         _install_process_proxy_environment()
         return True

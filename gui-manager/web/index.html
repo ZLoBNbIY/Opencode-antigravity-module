@@ -149,7 +149,7 @@
         </div>
         <div class="glass-card network-panel proxy-panel">
           <div class="panel-heading"><h2>HTTP(S)-прокси и ротация пула</h2><span class="connection-indicator idle" id="http-proxy-indicator"></span></div>
-          <p class="help-text">Внешние прокси для маршрута «Внешний прокси». Можно указать один или несколько узлов. При сбое активного прокси Hub автоматически переключается на следующий свободный узел из пула.</p>
+          <p class="help-text">Прокси проверяются в порядке списка: верхний — основной, ниже — резервные. Перемещайте узлы стрелками. При включённом Failover Hub переходит к следующему прокси, если предыдущий не подключился.</p>
           <div style="display: flex; gap: 8px; margin-bottom: 10px;">
             <input id="network-proxy" type="text" autocomplete="off" placeholder="http://host:port или http://user:pass@host:port" style="flex:1; font-family: Consolas, monospace; font-size:12px; padding: 9px 12px; background: rgba(0,0,0,0.3); border: 1px solid var(--glass-border); border-radius: 8px; color: #fff;">
             <button class="btn-primary" type="button" onclick="addProxyToPool()" style="white-space: nowrap; padding: 8px 14px; font-size: 11px;">＋ Добавить</button>
@@ -163,7 +163,16 @@
           </label>
           <p class="help-text" id="http-proxy-status" style="margin-top: 6px;"></p>
         </div>
-        <details class="glass-card experimental-panel"><summary>🧪 Google SmartDNS · экспериментальная функция</summary><p class="help-text">Отдельный экспериментальный TLS-маршрут только для Google Cloud Code. Включается явно в маршруте Google; не заменяет обычные настройки DNS.</p><label class="field-label">DoH-резолвер SmartDNS<input id="google-smart-doh" placeholder="https://dns.dns-ai.ru/dns-query"></label></details>
+        <div class="glass-card network-panel">
+          <div class="panel-heading"><h2>Правила Gemini</h2><div class="button-row"><button class="btn-secondary" id="btn-gemini-rules-toggle" onclick="toggleGeminiRules()">Показать список</button><button class="btn-secondary" id="btn-gemini-rules-refresh" onclick="refreshGeminiRules()">Обновить</button></div></div>
+          <p class="help-text" id="gemini-rules-status" role="status">Проверяем источники…</p>
+          <p class="help-text">Список доменов Gemini и Google AI. Hub сверяет адрес подключения с правилами и применяет выбранный маршрут Google; это не проверка доступности аккаунта или модели.</p>
+          <div id="gemini-rules-viewer" hidden>
+            <input id="gemini-rules-search" type="search" placeholder="Фильтр по домену или источнику…" autocomplete="off">
+            <p class="help-text" id="gemini-rules-count"></p>
+            <div id="gemini-rules-list" style="max-height:320px; overflow:auto; font:12px Consolas,monospace"></div>
+          </div>
+        </div>
         <div class="network-save-row"><button class="btn-primary" id="btn-network-save" onclick="saveNetworkSettings()">Сохранить настройки сети</button><span class="help-text" id="network-save-result" role="status"></span></div>
         <div class="glass-card route-explanation"><h2>Выбор маршрута</h2><p class="help-text">Маршрут каждого провайдера настраивается справа от аккаунтов и лимитов в его вкладке.</p><p class="help-text"><strong>Авто → …</strong> — сравнивает настроенные маршруты, выбирает самый доступный и быстрый для этого провайдера и переключается при ошибке подключения. Ручной выбор закрепляет один маршрут.</p><p class="help-text" id="hub-auto-route"></p><p class="help-text">Auto перепроверяет маршруты раз в минуту; при отказе выбранного пробует другой доступный. Активная генерация не переотправляется. Индикаторы доменов показывают TCP-соединение, а не доступность конкретной модели.</p></div>
       </section>

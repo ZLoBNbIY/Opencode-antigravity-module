@@ -38,7 +38,6 @@ from vless_manager import get_http_port, get_socks_port, vless_service, VlessPar
 import provider_proxy
 import auto_router
 import dns_tester
-import google_smart_dns
 import xpiki_manager
 import openrouter_manager
 
@@ -175,8 +174,22 @@ class HubApi:
             "appVersion": "v2.0.0",
             "diagnostics": self.get_cached_diagnostics(),
             "network": self.get_network_state(),
+            "geminiRules": self.get_gemini_rules_status(),
             "providers": self.get_provider_state(),
         }
+
+    def get_gemini_rules_status(self) -> dict:
+        import gemini_routes
+        return gemini_routes.get_status()
+
+    def refresh_gemini_rules(self) -> dict:
+        import gemini_routes
+        gemini_routes.refresh_async(force=True)
+        return gemini_routes.get_status()
+
+    def get_gemini_rules(self, query: str = "") -> list[dict]:
+        import gemini_routes
+        return gemini_routes.get_rules(query)
 
     def get_network_state(self) -> dict:
         cfg = self.load_config()
@@ -221,7 +234,7 @@ class HubApi:
     def _diagnostic_signature(self, cfg=None):
         cfg = self.load_config() if cfg is None else cfg
         keys = ("provider_routes", "dns_mode", "custom_dns", "dot_host", "doh_url", "proxy",
-                "vless_enabled", "vless_url", "vless_http_port", "google_smart_doh")
+                "vless_enabled", "vless_url", "vless_http_port")
         return json.dumps([{key: cfg.get(key) for key in keys},
                            xpiki_manager.load_xpiki_config().get("base_url")], sort_keys=True)
 
@@ -266,8 +279,7 @@ class HubApi:
                 t0 = time.perf_counter()
                 try:
                     conn, upstream = provider_proxy.connect_routed(domain, 443, hub_config=cfg, opencode_config=oc)
-                    row["route"] = ("SmartDNS · эксперимент" if upstream == "smartdns://google"
-                        else "DNS Hub" if upstream == "dns://hub" else "Системный маршрут" if not upstream
+                    row["route"] = ("DNS Hub" if upstream == "dns://hub" else "Системный маршрут" if not upstream
                         else "VLESS" if upstream == f"http://127.0.0.1:{get_http_port()}" else "HTTP-прокси")
                     with conn:
                         row.update(status="ok", latency_ms=round((time.perf_counter() - t0) * 1000),
@@ -303,10 +315,8 @@ class HubApi:
         provider = {"claude": "claude-pro", "openrouter": "openrouter-free"}.get(provider, provider)
         if provider not in ("google", "openai", "claude-pro", "xpiki", "openrouter-free"):
             raise ValueError("Неизвестный провайдер")
-        if route not in ("direct", "default", "auto", "vless", "dns", "proxy", "google-smart"):
+        if route not in ("direct", "default", "auto", "vless", "dns", "proxy"):
             raise ValueError("Неизвестный маршрут")
-        if route == "google-smart" and provider != "google":
-            raise ValueError("Экспериментальный SmartDNS доступен только для Google")
         with self._config_lock:
             cfg = self.load_config()
             if route == "vless" and not vless_service.is_running():
@@ -325,7 +335,7 @@ class HubApi:
 
     def save_network_settings(self, settings: dict) -> dict:
         allowed = {"vless_url", "vless_core_path", "vless_kill_switch", "dns_mode", "custom_dns", "dot_host", "doh_url",
-                   "google_smart_doh", "proxy", "dns_presets"}
+                   "proxy", "dns_presets"}
         with self._config_lock:
             cfg = self.load_config()
             previous = dict(cfg)
@@ -378,7 +388,7 @@ class HubApi:
                 parsed = urlparse(str(cfg.get("doh_url", "")))
                 if parsed.scheme != "https" or not parsed.hostname:
                     raise ValueError("Укажите HTTPS URL для DoH")
-            cfg["google_smart_doh"] = google_smart_dns.resolver_url(cfg)
+            cfg.pop("google_smart_doh", None)
             for key, fallback in (("vless_http_port", 10879), ("vless_socks_port", 10878)):
                 port = int(cfg.get(key, fallback))
                 if not 1024 <= port <= 65535:
@@ -506,6 +516,25 @@ class HubApi:
                 return {"ok": False, "message": "Не удалось сохранить изменения"}
             self._sync_routes(cfg)
         return {"ok": True, "message": "Прокси удалён из пула", "pool": pool}
+
+    def move_proxy_pool_item(self, from_index: int, to_index: int) -> dict:
+        try:
+            from_index, to_index = int(from_index), int(to_index)
+        except (TypeError, ValueError):
+            return {"ok": False, "message": "Некорректная позиция прокси"}
+        with self._config_lock:
+            cfg = self.load_config()
+            pool = list(cfg.get("proxy_pool") or [])
+            if not 0 <= from_index < len(pool) or not 0 <= to_index < len(pool):
+                return {"ok": False, "message": "Прокси не найден в списке"}
+            item = pool.pop(from_index)
+            pool.insert(to_index, item)
+            cfg["proxy_pool"] = pool
+            cfg["proxy"] = pool[0] if pool else ""
+            if not self.save_config(cfg):
+                return {"ok": False, "message": "Не удалось сохранить приоритет прокси"}
+            self._sync_routes(cfg)
+        return {"ok": True, "pool": pool, "message": "Приоритет прокси сохранён"}
 
     def test_proxy(self, proxy_url: str) -> dict:
         proxy_url = str(proxy_url or "").strip()

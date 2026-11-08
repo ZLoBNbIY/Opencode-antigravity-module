@@ -34,6 +34,18 @@ class ProviderRouteProxyTests(unittest.TestCase):
         self.assertEqual(provider_for_host("api.openai.com", self.opencode), "openai")
         self.assertEqual(provider_for_host("api.mwapi.dev", self.opencode), "mwapi")
 
+    def test_updated_gemini_domain_is_routed_as_google(self):
+        with patch("gemini_routes.matches", return_value=True):
+            self.assertEqual(provider_for_host("antigravity-unleash.goog", self.opencode), "google")
+            self.assertEqual(select_upstream("antigravity-unleash.goog",
+                {"provider_routes": {"google": "vless"}, "vless_http_port": 10879}, self.opencode),
+                "http://127.0.0.1:10879")
+
+    def test_gemini_match_does_not_override_configured_provider(self):
+        config = {"provider": {"custom": {"options": {"baseURL": "https://antigravity-unleash.goog"}}}}
+        with patch("gemini_routes.matches", return_value=True):
+            self.assertEqual(provider_for_host("antigravity-unleash.goog", config), "custom")
+
     def test_builtin_openai_direct_route_without_provider_config(self):
         hub = {"provider_routes": {"openai": "direct"}, "dns_mode": "standard",
                "vless_enabled": True, "vless_url": "vless://example"}
@@ -67,13 +79,11 @@ class ProviderRouteProxyTests(unittest.TestCase):
         self.assertEqual(select_upstream("api.openai.com", hub, self.opencode),
                           "http://127.0.0.1:10879")
 
-    def test_smart_dns_is_only_used_for_cloudcode_not_oauth(self):
+    def test_legacy_smart_dns_route_falls_back_to_normal_google_route(self):
         hub = {"provider_routes": {"google": "google-smart"},
                "vless_enabled": True, "vless_url": "vless://example"}
-        for host in ("cloudcode-pa.googleapis.com", "daily-cloudcode-pa.googleapis.com"):
-            self.assertEqual(select_upstream(host, hub, self.opencode), "smartdns://google")
-        for host in ("oauth2.googleapis.com", "accounts.google.com", "cloudcode-pa.googleapis.com.evil.test"):
-            self.assertEqual(select_upstream(host, hub, self.opencode), "http://127.0.0.1:10879")
+        self.assertEqual(select_upstream("cloudcode-pa.googleapis.com", hub, self.opencode),
+                         "http://127.0.0.1:10879")
 
     def test_plugin_dispatcher_proxy_never_loops_back_to_dispatcher(self):
         # The OpenCode plugin reads hub.proxy from antigravity.json; when it
@@ -94,6 +104,13 @@ class ProviderRouteProxyTests(unittest.TestCase):
                "dns_mode": "system"}
         self.assertEqual(select_upstream("accounts.google.com", hub, self.opencode),
                          "http://proxy.example:3128")
+
+    def test_proxy_pool_top_entry_is_the_primary_route(self):
+        import provider_proxy
+        hub = {"proxy_pool": ["http://first.example:8000", "http://backup.example:8000"],
+               "proxy_failover": True}
+        self.assertEqual(provider_proxy._hub_upstream_proxy(hub), "http://first.example:8000")
+        self.assertEqual(provider_proxy._get_candidate_proxies(hub), hub["proxy_pool"])
 
     @patch("provider_proxy.select_upstream", return_value="http://secret:password@proxy.example:3128")
     def test_route_description_never_exposes_credentials(self, select):

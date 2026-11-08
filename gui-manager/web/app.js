@@ -138,7 +138,7 @@ function renderSidebar() {
 }
 
 // --- Network Tab (Variant 3) ---
-const routeNames = {default:'По настройкам Hub', direct:'Напрямую', dns:'DNS Hub', vless:'VLESS', proxy:'Внешний прокси', 'google-smart':'SmartDNS · эксперимент'};
+const routeNames = {default:'По настройкам Hub', direct:'Напрямую', dns:'DNS Hub', vless:'VLESS', proxy:'Внешний прокси'};
 function autoRouteState(provider) {
   return appState.network?.autoRoutes?.[provider] || {selected:null, status:'pending', rows:[]};
 }
@@ -195,13 +195,13 @@ function renderNetworkTab() {
   for (const provider of ['google', 'claude', 'openai', 'xpiki', 'openrouter']) {
     const key = provider === 'claude' ? 'claude-pro' : provider === 'openrouter' ? 'openrouter-free' : provider;
     const options = ['default', 'dns', 'vless', 'direct', 'proxy'];
-    if (provider === 'google') options.push('google-smart');
     updateSegmentedGroup(`seg-group-${provider}`, routes[key] || 'default',
       options.map(val => ({val, label:routeLabel(val, key)})));
     document.getElementById(`card-route-${provider}`).textContent = routeDescription(routes[key] || 'default', key);
     renderAutoComparison(key, provider);
   }
-  document.getElementById('hub-auto-route').textContent = 'Auto проверяет HTTPS без API-ключей, выбирает маршрут с наибольшей доступностью и наименьшей задержкой. Прямое подключение и экспериментальный SmartDNS в сравнении не участвуют.';
+  document.getElementById('hub-auto-route').textContent = 'Auto проверяет HTTPS без API-ключей, выбирает маршрут с наибольшей доступностью и наименьшей задержкой. Прямое подключение в сравнении не участвует.';
+  renderGeminiRulesStatus(appState.geminiRules || {});
   const net = appState.network || {};
   const badge = document.getElementById('vless-status');
   badge.textContent = net.vlessRunning ? '● Туннель запущен' : '● Остановлен';
@@ -224,7 +224,9 @@ function renderNetworkTab() {
   const proxyConfigured = proxyPool.length > 0;
   document.getElementById('http-proxy-indicator').className = `connection-indicator ${proxyConfigured ? 'ok' : 'idle'}`;
   document.getElementById('http-proxy-indicator').setAttribute('aria-label', proxyConfigured ? 'Прокси настроен' : 'Прокси не задан');
-  document.getElementById('http-proxy-status').textContent = proxyConfigured ? `В пуле: ${proxyPool.length} узлов. Ротация включена.` : 'Прокси не настроены';
+  document.getElementById('http-proxy-status').textContent = proxyConfigured
+    ? `В пуле: ${proxyPool.length} узлов. Основной отмечен в списке. Failover ${appState.config?.proxy_failover === false ? 'выключен' : 'включён'}.`
+    : 'Прокси не настроены';
   document.getElementById('btn-vless-start').disabled = !!net.vlessRunning;
   document.getElementById('btn-vless-stop').disabled = !net.vlessRunning;
   renderProxyPool();
@@ -244,7 +246,7 @@ function fillNetworkForm() {
     'dns-mode':cfg.dns_mode || 'system', 'dns-primary':(cfg.custom_dns || ['143.20.64.55'])[0] || '',
     'dns-secondary':(cfg.custom_dns || ['143.20.64.55','31.58.216.201'])[1] || '',
     'dns-dot':cfg.dot_host || 'dns.bezmezhau.com', 'dns-doh':cfg.doh_url || 'https://dns.bezmezhau.com/dns-query',
-    'google-smart-doh':cfg.google_smart_doh || 'https://dns.dns-ai.ru/dns-query', 'network-proxy': ''};
+    'network-proxy': ''};
   for (const [id, value] of Object.entries(values)) document.getElementById(id).value = value;
   document.getElementById('vless-kill-switch').checked = cfg.vless_kill_switch !== false;
   if (document.getElementById('switch-proxy-failover')) {
@@ -336,16 +338,21 @@ function renderProxyPool() {
     row.style = 'display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 10px; background:rgba(255,255,255,0.03); border:1px solid var(--glass-border); border-radius:8px; font-size:11px;';
     row.innerHTML = `
       <div style="display:flex; align-items:center; gap:8px; flex:1; min-width:0;">
+        <span class="badge-pill ${idx === 0 ? 'badge-available' : 'badge-pool'}" style="font-size:10px; padding:2px 6px; white-space:nowrap;">${idx === 0 ? 'Основной' : `Резерв ${idx + 1}`}</span>
         <span class="badge-pill ${statusClass}" style="font-size:10px; padding:2px 6px;">${html(statusText)}</span>
         <span style="font-family:Consolas, monospace; color:#fff; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${html(proxyUrl)}</span>
       </div>
       <div style="display:flex; gap:6px;">
+        <button class="btn-secondary" style="padding:4px 8px; font-size:11px;" data-action="up" title="Повысить приоритет" ${idx === 0 ? 'disabled' : ''}>↑</button>
+        <button class="btn-secondary" style="padding:4px 8px; font-size:11px;" data-action="down" title="Понизить приоритет" ${idx === pool.length - 1 ? 'disabled' : ''}>↓</button>
         <button class="btn-secondary" style="padding:4px 8px; font-size:10px;" data-action="test">🩺</button>
         <button class="btn-secondary" style="padding:4px 8px; font-size:10px; color:var(--accent-red);" data-action="delete">🗑</button>
       </div>
     `;
     row.querySelector('[data-action="test"]')?.addEventListener('click', () => testProxyItem(proxyUrl));
     row.querySelector('[data-action="delete"]')?.addEventListener('click', () => removeProxyItem(idx));
+    row.querySelector('[data-action="up"]')?.addEventListener('click', () => moveProxyItem(idx, idx - 1));
+    row.querySelector('[data-action="down"]')?.addEventListener('click', () => moveProxyItem(idx, idx + 1));
     container.appendChild(row);
   });
 }
@@ -449,6 +456,109 @@ const DEFAULT_DNS_PRESETS = [
 function dnsPresets() {
   const saved = appState.config?.dns_presets;
   return Array.isArray(saved) ? saved : DEFAULT_DNS_PRESETS;
+}
+
+async function moveProxyItem(fromIndex, toIndex) {
+  const pool = (appState.config?.proxy_pool || []).filter(Boolean);
+  if (toIndex < 0 || toIndex >= pool.length) return;
+  if (window.pywebview?.api?.move_proxy_pool_item) {
+    try {
+      const result = await window.pywebview.api.move_proxy_pool_item(fromIndex, toIndex);
+      if (!result?.ok) throw new Error(result?.message || 'Не удалось изменить порядок');
+      appState.config.proxy_pool = result.pool || [];
+      appState.config.proxy = appState.config.proxy_pool[0] || '';
+      renderProxyPool();
+      showToast('Приоритет прокси сохранён');
+    } catch (error) {
+      showToast(`Ошибка изменения приоритета: ${error}`);
+    }
+    return;
+  }
+  const [item] = pool.splice(fromIndex, 1);
+  pool.splice(toIndex, 0, item);
+  appState.config.proxy_pool = pool;
+  appState.config.proxy = pool[0] || '';
+  renderProxyPool();
+  await saveNetworkSettings();
+}
+
+function renderGeminiRulesStatus(rules) {
+  const status = document.getElementById('gemini-rules-status');
+  const button = document.getElementById('btn-gemini-rules-refresh');
+  if (!status || !button) return;
+  const updated = rules.updated_at ? new Date(rules.updated_at).toLocaleString() : 'ещё не обновлялся';
+  const count = Number(rules.domain_count || 0);
+  if (rules.state === 'updating') {
+    status.textContent = `Обновление… · в кэше ${count} доменов · последняя успешная загрузка: ${updated}`;
+  } else if (rules.state === 'updated') {
+    status.textContent = `Обновлено ${updated} · ${count} доменов · источники доступны ${rules.sources_loaded}/${rules.sources_total}`;
+  } else if (rules.state === 'error') {
+    status.textContent = `Ошибка обновления (${rules.last_error || 'неизвестно'}). В кэше ${count} доменов; последнее успешное обновление: ${updated}.`;
+  } else {
+    status.textContent = 'Список ещё не загружен. Hub попробует получить правила из источников.';
+  }
+  button.disabled = rules.state === 'updating';
+  button.textContent = rules.state === 'updating' ? 'Обновление…' : 'Обновить';
+}
+
+async function toggleGeminiRules() {
+  const viewer = document.getElementById('gemini-rules-viewer');
+  viewer.hidden = !viewer.hidden;
+  document.getElementById('btn-gemini-rules-toggle').textContent = viewer.hidden ? 'Показать список' : 'Свернуть список';
+  if (!viewer.hidden) await loadGeminiRules();
+}
+
+async function loadGeminiRules() {
+  const query = document.getElementById('gemini-rules-search').value.trim();
+  const list = document.getElementById('gemini-rules-list');
+  const count = document.getElementById('gemini-rules-count');
+  list.textContent = 'Загружаем правила…';
+  try {
+    const rules = await window.pywebview.api.get_gemini_rules(query);
+    list.replaceChildren();
+    count.textContent = `Показано правил: ${rules.length}`;
+    for (const rule of rules) {
+      const row = document.createElement('div');
+      row.style.cssText = 'padding:7px 4px;border-bottom:1px solid var(--glass-border)';
+      const domain = document.createElement('div');
+      domain.style.fontWeight = '700';
+      domain.textContent = rule.domain;
+      const kind = document.createElement('span');
+      kind.textContent = rule.match === 'exact' ? 'Точное совпадение' : 'Домен и поддомены';
+      const sources = document.createElement('span');
+      sources.style.opacity = '.7';
+      sources.textContent = ` · ${rule.sources.map(source => {
+        try { return new URL(source).hostname + new URL(source).pathname; }
+        catch { return source; }
+      }).join(', ')}`;
+      const detail = document.createElement('div');
+      detail.append(kind, sources);
+      row.append(domain, detail);
+      list.appendChild(row);
+    }
+    if (!rules.length) list.textContent = 'Правила не найдены. Список может быть ещё не загружен.';
+  } catch (error) {
+    list.textContent = `Не удалось прочитать правила: ${error}`;
+  }
+}
+
+async function refreshGeminiRules() {
+  const button = document.getElementById('btn-gemini-rules-refresh');
+  button.disabled = true;
+  try {
+    await window.pywebview.api.refresh_gemini_rules();
+    await refreshState();
+    const poll = async attempts => {
+      if (attempts <= 0 || appState.geminiRules?.state !== 'updating') return;
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      await refreshState();
+      poll(attempts - 1);
+    };
+    poll(20);
+  } catch (error) {
+    showToast(`Не удалось обновить правила Gemini: ${error}`);
+    button.disabled = false;
+  }
 }
 function renderDnsPresetOptions(selected = 'custom') {
   const select = document.getElementById('dns-preset');
@@ -621,7 +731,7 @@ async function saveNetworkSettings() {
       vless_url:value('vless-url'), vless_core_path:value('vless-core-path') || null,
       vless_kill_switch:document.getElementById('vless-kill-switch').checked,
       dns_mode:value('dns-mode'), custom_dns:[value('dns-primary'),value('dns-secondary')].filter(Boolean),
-      dot_host:value('dns-dot'), doh_url:value('dns-doh'), google_smart_doh:value('google-smart-doh'),
+      dot_host:value('dns-dot'), doh_url:value('dns-doh'),
       proxy: primaryProxy,
       proxy_pool: pool,
       proxy_failover: document.getElementById('switch-proxy-failover')?.checked !== false
@@ -761,7 +871,7 @@ const diagnosticErrors = new Map();
 function diagnosticSignature(tab) {
   const cfg = appState.config || {};
   return JSON.stringify([tab, appState.routes || {}, cfg.dns_mode, cfg.custom_dns, cfg.dot_host,
-    cfg.doh_url, cfg.proxy, cfg.vless_enabled, cfg.vless_url, cfg.google_smart_doh,
+    cfg.doh_url, cfg.proxy, cfg.vless_enabled, cfg.vless_url,
     appState.network?.vlessRunning, appState.providers?.xpiki?.baseUrl, appState.network?.autoRoutes?.[providerTabs[tab]]?.selected]);
 }
 async function refreshEnabledDiagnostics() {
@@ -1644,7 +1754,7 @@ window.addEventListener('pywebviewready', () => {
   console.log("PyWebView bridge ready");
   document.getElementById('network-settings').addEventListener('input', () => { networkDirty = true; renderDnsStatus(); });
   document.getElementById('network-proxy').addEventListener('input', () => { networkDirty = true; });
-  document.getElementById('google-smart-doh').addEventListener('input', () => { networkDirty = true; });
+  document.getElementById('gemini-rules-search').addEventListener('input', loadGeminiRules);
   refreshState();
   // Auto refresh loop every 10 seconds
   setInterval(refreshState, 10000);

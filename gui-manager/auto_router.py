@@ -27,7 +27,7 @@ class AutoRouteUnavailable(OSError):
 
 
 def configured_routes(hub):
-    """Only explicitly configured transports; direct and experimental SmartDNS are opt-in manual routes."""
+    """Only explicitly configured transports; direct connections are opt-in manual routes."""
     routes = []
     if hub.get("vless_enabled") and hub.get("vless_url"):
         routes.append(("vless", f"http://127.0.0.1:{hub.get('vless_http_port', 10879)}"))

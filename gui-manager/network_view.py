@@ -36,7 +36,6 @@ PROVIDER_ROUTE_LABELS = {
     "vless": "VLESS",
     "proxy": "Внешний прокси",
     "dns": "DNS-прокси Hub",
-    "google-smart": "🧪 Google SmartDNS (Эксперимент)",
 }
 PROVIDER_ROUTE_BY_LABEL = {label: mode for mode, label in PROVIDER_ROUTE_LABELS.items()}
 
@@ -81,7 +80,7 @@ class NetworkView(ctk.CTkScrollableFrame):
 
         ctk.CTkLabel(
             self,
-            text="Управление сетевыми туннелями VLESS (обход геоблокировок) и защищёнными DNS-серверами (DoH / DoT / SmartDNS) для OpenCode.",
+            text="Управление сетевыми туннелями VLESS (обход геоблокировок) и защищёнными DNS-серверами (DoH / DoT) для OpenCode.",
             font=app.font(12),
             anchor="w",
             text_color=colors["text_secondary"]
@@ -300,7 +299,7 @@ class NetworkView(ctk.CTkScrollableFrame):
 
         ctk.CTkLabel(
             dns_card,
-            text="🌐 Кастомные DNS-серверы (DoH / DoT / SmartDNS)",
+            text="🌐 Кастомные DNS-серверы (DoH / DoT)",
             font=app.font(14, "bold"),
             text_color=colors["text_primary"]
         ).pack(anchor="w", padx=16, pady=(12, 4))
@@ -488,9 +487,28 @@ class NetworkView(ctk.CTkScrollableFrame):
         ).pack(anchor="w", padx=16, pady=(12, 3))
         ctk.CTkLabel(
             provider_routes_card,
-            text="Google SmartDNS встроен в Hub: получает адрес выхода через DoH и переносит TLS без AG Unlocker. Используется для двух Cloud Code-доменов; вход Google следует общим настройкам. «Напрямую» использует системную сеть и DNS.",
+            text="Выберите сетевой маршрут для провайдера. «Напрямую» использует системную сеть и DNS.",
             font=app.font(11), text_color=colors["text_secondary"], justify="left", wraplength=980
         ).pack(anchor="w", padx=16, pady=(0, 8))
+
+        gemini_rules_row = ctk.CTkFrame(provider_routes_card, fg_color="transparent")
+        gemini_rules_row.pack(fill="x", padx=16, pady=(0, 8))
+        ctk.CTkLabel(gemini_rules_row, text="Правила Gemini:", font=app.font(11, "bold"),
+                     text_color=colors["text_primary"]).pack(side="left", padx=(0, 6))
+        self.gemini_rules_status = ctk.CTkLabel(gemini_rules_row, text="Проверяем источники…",
+                                                font=app.font(11), text_color=colors["text_secondary"])
+        self.gemini_rules_status.pack(side="left", fill="x", expand=True, anchor="w")
+        ctk.CTkLabel(provider_routes_card,
+            text="Список доменов Gemini и Google AI. Hub сверяет адрес подключения с правилами и применяет выбранный маршрут Google; это не проверка доступности аккаунта или модели.",
+            font=app.font(10), text_color=colors["text_secondary"], justify="left",
+            wraplength=980).pack(anchor="w", padx=16, pady=(0, 8))
+        self.gemini_rules_refresh = ctk.CTkButton(gemini_rules_row, text="Обновить",
+            width=95, height=28, command=self.refresh_gemini_rules)
+        self.gemini_rules_refresh.pack(side="right")
+        self.gemini_rules_view = ctk.CTkButton(gemini_rules_row, text="Показать список",
+            width=125, height=28, command=self.show_gemini_rules)
+        self.gemini_rules_view.pack(side="right", padx=(0, 6))
+        self.update_gemini_rules_status()
 
         opencode_path = Path.home() / ".config" / "opencode" / "opencode.json"
         try:
@@ -518,20 +536,9 @@ class NetworkView(ctk.CTkScrollableFrame):
             variable = tk.StringVar(value=PROVIDER_ROUTE_LABELS[mode])
             self.provider_route_vars[provider_name] = variable
 
-            if provider_name == "google":
-                def _on_google_option_selected(choice):
-                    is_smart = (choice == PROVIDER_ROUTE_LABELS["google-smart"])
-                    if hasattr(self, "smart_dns_enabled_var"):
-                        self.smart_dns_enabled_var.set(is_smart)
-
-                cmd = _on_google_option_selected
-            else:
-                cmd = None
-
             ctk.CTkOptionMenu(
-                route_row, variable=variable, command=cmd,
-                values=[label for label, value in PROVIDER_ROUTE_BY_LABEL.items()
-                        if value != "google-smart" or provider_name == "google"],
+                route_row, variable=variable,
+                values=list(PROVIDER_ROUTE_BY_LABEL),
                 font=app.font(11), width=190, height=30,
                 fg_color=colors["subbox_bg"], button_color=colors["border"],
                 button_hover_color=colors["border"], text_color=colors["text_primary"]
@@ -542,70 +549,8 @@ class NetworkView(ctk.CTkScrollableFrame):
                          font=app.font(11), text_color=colors["text_secondary"], wraplength=950
                          ).pack(anchor="w", padx=16, pady=(0, 12))
 
-        # Сворачиваемый блок для экспериментальной функции Google SmartDNS
-        self.smart_dns_expanded = False
-        self.smart_dns_card = ctk.CTkFrame(provider_routes_card, fg_color=colors["subbox_bg"], corner_radius=12,
-                                         border_width=1, border_color=colors["border"])
-        self.smart_dns_card.pack(fill="x", padx=16, pady=(10, 4))
-
-        smart_header_row = ctk.CTkFrame(self.smart_dns_card, fg_color="transparent")
-        smart_header_row.pack(fill="x", padx=12, pady=8)
-
-        # Чекбокс включения / отключения SmartDNS для Google
-        google_current_route = saved_routes.get("google", "direct")
-        self.smart_dns_enabled_var = tk.BooleanVar(value=(google_current_route == "google-smart"))
-
-        def _on_toggle_smart_dns():
-            if "google" in self.provider_route_vars:
-                if self.smart_dns_enabled_var.get():
-                    self.provider_route_vars["google"].set(PROVIDER_ROUTE_LABELS["google-smart"])
-                else:
-                    self.provider_route_vars["google"].set(PROVIDER_ROUTE_LABELS["direct"])
-
-        self.smart_dns_switch = create_cyber_switch(
-            smart_header_row,
-            text=" Включить Google SmartDNS",
-            variable=self.smart_dns_enabled_var,
-            command=_on_toggle_smart_dns,
-            font=app.font(11, "bold")
-        )
-        self.smart_dns_switch.pack(side="left")
-
-        ctk.CTkLabel(smart_header_row, text="[Эксперимент]",
-                     font=app.font(10, "bold"), text_color="#d29922").pack(side="left", padx=(8, 0))
-
-        # Кнопка сворачивания/разворачивания блока подробностей
-        self.btn_toggle_smart_body = ctk.CTkButton(
-            smart_header_row, text="▶ Подробнее и DoH", width=140, height=24,
-            font=app.font(10), fg_color="transparent", hover_color=colors["card_bg"],
-            text_color=colors["text_secondary"], command=self._toggle_smart_dns_body
-        )
-        self.btn_toggle_smart_body.pack(side="right")
-
-        # Тело сворачиваемого блока (скрыто по умолчанию)
-        self.smart_dns_body = ctk.CTkFrame(self.smart_dns_card, fg_color="transparent")
-
-        smart_disclaimer = (
-            "• Зачем это нужно: Прямое подключение к шлюзам генерации Cloud Code (daily-cloudcode-pa / cloudcode-pa) "
-            "в обход VLESS. При генерации запрашивается список актуальных IP через защищённый DoH и отбирается рабочий адрес "
-            "с автоматическим переключением при сбоях.\n"
-            "• Как работает тумблер: Включение тумблера переводит маршрут «google» в режим «Google SmartDNS». "
-            "Выключение тумблера возвращает «google» на работу «Напрямую» (или выберите «DNS-прокси Hub»/«VLESS» в меню выше)."
-        )
-        ctk.CTkLabel(self.smart_dns_body, text=smart_disclaimer,
-                     font=app.font(10), text_color=colors["text_secondary"],
-                     wraplength=920, justify="left").pack(anchor="w", padx=12, pady=(0, 6))
-
-        ctk.CTkLabel(self.smart_dns_body, text="DoH-резолвер для SmartDNS (запрос пула IP):",
-                     font=app.font(11), text_color=colors["text_secondary"]
-                     ).pack(anchor="w", padx=12, pady=(4, 2))
-        from google_smart_dns import DEFAULT_DOH
-        self.google_smart_doh_entry = ctk.CTkEntry(self.smart_dns_body, font=app.font(11))
-        self.google_smart_doh_entry.pack(fill="x", padx=12, pady=(0, 6))
-        self.google_smart_doh_entry.insert(0, app.config_data.get("google_smart_doh") or DEFAULT_DOH)
-
-        google_tools = ctk.CTkFrame(self.smart_dns_body, fg_color="transparent")
-        google_tools.pack(fill="x", padx=12, pady=(4, 8))
+        google_tools = ctk.CTkFrame(provider_routes_card, fg_color="transparent")
+        google_tools.pack(fill="x", padx=16, pady=(8, 12))
         self.btn_google_route_check = ctk.CTkButton(
             google_tools, text="Диагностика маршрута Google", command=self.diagnose_google_route,
             font=app.font(11), width=200)
@@ -631,18 +576,92 @@ class NetworkView(ctk.CTkScrollableFrame):
         self.update_vless_status()
         self.after(2500, self._poll_vless_status)
 
-    def _toggle_smart_dns_body(self):
-        self.smart_dns_expanded = not self.smart_dns_expanded
-        if self.smart_dns_expanded:
-            self.smart_dns_body.pack(fill="x", padx=4, pady=(0, 6))
-            self.btn_toggle_smart_body.configure(text="▼ Свернуть")
-        else:
-            self.smart_dns_body.pack_forget()
-            self.btn_toggle_smart_body.configure(text="▶ Подробнее и DoH")
-
     # =========================================================================
     # VLESS ACTIONS
     # =========================================================================
+    def update_gemini_rules_status(self):
+        try:
+            import gemini_routes
+            status = gemini_routes.get_status()
+            state = status["state"]
+            updated = status.get("updated_at")
+            if updated:
+                from datetime import datetime
+                updated = datetime.fromisoformat(updated).astimezone().strftime("%d.%m.%Y %H:%M")
+            if state == "updating":
+                text = f"Обновляем… · в кэше {status['domain_count']} доменов"
+            elif state == "updated":
+                text = (f"Обновлено {updated} · {status['domain_count']} доменов · "
+                        f"источники {status['sources_loaded']}/{status['sources_total']} доступны")
+            elif state == "error":
+                text = (f"Ошибка {status.get('last_error') or ''} · сохранено доменов: "
+                        f"{status['domain_count']} · последнее успешное: {updated or 'нет'}")
+            else:
+                text = "Список ещё не загружен · ожидаем доступ к источникам"
+            self.gemini_rules_status.configure(text=text)
+            self.gemini_rules_refresh.configure(state="disabled" if state == "updating" else "normal")
+            if state == "updating":
+                self.after(1000, self.update_gemini_rules_status)
+        except Exception:
+            self.gemini_rules_status.configure(text="Не удалось получить состояние списка")
+
+    def refresh_gemini_rules(self):
+        import gemini_routes
+        gemini_routes.refresh_async(force=True)
+        self.update_gemini_rules_status()
+
+    def show_gemini_rules(self):
+        import gemini_routes
+        existing = getattr(self, "gemini_rules_window", None)
+        if existing is not None and existing.winfo_exists():
+            existing.destroy()
+            self.gemini_rules_window = None
+            self.gemini_rules_view.configure(text="Показать список")
+            return
+        window = ctk.CTkToplevel(self)
+        self.gemini_rules_window = window
+        window.title("Правила Gemini")
+        window.geometry("760x620")
+        window.transient(self.winfo_toplevel())
+        self.gemini_rules_view.configure(text="Свернуть список")
+
+        def close_window():
+            self.gemini_rules_window = None
+            self.gemini_rules_view.configure(text="Показать список")
+            window.destroy()
+
+        window.protocol("WM_DELETE_WINDOW", close_window)
+        search_var = tk.StringVar()
+        search = ctk.CTkEntry(window, textvariable=search_var,
+                              placeholder_text="Фильтр по домену или источнику…")
+        search.pack(fill="x", padx=14, pady=(14, 6))
+        count_label = ctk.CTkLabel(window, text="")
+        count_label.pack(anchor="w", padx=14, pady=(0, 6))
+        rows = ctk.CTkScrollableFrame(window, label_text="Домен · тип совпадения · источник")
+        rows.pack(fill="both", expand=True, padx=14, pady=(0, 14))
+
+        def render(*_args):
+            for child in rows.winfo_children():
+                child.destroy()
+            rules = gemini_routes.get_rules(search_var.get())
+            count_label.configure(text=f"Показано правил: {len(rules)}")
+            for rule in rules:
+                source = ", ".join(rule["sources"])
+                line = ctk.CTkFrame(rows, fg_color="transparent")
+                line.pack(fill="x", padx=4, pady=3)
+                ctk.CTkLabel(line, text=rule["domain"], anchor="w", width=250,
+                             font=self.app.font(11, "bold")).pack(side="left", padx=(2, 8))
+                kind = "Точное совпадение" if rule["match"] == "exact" else "Домен и поддомены"
+                ctk.CTkLabel(line, text=kind, anchor="w", width=150,
+                             font=self.app.font(10)).pack(side="left", padx=(0, 8))
+                ctk.CTkLabel(line, text=source, anchor="w", justify="left",
+                             wraplength=300, font=self.app.font(9)).pack(side="left", fill="x", expand=True)
+            if not rules:
+                ctk.CTkLabel(rows, text="Нет загруженных правил или совпадений с фильтром.").pack(pady=12)
+
+        search_var.trace_add("write", render)
+        render()
+
     def update_core_status(self):
         cand = vless_service.find_core_executable(self.app.config_data.get("vless_core_path"))
         if cand:
@@ -890,12 +909,6 @@ class NetworkView(ctk.CTkScrollableFrame):
     # SAVE ALL SETTINGS
     # =========================================================================
     def save_network_settings(self):
-        from google_smart_dns import resolver_url
-        try:
-            smart_doh = resolver_url({"google_smart_doh": self.google_smart_doh_entry.get().strip()})
-        except ValueError as error:
-            messagebox.showerror("Google SmartDNS", str(error))
-            return
         provider_routes = {
             name: PROVIDER_ROUTE_BY_LABEL.get(variable.get(), "direct")
             for name, variable in self.provider_route_vars.items()
@@ -964,7 +977,7 @@ class NetworkView(ctk.CTkScrollableFrame):
             self.app.config_data.pop("proxy", None)
 
         self.app.config_data["provider_routes"] = provider_routes
-        self.app.config_data["google_smart_doh"] = smart_doh
+        self.app.config_data.pop("google_smart_doh", None)
 
         # Synchronize the selected proxy mode to OpenCode providers.
         self.sync_opencode_proxy()

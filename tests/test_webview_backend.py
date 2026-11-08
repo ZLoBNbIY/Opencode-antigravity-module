@@ -40,7 +40,6 @@ class WebviewBackendTests(unittest.TestCase):
             "provider_proxy": self.router,
             "auto_router": SimpleNamespace(router=self.auto),
             "dns_tester": ModuleType("dns_tester"),
-            "google_smart_dns": SimpleNamespace(resolver_url=lambda cfg: cfg.get('google_smart_doh') or 'https://dns.example/query'),
             "xpiki_manager": self.xpiki,
             "openrouter_manager": self.openrouter,
         }
@@ -230,7 +229,17 @@ class WebviewBackendTests(unittest.TestCase):
         saved = api.load_config()
         self.assertEqual(saved['provider_routes'], {'claude-pro': 'dns'})
         with self.assertRaises(ValueError):
-            api.set_provider_route('openai', 'google-smart')
+            api.set_provider_route('google', 'google-smart')
+
+    def test_reordering_proxy_pool_sets_top_item_as_primary(self):
+        api = self.backend.HubApi()
+        api.save_config({'proxy_pool': ['http://one.example:8000', 'http://two.example:8000'],
+                         'proxy': 'http://one.example:8000'})
+        result = api.move_proxy_pool_item(1, 0)
+        self.assertTrue(result['ok'])
+        saved = api.load_config()
+        self.assertEqual(saved['proxy_pool'][0], 'http://two.example:8000')
+        self.assertEqual(saved['proxy'], 'http://two.example:8000')
 
     def test_domain_failure_remains_red_without_fake_latency(self):
         self.router._connect_upstream.side_effect = OSError('unavailable')

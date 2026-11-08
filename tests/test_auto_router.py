@@ -62,7 +62,7 @@ class AutoRouterTests(unittest.TestCase):
         connector.assert_not_called()
         with self.assertRaises(AutoRouteUnavailable):
             router.connect("openai", "chatgpt.com", 443, {}, self.oc)
-        self.assertEqual(configured_routes({"google_smart_doh": "https://dns.example/query"}), [])
+        self.assertEqual(configured_routes({}), [])
 
     def test_cache_refreshes_after_expiry_and_config_changes_invalidate_selection(self):
         now = [0]
