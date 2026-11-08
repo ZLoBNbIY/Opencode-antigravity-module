@@ -40,6 +40,7 @@ import auto_router
 import dns_tester
 import xpiki_manager
 import openrouter_manager
+import museai_manager
 
 CONFIG_DIR = Path(os.path.expanduser("~/.config/opencode"))
 ANTIGRAVITY_CONFIG_FILE = CONFIG_DIR / "antigravity.json"
@@ -64,9 +65,10 @@ PROVIDER_DOMAINS = {
     "claude-pro": ["claude.ai", "api.anthropic.com", "console.anthropic.com"],
     "xpiki": ["api.xpiki.com"],
     "openrouter-free": ["openrouter.ai"],
+    "museai": ["muse.ai", "meta.com", "facebook.com", "facebook.net", "fbcdn.net", "fbsbx.com"],
 }
 PROVIDER_SETTING_IDS = {"antigravity": "google", "openai": "openai", "claude": "claude-pro",
-                        "xpiki": "xpiki", "openrouter": "openrouter-free"}
+                        "xpiki": "xpiki", "openrouter": "openrouter-free", "museai": "museai"}
 
 
 class HubApi:
@@ -313,7 +315,7 @@ class HubApi:
 
     def set_provider_route(self, provider: str, route: str) -> bool:
         provider = {"claude": "claude-pro", "openrouter": "openrouter-free"}.get(provider, provider)
-        if provider not in ("google", "openai", "claude-pro", "xpiki", "openrouter-free"):
+        if provider not in ("google", "openai", "claude-pro", "xpiki", "openrouter-free", "museai"):
             raise ValueError("Неизвестный провайдер")
         if route not in ("direct", "default", "auto", "vless", "dns", "proxy"):
             raise ValueError("Неизвестный маршрут")
@@ -586,14 +588,42 @@ class HubApi:
                 selected = list(oc.get("provider", {}).get("openrouter-free", {}).get("models", {}))
         except (OSError, ValueError):
             pass
-        return {"xpiki": {"connected": bool(xpiki.get("connected") and xpiki_key), "hasKey": bool(xpiki_key),
+        muse = museai_manager.load_config()
+        muse_key = str(muse.get("api_key") or "")
+        return {"museai": {"connected": bool(muse.get("connected") and muse_key), "hasKey": bool(muse_key),
+                           "keyLabel": key_label(muse_key), "baseUrl": muse.get("base_url") or museai_manager.DEFAULT_BASE_URL,
+                           "models": muse.get("models", []), "enabledModels": muse.get("enabled_models", []),
+                           "setup": museai_manager.setup_state()},
+                "xpiki": {"connected": bool(xpiki.get("connected") and xpiki_key), "hasKey": bool(xpiki_key),
                           "keyLabel": key_label(xpiki_key),
                           "baseUrl": xpiki.get("base_url") or xpiki_manager.DEFAULT_BASE_URL,
                           "enabledModels": xpiki.get("enabled_models", list(xpiki_manager.XPIKI_MODELS)),
                           "models": [{"id": mid, "name": meta["name"]} for mid, meta in xpiki_manager.XPIKI_MODELS.items()],
                           "quota": xpiki.get("cached_quota") or {}},
                 "openrouter": {"hasKey": bool(openrouter_key), "keyLabel": key_label(openrouter_key),
-                               "connected": bool(openrouter_key and selected), "selectedModels": selected}}
+                                "connected": bool(openrouter_key and selected), "selectedModels": selected}}
+
+    def connect_museai(self, api_key: str, base_url: str, models: list) -> dict:
+        with self._provider_lock:
+            catalog = museai_manager.connect(base_url, api_key, models)
+            self._sync_routes(self.load_config())
+            return {"ok": True, "message": f"Muse AI подключён; моделей в каталоге: {len(catalog)}"}
+
+    def load_museai_models(self, api_key: str, base_url: str) -> list:
+        saved = museai_manager.load_config()
+        return museai_manager.fetch_models(base_url, (api_key or saved.get("api_key") or "").strip())
+
+    def disconnect_museai(self) -> bool:
+        with self._provider_lock:
+            museai_manager.disconnect()
+            self._sync_routes(self.load_config())
+        return True
+
+    def start_museai_setup(self) -> dict:
+        return museai_manager.start_setup()
+
+    def get_museai_setup_state(self) -> dict:
+        return museai_manager.setup_state()
 
     def configure_xpiki(self, key: str, base_url: str, models: list) -> dict:
         with self._provider_lock:

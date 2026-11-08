@@ -59,6 +59,17 @@ class ProviderRouteProxyTests(unittest.TestCase):
         self.assertIsNone(provider_for_host('chatgpt.com.evil.test', {}))
         self.auto_refresh.assert_not_called()
 
+    def test_muse_login_and_gateway_hosts_share_muse_route(self):
+        hub = {"provider_routes": {"museai": "vless"}, "vless_http_port": 10879}
+        for host in ("muse.ai", "www.muse.ai", "www.facebook.com", "static.xx.fbcdn.net"):
+            self.assertEqual(provider_for_host(host, {}), "museai")
+            self.assertEqual(select_upstream(host, hub, {}), "http://127.0.0.1:10879")
+
+    def test_muse_auto_probe_uses_muse_ai_domain(self):
+        from auto_router import probe_hosts
+        config = {"provider": {"museai": {"options": {"baseURL": "http://127.0.0.1:18610/v1"}}}}
+        self.assertEqual(probe_hosts("museai", config), ("muse.ai",))
+
     def test_configured_custom_endpoint_keeps_priority_over_builtin_fallback(self):
         config = {'provider': {'custom': {'options': {'baseURL': 'https://chatgpt.com/api'}}}}
         self.assertEqual(provider_for_host('chatgpt.com', config), 'custom')

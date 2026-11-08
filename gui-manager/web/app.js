@@ -18,7 +18,7 @@ let lastStateUpdatedAt = null;
 const providerSettings = {
   google:{key:'antigravity',id:'google'}, openai:{key:'openai',id:'openai'},
   claude:{key:'claude',id:'claude-pro'}, xpiki:{key:'xpiki',id:'xpiki'},
-  openrouter:{key:'openrouter',id:'openrouter-free'}
+  openrouter:{key:'openrouter',id:'openrouter-free'}, museai:{key:'museai',id:'museai'}
 };
 function providerEnabled(tab) {
   const item = providerSettings[tab];
@@ -109,6 +109,7 @@ function renderAll() {
   renderSettingsTab();
   renderXpikiTab();
   renderOpenRouterState();
+  renderMuseAiState();
   renderActiveAccounts();
   renderProviderDiagnostics();
   applyProviderVisibility();
@@ -192,7 +193,7 @@ async function refreshAutoRoutes(tab) {
 
 function renderNetworkTab() {
   const routes = appState.routes || {};
-  for (const provider of ['google', 'claude', 'openai', 'xpiki', 'openrouter']) {
+  for (const provider of ['google', 'claude', 'openai', 'xpiki', 'openrouter', 'museai']) {
     const key = provider === 'claude' ? 'claude-pro' : provider === 'openrouter' ? 'openrouter-free' : provider;
     const options = ['default', 'dns', 'vless', 'direct', 'proxy'];
     updateSegmentedGroup(`seg-group-${provider}`, routes[key] || 'default',
@@ -858,12 +859,12 @@ async function setProviderRoute(provider, route) {
   }
 }
 
-const providerTabs = {google:'google', openai:'openai', claude:'claude-pro', xpiki:'xpiki', openrouter:'openrouter-free'};
+const providerTabs = {google:'google', openai:'openai', claude:'claude-pro', xpiki:'xpiki', openrouter:'openrouter-free', museai:'museai'};
 const diagnosticDomains = {
   google:['daily-cloudcode-pa.googleapis.com','cloudcode-pa.googleapis.com','cloudaicompanion.googleapis.com','generativelanguage.googleapis.com','oauth2.googleapis.com','clients6.google.com','www.googleapis.com'],
   openai:['chatgpt.com','auth.openai.com','api.openai.com'],
   claude:['claude.ai','api.anthropic.com','console.anthropic.com'],
-  xpiki:['api.xpiki.com'], openrouter:['openrouter.ai']
+  xpiki:['api.xpiki.com'], openrouter:['openrouter.ai'], museai:['muse.ai','meta.com','facebook.com']
 };
 const diagnosticBusy = new Set();
 const diagnosticAttempts = new Map();
@@ -994,7 +995,8 @@ const dashboardProviderInfo = {
   openai:{name:'ChatGPT',icon:'◎',color:'#42d6a0'},
   claude:{name:'Claude Pro',icon:'✦',color:'#e6a36b'},
   xpiki:{name:'Claude API · Xpiki',icon:'ϟ',color:'#f0b257'},
-  openrouter:{name:'OpenRouter Free',icon:'◉',color:'#b29aff'}
+  openrouter:{name:'OpenRouter Free',icon:'◉',color:'#b29aff'},
+  museai:{name:'Muse AI',icon:'M',color:'#7dd3fc'}
 };
 function dashboardAccess(tab) {
   if (['google','openai','claude'].includes(tab)) {
@@ -1004,6 +1006,8 @@ function dashboardAccess(tab) {
       label:active?.email || active?.name || (accounts.length ? 'Активный аккаунт не выбран' : 'Нет аккаунтов')};
   }
   const cfg = appState.providers?.[tab] || {};
+  if (tab === 'museai') return {active:null, connected:!!cfg.connected, count:cfg.hasKey ? 1 : 0,
+    label:cfg.connected ? `${cfg.enabledModels?.length || 0} моделей` : 'Gateway не подключён'};
   return {active:null, connected:!!cfg.connected, count:cfg.hasKey ? 1 : 0,
     label:cfg.hasKey ? `API-ключ ${cfg.keyLabel || 'сохранён'}` : 'Ключ не задан'};
 }
@@ -1463,6 +1467,82 @@ function renderOpenRouterState() {
   const cfg = appState.providers?.openrouter;
   if (!cfg) return;
   document.getElementById('openrouter-key-input').placeholder = cfg.hasKey ? 'Ключ сохранён · можно загрузить каталог' : 'sk-or-v1-…';
+}
+function renderMuseAiState() {
+  const cfg = appState.providers?.museai;
+  if (!cfg) return;
+  const badge = document.getElementById('museai-connection-status');
+  badge.textContent = cfg.connected ? '● Подключён' : 'Не подключён';
+  badge.className = `badge-pill ${cfg.connected ? 'badge-available' : 'badge-pool'}`;
+  document.getElementById('museai-base-url').value = cfg.baseUrl || 'http://127.0.0.1:18610/v1';
+  document.getElementById('museai-key').placeholder = cfg.hasKey ? 'Ключ сохранён · оставьте пустым' : 'Введите API-ключ шлюза';
+  renderMuseAiSetup(cfg.setup || {});
+  const picker = document.getElementById('museai-models');
+  if (picker.dataset.loaded !== 'true' && cfg.models?.length) renderMuseAiModelChoices(cfg.models, cfg.enabledModels || []);
+}
+function renderMuseAiSetup(state) {
+  const button = document.getElementById('museai-login-button');
+  const output = document.getElementById('museai-setup-status');
+  if (!button || !output) return;
+  button.disabled = !!state.running;
+  button.textContent = state.running ? '⏳ Настройка…' : state.stage === 'done' ? 'Подключено · запустить вход ещё раз' : 'Установить gateway и войти в Muse.ai';
+  output.textContent = state.error || state.message || '';
+}
+let museAiSetupTimer = null;
+async function startMuseAiSetup() {
+  const button = document.getElementById('museai-login-button');
+  button.disabled = true;
+  try {
+    const state = await window.pywebview.api.start_museai_setup();
+    renderMuseAiSetup(state);
+    if (museAiSetupTimer) clearInterval(museAiSetupTimer);
+    museAiSetupTimer = setInterval(async () => {
+      try {
+        const current = await window.pywebview.api.get_museai_setup_state();
+        renderMuseAiSetup(current);
+        if (!current.running) {
+          clearInterval(museAiSetupTimer); museAiSetupTimer = null;
+          await refreshState();
+        }
+      } catch (error) { renderMuseAiSetup({error:String(error)}); }
+    }, 1500);
+  } catch (error) { renderMuseAiSetup({error:String(error)}); }
+}
+function renderMuseAiModelChoices(models, selected = []) {
+  const picker = document.getElementById('museai-models');
+  picker.replaceChildren();
+  for (const model of models) {
+    const label = document.createElement('label'); label.className = 'model-choice';
+    const input = document.createElement('input'); input.type = 'checkbox'; input.value = model.id;
+    input.checked = selected.length ? selected.includes(model.id) : true;
+    label.append(input, document.createTextNode(`${model.name} · ${model.id}`)); picker.appendChild(label);
+  }
+  picker.dataset.loaded = 'true';
+}
+async function loadMuseAiModels() {
+  const output = document.getElementById('museai-result'); output.textContent = 'Запрос каталога…';
+  try {
+    const models = await window.pywebview.api.load_museai_models(document.getElementById('museai-key').value,
+      document.getElementById('museai-base-url').value.trim());
+    renderMuseAiModelChoices(models, appState.providers?.museai?.enabledModels || []);
+    output.textContent = `Каталог получен: ${models.length} моделей.`;
+  } catch (error) { output.textContent = String(error); }
+}
+async function connectMuseAi() {
+  const output = document.getElementById('museai-result'); output.textContent = 'Подключение…';
+  try {
+    const models = [...document.querySelectorAll('#museai-models input:checked')].map(input => input.value);
+    const result = await window.pywebview.api.connect_museai(document.getElementById('museai-key').value,
+      document.getElementById('museai-base-url').value.trim(), models);
+    document.getElementById('museai-key').value = '';
+    output.textContent = result.message; await refreshState();
+  } catch (error) { output.textContent = String(error); }
+}
+async function disconnectMuseAi() {
+  if (!confirm('Отключить Muse AI в OpenCode и удалить сохранённый ключ из Hub?')) return;
+  try { await window.pywebview.api.disconnect_museai(); document.getElementById('museai-models').dataset.loaded = '';
+    document.getElementById('museai-result').textContent = 'Muse AI отключён'; await refreshState(); }
+  catch (error) { showToast(String(error)); }
 }
 async function loadOpenRouterModels() {
   const output = document.getElementById('openrouter-status-text');
