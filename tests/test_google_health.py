@@ -1,6 +1,7 @@
 from pathlib import Path
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gui-manager"))
@@ -66,3 +67,40 @@ class GoogleHealthTests(unittest.TestCase):
             refresh = Mock()
             health_checker.test_google_account_health({"access": "token"}, refresh_account=refresh)
             refresh.assert_not_called()
+
+    @patch("health_checker._test_antigravity_model_once", return_value={"ok": True, "latency_ms": 12})
+    @patch("health_checker._effective_proxy_from_config", return_value=None)
+    def test_deep_probe_refreshes_missing_access_token_for_active_account(self, _proxy, probe):
+        account = {"id":"acct-2", "email":"person@example.com", "refreshToken":"refresh-only"}
+        manager = SimpleNamespace(
+            export_google_accounts=Mock(return_value=[account]),
+            get_active_google_health_account=Mock(return_value=account),
+            run_google_route_cmd=Mock(), get_node_executable=Mock(return_value="node"),
+            get_cli_js=Mock(return_value="cli.js"),
+        )
+        auth = SimpleNamespace(refresh_google_health_account=Mock(return_value={
+            **account, "accessToken":"fresh-access", "expires":9999999999999,
+        }))
+        with patch.dict("sys.modules", {"antigravity_manager":manager, "google_health_auth":auth}):
+            result = health_checker.test_provider_deep_probe("google")
+        self.assertTrue(result["ok"])
+        auth.refresh_google_health_account.assert_called_once_with(account, manager.run_google_route_cmd,
+                                                                  "node", "cli.js")
+        self.assertEqual(probe.call_args.args[0]["accessToken"], "fresh-access")
+
+    @patch("health_checker._test_antigravity_model_once")
+    @patch("health_checker._effective_proxy_from_config", return_value=None)
+    def test_deep_probe_reports_refresh_failure_without_leaking_cli_error(self, _proxy, probe):
+        account = {"id":"acct-1", "email":"person@example.com", "refreshToken":"refresh-only"}
+        manager = SimpleNamespace(
+            export_google_accounts=Mock(return_value=[account]),
+            get_active_google_health_account=Mock(return_value=account),
+            run_google_route_cmd=Mock(), get_node_executable=Mock(return_value="node"),
+            get_cli_js=Mock(return_value="cli.js"),
+        )
+        auth = SimpleNamespace(refresh_google_health_account=Mock(side_effect=ValueError("secret-token")))
+        with patch.dict("sys.modules", {"antigravity_manager":manager, "google_health_auth":auth}):
+            result = health_checker.test_provider_deep_probe("google")
+        self.assertEqual(result["status"], "refresh_failed")
+        self.assertNotIn("secret-token", result["message"])
+        probe.assert_not_called()

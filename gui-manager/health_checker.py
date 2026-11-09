@@ -540,8 +540,33 @@ def test_provider_deep_probe(provider: str, timeout: int = 15) -> dict:
         accs = antigravity_manager.export_google_accounts()
         if not accs:
             return {"ok": False, "status": "no_account", "message": "Нет подключенных аккаунтов Google"}
-        idx = antigravity_manager.get_active_google_account_index()
-        acc = accs[idx] if (0 <= idx < len(accs)) else accs[0]
+        # Resolve the active account by its generation-store ID. Exported rows
+        # can omit incomplete accounts, so indexing that filtered list may pick
+        # a different account than the one selected in the Hub.
+        get_active = getattr(antigravity_manager, "get_active_google_health_account", None)
+        acc = get_active() if callable(get_active) else None
+        if not acc:
+            idx = antigravity_manager.get_active_google_account_index()
+            acc = accs[idx] if (0 <= idx < len(accs)) else accs[0]
+        # The generation store may retain only the refresh token. Obtain a
+        # short-lived access token for this explicit probe instead of reporting
+        # "no token" without trying the supported refresh flow.
+        access = acc.get("accessToken") or acc.get("access")
+        expires = acc.get("expires", 0)
+        if not access or not isinstance(expires, (int, float)) or expires <= time.time() * 1000 + 60000:
+            try:
+                import google_health_auth
+                acc = google_health_auth.refresh_google_health_account(
+                    acc,
+                    antigravity_manager.run_google_route_cmd,
+                    antigravity_manager.get_node_executable(),
+                    antigravity_manager.get_cli_js(),
+                )
+            except Exception:
+                return {
+                    "ok": False, "status": "refresh_failed",
+                    "message": "Не удалось получить временный access token Google. Проверьте сеть и авторизацию аккаунта.",
+                }
         proxy = _effective_proxy_from_config("google")
         res = _test_antigravity_model_once(acc, "antigravity-gemini-3.8-flash", timeout=timeout, proxy_url=proxy, prompt="ping")
         if res.get("ok"):
