@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
+import sqlite3
 import sys
+from tempfile import TemporaryDirectory
 import unittest
 import urllib.error
 import urllib.parse
@@ -26,6 +28,7 @@ class OpenAiLoginTests(unittest.TestCase):
                 direct.open(base + '/favicon.ico', timeout=2)
             with direct.open(base + '/auth/callback?code=test&state=' + state, timeout=2) as response:
                 self.assertEqual(response.status, 200)
+                self.assertIn('Ответ браузера получен', response.read().decode('utf-8'))
             return True
         response = Mock()
         response.__enter__ = Mock(return_value=response)
@@ -62,6 +65,33 @@ class OpenAiLoginTests(unittest.TestCase):
         self.assertFalse(result[0])
         self.assertIn('exchange unavailable', result[1])
         save.assert_not_called()
+
+    def test_empty_hub_pool_imports_active_opencode_database_account(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / 'opencode.db'
+            pool = root / 'openai-accounts.json'
+            credential = {
+                'type': 'oauth', 'methodID': 'chatgpt-browser',
+                'access': 'fake', 'refresh': 'fake-refresh', 'expires': 123,
+                'metadata': {'accountID': 'account-1', 'email': 'chatgpt@example.com'},
+            }
+            conn = sqlite3.connect(database)
+            with conn:
+                conn.execute('CREATE TABLE credential (integration_id, active, time_updated, value)')
+                conn.executemany('INSERT INTO credential VALUES (?, ?, ?, ?)', [
+                    ('openai', 1, 1, json.dumps(credential)),
+                    ('openai', 0, 2, json.dumps({**credential, 'metadata': {'accountID': 'inactive'}})),
+                ])
+            conn.close()
+            with patch.multiple(manager, CONFIG_DIR=root, OPENAI_ACCOUNTS_FILE=pool,
+                                AUTH_FILES=[root / 'auth.json'], OPENCODE_DB_FILE=database):
+                accounts = manager.load_openai_accounts()
+                self.assertEqual(manager.load_openai_accounts(), accounts)
+            self.assertEqual(len(accounts), 1)
+            self.assertEqual(accounts[0]['id'], 'account-1')
+            self.assertEqual(accounts[0]['email'], 'chatgpt@example.com')
+            self.assertTrue(accounts[0]['is_active'])
 
 
 if __name__ == '__main__':

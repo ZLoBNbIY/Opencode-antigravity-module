@@ -18,6 +18,8 @@ from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import urllib.request
 import urllib.parse
+from contextlib import closing
+from html import escape
 
 OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 OPENAI_ISSUER = "https://auth.openai.com"
@@ -211,10 +213,25 @@ def get_active_auth_openai() -> dict | None:
                 with open(auth_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     val = data.get("openai")
-                    if val:
+                    if isinstance(val, dict) and val.get("access"):
                         return val
             except Exception:
                 pass
+
+    if OPENCODE_DB_FILE.exists():
+        try:
+            with closing(sqlite3.connect(f"{OPENCODE_DB_FILE.as_uri()}?mode=ro", uri=True, timeout=2)) as conn:
+                row = conn.execute(
+                    "SELECT value FROM credential WHERE integration_id = 'openai' AND active = 1 "
+                    "ORDER BY time_updated DESC LIMIT 1"
+                ).fetchone()
+            if row:
+                value = json.loads(row[0])
+                if value.get("type") == "oauth" and value.get("methodID") == "chatgpt-browser" and value.get("access"):
+                    metadata = value.get("metadata") or {}
+                    return {**value, "accountId": metadata.get("accountID"), "email": metadata.get("email")}
+        except (sqlite3.Error, ValueError, AttributeError):
+            pass
     return None
 
 
@@ -263,14 +280,14 @@ def load_openai_accounts() -> list[dict]:
         except Exception as e:
             print(f"[OpenAI Manager] Error reading openai-accounts.json: {e}")
 
-    # If accounts file is empty or missing, check if auth.json has an openai account
+    # Seed an empty Hub pool from the active OpenCode credential.
     active_auth = get_active_auth_openai()
     if not accounts and active_auth and active_auth.get("access"):
         claims = extract_claims_info("", active_auth.get("access", ""))
         imported_acc = {
-            "id": claims["accountId"] or "openai_default",
+            "id": active_auth.get("accountId") or claims["accountId"] or "openai_default",
             "accountId": active_auth.get("accountId") or claims["accountId"],
-            "email": claims["email"],
+            "email": active_auth.get("email") or claims["email"],
             "name": claims["name"],
             "plan_type": claims["plan_type"],
             "access": active_auth.get("access", ""),
@@ -284,7 +301,7 @@ def load_openai_accounts() -> list[dict]:
         accounts.append(imported_acc)
         save_openai_accounts(accounts)
 
-    # Sync is_active flag with auth.json
+    # Sync is_active with the active OpenCode credential.
     active_account_id = active_auth.get("accountId") if active_auth else None
     for acc in accounts:
         if active_account_id and acc.get("accountId") == active_account_id:
@@ -727,8 +744,8 @@ class _OAuthCallbackHandler(BaseHTTPRequestHandler):
 <body>
   <div class="card">
     <div class="badge">{icon}</div>
-    <h2>{'Авторизация успешна' if success else 'Ошибка входа'}</h2>
-    <p>{message}</p>
+    <h2>{'Ответ браузера получен' if success else 'Ошибка входа'}</h2>
+    <p>{escape(message)}</p>
   </div>
 </body>
 </html>"""
