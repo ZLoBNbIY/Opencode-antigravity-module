@@ -540,6 +540,10 @@ if (Test-Path -LiteralPath $UninstallScript) {
         New-Item -ItemType Directory -Path $UninstallDir -Force | Out-Null
         $InstalledUninstaller = Join-Path $UninstallDir "uninstall.ps1"
         Copy-Item -LiteralPath $UninstallScript -Destination $InstalledUninstaller -Force
+        $UninstallLauncher = Join-Path $ScriptDir "uninstall.bat"
+        if (Test-Path -LiteralPath $UninstallLauncher) {
+            Copy-Item -LiteralPath $UninstallLauncher -Destination (Join-Path $UninstallDir "uninstall.bat") -Force
+        }
         $UninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AntigravityHub"
         New-Item -Path $UninstallKey -Force | Out-Null
         $UninstallCommand = '"' + (Get-Command powershell.exe).Source + '" -NoProfile -ExecutionPolicy Bypass -File "' + $InstalledUninstaller + '"'
