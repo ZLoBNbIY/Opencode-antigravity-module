@@ -691,23 +691,28 @@ class HubApi:
         if not self._login_locks["google"].acquire(blocking=False):
             return {"status": "error", "message": "Вход в Google уже выполняется"}
         try:
+            before = antigravity_manager.export_google_accounts()
+            before_ids = {
+                (str(account.get("id") or ""), str(account.get("email") or "").casefold())
+                for account in before
+            }
             node_exe = antigravity_manager.get_node_executable()
             cli_js = antigravity_manager.get_cli_js()
             if not os.path.exists(cli_js):
                 raise RuntimeError("Файл CLI не найден")
-            repair_error = antigravity_manager.repair_legacy_google_account_file()
-            if repair_error:
-                raise RuntimeError(repair_error)
             result = antigravity_manager.run_silent_cmd([node_exe, cli_js, "login"], timeout=300)
             if result.returncode:
                 raise RuntimeError(result.stderr or result.stdout or "Не удалось завершить вход в Google")
-            repair_error = antigravity_manager.repair_legacy_google_account_file()
-            if repair_error:
-                raise RuntimeError(repair_error)
-            result = antigravity_manager.run_silent_cmd(
-                [node_exe, cli_js, "migrate", "--offline", "--yes"], timeout=30)
-            if result.returncode:
-                raise RuntimeError("Миграция аккаунта не завершилась: " + (result.stderr or result.stdout))
+            after = antigravity_manager.export_google_accounts()
+            new_accounts = [
+                account for account in after
+                if (str(account.get("id") or ""), str(account.get("email") or "").casefold()) not in before_ids
+            ]
+            if not new_accounts:
+                return {
+                    "status": "error",
+                    "message": "Вход завершён, но новый аккаунт не появился в пуле. Возможно, Google авторизовал уже добавленный аккаунт; выберите другой аккаунт в окне Google и повторите.",
+                }
             return {"status": "ok", "message": "Google аккаунт добавлен в пул"}
         except Exception as exc:
             return {"status": "error", "message": str(exc)}
