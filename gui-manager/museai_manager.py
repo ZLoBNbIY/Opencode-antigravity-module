@@ -224,6 +224,42 @@ def _gateway_running(api_key):
         return False
 
 
+def gateway_status():
+    cfg = load_config()
+    api_key = str(cfg.get("gateway_api_key") or "")
+    return bool(api_key and _gateway_running(api_key))
+
+
+def ensure_gateway_on_startup():
+    """Restore a previously configured local gateway without reopening Muse login."""
+    cfg = load_config()
+    if not (cfg.get("connected") and cfg.get("gateway_api_key") and cfg.get("gateway_admin_key")):
+        return False
+    if _gateway_running(cfg["gateway_api_key"]):
+        return True
+    with _job_lock:
+        if _job_state["running"]:
+            return True
+        _job_state.update(running=True, stage="recovering",
+                          message="Восстанавливаем локальный Muse AI gateway…", error="")
+    threading.Thread(target=_recover_saved_gateway, daemon=True,
+                     name="museai-gateway-recovery").start()
+    return True
+
+
+def _recover_saved_gateway():
+    try:
+        cfg = load_config()
+        project, python = _install_gateway()
+        _start_gateway(project, python, cfg["gateway_api_key"], cfg["gateway_admin_key"])
+        models = fetch_models(DEFAULT_BASE_URL, cfg["gateway_api_key"])
+        save_config({"models": models})
+        _set_job("done", f"Gateway запущен; моделей доступно: {len(models)}", running=False)
+    except Exception as exc:
+        _set_job("error", "Не удалось запустить Muse AI gateway",
+                 error=str(exc)[:300], running=False)
+
+
 def _playwright_chromium_path(python):
     env = os.environ.copy()
     env["PLAYWRIGHT_BROWSERS_PATH"] = str(GATEWAY_DIR / "browsers")
@@ -458,12 +494,18 @@ def _setup_worker():
         _set_job("error", "Настройка не завершена", error=message[:300], running=False)
 
 
-def start_setup():
+def start_setup(force_login=False):
+    cfg = load_config()
+    worker = _setup_worker
+    if (not force_login and cfg.get("connected") and cfg.get("gateway_api_key")
+            and cfg.get("gateway_admin_key")):
+        worker = _recover_saved_gateway
     with _job_lock:
         if _job_state["running"]:
             return dict(_job_state)
         _job_state.update(running=True, stage="starting", message="Подготовка…", error="")
-    threading.Thread(target=_setup_worker, daemon=True, name="museai-first-login").start()
+    name = "museai-gateway-recovery" if worker is _recover_saved_gateway else "museai-first-login"
+    threading.Thread(target=worker, daemon=True, name=name).start()
     return setup_state()
 
 

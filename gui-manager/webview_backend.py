@@ -590,7 +590,11 @@ class HubApi:
             pass
         muse = museai_manager.load_config()
         muse_key = str(muse.get("api_key") or "")
-        return {"museai": {"connected": bool(muse.get("connected") and muse_key), "hasKey": bool(muse_key),
+        muse_gateway_running = museai_manager.gateway_status()
+        muse_configured = bool(muse.get("connected") and muse_key)
+        return {"museai": {"connected": bool(muse_configured and muse_gateway_running),
+                           "configured": muse_configured, "gatewayRunning": muse_gateway_running,
+                           "hasKey": bool(muse_key),
                            "keyLabel": key_label(muse_key), "baseUrl": muse.get("base_url") or museai_manager.DEFAULT_BASE_URL,
                            "models": muse.get("models", []), "enabledModels": muse.get("enabled_models", []),
                            "setup": museai_manager.setup_state()},
@@ -619,8 +623,8 @@ class HubApi:
             self._sync_routes(self.load_config())
         return True
 
-    def start_museai_setup(self) -> dict:
-        return museai_manager.start_setup()
+    def start_museai_setup(self, force_login: bool = False) -> dict:
+        return museai_manager.start_setup(force_login=force_login)
 
     def get_museai_setup_state(self) -> dict:
         return museai_manager.setup_state()
@@ -1067,6 +1071,7 @@ def run_webview_app():
     icon_str = str(icon_file.resolve()) if icon_file.exists() else None
 
     api = HubApi()
+    museai_manager.ensure_gateway_on_startup()
 
     # Ensure Windows taskbar groups windows under Antigravity Hub, not Python
     try:

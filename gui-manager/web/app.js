@@ -1472,28 +1472,31 @@ function renderMuseAiState() {
   const cfg = appState.providers?.museai;
   if (!cfg) return;
   const badge = document.getElementById('museai-connection-status');
-  badge.textContent = cfg.connected ? '● Подключён' : 'Не подключён';
+  const badgeText = cfg.connected ? '● Подключён' : cfg.configured ? 'Gateway остановлен' : 'Не подключён';
+  badge.textContent = badgeText;
   badge.className = `badge-pill ${cfg.connected ? 'badge-available' : 'badge-pool'}`;
   document.getElementById('museai-base-url').value = cfg.baseUrl || 'http://127.0.0.1:18610/v1';
   document.getElementById('museai-key').placeholder = cfg.hasKey ? 'Ключ сохранён · оставьте пустым' : 'Введите API-ключ шлюза';
-  renderMuseAiSetup(cfg.setup || {});
+  renderMuseAiSetup(cfg.setup || {}, cfg);
   const picker = document.getElementById('museai-models');
   if (picker.dataset.loaded !== 'true' && cfg.models?.length) renderMuseAiModelChoices(cfg.models, cfg.enabledModels || []);
 }
-function renderMuseAiSetup(state) {
+function renderMuseAiSetup(state, cfg = appState.providers?.museai || {}) {
   const button = document.getElementById('museai-login-button');
   const output = document.getElementById('museai-setup-status');
   if (!button || !output) return;
   button.disabled = !!state.running;
-  button.textContent = state.running ? '⏳ Настройка…' : state.stage === 'done' ? 'Подключено · запустить вход ещё раз' : 'Установить gateway и войти в Muse.ai';
-  output.textContent = state.error || state.message || '';
+  button.textContent = state.running ? '⏳ Настройка…' : cfg.configured && !cfg.gatewayRunning ? 'Перезапустить gateway' : cfg.connected ? 'Подключено · запустить вход ещё раз' : 'Установить gateway и войти в Muse.ai';
+  output.textContent = state.error || state.message || (cfg.configured && !cfg.gatewayRunning ? 'Локальный gateway не отвечает. Сохранённая сессия останется на месте.' : '');
 }
 let museAiSetupTimer = null;
 async function startMuseAiSetup() {
   const button = document.getElementById('museai-login-button');
   button.disabled = true;
   try {
-    const state = await window.pywebview.api.start_museai_setup();
+    const cfg = appState.providers?.museai || {};
+    const forceLogin = !!(cfg.connected && cfg.gatewayRunning);
+    const state = await window.pywebview.api.start_museai_setup(forceLogin);
     renderMuseAiSetup(state);
     if (museAiSetupTimer) clearInterval(museAiSetupTimer);
     museAiSetupTimer = setInterval(async () => {
