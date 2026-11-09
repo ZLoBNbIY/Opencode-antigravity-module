@@ -59,6 +59,8 @@
           </div>
         </div>
 
+        <div class="nav-item" data-tab="museai" onclick="switchTab('museai')"><span class="nav-icon">🎼</span><div class="nav-text"><span>Muse AI</span><span class="nav-sub">Gateway · модели · маршрут</span></div></div>
+
         <div class="nav-item" data-tab="network" onclick="switchTab('network')">
           <span class="nav-icon">🌐</span>
           <div class="nav-text">
@@ -401,6 +403,31 @@
         </div>
       </section>
 
+      <section id="view-museai" class="view-tab" style="display:none">
+        <div class="page-header"><div class="header-left"><h1>🎼 Muse AI</h1><p>Подключение локального Muse AI gateway к OpenCode</p></div><span class="badge-pill badge-pool" id="museai-connection-status">Не подключён</span></div>
+        <div class="glass-card network-panel">
+          <p class="help-text">Hub установит <a href="https://github.com/d4ncboz/museai" target="_blank" rel="noreferrer">museai gateway</a> локально и откроет официальную страницу Muse.ai. Введите данные аккаунта только в окне Muse.ai; Hub дождётся сессии и передаст cookies локальному шлюзу. Пароль Hub не получает и не сохраняет.</p>
+          <div class="button-row"><button class="btn-primary" id="museai-login-button" onclick="startMuseAiSetup()">Установить gateway и войти в Muse.ai</button><span class="help-text" id="museai-setup-status" role="status"></span></div>
+          <p class="help-text">При первом запуске скачиваются исходники, Python-зависимости и Chromium. Пока статус показывает установку, вводить данные не нужно: после неё отдельно откроется окно браузера Muse.ai. MFA/CAPTCHA, если запросятся, пройдите в этом окне.</p>
+          <details><summary>У меня уже запущен gateway</summary>
+          <label class="field-label">URL API<input id="museai-base-url" value="http://127.0.0.1:18610/v1" placeholder="http://127.0.0.1:18610/v1"></label>
+          <label class="field-label">API-ключ шлюза<input id="museai-key" type="password" autocomplete="off" placeholder="Введите ключ MUSEAI_API_KEY"></label>
+          <div class="model-picker" id="museai-models"><p class="help-text">Загрузите каталог моделей работающего gateway.</p></div>
+          <div class="button-row"><button class="btn-secondary" onclick="loadMuseAiModels()">Загрузить модели</button><button class="btn-primary" onclick="connectMuseAi()">Добавить выбранные в OpenCode</button><button class="btn-secondary" onclick="disconnectMuseAi()">Отключить</button></div>
+          </details>
+          <p class="help-text" id="museai-result" role="status"></p>
+          <p class="help-text">Gateway и cookies хранятся локально в профиле пользователя. Не открывайте его API наружу и не переносите каталог данных без защиты.</p>
+        </div>
+        <div class="glass-card service-card" data-provider-card="museai">
+          <div class="service-card-header"><div class="service-name">Маршрут Muse AI</div><span class="badge-pill badge-pool provider-status" id="provider-status-museai" role="status"><span class="connection-indicator idle"></span> Не проверено</span></div>
+          <div class="route-section-title">Общий маршрут для входа в браузере и Chromium gateway</div>
+          <div class="segmented-group" id="seg-group-museai"></div>
+          <p class="help-text provider-route-description" id="card-route-museai"></p>
+          <details class="auto-comparison"><summary>Сравнение маршрутов Auto</summary><div id="auto-routes-museai"></div><button class="btn-secondary" id="auto-check-museai" onclick="refreshAutoRoutes('museai')">Сравнить маршруты</button></details>
+          <div class="provider-check-row"><span class="help-text" id="card-check-time-museai">Проверка ещё не запускалась</span><div style="display:flex;gap:6px"><button class="btn-secondary" id="card-check-museai" onclick="showDiagnostics('museai')">Диагностика →</button></div></div>
+        </div>
+      </section>
+
       <!-- ===============================================================
            SETTINGS & SYSTEM
            =============================================================== -->
@@ -432,6 +459,11 @@
           <div class="diagnostic-scroll"><table class="diag-table"><thead><tr><th>Сервис / домен</th><th>Доступность</th><th>Задержка</th><th>Маршрут</th><th>IP соединения</th></tr></thead><tbody id="diag-tbody-openrouter"></tbody></table></div>
           <p class="help-text">● зелёный — TCP доступен · ● красный — ошибка · ● серый — ещё не проверялся. IP соединения может принадлежать локальному прокси.</p>
         </div>
+        <div class="glass-card diag-card provider-diagnostics" id="diagnostics-museai">
+          <div class="diag-header"><div><h2>Диагностика Muse AI</h2><p class="help-text">Проверка доступности Muse.ai и доменов входа через выбранный маршрут Hub.</p></div><button class="btn-primary" id="btn-diag-museai" onclick="runDiagnostics('museai')">Проверить домены</button></div>
+          <div class="diagnostic-scroll"><table class="diag-table"><thead><tr><th>Сервис / домен</th><th>Доступность</th><th>Задержка</th><th>Маршрут</th><th>IP соединения</th></tr></thead><tbody id="diag-tbody-museai"></tbody></table></div>
+          <p class="help-text">Проверка маршрута — это TCP-доступность, не подтверждение валидности сессии или генерации.</p>
+        </div>
       </section>
 
       <section id="view-settings" class="view-tab" style="display: none;">
@@ -454,6 +486,7 @@
           <label class="provider-toggle-row"><span>Claude Pro</span><input type="checkbox" class="switch-input" id="provider-enabled-claude" checked onchange="markSettingsDirty()" aria-label="Включить Claude Pro"></label>
           <label class="provider-toggle-row"><span>Claude API · Xpiki</span><input type="checkbox" class="switch-input" id="provider-enabled-xpiki" checked onchange="markSettingsDirty()" aria-label="Включить Claude API · Xpiki"></label>
           <label class="provider-toggle-row"><span>OpenRouter Free</span><input type="checkbox" class="switch-input" id="provider-enabled-openrouter" checked onchange="markSettingsDirty()" aria-label="Включить OpenRouter Free"></label>
+          <label class="provider-toggle-row"><span>Muse AI Gateway</span><input type="checkbox" class="switch-input" id="provider-enabled-museai" checked onchange="markSettingsDirty()" aria-label="Включить Muse AI"></label>
           <p class="help-text" id="provider-settings-result" role="status"></p>
         </div>
         <div class="glass-card" style="margin-bottom: 16px;">

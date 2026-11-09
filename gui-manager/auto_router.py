@@ -17,6 +17,7 @@ DEFAULT_HOSTS = {
     "google": ("daily-cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis.com"),
     "openai": ("api.openai.com", "chatgpt.com"), "claude-pro": ("claude.ai",),
     "xpiki": ("api.xpiki.com",), "openrouter-free": ("openrouter.ai",),
+    "museai": ("muse.ai",),
 }
 REFRESH_SECONDS = 60
 PROBE_SECONDS = 6

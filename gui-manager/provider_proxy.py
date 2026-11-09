@@ -44,6 +44,8 @@ LOCAL_ROUTES = {
     "openrouter-free": ("openrouter.ai",),
     "mwapi": ("mwapi.dev",),
     "xpiki": ("api.xpiki.com", "xpiki.com"),
+    # Muse's login flow can traverse Meta identity and static-asset hosts too.
+    "museai": ("muse.ai", "meta.com", "facebook.com", "facebook.net", "fbcdn.net", "fbsbx.com"),
     "deepseek-account": ("api.deepseek.com", "deepseek.com"),
     "deepseek-web": ("chat.deepseek.com", "deepseek.com"),
 }

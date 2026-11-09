@@ -40,6 +40,7 @@ import auto_router
 import dns_tester
 import xpiki_manager
 import openrouter_manager
+import museai_manager
 
 CONFIG_DIR = Path(os.path.expanduser("~/.config/opencode"))
 ANTIGRAVITY_CONFIG_FILE = CONFIG_DIR / "antigravity.json"
@@ -64,9 +65,10 @@ PROVIDER_DOMAINS = {
     "claude-pro": ["claude.ai", "api.anthropic.com", "console.anthropic.com"],
     "xpiki": ["api.xpiki.com"],
     "openrouter-free": ["openrouter.ai"],
+    "museai": ["muse.ai", "meta.com", "facebook.com", "facebook.net", "fbcdn.net", "fbsbx.com"],
 }
 PROVIDER_SETTING_IDS = {"antigravity": "google", "openai": "openai", "claude": "claude-pro",
-                        "xpiki": "xpiki", "openrouter": "openrouter-free"}
+                        "xpiki": "xpiki", "openrouter": "openrouter-free", "museai": "museai"}
 
 
 class HubApi:
@@ -313,7 +315,7 @@ class HubApi:
 
     def set_provider_route(self, provider: str, route: str) -> bool:
         provider = {"claude": "claude-pro", "openrouter": "openrouter-free"}.get(provider, provider)
-        if provider not in ("google", "openai", "claude-pro", "xpiki", "openrouter-free"):
+        if provider not in ("google", "openai", "claude-pro", "xpiki", "openrouter-free", "museai"):
             raise ValueError("Неизвестный провайдер")
         if route not in ("direct", "default", "auto", "vless", "dns", "proxy"):
             raise ValueError("Неизвестный маршрут")
@@ -586,14 +588,46 @@ class HubApi:
                 selected = list(oc.get("provider", {}).get("openrouter-free", {}).get("models", {}))
         except (OSError, ValueError):
             pass
-        return {"xpiki": {"connected": bool(xpiki.get("connected") and xpiki_key), "hasKey": bool(xpiki_key),
+        muse = museai_manager.load_config()
+        muse_key = str(muse.get("api_key") or "")
+        muse_gateway_running = museai_manager.gateway_status()
+        muse_configured = bool(muse.get("connected") and muse_key)
+        return {"museai": {"connected": bool(muse_configured and muse_gateway_running),
+                           "configured": muse_configured, "gatewayRunning": muse_gateway_running,
+                           "hasKey": bool(muse_key),
+                           "keyLabel": key_label(muse_key), "baseUrl": muse.get("base_url") or museai_manager.DEFAULT_BASE_URL,
+                           "models": muse.get("models", []), "enabledModels": muse.get("enabled_models", []),
+                           "setup": museai_manager.setup_state()},
+                "xpiki": {"connected": bool(xpiki.get("connected") and xpiki_key), "hasKey": bool(xpiki_key),
                           "keyLabel": key_label(xpiki_key),
                           "baseUrl": xpiki.get("base_url") or xpiki_manager.DEFAULT_BASE_URL,
                           "enabledModels": xpiki.get("enabled_models", list(xpiki_manager.XPIKI_MODELS)),
                           "models": [{"id": mid, "name": meta["name"]} for mid, meta in xpiki_manager.XPIKI_MODELS.items()],
                           "quota": xpiki.get("cached_quota") or {}},
                 "openrouter": {"hasKey": bool(openrouter_key), "keyLabel": key_label(openrouter_key),
-                               "connected": bool(openrouter_key and selected), "selectedModels": selected}}
+                                "connected": bool(openrouter_key and selected), "selectedModels": selected}}
+
+    def connect_museai(self, api_key: str, base_url: str, models: list) -> dict:
+        with self._provider_lock:
+            catalog = museai_manager.connect(base_url, api_key, models)
+            self._sync_routes(self.load_config())
+            return {"ok": True, "message": f"Muse AI подключён; моделей в каталоге: {len(catalog)}"}
+
+    def load_museai_models(self, api_key: str, base_url: str) -> list:
+        saved = museai_manager.load_config()
+        return museai_manager.fetch_models(base_url, (api_key or saved.get("api_key") or "").strip())
+
+    def disconnect_museai(self) -> bool:
+        with self._provider_lock:
+            museai_manager.disconnect()
+            self._sync_routes(self.load_config())
+        return True
+
+    def start_museai_setup(self, force_login: bool = False) -> dict:
+        return museai_manager.start_setup(force_login=force_login)
+
+    def get_museai_setup_state(self) -> dict:
+        return museai_manager.setup_state()
 
     def configure_xpiki(self, key: str, base_url: str, models: list) -> dict:
         with self._provider_lock:
@@ -657,23 +691,28 @@ class HubApi:
         if not self._login_locks["google"].acquire(blocking=False):
             return {"status": "error", "message": "Вход в Google уже выполняется"}
         try:
+            before = antigravity_manager.export_google_accounts()
+            before_ids = {
+                (str(account.get("id") or ""), str(account.get("email") or "").casefold())
+                for account in before
+            }
             node_exe = antigravity_manager.get_node_executable()
             cli_js = antigravity_manager.get_cli_js()
             if not os.path.exists(cli_js):
                 raise RuntimeError("Файл CLI не найден")
-            repair_error = antigravity_manager.repair_legacy_google_account_file()
-            if repair_error:
-                raise RuntimeError(repair_error)
             result = antigravity_manager.run_silent_cmd([node_exe, cli_js, "login"], timeout=300)
             if result.returncode:
                 raise RuntimeError(result.stderr or result.stdout or "Не удалось завершить вход в Google")
-            repair_error = antigravity_manager.repair_legacy_google_account_file()
-            if repair_error:
-                raise RuntimeError(repair_error)
-            result = antigravity_manager.run_silent_cmd(
-                [node_exe, cli_js, "migrate", "--offline", "--yes"], timeout=30)
-            if result.returncode:
-                raise RuntimeError("Миграция аккаунта не завершилась: " + (result.stderr or result.stdout))
+            after = antigravity_manager.export_google_accounts()
+            new_accounts = [
+                account for account in after
+                if (str(account.get("id") or ""), str(account.get("email") or "").casefold()) not in before_ids
+            ]
+            if not new_accounts:
+                return {
+                    "status": "error",
+                    "message": "Вход завершён, но новый аккаунт не появился в пуле. Возможно, Google авторизовал уже добавленный аккаунт; выберите другой аккаунт в окне Google и повторите.",
+                }
             return {"status": "ok", "message": "Google аккаунт добавлен в пул"}
         except Exception as exc:
             return {"status": "error", "message": str(exc)}
@@ -1037,6 +1076,7 @@ def run_webview_app():
     icon_str = str(icon_file.resolve()) if icon_file.exists() else None
 
     api = HubApi()
+    museai_manager.ensure_gateway_on_startup()
 
     # Ensure Windows taskbar groups windows under Antigravity Hub, not Python
     try:

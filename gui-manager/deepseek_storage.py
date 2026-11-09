@@ -51,7 +51,8 @@ def protect_channel(payload):
 
 def protect_secret(purpose, payload):
     """Protect Hub secrets at rest; never serialize them raw on Windows."""
-    if purpose not in {"deepseek-web-session", "openrouter-api-key", "mwapi-api-key", "mwapi-dashboard-token"}:
+    if purpose not in {"deepseek-web-session", "openrouter-api-key", "mwapi-api-key", "mwapi-dashboard-token",
+                       "museai-gateway-credentials"}:
         raise ValueError("Unknown protected secret purpose")
     raw = json.dumps({"purpose": purpose, "data": payload}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     if os.name == "nt":

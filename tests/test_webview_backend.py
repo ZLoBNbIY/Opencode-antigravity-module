@@ -55,26 +55,36 @@ class WebviewBackendTests(unittest.TestCase):
         self.backend.ANTIGRAVITY_CONFIG_FILE = Path(self.temp.name) / 'antigravity.json'
         self.backend.OPENCODE_CONFIG_FILE = Path(self.temp.name) / 'opencode.json'
 
-    def test_google_login_waits_and_migrates_before_reporting_success(self):
+    def test_google_login_reports_success_only_after_account_is_added_to_store(self):
         self.manager.get_node_executable = Mock(return_value="node")
         self.manager.get_cli_js = Mock(return_value="cli.js")
-        self.manager.repair_legacy_google_account_file = Mock(return_value=None)
+        self.manager.export_google_accounts = Mock(side_effect=[[], [{"id": "new-id", "email": "new@example.com"}]])
         self.manager.run_silent_cmd = Mock(return_value=SimpleNamespace(returncode=0, stdout="", stderr=""))
         with patch.object(self.backend.os.path, "exists", return_value=True):
             result = self.backend.HubApi().add_google_account()
         self.assertEqual(result['status'], 'ok')
-        self.assertEqual([c.args[0] for c in self.manager.run_silent_cmd.call_args_list],
-                         [["node", "cli.js", "login"], ["node", "cli.js", "migrate", "--offline", "--yes"]])
+        self.manager.run_silent_cmd.assert_called_once_with(["node", "cli.js", "login"], timeout=300)
 
-    def test_google_login_failure_is_reported_without_migration(self):
+    def test_google_login_failure_is_reported(self):
         self.manager.get_node_executable = Mock(return_value="node")
         self.manager.get_cli_js = Mock(return_value="cli.js")
-        self.manager.repair_legacy_google_account_file = Mock(return_value=None)
         self.manager.run_silent_cmd = Mock(return_value=SimpleNamespace(returncode=1, stdout="", stderr="login failed"))
         with patch.object(self.backend.os.path, "exists", return_value=True):
             result = self.backend.HubApi().add_google_account()
         self.assertEqual(result, {'status':'error', 'message':'login failed'})
         self.manager.run_silent_cmd.assert_called_once()
+
+    def test_google_login_same_existing_account_is_not_reported_as_added(self):
+        self.manager.get_node_executable = Mock(return_value="node")
+        self.manager.get_cli_js = Mock(return_value="cli.js")
+        account = {"id": "existing-id", "email": "same@example.com"}
+        self.manager.export_google_accounts = Mock(side_effect=[[account], [account]])
+        self.manager.run_silent_cmd = Mock(return_value=SimpleNamespace(returncode=0, stdout="", stderr=""))
+        with patch.object(self.backend.os.path, "exists", return_value=True):
+            result = self.backend.HubApi().add_google_account()
+        self.assertEqual(result["status"], "error")
+        self.assertIn("выберите другой аккаунт", result["message"])
+        self.manager.run_silent_cmd.assert_called_once_with(["node", "cli.js", "login"], timeout=300)
 
     def test_openai_failure_and_exception_reach_frontend_and_unlock_retry(self):
         self.openai.login_openai_browser = Mock(side_effect=[(False, 'token exchange failed', None),
