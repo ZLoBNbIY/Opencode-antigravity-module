@@ -245,6 +245,151 @@ def test_openai_account_health(account: dict, timeout=10) -> dict:
         }
 
 
+def test_openai_model_generation(
+    account: dict,
+    model: str = "gpt-5.6-sol",
+    timeout: int = 15,
+    prompt: str = "Reply with exactly: OK",
+) -> dict:
+    """
+    Tests an OpenAI/ChatGPT account by executing a lightweight real model generation request
+    via the OpenCode Codex responses endpoint (https://chatgpt.com/backend-api/codex/responses).
+    Returns a dict with {ok, status, message, latency_ms, model, response_text}.
+    """
+    import openai_manager
+
+    access_token = account.get("accessToken") or account.get("access")
+    account_id = account.get("accountId", "")
+
+    if not access_token:
+        return {
+            "ok": False,
+            "status": "error",
+            "message": "Access token отсутствует (требуется вход в ChatGPT)",
+            "latency_ms": 0,
+        }
+
+    now_ms = int(time.time() * 1000)
+    if account.get("expires", 0) - now_ms < 120000:
+        try:
+            openai_manager.refresh_openai_token(account)
+            access_token = account.get("access", access_token)
+            account_id = account.get("accountId", account_id)
+        except Exception:
+            pass
+
+    opener = openai_manager._get_http_opener(timeout=timeout)
+    url = "https://chatgpt.com/backend-api/codex/responses?client_version=0.1.0"
+    body = {
+        "model": model,
+        "input": [{"role": "user", "content": prompt}],
+        "max_output_tokens": 16,
+        "store": False,
+        "stream": True,
+    }
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "chatgpt-account-id": account_id,
+        "originator": "opencode",
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+        "User-Agent": openai_manager.OPENAI_BROWSER_UA,
+    }
+
+    t0 = time.perf_counter()
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        with opener.open(req, timeout=timeout) as resp:
+            elapsed_ms = round((time.perf_counter() - t0) * 1000)
+            collected_text = []
+            for _ in range(60):
+                line = resp.readline()
+                if not line:
+                    break
+                line_str = line.decode("utf-8", errors="ignore").strip()
+                if line_str.startswith("data:"):
+                    data_str = line_str[5:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data_str)
+                        c_type = chunk.get("type")
+                        if c_type == "response.output_text.delta":
+                            delta = chunk.get("delta", "")
+                            if delta:
+                                collected_text.append(delta)
+                        elif c_type == "response.output_text.done":
+                            done_txt = chunk.get("text", "")
+                            if done_txt and not collected_text:
+                                collected_text.append(done_txt)
+                        elif c_type == "response.completed":
+                            break
+                    except Exception:
+                        pass
+
+            text = "".join(collected_text).strip()
+            msg = f"Генерация {model} успешна ({elapsed_ms} мс)"
+            if text:
+                msg += f": «{text[:60]}»"
+            return {
+                "ok": True,
+                "status": "active",
+                "message": msg,
+                "latency_ms": elapsed_ms,
+                "model": model,
+                "response_text": text,
+            }
+    except urllib.error.HTTPError as e:
+        elapsed_ms = round((time.perf_counter() - t0) * 1000)
+        err_body = ""
+        try:
+            err_body = e.read().decode("utf-8", errors="ignore")
+        except Exception:
+            pass
+
+        if e.code == 401:
+            return {
+                "ok": False,
+                "status": "expired",
+                "message": f"Сессия OpenAI истекла (401), требуется повторный вход ({elapsed_ms} мс)",
+                "latency_ms": elapsed_ms,
+            }
+        elif e.code == 429:
+            return {
+                "ok": False,
+                "status": "rate_limited",
+                "message": f"Квота модели {model} исчерпана (429 Rate Limit, {elapsed_ms} мс)",
+                "latency_ms": elapsed_ms,
+            }
+        elif e.code == 403:
+            return {
+                "ok": False,
+                "status": "geo_blocked",
+                "message": f"OpenAI отклонил запрос (403): регион заблокирован или требуется сменить маршрут VLESS/прокси ({elapsed_ms} мс)",
+                "latency_ms": elapsed_ms,
+            }
+        else:
+            return {
+                "ok": False,
+                "status": f"http_{e.code}",
+                "message": f"Ошибка OpenAI {e.code}: {err_body[:120]} ({elapsed_ms} мс)",
+                "latency_ms": elapsed_ms,
+            }
+    except Exception as exc:
+        elapsed_ms = round((time.perf_counter() - t0) * 1000)
+        return {
+            "ok": False,
+            "status": "network_error",
+            "message": f"Ошибка сети при генерации OpenAI: {str(exc)[:100]} ({elapsed_ms} мс)",
+            "latency_ms": elapsed_ms,
+        }
+
+
 ANTIGRAVITY_MODEL_INTERNAL_MAP = {
     "antigravity-gemini-4-argon": ("Gemini 4 Argon", "gemini-4-argon-medium"),
     "gemini-4-argon": ("Gemini 4 Argon", "gemini-4-argon-medium"),
@@ -564,8 +709,7 @@ def test_provider_deep_probe(provider: str, timeout: int = 15) -> dict:
         if not accs:
             return {"ok": False, "status": "no_account", "message": "Нет подключенных аккаунтов ChatGPT"}
         active = next((a for a in accs if a.get("is_active")), accs[0])
-        res = test_openai_account_health(active, timeout=timeout)
-        return res
+        return test_openai_model_generation(active, timeout=timeout)
 
     elif provider == "claude-pro":
         import claude_manager

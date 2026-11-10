@@ -46,6 +46,8 @@ function switchTab(tabId) {
 
 function showDiagnostics(tab) {
   switchTab('diagnostics');
+  const details = document.getElementById(`diag-details-${tab}`);
+  if (details) details.open = true;
   document.getElementById(`diagnostics-${tab}`)?.scrollIntoView({behavior:'smooth', block:'start'});
 }
 async function runAllDiagnostics() {
@@ -955,6 +957,11 @@ function renderProviderDiagnostics() {
     badge.innerHTML = `<span class="connection-indicator ${summary}"></span><span>${html(text)}</span>`;
     badge.setAttribute('aria-label', text);
     badge.title = diagnosticErrors.get(tab) || (count ? `TCP доступен для ${available} из ${count} доменов. Подробности во вкладке провайдера.` : 'Автоматическая проверка доменов');
+    const diagBadge = document.getElementById(`diag-badge-${tab}`);
+    if (diagBadge) {
+      diagBadge.className = `badge-pill diag-status-badge ${summary === 'ok' ? 'badge-available' : summary === 'error' ? 'badge-error' : ['warning','checking'].includes(summary) ? 'badge-checking' : 'badge-pool'}`;
+      diagBadge.textContent = running ? '⏳ Проверка…' : !count ? 'Развернуть список' : available === count ? `● Все ${count} доступны` : available ? `⚠ Доступны ${available}/${count}` : '🔴 Недоступны';
+    }
     const checked = state.checkedAt;
     document.getElementById(`card-check-time-${tab}`).textContent = running ? 'Проверяем выбранный маршрут…' : checked ? `TCP · ${new Date(checked*1000).toLocaleTimeString('ru-RU')}` : 'Автопроверка каждую минуту';
     const retry = document.getElementById(`card-check-${tab}`);
@@ -1009,10 +1016,13 @@ function dashboardAccess(tab) {
 }
 function dashboardQuota(tab, active) {
   if (tab === 'google') {
-    const windows = active?.groups?.find(group => group.name === 'gemini')?.windows || [];
+    const gemini = active?.groups?.find(group => group.name === 'gemini');
+    const windows = gemini?.windows || [];
+    const val5h = windows.find(w => /5h|5.hour|5ч|short/i.test(String(w.window)))?.remainingPercent ?? gemini?.remainingPercent;
+    const valWeekly = windows.find(w => /week|7d|нед/i.test(String(w.window)))?.remainingPercent ?? gemini?.remainingPercent;
     return [
-      {label:'5 часов', value:windows.find(w=>/5h|5.hour|5ч|short/i.test(String(w.window)))?.remainingPercent, variant:'5h'},
-      {label:'Неделя', value:windows.find(w=>/week|7d|нед/i.test(String(w.window)))?.remainingPercent, variant:'weekly'}
+      {label:'5 часов', value: val5h, variant:'5h'},
+      {label:'Неделя', value: valWeekly, variant:'weekly'}
     ];
   }
   if (tab === 'openai') {
@@ -1194,28 +1204,51 @@ function renderGoogleTab() {
   container.innerHTML = "";
   sorted.forEach(acc => {
     const isAct = acc.is_active === true;
+    const isEnabled = acc.enabled !== false;
+    const isCandidate = acc.candidate !== false;
     const email = acc.email || "unknown@gmail.com";
-
 
     // Extract Gemini quotas
     const gemini = (acc.groups || []).find(g => g.name === "gemini") || {};
     const windows = gemini.windows || [];
-    const fiveHour = windows.find(w => /5h|5.hour|5ч|short/i.test(String(w.window)));
-    const weekly = windows.find(w => /week|7d|нед/i.test(String(w.window)));
+    const fiveHour = windows.find(w => /5h|5.hour|5ч|short/i.test(String(w.window)))
+      || (gemini.remainingPercent != null ? { remainingPercent: gemini.remainingPercent, resetTime: gemini.resetTime } : null);
+    const weekly = windows.find(w => /week|7d|нед/i.test(String(w.window)))
+      || (gemini.remainingPercent != null ? { remainingPercent: gemini.remainingPercent, resetTime: gemini.resetTime } : null);
 
     // Extract Claude (Opus / Sonnet) quotas from non-gemini group
     const claudeGroup = (acc.groups || []).find(g => g.name === "non-gemini") || {};
     const claudeWindows = claudeGroup.windows || [];
     const claude5h = claudeWindows.find(w => /5h|5.hour|5ч|short/i.test(String(w.window)))
       || (claudeGroup.remainingPercent != null ? { remainingPercent: claudeGroup.remainingPercent, resetTime: claudeGroup.resetTime } : null);
-    const claudeWeekly = claudeWindows.find(w => /week|7d|нед/i.test(String(w.window)));
+    const claudeWeekly = claudeWindows.find(w => /week|7d|нед/i.test(String(w.window)))
+      || (claudeGroup.remainingPercent != null ? { remainingPercent: claudeGroup.remainingPercent, resetTime: claudeGroup.resetTime } : null);
 
     const card = document.createElement("div");
-    card.className = `glass-card acc-card ${isAct ? 'is-active' : ''}`;
+    card.className = `glass-card acc-card ${isAct ? 'is-active' : ''} ${!isEnabled ? 'is-disabled' : ''}`;
     if (isAct) {
       card.style.borderColor = "var(--glass-border-amber)";
       card.style.boxShadow = "0 16px 40px rgba(217, 154, 67, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.15)";
     }
+    if (!isEnabled) {
+      card.style.opacity = "0.75";
+    }
+
+    const roleText = !isEnabled
+      ? "Аккаунт отключен"
+      : isAct
+      ? (isCandidate ? "Используется сейчас для Google" : "Используется сейчас (standalone)")
+      : isCandidate
+      ? "В пуле ротации"
+      : "Standalone (ручной выбор)";
+
+    const badgeMarkup = !isEnabled
+      ? `<span class="badge-pill badge-pool" style="opacity:0.8;"><span class="dot" style="background:#8b949e"></span> Отключен</span>`
+      : isAct
+      ? `<span class="badge-pill badge-available"><span class="dot"></span> Активен${!isCandidate ? ' · standalone' : ''}</span>`
+      : isCandidate
+      ? `<span class="badge-pill badge-pool"><span class="dot"></span> В пуле</span>`
+      : `<span class="badge-pill badge-pool"><span class="dot" style="background:#58a6ff"></span> Standalone</span>`;
 
     card.innerHTML = `
       <div class="acc-top">
@@ -1223,38 +1256,43 @@ function renderGoogleTab() {
           <div class="acc-avatar">G</div>
           <div>
             <div class="acc-email">${html(email)}</div>
-            <div class="acc-role">${isAct ? "Используется сейчас для Google" : "В пуле ротации"}</div>
+            <div class="acc-role">${html(roleText)}</div>
           </div>
         </div>
         <div style="display:flex; align-items:center; gap:8px;">
-          <span class="badge-pill ${isAct ? 'badge-available' : 'badge-pool'}">
-            <span class="dot"></span> ${isAct ? 'Активен' : 'В пуле'}
-          </span>
+          ${badgeMarkup}
         </div>
       </div>
 
       <div class="quotas-box">
         ${quotaMarkup('Gemini · 5 часов', fiveHour, 'green')}
         ${quotaMarkup('Gemini · неделя', weekly, 'amber')}
-        ${claude5h ? quotaMarkup('Claude (Opus / Sonnet) · 5 часов', claude5h, 'cyan') : ''}
-        ${claudeWeekly ? quotaMarkup('Claude (Opus / Sonnet) · неделя', claudeWeekly, 'purple') : ''}
+        ${quotaMarkup('Claude (Opus / Sonnet) · 5 часов', claude5h, 'cyan')}
+        ${quotaMarkup('Claude (Opus / Sonnet) · неделя', claudeWeekly, 'purple')}
       </div>
 
       <div class="acc-footer">
         <div class="acc-actions">
-          ${!isAct ? `<button class="btn-primary" style="padding:6px 14px; font-size:11px;" data-action="activate">⭐ Сделать активным</button>` : ''}
+          ${!isAct && isEnabled ? `<button class="btn-primary" style="padding:6px 14px; font-size:11px;" data-action="activate">⭐ Сделать активным</button>` : ''}
           <button class="btn-secondary" style="padding:6px 12px; font-size:11px;" data-action="test">🩺 Проверить</button>
           <button class="btn-secondary" style="padding:6px 10px; font-size:11px; color:var(--accent-red);" data-action="delete">🗑</button>
         </div>
-        <label class="switch-label">
-          <input type="checkbox" class="switch-input" ${acc.candidate !== false ? 'checked' : ''} data-action="candidate">
-          <span>Авторотация</span>
-        </label>
+        <div class="acc-switches" style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+          <label class="switch-label">
+            <input type="checkbox" class="switch-input" ${isEnabled ? 'checked' : ''} data-action="toggle-enabled">
+            <span>Включен</span>
+          </label>
+          <label class="switch-label ${!isEnabled ? 'switch-disabled' : ''}">
+            <input type="checkbox" class="switch-input" ${isCandidate && isEnabled ? 'checked' : ''} ${!isEnabled ? 'disabled' : ''} data-action="candidate">
+            <span>Авторотация</span>
+          </label>
+        </div>
       </div>
     `;
     card.querySelector('[data-action="activate"]')?.addEventListener('click', () => activateGoogleAccount(acc.index - 1));
     card.querySelector('[data-action="test"]')?.addEventListener('click', () => testGoogleAccount(acc.id || acc.email));
     card.querySelector('[data-action="delete"]')?.addEventListener('click', () => deleteGoogleAccount(acc.id || acc.email));
+    card.querySelector('[data-action="toggle-enabled"]')?.addEventListener('change', event => toggleGoogleEnabled(acc.id || acc.email, event.target.checked));
     card.querySelector('[data-action="candidate"]')?.addEventListener('change', event => toggleCandidate(acc.id || acc.email, event.target.checked));
     container.appendChild(card);
   });
@@ -1315,14 +1353,86 @@ function renderOpenAiTab() {
   document.getElementById('openai-refresh-status').textContent = appState.openaiError || (appState.openaiRefreshing ? 'Запрашиваем лимиты ChatGPT в фоне…' : 'Лимиты обновляются автоматически каждые 5 минут.');
   container.innerHTML = '';
   accs.forEach(acc => {
+    const isAct = acc.is_active === true;
+    const isEnabled = acc.enabled !== false;
+    const isCandidate = acc.candidate !== false;
+    const accId = acc.accountId || acc.id || acc.email;
+
     const card = document.createElement('div');
-    card.className = `glass-card acc-card ${acc.is_active ? 'is-active' : ''}`;
+    card.className = `glass-card acc-card ${isAct ? 'is-active' : ''} ${!isEnabled ? 'is-disabled' : ''}`;
+    if (isAct) {
+      card.style.borderColor = "var(--glass-border-amber)";
+      card.style.boxShadow = "0 16px 40px rgba(217, 154, 67, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.15)";
+    }
+    if (!isEnabled) {
+      card.style.opacity = "0.75";
+    }
+
     const quota = acc.quota || {};
     const valid = quota.status === 'ok' || quota.status === 'stale';
     const primary = quota.window_5h || quota.primary;
     const secondary = quota.window_weekly || quota.secondary;
     const checked = quota.last_checked ? new Date(quota.last_checked * 1000).toLocaleString('ru-RU') : 'ещё не обновлялись';
-    card.innerHTML = `<div class="acc-top"><div class="acc-identity"><div class="acc-avatar" style="color:#10a37f">◎</div><div><div class="acc-email">${html(acc.email || 'ChatGPT Session')}</div><div class="acc-role">${html(acc.plan_type || quota.plan_type || 'Тариф неизвестен')}</div></div></div><span class="badge-pill ${acc.is_active ? 'badge-available' : 'badge-pool'}">${acc.is_active ? '● Активен' : 'В пуле'}</span></div><div class="quotas-box">${quotaMarkup('ChatGPT · 5 часов', primary, 'green', valid)}${quotaMarkup('ChatGPT · неделя', secondary, 'amber', valid)}</div><div class="help-text">Проверено: ${html(checked)}${quota.status === 'stale' ? ' · сохранённые данные, обновление не удалось' : quota.status === 'error' ? ' · запрос лимитов не удался' : ''}${quota.limit_reached ? ' · Лимит исчерпан' : ''}</div>`;
+
+    const badgeMarkup = !isEnabled
+      ? `<span class="badge-pill badge-pool" style="opacity:0.8;"><span class="dot" style="background:#8b949e"></span> Отключен</span>`
+      : isAct
+      ? `<span class="badge-pill badge-available"><span class="dot"></span> Активен${!isCandidate ? ' · standalone' : ''}</span>`
+      : isCandidate
+      ? `<span class="badge-pill badge-pool"><span class="dot"></span> В пуле</span>`
+      : `<span class="badge-pill badge-pool"><span class="dot" style="background:#58a6ff"></span> Standalone</span>`;
+
+    const planName = (acc.plan_type || quota.plan_type || 'Тариф неизвестен').toUpperCase();
+    const roleText = !isEnabled
+      ? "Аккаунт отключен"
+      : isAct
+      ? `${planName} · используется сейчас`
+      : isCandidate
+      ? `${planName} · в пуле ротации`
+      : `${planName} · standalone (ручной выбор)`;
+
+    card.innerHTML = `
+      <div class="acc-top">
+        <div class="acc-identity">
+          <div class="acc-avatar" style="color:#10a37f">◎</div>
+          <div>
+            <div class="acc-email">${html(acc.email || 'ChatGPT Session')}</div>
+            <div class="acc-role">${html(roleText)}</div>
+          </div>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          ${badgeMarkup}
+        </div>
+      </div>
+      <div class="quotas-box">
+        ${quotaMarkup('ChatGPT · 5 часов', primary, 'green', valid)}
+        ${quotaMarkup('ChatGPT · неделя', secondary, 'amber', valid)}
+      </div>
+      <div class="help-text">Проверено: ${html(checked)}${quota.status === 'stale' ? ' · сохранённые данные, обновление не удалось' : quota.status === 'error' ? ' · запрос лимитов не удался' : ''}${quota.limit_reached ? ' · Лимит исчерпан' : ''}</div>
+      <div class="acc-footer">
+        <div class="acc-actions">
+          ${!isAct && isEnabled ? `<button class="btn-primary" style="padding:6px 14px; font-size:11px;" data-action="activate">⭐ Сделать активным</button>` : ''}
+          <button class="btn-secondary" style="padding:6px 12px; font-size:11px;" data-action="test">⚡ Проверить</button>
+          <button class="btn-secondary" style="padding:6px 10px; font-size:11px; color:var(--accent-red);" data-action="delete">🗑</button>
+        </div>
+        <div class="acc-switches" style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+          <label class="switch-label">
+            <input type="checkbox" class="switch-input" ${isEnabled ? 'checked' : ''} data-action="toggle-enabled">
+            <span>Включен</span>
+          </label>
+          <label class="switch-label ${!isEnabled ? 'switch-disabled' : ''}">
+            <input type="checkbox" class="switch-input" ${isCandidate && isEnabled ? 'checked' : ''} ${!isEnabled ? 'disabled' : ''} data-action="candidate">
+            <span>Авторотация</span>
+          </label>
+        </div>
+      </div>
+    `;
+
+    card.querySelector('[data-action="activate"]')?.addEventListener('click', () => activateOpenAiAccount(accId));
+    card.querySelector('[data-action="test"]')?.addEventListener('click', () => testOpenAiAccount(accId));
+    card.querySelector('[data-action="delete"]')?.addEventListener('click', () => deleteOpenAiAccount(accId));
+    card.querySelector('[data-action="toggle-enabled"]')?.addEventListener('change', event => toggleOpenAiEnabled(accId, event.target.checked));
+    card.querySelector('[data-action="candidate"]')?.addEventListener('change', event => toggleOpenAiCandidate(accId, event.target.checked));
     container.appendChild(card);
   });
 }
@@ -1648,12 +1758,58 @@ async function testGoogleAccount(id) {
   showToast("Тестирование токена и квот...");
   const res = await window.pywebview.api.test_google_account(id);
   showToast(res || "Аккаунт активен и отвечает");
+  await refreshState();
+}
+
+async function toggleGoogleEnabled(id, enabled) {
+  if (!window.pywebview?.api) return;
+  await window.pywebview.api.toggle_google_enabled(id, enabled);
+  showToast(`Google аккаунт ${enabled ? "включен" : "отключен"}`);
+  await refreshState();
 }
 
 async function toggleCandidate(id, enabled) {
   if (!window.pywebview?.api) return;
   await window.pywebview.api.toggle_google_candidate(id, enabled);
   showToast(`Авторотация ${enabled ? "включена" : "отключена"}`);
+  await refreshState();
+}
+
+async function activateOpenAiAccount(id) {
+  if (!window.pywebview?.api) return;
+  await window.pywebview.api.activate_openai_account(id);
+  showToast("Активный аккаунт ChatGPT переключен");
+  await refreshState();
+}
+
+async function testOpenAiAccount(id) {
+  if (!window.pywebview?.api) return;
+  showToast("Проверка генерации ChatGPT модели...");
+  const res = await window.pywebview.api.test_openai_account(id);
+  showToast(res || "Аккаунт отвечает");
+  await refreshState();
+}
+
+async function deleteOpenAiAccount(id) {
+  if (!confirm("Удалить этот ChatGPT аккаунт из пула?")) return;
+  if (!window.pywebview?.api) return;
+  await window.pywebview.api.delete_openai_account(id);
+  showToast("ChatGPT аккаунт удалён");
+  await refreshState();
+}
+
+async function toggleOpenAiEnabled(id, enabled) {
+  if (!window.pywebview?.api) return;
+  await window.pywebview.api.toggle_openai_enabled(id, enabled);
+  showToast(`ChatGPT аккаунт ${enabled ? "включен" : "отключен"}`);
+  await refreshState();
+}
+
+async function toggleOpenAiCandidate(id, enabled) {
+  if (!window.pywebview?.api) return;
+  await window.pywebview.api.toggle_openai_candidate(id, enabled);
+  showToast(`Авторотация ChatGPT ${enabled ? "включена" : "отключена"}`);
+  await refreshState();
 }
 
 async function addOpenAiAccount() {

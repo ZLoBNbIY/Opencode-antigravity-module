@@ -9,6 +9,7 @@ import sys
 import json
 import time
 import socket
+import ssl
 import urllib.parse
 import urllib.request
 import subprocess
@@ -30,8 +31,63 @@ DEFAULT_HTTP_PORT = 10879
 DEFAULT_SOCKS_PORT = 10878
 LOCAL_DNS_PROXY_PORT = 51180
 
-SING_BOX_DOWNLOAD_URL = "https://github.com/SagerNet/sing-box/releases/latest/download/sing-box-windows-amd64.zip"
+SING_BOX_FALLBACK_VERSION = "1.14.4"
+SING_BOX_FALLBACK_URL = (
+    f"https://github.com/SagerNet/sing-box/releases/download/v{SING_BOX_FALLBACK_VERSION}/"
+    f"sing-box-{SING_BOX_FALLBACK_VERSION}-windows-amd64.zip"
+)
+SING_BOX_DOWNLOAD_URL = SING_BOX_FALLBACK_URL
 XRAY_DOWNLOAD_URL = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip"
+
+
+def resolve_sing_box_download_url(timeout: float = 6.0) -> str:
+    """
+    Dynamically discovers the latest sing-box Windows AMD64 download URL.
+    Falls back to a known stable release if discovery fails.
+    """
+    # 1. Try redirect on releases/latest (GET /releases/latest -> /releases/tag/vX.Y.Z)
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        req = urllib.request.Request(
+            "https://github.com/SagerNet/sing-box/releases/latest",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+        )
+        with opener.open(req, timeout=timeout) as resp:
+            final_url = resp.geturl()
+            if "/tag/" in final_url:
+                tag = final_url.rstrip("/").split("/")[-1]
+                version = tag.lstrip("v")
+                if version:
+                    return f"https://github.com/SagerNet/sing-box/releases/download/{tag}/sing-box-{version}-windows-amd64.zip"
+    except Exception:
+        pass
+
+    # 2. Try GitHub Releases API
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        req = urllib.request.Request(
+            "https://api.github.com/repos/SagerNet/sing-box/releases/latest",
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                "Accept": "application/vnd.github.v3+json",
+            },
+        )
+        with opener.open(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            for asset in data.get("assets", []):
+                name = asset.get("name", "")
+                if name.endswith("-windows-amd64.zip") and "legacy" not in name:
+                    dl = asset.get("browser_download_url")
+                    if dl:
+                        return dl
+            tag = data.get("tag_name", "")
+            if tag:
+                version = tag.lstrip("v")
+                return f"https://github.com/SagerNet/sing-box/releases/download/{tag}/sing-box-{version}-windows-amd64.zip"
+    except Exception:
+        pass
+
+    return SING_BOX_FALLBACK_URL
 
 
 def load_hub_config() -> Dict[str, Any]:
@@ -227,18 +283,31 @@ class VlessManager:
         if existing:
             return True, f"Ядро уже установлено: {existing.name}"
 
-        base_url = SING_BOX_DOWNLOAD_URL if core_type == "sing-box" else XRAY_DOWNLOAD_URL
+        candidate_urls: list[str] = []
+        if core_type == "sing-box":
+            resolved_url = resolve_sing_box_download_url()
+            candidate_urls.extend([
+                resolved_url,
+                f"https://gh-proxy.com/{resolved_url}",
+                f"https://ghfast.top/{resolved_url}",
+            ])
+            if resolved_url != SING_BOX_FALLBACK_URL:
+                candidate_urls.extend([
+                    SING_BOX_FALLBACK_URL,
+                    f"https://gh-proxy.com/{SING_BOX_FALLBACK_URL}",
+                    f"https://ghfast.top/{SING_BOX_FALLBACK_URL}",
+                ])
+        else:
+            candidate_urls.extend([
+                XRAY_DOWNLOAD_URL,
+                f"https://gh-proxy.com/{XRAY_DOWNLOAD_URL}",
+                f"https://ghfast.top/{XRAY_DOWNLOAD_URL}",
+            ])
+
         archive_path = bin_dir / "core_archive.zip"
 
-        # List of candidate endpoints (direct GitHub first, then fast mirrors)
-        urls_to_try = [
-            base_url,
-            f"https://ghfast.top/{base_url}",
-            f"https://mirror.ghproxy.com/{base_url}",
-        ]
-
         last_error = None
-        for candidate_url in urls_to_try:
+        for candidate_url in candidate_urls:
             try:
                 if progress_callback:
                     progress_callback(f"Загрузка {core_type}...")
@@ -250,9 +319,22 @@ class VlessManager:
                         "Accept": "*/*",
                     }
                 )
-                # Build opener with empty ProxyHandler to bypass dead local proxies (WinError 10061)
                 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-                with opener.open(req, timeout=30) as resp, open(archive_path, "wb") as f:
+                try:
+                    resp = opener.open(req, timeout=30)
+                except Exception as open_err:
+                    err_str = str(open_err).lower()
+                    if "cert" in err_str or "ssl" in err_str:
+                        ctx = ssl._create_unverified_context()
+                        opener = urllib.request.build_opener(
+                            urllib.request.ProxyHandler({}),
+                            urllib.request.HTTPSHandler(context=ctx),
+                        )
+                        resp = opener.open(req, timeout=30)
+                    else:
+                        raise
+
+                with resp, open(archive_path, "wb") as f:
                     total_size = resp.length or 0
                     downloaded = 0
                     while True:
@@ -271,7 +353,7 @@ class VlessManager:
                 with zipfile.ZipFile(archive_path, "r") as zf:
                     for member in zf.namelist():
                         basename = os.path.basename(member)
-                        if basename in ("sing-box.exe", "xray.exe"):
+                        if basename in ("sing-box.exe", "xray.exe") or (basename.endswith(".dll") and "cronet" in basename.lower()):
                             with zf.open(member) as source:
                                 target_file = bin_dir / basename
                                 with open(target_file, "wb") as out_f:

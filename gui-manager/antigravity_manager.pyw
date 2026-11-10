@@ -407,8 +407,8 @@ def set_active_google_account_index(target_index: int) -> bool:
     return changed
 
 
-def set_google_account_candidate(target_email_or_id: str, enabled: bool) -> bool:
-    """Persists account enable/disable state to commonAuthPool and config so OpenCode respects auto-rotation toggles."""
+def set_google_account_candidate(target_email_or_id: str, candidate: bool) -> bool:
+    """Persists account auto-rotation candidate flag without disabling the account itself."""
     config_dir = Path(os.path.expanduser("~/.config/opencode"))
     gen_dirs = list(config_dir.glob("*.generation"))
     changed = False
@@ -435,19 +435,83 @@ def set_google_account_candidate(target_email_or_id: str, enabled: bool) -> bool
 
                 if not target_id:
                     for acc in cfg.get("accounts", []):
-                        if acc.get("id") == target_email_or_id:
+                        if acc.get("id") == target_email_or_id or acc.get("email") == target_email_or_id:
                             target_id = acc.get("id")
                             break
 
                 if target_id:
                     rows = cfg.get("commonAuthPool", {}).get("rows", {})
                     if target_id in rows:
-                        rows[target_id]["enabled"] = enabled
-                        rows[target_id]["usable"] = enabled
+                        rows[target_id]["usable"] = candidate
                     for acc in cfg.get("accounts", []):
                         if acc.get("id") == target_id:
-                            acc["candidate"] = enabled
+                            acc["candidate"] = candidate
+
+                    cfg_file.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+                    changed = True
+            except Exception as e:
+                print(f"Error updating candidate in generation config: {e}")
+
+    legacy_file = config_dir / "antigravity-accounts.json"
+    if legacy_file.exists():
+        try:
+            legacy_data = json.loads(legacy_file.read_text(encoding="utf-8"))
+            for acc in legacy_data.get("accounts", []):
+                if acc.get("id") == target_email_or_id or acc.get("email") == target_email_or_id:
+                    acc["candidate"] = candidate
+                    changed = True
+            if changed:
+                legacy_file.write_text(json.dumps(legacy_data, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
+    return changed
+
+
+def set_google_account_enabled(target_email_or_id: str, enabled: bool) -> bool:
+    """Persists account enabled/disabled state to commonAuthPool and config."""
+    config_dir = Path(os.path.expanduser("~/.config/opencode"))
+    gen_dirs = list(config_dir.glob("*.generation"))
+    changed = False
+
+    if gen_dirs:
+        gen_dir = gen_dirs[0]
+        cfg_file = gen_dir / "config.json"
+        state_file = gen_dir / "state.json"
+        if cfg_file.exists():
+            try:
+                cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+                target_id = None
+
+                if state_file.exists():
+                    try:
+                        state = json.loads(state_file.read_text(encoding="utf-8"))
+                        for aid, st in state.get("accounts", {}).items():
+                            meta = st.get("commonAuthProviderState", {}).get("metadata", {})
+                            if aid == target_email_or_id or meta.get("email") == target_email_or_id:
+                                target_id = aid
+                                break
+                    except Exception:
+                        pass
+
+                if not target_id:
+                    for acc in cfg.get("accounts", []):
+                        if acc.get("id") == target_email_or_id or acc.get("email") == target_email_or_id:
+                            target_id = acc.get("id")
+                            break
+
+                if target_id:
+                    rows = cfg.get("commonAuthPool", {}).get("rows", {})
+                    current_cand = True
+                    for acc in cfg.get("accounts", []):
+                        if acc.get("id") == target_id:
+                            current_cand = acc.get("candidate", True)
                             acc["enabled"] = enabled
+                            break
+
+                    if target_id in rows:
+                        rows[target_id]["enabled"] = enabled
+                        rows[target_id]["usable"] = enabled and current_cand
 
                     cfg_file.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
                     changed = True
@@ -462,7 +526,7 @@ def set_google_account_candidate(target_email_or_id: str, enabled: bool) -> bool
                         except Exception:
                             pass
             except Exception as e:
-                print(f"Error updating candidate in generation config: {e}")
+                print(f"Error updating enabled in generation config: {e}")
 
     legacy_file = config_dir / "antigravity-accounts.json"
     if legacy_file.exists():
@@ -470,7 +534,6 @@ def set_google_account_candidate(target_email_or_id: str, enabled: bool) -> bool
             legacy_data = json.loads(legacy_file.read_text(encoding="utf-8"))
             for acc in legacy_data.get("accounts", []):
                 if acc.get("id") == target_email_or_id or acc.get("email") == target_email_or_id:
-                    acc["candidate"] = enabled
                     acc["enabled"] = enabled
                     changed = True
             if changed:
@@ -647,29 +710,36 @@ def enrich_google_accounts_with_generation_store(accounts: list[dict]) -> list[d
 
         groups = []
         for g_name in ["gemini", "non-gemini"]:
-            g_data = cached.get(g_name, {})
-            rem_frac = g_data.get("remainingFraction", 1.0)
+            g_data = cached.get(g_name)
+            if not g_data or not isinstance(g_data, dict):
+                continue
+            rem_frac = g_data.get("remainingFraction")
+            rem_pct = round(rem_frac * 100, 1) if rem_frac is not None else None
             windows = []
             for w in g_data.get("windows", []):
+                w_frac = w.get("remainingFraction")
                 windows.append({
                     "window": w.get("window"),
-                    "remainingPercent": round(w.get("remainingFraction", 1.0) * 100, 1),
+                    "remainingPercent": round(w_frac * 100, 1) if w_frac is not None else None,
                     "resetTime": w.get("resetTime"),
                 })
             groups.append({
                 "name": g_name,
-                "remainingPercent": round(rem_frac * 100, 1),
+                "remainingPercent": rem_pct,
                 "resetTime": g_data.get("resetTime"),
                 "windows": windows,
             })
 
+        is_enabled = row.get("enabled", True)
+        is_candidate = acc.get("candidate", row.get("usable", is_enabled))
         disk_accounts.append({
             "index": idx,
             "id": aid,
             "email": email,
             "addedAt": added_at,
-            "status": "ok" if row.get("enabled", True) else "disabled",
-            "candidate": row.get("enabled", True),
+            "enabled": is_enabled,
+            "status": "ok" if is_enabled else "disabled",
+            "candidate": is_candidate,
             "groups": groups,
         })
 
@@ -691,7 +761,9 @@ def enrich_google_accounts_with_generation_store(accounts: list[dict]) -> list[d
         if disk_acc is None and not account_id and not email and idx < len(disk_accounts):
             disk_acc = disk_accounts[idx]
         if disk_acc:
+            acc["enabled"] = disk_acc.get("enabled", True)
             acc["candidate"] = disk_acc.get("candidate", True)
+            acc["status"] = disk_acc.get("status", "ok")
             if not acc.get("email") or acc.get("email", "").startswith("Account "):
                 acc["email"] = disk_acc["email"]
             if not acc.get("addedAt"):

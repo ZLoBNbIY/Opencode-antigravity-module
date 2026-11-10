@@ -31,6 +31,85 @@ class VlessManagerTests(unittest.TestCase):
                 self.assertFalse(ok)
                 self.assertGreater(opener.call_count, 0)
 
+    def test_resolve_sing_box_download_url_redirect(self):
+        fake_resp = mock.MagicMock()
+        fake_resp.geturl.return_value = "https://github.com/SagerNet/sing-box/releases/tag/v1.14.4"
+        fake_opener = mock.MagicMock()
+        fake_opener.open.return_value.__enter__.return_value = fake_resp
+
+        with mock.patch("vless_manager.urllib.request.build_opener", return_value=fake_opener):
+            url = vless_manager.resolve_sing_box_download_url()
+            self.assertEqual(
+                url,
+                "https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-windows-amd64.zip",
+            )
+
+    def test_resolve_sing_box_download_url_api_fallback(self):
+        # 1st call to redirect fails, 2nd call to API succeeds
+        api_data = {
+            "tag_name": "v1.14.4",
+            "assets": [
+                {
+                    "name": "sing-box-1.14.4-windows-amd64.zip",
+                    "browser_download_url": "https://example.com/sb.zip",
+                }
+            ],
+        }
+
+        class MockOpener:
+            def open(self, req, timeout=None):
+                if "api.github.com" in req.full_url:
+                    cm = mock.MagicMock()
+                    cm.__enter__.return_value.read.return_value = json.dumps(api_data).encode("utf-8")
+                    return cm
+                raise OSError("redirect failed")
+
+        with mock.patch("vless_manager.urllib.request.build_opener", return_value=MockOpener()):
+            url = vless_manager.resolve_sing_box_download_url()
+            self.assertEqual(url, "https://example.com/sb.zip")
+
+    def test_resolve_sing_box_download_url_offline_fallback(self):
+        with mock.patch("vless_manager.urllib.request.build_opener", side_effect=OSError("offline")):
+            url = vless_manager.resolve_sing_box_download_url()
+            self.assertEqual(url, vless_manager.SING_BOX_FALLBACK_URL)
+            self.assertIn("sing-box-1.14.4-windows-amd64.zip", url)
+
+    def test_download_core_sing_box_extracts_executable(self):
+        import io
+        import zipfile
+
+        # Create mock zip in memory
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w") as zf:
+            zf.writestr("sing-box-1.14.4-windows-amd64/sing-box.exe", b"fake binary")
+            zf.writestr("sing-box-1.14.4-windows-amd64/libcronet.dll", b"fake dll")
+        zip_bytes = zip_buf.getvalue()
+
+        def make_fake_resp():
+            resp = mock.MagicMock()
+            resp.length = len(zip_bytes)
+            resp.read.side_effect = [zip_bytes, b""]
+            resp.__enter__.return_value = resp
+            return resp
+
+        fake_opener = mock.MagicMock()
+        fake_opener.open.side_effect = lambda req, timeout=None: make_fake_resp()
+
+        root = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory(dir=root) as directory:
+            folder = Path(directory)
+            manager = vless_manager.VlessManager()
+            with mock.patch.object(manager, 'get_bin_dir', return_value=folder), \
+                 mock.patch.object(vless_manager, 'CONFIG_DIR', folder), \
+                 mock.patch('vless_manager.shutil.which', return_value=None), \
+                 mock.patch('vless_manager.resolve_sing_box_download_url', return_value="https://mock/sb.zip"), \
+                 mock.patch('vless_manager.urllib.request.build_opener', return_value=fake_opener):
+                ok, msg = manager.download_core('sing-box')
+                self.assertTrue(ok)
+                self.assertTrue((folder / 'sing-box.exe').exists())
+                self.assertEqual((folder / 'sing-box.exe').read_bytes(), b"fake binary")
+                self.assertTrue((folder / 'libcronet.dll').exists())
+
     def test_parse_vless_reality(self):
         url = (
             "vless://12345678-1234-1234-1234-123456789abc@198.51.100.1:443"

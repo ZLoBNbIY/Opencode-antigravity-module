@@ -160,10 +160,10 @@ class HubApi:
                              0 if claude_accs else None)
 
         return {
-            "accounts": [{k: a[k] for k in ("id", "email", "index", "is_active", "groups", "candidate", "status") if k in a} for a in accounts],
+            "accounts": [{k: a[k] for k in ("id", "email", "index", "is_active", "groups", "candidate", "enabled", "status") if k in a} for a in accounts],
             "activeIndex": active_index,
             "activeGoogleId": active.get("id") if active else None,
-            "openaiAccounts": [{k: a[k] for k in ("id", "accountId", "email", "plan_type", "is_active", "quota") if k in a} for a in openai_accs],
+            "openaiAccounts": [{k: a[k] for k in ("id", "accountId", "email", "plan_type", "is_active", "quota", "enabled", "candidate") if k in a} for a in openai_accs],
             "claudeAccounts": [{**{k: a[k] for k in ("id", "email", "name", "plan") if k in a},
                                 "is_active": index == claude_active} for index, a in enumerate(claude_accs)],
             "openaiRefreshing": self._quota_refreshing,
@@ -706,8 +706,34 @@ class HubApi:
         except Exception as e:
             return f"Результат проверки: {e}"
 
-    def toggle_google_candidate(self, aid_or_email: str, enabled: bool) -> bool:
-        return antigravity_manager.set_google_account_candidate(aid_or_email, enabled)
+    def toggle_google_enabled(self, aid_or_email: str, enabled: bool) -> bool:
+        return antigravity_manager.set_google_account_enabled(aid_or_email, enabled)
+
+    def toggle_google_candidate(self, aid_or_email: str, candidate: bool) -> bool:
+        return antigravity_manager.set_google_account_candidate(aid_or_email, candidate)
+
+    def test_openai_account(self, aid_or_email: str) -> str:
+        accs = openai_manager.load_openai_accounts() if hasattr(openai_manager, "load_openai_accounts") else []
+        acc = next((a for a in accs if a.get("id") == aid_or_email or a.get("accountId") == aid_or_email or a.get("email") == aid_or_email), None)
+        if not acc:
+            return "Аккаунт ChatGPT не найден"
+        try:
+            res = health_checker.test_openai_model_generation(acc, timeout=20)
+            return res.get("message", "Проверка завершена")
+        except Exception as e:
+            return f"Результат проверки OpenAI: {e}"
+
+    def toggle_openai_enabled(self, aid_or_email: str, enabled: bool) -> bool:
+        return openai_manager.set_openai_account_enabled(aid_or_email, enabled)
+
+    def toggle_openai_candidate(self, aid_or_email: str, candidate: bool) -> bool:
+        return openai_manager.set_openai_account_candidate(aid_or_email, candidate)
+
+    def activate_openai_account(self, aid_or_email: str) -> bool:
+        return openai_manager.set_active_openai_account(aid_or_email)
+
+    def delete_openai_account(self, aid_or_email: str) -> bool:
+        return openai_manager.remove_openai_account(aid_or_email)
 
     def add_openai_account(self) -> dict:
         if not self._login_locks["openai"].acquire(blocking=False):

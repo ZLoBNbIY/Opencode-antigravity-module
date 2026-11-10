@@ -417,6 +417,34 @@ def remove_openai_account(account_id: str) -> bool:
     return True
 
 
+def set_openai_account_enabled(account_id: str, enabled: bool) -> bool:
+    """Enables or disables an OpenAI account."""
+    accounts = load_openai_accounts()
+    changed = False
+    for acc in accounts:
+        if acc.get("id") == account_id or acc.get("accountId") == account_id or acc.get("email") == account_id:
+            acc["enabled"] = enabled
+            changed = True
+            break
+    if changed:
+        save_openai_accounts(accounts)
+    return changed
+
+
+def set_openai_account_candidate(account_id: str, candidate: bool) -> bool:
+    """Sets whether an OpenAI account participates in auto-rotation."""
+    accounts = load_openai_accounts()
+    changed = False
+    for acc in accounts:
+        if acc.get("id") == account_id or acc.get("accountId") == account_id or acc.get("email") == account_id:
+            acc["candidate"] = candidate
+            changed = True
+            break
+    if changed:
+        save_openai_accounts(accounts)
+    return changed
+
+
 def _get_http_opener(timeout: int = 15):
     """Route OpenAI usage/auth requests according to the provider selector."""
     import provider_proxy
@@ -625,6 +653,8 @@ def check_and_auto_rotate_openai(accounts: list[dict]) -> tuple[bool, str]:
     candidates = [
         a for a in accounts
         if (a.get("accountId") != active_acc.get("accountId") and a.get("id") != active_acc.get("id"))
+        and a.get("enabled", True) is not False
+        and a.get("candidate", True) is not False
         and (a.get("quota") or {}).get("primary", {}).get("remaining_percent", 100) > 0
         and (a.get("quota") or {}).get("secondary", {}).get("remaining_percent", 100) > 0
     ]
