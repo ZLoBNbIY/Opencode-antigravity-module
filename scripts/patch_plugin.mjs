@@ -371,6 +371,49 @@ for (const basePath of targetPaths) {
     let content = fs.readFileSync(filePath, 'utf8');
     let changed = false;
 
+    // Keep Gemini 4 Hydrogen visible in OpenCode's Antigravity model catalog.
+    // The upstream dynamic catalog can replace the static ID list at runtime.
+    const hydrogenCatalogPatch = `if (!ALL_MODEL_DEFINITIONS["antigravity-gemini-4-hydrogen"]) {
+  ALL_MODEL_DEFINITIONS["antigravity-gemini-4-hydrogen"] = defineModel("antigravity-gemini-4-hydrogen", {
+    name: "Gemini 4 Hydrogen (Antigravity)",
+    reasoning: true,
+    limit: { context: 1048576, output: 1048576 },
+    modalities: DEFAULT_MODALITIES,
+    variants: {
+      low: { thinkingLevel: "low" },
+      medium: { thinkingLevel: "medium" },
+      high: { thinkingLevel: "high" },
+      xhigh: { thinkingLevel: "xhigh" }
+    }
+  });
+}
+if (!ANTIGRAVITY_OPENCODE_MODEL_IDS.includes("antigravity-gemini-4-hydrogen")) {
+  ANTIGRAVITY_OPENCODE_MODEL_IDS.unshift("antigravity-gemini-4-hydrogen");
+}
+`;
+    const catalogMarker = 'var OPENCODE_MODEL_DEFINITIONS = pickModelDefinitions(ANTIGRAVITY_OPENCODE_MODEL_IDS);';
+    if (content.includes(catalogMarker) && !content.includes('var HYDROGEN_CATALOG_PATCH_APPLIED')) {
+      content = content.replace(catalogMarker, `var HYDROGEN_CATALOG_PATCH_APPLIED = true;\n${hydrogenCatalogPatch}${catalogMarker}`);
+      changed = true;
+      console.log(`✓ Added Gemini 4 Hydrogen to ${file} model catalog`);
+    }
+
+    const publicModelsTarget = `function getPublicModelDefinitions() {
+  return pickModelDefinitions(ANTIGRAVITY_OPENCODE_MODEL_IDS);
+}`;
+    const publicModelsReplacement = `function getPublicModelDefinitions() {
+  if (!ANTIGRAVITY_OPENCODE_MODEL_IDS.includes("antigravity-gemini-4-hydrogen")) {
+    ensureDynamicModelDefinition("antigravity-gemini-4-hydrogen");
+    ANTIGRAVITY_OPENCODE_MODEL_IDS.unshift("antigravity-gemini-4-hydrogen");
+  }
+  return pickModelDefinitions(ANTIGRAVITY_OPENCODE_MODEL_IDS);
+}`;
+    if (content.includes(publicModelsTarget)) {
+      content = content.replace(publicModelsTarget, publicModelsReplacement);
+      changed = true;
+      console.log(`✓ Preserved Gemini 4 Hydrogen during catalog refresh in ${file}`);
+    }
+
     // Windows fsync polyfill
     if (process.platform === 'win32' && !content.includes('__origSync')) {
       content = WIN32_FSYNC_POLYFILL + content;

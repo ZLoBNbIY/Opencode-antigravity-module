@@ -134,6 +134,7 @@ The model registry lives at `packages/core/src/model-registry.ts`; the OpenCode 
 
 | Model | Variants | Quota group |
 | --- | --- | --- |
+| `antigravity-gemini-4-hydrogen` | `low`, `medium`, `high`, `xhigh` | `gemini-flash` |
 | `antigravity-gemini-3.8-flash` | `low`, `high` | `gemini-flash` |
 | `antigravity-gemini-3.7-flash` | `low`, `high` | `gemini-flash` |
 | `antigravity-gemini-3.6-flash` | `low`, `high` | `gemini-flash` |

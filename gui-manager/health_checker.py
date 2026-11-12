@@ -393,6 +393,8 @@ def test_openai_model_generation(
 ANTIGRAVITY_MODEL_INTERNAL_MAP = {
     "antigravity-gemini-4-argon": ("Gemini 4 Argon", "gemini-4-argon-medium"),
     "gemini-4-argon": ("Gemini 4 Argon", "gemini-4-argon-medium"),
+    "antigravity-gemini-4-hydrogen": ("Gemini 4 Hydrogen", "gemini-4-hydrogen-high"),
+    "gemini-4-hydrogen": ("Gemini 4 Hydrogen", "gemini-4-hydrogen-high"),
     "antigravity-gemini-3.8-flash": ("Gemini 3.8 Flash", "gemini-3.8-flash-high"),
     "antigravity-claude-opus-5-5": ("Claude Opus 5.5", "claude-opus-5-5"),
     "antigravity-claude-opus-5-5-thinking": ("Claude Opus 5.5 Thinking", "claude-opus-5-5"),

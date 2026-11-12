@@ -16644,6 +16644,18 @@ var ALL_MODEL_DEFINITIONS = {
       high: { thinkingLevel: "high" }
     }
   }),
+  "antigravity-gemini-4-hydrogen": defineModel("antigravity-gemini-4-hydrogen", {
+    name: "Gemini 4 Hydrogen (Antigravity)",
+    reasoning: true,
+    limit: { context: 1048576, output: 1048576 },
+    modalities: DEFAULT_MODALITIES,
+    variants: {
+      low: { thinkingLevel: "low" },
+      medium: { thinkingLevel: "medium" },
+      high: { thinkingLevel: "high" },
+      xhigh: { thinkingLevel: "xhigh" }
+    }
+  }),
   "antigravity-claude-sonnet-5-5": defineModel("antigravity-claude-sonnet-5-5", {
     name: "Claude Sonnet 5.5 (Antigravity)",
     reasoning: true,
@@ -16916,6 +16928,7 @@ var QUOTA_GROUP_BY_MODEL_ID = {
 };
 var ANTIGRAVITY_OPENCODE_MODEL_IDS = [
   "antigravity-gemini-4-argon",
+  "antigravity-gemini-4-hydrogen",
   "antigravity-gemini-3.8-flash",
   "antigravity-claude-opus-5-5",
   "antigravity-claude-opus-5-5-thinking",

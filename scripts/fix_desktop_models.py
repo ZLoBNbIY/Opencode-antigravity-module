@@ -29,6 +29,7 @@ def fix_models_visibility():
 
         # 2. Models that should be immediately visible in the quick dropdown
         to_show = [
+            "antigravity-gemini-4-hydrogen",
             "antigravity-gemini-4-argon",
             "antigravity-gemini-3.8-flash",
             "antigravity-claude-opus-5-5",
@@ -56,11 +57,12 @@ def fix_models_visibility():
 
         data["user"] = user_models
 
-        # 3. Clean recent & ensure Gemini 4 Argon, Claude Opus/Sonnet 5.5 and Gemini 3.8 are at top
+        # 3. Clean recent & ensure Gemini 4 Hydrogen/Argon, Claude Opus/Sonnet 5.5 and Gemini 3.8 are at top
         if "recent" in data:
             data["recent"] = [m for m in data["recent"] if not is_dep(m.get("modelID", ""))]
             recent_keys = {f"{m.get('providerID')}:{m.get('modelID')}" for m in data["recent"]}
             for m_id in [
+                "antigravity-gemini-4-hydrogen",
                 "antigravity-gemini-4-argon",
                 "antigravity-claude-sonnet-5-5",
                 "antigravity-claude-opus-5-5",
@@ -79,7 +81,7 @@ def fix_models_visibility():
         cur.execute("UPDATE state SET value=? WHERE rowid=?", (json.dumps(data), rowid))
         conn.commit()
         conn.close()
-        print("[Desktop Fix] OpenCode Desktop models visibility updated: Claude Opus/Sonnet and Gemini active.")
+        print("[Desktop Fix] OpenCode Desktop models visibility updated: Gemini 4 Hydrogen/Argon, Claude, and Gemini active.")
     except Exception as e:
         print(f"[Desktop Fix] Error updating models: {e}")
 
