@@ -36,6 +36,7 @@ except Exception:
     claude_service = None
 
 from vless_manager import get_http_port, get_socks_port, vless_service, VlessParser
+import vless_subscription
 import provider_proxy
 import auto_router
 import dns_tester
@@ -486,6 +487,59 @@ class HubApi:
         with self._core_lock:
             ok, message = vless_service.download_core(core_type)
         return {"ok": ok, "message": message}
+
+    def get_vless_subscription(self, url: str = None, force_refresh: bool = False) -> dict:
+        try:
+            target_url = url or vless_subscription.DEFAULT_SUBSCRIPTION_URL
+            nodes, msg = vless_subscription.fetch_subscription(url=target_url, force_refresh=force_refresh)
+            node_dicts = [
+                {
+                    "url": n.url,
+                    "server": n.server,
+                    "port": n.port,
+                    "tag": n.tag,
+                    "country_code": n.country_code,
+                    "country_name": n.country_name,
+                    "flag": n.flag,
+                    "is_ai_allowed": n.is_ai_allowed,
+                    "display_label": n.display_label,
+                }
+                for n in nodes
+            ]
+            return {"ok": bool(nodes), "message": msg, "nodes": node_dicts}
+        except Exception as e:
+            return {"ok": False, "message": str(e), "nodes": []}
+
+    def auto_pick_vless_node(self, country_filter: str = "ai_allowed") -> dict:
+        try:
+            nodes, msg = vless_subscription.fetch_subscription()
+            if not nodes:
+                return {"ok": False, "message": f"Не удалось загрузить серверы: {msg}"}
+            best_node = vless_subscription.benchmark_and_pick_best(nodes, country_filter=country_filter, max_check=12)
+            if best_node and best_node.ping_ms is not None:
+                with self._config_lock:
+                    cfg = self.load_config()
+                    cfg["vless_url"] = best_node.url
+                    self.save_config(cfg)
+                    self._sync_routes(cfg)
+                return {
+                    "ok": True,
+                    "message": f"Выбран быстрый сервер: {best_node.flag} {best_node.country_name} ({best_node.ping_ms} мс)",
+                    "node": {
+                        "url": best_node.url,
+                        "server": best_node.server,
+                        "port": best_node.port,
+                        "tag": best_node.tag,
+                        "country_code": best_node.country_code,
+                        "country_name": best_node.country_name,
+                        "flag": best_node.flag,
+                        "ping_ms": best_node.ping_ms,
+                        "display_label": best_node.display_label,
+                    }
+                }
+            return {"ok": False, "message": "Серверы не ответили на быстрый пинг. Выберите узел вручную."}
+        except Exception as e:
+            return {"ok": False, "message": str(e)}
 
     def test_dns(self, mode: str, value: str) -> dict:
         # Pass the domain explicitly so concurrent resolver checks are independent.

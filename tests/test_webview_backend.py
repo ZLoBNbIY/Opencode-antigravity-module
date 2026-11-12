@@ -279,6 +279,35 @@ class WebviewBackendTests(unittest.TestCase):
             mocked.assert_called_once_with("google", timeout=20)
             self.assertTrue(result["ok"])
 
+    def test_vless_subscription_methods(self):
+        api = self.backend.HubApi()
+        fake_node = SimpleNamespace(
+            url="vless://test-uuid@1.2.3.4:443?security=reality#%F0%9F%87%BA%F0%9F%87%B8%20USA",
+            server="1.2.3.4",
+            port=443,
+            tag="USA",
+            country_code="US",
+            country_name="United States",
+            flag="🇺🇸",
+            is_ai_allowed=True,
+            ping_ms=45,
+            display_label="🇺🇸 United States [45ms] — USA",
+        )
+        with patch.object(self.backend.vless_subscription, "fetch_subscription", return_value=([fake_node], "OK")):
+            sub_res = api.get_vless_subscription()
+            self.assertTrue(sub_res["ok"])
+            self.assertEqual(len(sub_res["nodes"]), 1)
+            self.assertEqual(sub_res["nodes"][0]["country_code"], "US")
+            self.assertTrue(sub_res["nodes"][0]["is_ai_allowed"])
+
+        with patch.object(self.backend.vless_subscription, "fetch_subscription", return_value=([fake_node], "OK")), \
+             patch.object(self.backend.vless_subscription, "benchmark_and_pick_best", return_value=fake_node):
+            pick_res = api.auto_pick_vless_node("ai_allowed")
+            self.assertTrue(pick_res["ok"])
+            self.assertIn("🇺🇸", pick_res["message"])
+            saved_cfg = api.load_config()
+            self.assertEqual(saved_cfg.get("vless_url"), fake_node.url)
+
     @unittest.skipUnless(importlib.util.find_spec("webview"), "pywebview required")
     def test_bridge_finishes_without_inspecting_native_window(self):
         from webview.util import inject_pywebview

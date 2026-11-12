@@ -117,6 +117,37 @@
           <div class="glass-card network-panel">
             <div class="panel-heading"><h2>VLESS-туннель</h2><span class="badge-pill badge-pool" id="vless-status">Проверка…</span></div>
             <p class="help-text">Локальный туннель Xray / sing-box. Выберите VLESS в маршруте нужного провайдера.</p>
+
+            <!-- Subscription & AI Country Filter -->
+            <div class="vless-sub-section" style="margin-top: 10px; margin-bottom: 12px; padding: 12px; background: rgba(0,0,0,0.25); border: 1px solid var(--glass-border); border-radius: 10px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <span style="font-weight:600; font-size:12px; color:var(--text-primary);">🌍 Проверенные серверы для ИИ (OpenAI / Claude / Gemini)</span>
+                <span class="badge-pill badge-pool" id="vless-sub-count" style="font-size:10px;">Нажмите «Загрузить»</span>
+              </div>
+              <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center; flex-wrap: wrap;">
+                <select id="vless-country-filter" onchange="onVlessCountryFilterChanged()" style="flex: 1; min-width: 180px; padding: 6px 10px; font-size: 11px; background: rgba(0,0,0,0.3); border: 1px solid var(--glass-border); border-radius: 6px; color: #fff;">
+                  <option value="ai_allowed">✨ Только для ИИ (US, DE, NL, FR, JP...)</option>
+                  <option value="US">🇺🇸 США (United States)</option>
+                  <option value="DE">🇩🇪 Германия (Germany)</option>
+                  <option value="NL">🇳🇱 Нидерланды (Netherlands)</option>
+                  <option value="FR">🇫🇷 Франция (France)</option>
+                  <option value="PL">🇵🇱 Польша (Poland)</option>
+                  <option value="JP">🇯🇵 Япония (Japan)</option>
+                  <option value="SG">🇸🇬 Сингапур (Singapore)</option>
+                  <option value="LT">🇱🇹 Литва (Lithuania)</option>
+                  <option value="all">🌐 Все страны</option>
+                </select>
+                <button class="btn-secondary" type="button" id="btn-load-sub" onclick="loadVlessSubscription()" style="padding: 6px 12px; font-size: 11px; white-space: nowrap;">📥 Загрузить серверы</button>
+                <button class="btn-primary" type="button" id="btn-auto-pick-node" onclick="autoPickVlessNode()" style="padding: 6px 12px; font-size: 11px; white-space: nowrap;">⚡ Авто-выбор (пинг)</button>
+              </div>
+              <div style="display:flex; gap:8px; align-items:center;">
+                <select id="vless-node-select" onchange="onVlessNodeSelected()" style="flex: 1; padding: 6px 10px; font-size: 11px; background: rgba(0,0,0,0.3); border: 1px solid var(--glass-border); border-radius: 6px; color: #fff;">
+                  <option value="">(Нажмите «Загрузить серверы» для получения списка)</option>
+                </select>
+              </div>
+              <p class="help-text" id="vless-sub-status" style="margin: 6px 0 0 0; font-size: 11px;"></p>
+            </div>
+
             <label class="field-label" for="vless-url">Строка подключения</label><input id="vless-url" type="password" autocomplete="off" placeholder="vless://uuid@server:port?...">
             <label class="field-label" for="vless-core-path">Свой путь к ядру (необязательно)</label><input id="vless-core-path" placeholder="C:\path\sing-box.exe">
             <div class="core-list" id="vless-core-list"></div><p class="help-text" id="vless-core-status">Выбранное ядро: проверка…</p>

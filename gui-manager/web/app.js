@@ -42,6 +42,9 @@ function switchTab(tabId) {
     el.style.display = (el.id === `view-${tabId}`) ? 'block' : 'none';
   });
   if (changed) document.getElementById('main-scroll').scrollTop = 0;
+  if (tabId === 'network' && (!vlessSubNodes || !vlessSubNodes.length)) {
+    loadVlessSubscription();
+  }
 }
 
 function showDiagnostics(tab) {
@@ -748,6 +751,126 @@ async function saveNetworkSettings() {
     showToast(`Не удалось сохранить сеть: ${e}`);
     return false;
   } finally { button.disabled = false; }
+}
+
+let vlessSubNodes = [];
+
+async function loadVlessSubscription(force = false) {
+  const btn = document.getElementById('btn-load-sub');
+  const countBadge = document.getElementById('vless-sub-count');
+  const statusLbl = document.getElementById('vless-sub-status');
+  if (btn) btn.disabled = true;
+  if (statusLbl) statusLbl.textContent = 'Загрузка списка серверов…';
+
+  try {
+    const result = await window.pywebview.api.get_vless_subscription(null, force);
+    if (result.ok && Array.isArray(result.nodes)) {
+      vlessSubNodes = result.nodes;
+      const aiCount = vlessSubNodes.filter(n => n.is_ai_allowed).length;
+      if (countBadge) countBadge.textContent = `${vlessSubNodes.length} узлов (ИИ: ${aiCount})`;
+      if (statusLbl) statusLbl.textContent = `Загружено: ${result.message}`;
+      renderVlessNodesDropdown();
+    } else {
+      if (statusLbl) statusLbl.textContent = `Ошибка: ${result.message}`;
+      showToast(`Не удалось загрузить подписку: ${result.message}`);
+    }
+  } catch (e) {
+    if (statusLbl) statusLbl.textContent = String(e);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function onVlessCountryFilterChanged() {
+  renderVlessNodesDropdown();
+}
+
+function renderVlessNodesDropdown() {
+  const filterSelect = document.getElementById('vless-country-filter');
+  const nodeSelect = document.getElementById('vless-node-select');
+  if (!nodeSelect || !filterSelect) return;
+
+  const filter = filterSelect.value || 'ai_allowed';
+  let filtered = vlessSubNodes;
+
+  if (filter === 'ai_allowed') {
+    filtered = vlessSubNodes.filter(n => n.is_ai_allowed);
+  } else if (filter !== 'all') {
+    filtered = vlessSubNodes.filter(n => n.country_code.toUpperCase() === filter.toUpperCase());
+  }
+
+  nodeSelect.innerHTML = '';
+  if (!filtered.length) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = vlessSubNodes.length === 0
+      ? '(Нажмите «Загрузить серверы» для получения списка)'
+      : '(Нет серверов для выбранной страны)';
+    nodeSelect.appendChild(opt);
+    return;
+  }
+
+  filtered.forEach((node) => {
+    const opt = document.createElement('option');
+    opt.value = node.url;
+    opt.textContent = node.display_label || `${node.flag || ''} ${node.country_name} — ${node.server}:${node.port}`;
+    nodeSelect.appendChild(opt);
+  });
+
+  const vlessInput = document.getElementById('vless-url');
+  if (vlessInput && !vlessInput.value.trim() && filtered[0]) {
+    vlessInput.value = filtered[0].url;
+    markNetworkDirty();
+  }
+}
+
+function onVlessNodeSelected() {
+  const nodeSelect = document.getElementById('vless-node-select');
+  const vlessInput = document.getElementById('vless-url');
+  if (!nodeSelect || !vlessInput) return;
+  const val = nodeSelect.value;
+  if (val) {
+    vlessInput.value = val;
+    markNetworkDirty();
+    saveNetworkSettings();
+  }
+}
+
+async function autoPickVlessNode() {
+  const btn = document.getElementById('btn-auto-pick-node');
+  const statusLbl = document.getElementById('vless-sub-status');
+  const filterSelect = document.getElementById('vless-country-filter');
+  const filter = filterSelect ? filterSelect.value : 'ai_allowed';
+
+  if (btn) btn.disabled = true;
+  if (statusLbl) statusLbl.textContent = 'Пинг серверов и поиск самого быстрого…';
+
+  try {
+    const res = await window.pywebview.api.auto_pick_vless_node(filter);
+    if (res.ok && res.node) {
+      const vlessInput = document.getElementById('vless-url');
+      if (vlessInput) {
+        vlessInput.value = res.node.url;
+      }
+      if (statusLbl) {
+        statusLbl.textContent = `✅ ${res.message}`;
+      }
+      showToast(res.message);
+      if (!vlessSubNodes.length) {
+        await loadVlessSubscription();
+      } else {
+        renderVlessNodesDropdown();
+      }
+      await refreshState();
+    } else {
+      if (statusLbl) statusLbl.textContent = `❌ ${res.message || 'Ошибка выбора'}`;
+      showToast(`Не удалось выбрать сервер: ${res.message}`);
+    }
+  } catch (e) {
+    if (statusLbl) statusLbl.textContent = String(e);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 async function vlessAction(action) {

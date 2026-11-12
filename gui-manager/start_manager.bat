@@ -97,8 +97,8 @@ if exist "!PY_DIR!pythonw.exe" (
     )
 )
 
-:: Проверка зависимостей интерфейса (customtkinter, pillow и т.д.)
-"!PY_EXE!" -c "import customtkinter, PIL, pywinstyles, httpx, webview" >nul 2>nul
+:: Проверка зависимостей нового интерфейса WebView
+"!PY_EXE!" -c "import httpx, webview" >nul 2>nul
 if !ERRORLEVEL! neq 0 (
     echo [*] Первый запуск: установка необходимых библиотек GUI...
     "!PY_EXE!" -m pip install -r "%~dp0requirements.txt"

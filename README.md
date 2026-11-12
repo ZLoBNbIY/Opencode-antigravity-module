@@ -166,7 +166,7 @@ chmod +x install.sh
 
 1. **Запустите менеджер:**
    - На Windows: запустите ярлык **Antigravity Hub** с рабочего стола или файл `Запуск_Менеджера.bat`.
-   - В терминале: `python gui-manager/antigravity_manager.pyw`.
+   - В терминале: `python gui-manager/antigravity_manager.pyw` — откроется новый интерфейс Hub на WebView2.
 2. **Подключите провайдеров:**
    - **Google Antigravity:** Нажмите **«+ Добавить Google-аккаунт»** и авторизуйтесь в браузере. Для устойчивости добавьте 2 или более аккаунтов.
    - **OpenAI / ChatGPT:** Нажмите **«+ Добавить OpenAI»** во вкладке ChatGPT для авторизации через браузер.
