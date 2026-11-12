@@ -18,9 +18,15 @@ from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional, Dict, Any, List, Tuple
 
-CONFIG_DIR = Path.home() / ".config" / "opencode"
-CLAUDE_ACCOUNTS_FILE = CONFIG_DIR / "claude-accounts.json"
-CLAUDE_PROFILE_DIR = CONFIG_DIR / "claude_profile"
+try:
+    import hub_paths
+    CONFIG_DIR = hub_paths.CONFIG_DIR
+    CLAUDE_ACCOUNTS_FILE = hub_paths.ACCOUNTS_DIR / "claude-accounts.json"
+    CLAUDE_PROFILE_DIR = hub_paths.CLAUDE_PROFILE_DIR
+except Exception:
+    CONFIG_DIR = Path.home() / ".config" / "opencode"
+    CLAUDE_ACCOUNTS_FILE = CONFIG_DIR / "claude-accounts.json"
+    CLAUDE_PROFILE_DIR = CONFIG_DIR / "claude_profile"
 DEFAULT_BRIDGE_PORT = 51186
 
 CLAUDE_MODELS = {
@@ -440,22 +446,14 @@ class ClaudeAccountManager:
         browser_desc = "встроенного браузера Chromium"
         if mode == "default":
             try:
-                from .deepseek_browser import browser_paths, supports_cdp
-                b_paths = browser_paths()
+                import browser_paths
+                b_paths = browser_paths.browser_paths()
                 cand = b_paths.get("default") or b_paths.get("chrome") or b_paths.get("edge")
-                if cand and supports_cdp(cand):
+                if cand and browser_paths.supports_cdp(cand):
                     executable_path = str(cand)
                     browser_desc = f"дефолтного браузера ({Path(executable_path).name})"
             except Exception:
-                try:
-                    import deepseek_browser
-                    b_paths = deepseek_browser.browser_paths()
-                    cand = b_paths.get("default") or b_paths.get("chrome") or b_paths.get("edge")
-                    if cand and deepseek_browser.supports_cdp(cand):
-                        executable_path = str(cand)
-                        browser_desc = f"дефолтного браузера ({Path(executable_path).name})"
-                except Exception:
-                    pass
+                pass
 
         if progress_callback:
             tunnel_info = "через VLESS-туннель" if proxy else "прямое подключение"

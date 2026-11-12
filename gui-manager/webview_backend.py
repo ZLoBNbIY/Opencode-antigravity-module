@@ -13,6 +13,7 @@ import subprocess
 import copy
 import ipaddress
 import re
+import shutil
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 from pathlib import Path
@@ -40,11 +41,13 @@ import auto_router
 import dns_tester
 import xpiki_manager
 import openrouter_manager
+import hub_paths
 
 CONFIG_DIR = Path(os.path.expanduser("~/.config/opencode"))
 ANTIGRAVITY_CONFIG_FILE = CONFIG_DIR / "antigravity.json"
 OPENCODE_CONFIG_FILE = CONFIG_DIR / "opencode.json"
-LOG_DIR = CONFIG_DIR / "logs"
+LOG_DIR = hub_paths.LOG_DIR
+HUB_CONFIG_FILE = hub_paths.HUB_CONFIG_FILE
 
 CLOUDCODE_ENDPOINTS = [
     "daily-cloudcode-pa.googleapis.com",
@@ -76,6 +79,10 @@ class HubApi:
         # pywebview recursively inspects public API attributes. A public Window
         # reference exposes native GUI properties and can block bridge startup.
         self._window_holder = window_holder
+        try:
+            hub_paths.migrate_legacy_locations()
+        except Exception:
+            pass
         self._config_lock = threading.RLock()
         self._quota_lock = threading.Lock()
         self._quota_refreshing = False
@@ -89,13 +96,17 @@ class HubApi:
         self._provider_lock = threading.RLock()
         self._core_lock = threading.Lock()
         self._restart_lock = threading.Lock()
-        self._login_locks = {name: threading.Lock() for name in ("google", "openai")}
+        self._login_locks = {name: threading.Lock() for name in ("google", "openai", "claude")}
 
     def load_config(self) -> dict:
-        if ANTIGRAVITY_CONFIG_FILE.exists():
+        # The OpenCode mirror can be edited outside Hub. Honor whichever copy
+        # was most recently changed, then save both copies atomically.
+        candidates = [p for p in (HUB_CONFIG_FILE, ANTIGRAVITY_CONFIG_FILE) if p.exists()]
+        target = max(candidates, key=lambda p: p.stat().st_mtime_ns) if candidates else HUB_CONFIG_FILE
+        if target.exists():
             try:
                 return {**copy.deepcopy(antigravity_manager.DEFAULT_CONFIG),
-                        **json.loads(ANTIGRAVITY_CONFIG_FILE.read_text(encoding="utf-8-sig"))}
+                        **json.loads(target.read_text(encoding="utf-8-sig"))}
             except Exception:
                 pass
         return copy.deepcopy(antigravity_manager.DEFAULT_CONFIG)
@@ -103,7 +114,14 @@ class HubApi:
     def save_config(self, cfg: dict) -> bool:
         try:
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            hub_paths.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
             with self._config_lock:
+                # 1. Save to central isolated hub storage
+                pending_hub = HUB_CONFIG_FILE.with_suffix(".json.tmp")
+                pending_hub.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+                pending_hub.replace(HUB_CONFIG_FILE)
+
+                # 2. Mirror to opencode shared config for plugin compatibility
                 pending = ANTIGRAVITY_CONFIG_FILE.with_suffix(".json.tmp")
                 pending.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
                 pending.replace(ANTIGRAVITY_CONFIG_FILE)
@@ -573,6 +591,26 @@ class HubApi:
         threading.Thread(target=worker, daemon=True, name="hub-openai-quotas").start()
         return {"ok": True, "refreshing": True}
 
+    def refresh_all_quotas(self) -> dict:
+        self.refresh_openai_quotas()
+        try:
+            xpiki_manager.refresh_xpiki_quota_silent()
+        except Exception:
+            pass
+        def bg_google():
+            try:
+                node_exe = antigravity_manager.get_node_executable()
+                cli_js = antigravity_manager.get_cli_js()
+                if os.path.exists(node_exe) and os.path.exists(cli_js):
+                    antigravity_manager.run_silent_cmd(
+                        [node_exe, cli_js, "quota", "--refresh", "--json"],
+                        timeout=30, env=antigravity_manager.provider_route_environment()
+                    )
+            except Exception:
+                pass
+        threading.Thread(target=bg_google, daemon=True, name="hub-all-quotas-google").start()
+        return {"ok": True, "message": "Обновление квот запущено"}
+
     def get_provider_state(self) -> dict:
         xpiki = xpiki_manager.load_xpiki_config()
         xpiki_key = str(xpiki.get("api_key") or "")
@@ -746,13 +784,19 @@ class HubApi:
         finally:
             self._login_locks["openai"].release()
 
-    def add_claude_account(self) -> bool:
+    def add_claude_account(self) -> dict:
         if not claude_service:
-            return False
-        def _bg():
-            claude_service.login_claude_browser(mode="browser", timeout=300)
-        threading.Thread(target=_bg, daemon=True).start()
-        return True
+            return {"status": "error", "message": "Сервис Claude недоступен"}
+        if not self._login_locks["claude"].acquire(blocking=False):
+            return {"status": "error", "message": "Вход в Claude уже выполняется"}
+        try:
+            mode = "tunnel" if vless_service.is_running() else "default"
+            success, message, account = claude_service.login_claude_browser(mode=mode, timeout=300)
+            return {"status": "ok" if success and account else "error", "message": message}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+        finally:
+            self._login_locks["claude"].release()
 
     def set_strategy(self, strat: str) -> bool:
         with self._config_lock:
@@ -851,6 +895,47 @@ class HubApi:
             return True
         return False
 
+    def get_storage_stats(self) -> dict:
+        return hub_paths.get_storage_stats()
+
+    def clean_logs_and_cache(self) -> dict:
+        return hub_paths.clean_logs_and_cache()
+
+    def clean_browser_profiles(self) -> dict:
+        return hub_paths.clean_browser_profiles()
+
+    def open_hub_data_dir(self) -> bool:
+        return hub_paths.open_data_folder()
+
+    def uninstall_hub_completely(self) -> dict:
+        try:
+            try:
+                vless_service.stop_tunnel()
+            except Exception:
+                pass
+            if OPENCODE_CONFIG_FILE.exists():
+                try:
+                    cfg = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8-sig"))
+                    if isinstance(cfg.get("plugin"), list):
+                        cfg["plugin"] = [p for p in cfg["plugin"] if not str(p).startswith("@cortexkit/opencode-antigravity-auth")]
+                        if not cfg["plugin"]:
+                            cfg.pop("plugin", None)
+                    if cfg.get("provider", {}).get("google", {}).get("options", {}).get("apiKey") == "antigravity":
+                        cfg.get("provider", {}).pop("google", None)
+                        if not cfg.get("provider"):
+                            cfg.pop("provider", None)
+                    OPENCODE_CONFIG_FILE.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+                except Exception:
+                    pass
+            # This is the plugin compatibility mirror, owned by Hub. Do not
+            # touch opencode.json or any unrelated OpenCode data.
+            ANTIGRAVITY_CONFIG_FILE.unlink(missing_ok=True)
+            hub_root = hub_paths.get_hub_data_dir()
+            shutil.rmtree(hub_root, ignore_errors=True)
+            return {"ok": True, "message": "Antigravity Hub полностью удалён из системы."}
+        except Exception as e:
+            return {"ok": False, "message": f"Ошибка деинсталляции: {e}"}
+
     def export_backup(self, target_path: str = None) -> dict:
         try:
             import webview
@@ -917,7 +1002,7 @@ class HubApi:
         except Exception as e:
             return {"ok": False, "message": f"Ошибка экспорта: {e}"}
 
-    def import_backup(self, source_path: str = None) -> dict:
+    def import_backup(self, source_path: str = None, password: str = None) -> dict:
         try:
             import webview
             import crypto_backup
@@ -937,9 +1022,19 @@ class HubApi:
             raw = source.read_bytes()
 
             if crypto_backup.is_encrypted_backup(raw):
-                return {"ok": False, "message": "Зашифрованные .agb файлы требуют пароля"}
-
-            data = json.loads(raw.decode("utf-8"))
+                if not password:
+                    return {
+                        "ok": False,
+                        "requires_password": True,
+                        "source_path": str(source),
+                        "message": "Файл резервной копии зашифрован. Введите пароль для расшифровки."
+                    }
+                try:
+                    data = crypto_backup.decrypt_backup(raw, password)
+                except Exception as dec_err:
+                    return {"ok": False, "message": f"Ошибка расшифровки: {dec_err}"}
+            else:
+                data = json.loads(raw.decode("utf-8"))
             if not isinstance(data, dict):
                 raise ValueError("Некорректная структура файла бэкапа")
 

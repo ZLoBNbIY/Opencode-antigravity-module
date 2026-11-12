@@ -68,21 +68,19 @@ def resolve_target(host: str) -> str:
     if mode == "system":
         return host
 
-    dns_tester.DOMAIN_TO_TEST = host
-
     try:
         if mode == "doh":
-            res = dns_tester.test_doh_endpoint(settings.get("doh_url", "https://dns.bezmezhau.com/dns-query"))
+            res = dns_tester.test_doh_endpoint(settings.get("doh_url", "https://dns.bezmezhau.com/dns-query"), domain=host)
             if res.get("ok") and res.get("resolved_ip") and res["resolved_ip"] != "OK":
                 resolved_ip = res["resolved_ip"]
         elif mode == "dot":
-            res = dns_tester.test_dot_endpoint(settings.get("dot_host", "dns.bezmezhau.com"))
+            res = dns_tester.test_dot_endpoint(settings.get("dot_host", "dns.bezmezhau.com"), domain=host)
             if res.get("ok") and res.get("resolved_ip") and res["resolved_ip"] != "OK":
                 resolved_ip = res["resolved_ip"]
         elif mode == "standard":
             custom_dns = settings.get("custom_dns", [])
             primary = custom_dns[0] if custom_dns else "143.20.64.55"
-            res = dns_tester.test_standard_dns(primary)
+            res = dns_tester.test_standard_dns(primary, domain=host)
             if res.get("ok") and res.get("resolved_ip") and res["resolved_ip"] != "OK":
                 resolved_ip = res["resolved_ip"]
     except Exception:

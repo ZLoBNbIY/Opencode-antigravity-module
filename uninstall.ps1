@@ -6,6 +6,7 @@ $configDir = if ($env:OPENCODE_CONFIG_DIR) {
 } else {
     Join-Path $HOME '.config\opencode'
 }
+$hubCentralDir = if ($env:APPDATA) { Join-Path $env:APPDATA 'AntigravityHub' } else { Join-Path $HOME '.config\AntigravityHub' }
 $hubDataDir = Join-Path $HOME '.local\share\antigravity-hub'
 
 Write-Host 'OpenCode Antigravity Hub - complete removal' -ForegroundColor Cyan
@@ -34,7 +35,7 @@ if (Test-Path -LiteralPath $opencodeConfig) {
         } elseif ($cfg.plugin -is [string] -and $cfg.plugin -match '^@cortexkit/opencode-antigravity-auth(?:@|$)') {
             $cfg.PSObject.Properties.Remove('plugin')
         }
-        if ($cfg.provider -and $cfg.provider.google -and $cfg.provider.google.options.apiKey -eq 'antigravity') {
+        if ($cfg.provider -and $cfg.provider.google -and $cfg.provider.google.options -and $cfg.provider.google.options.apiKey -eq 'antigravity') {
             $cfg.provider.google.options.PSObject.Properties.Remove('apiKey')
             if ($cfg.provider.google.options.PSObject.Properties.Count -eq 0) { $cfg.provider.PSObject.Properties.Remove('google') }
             if ($cfg.provider.PSObject.Properties.Count -eq 0) { $cfg.PSObject.Properties.Remove('provider') }
@@ -82,6 +83,7 @@ foreach ($base in @($configDir, $hubDataDir)) {
     }
 }
 foreach ($path in @(
+    $hubCentralDir,
     $hubDataDir,
     (Join-Path $HOME '.cache\opencode\npm\node_modules\@cortexkit\opencode-antigravity-auth'),
     (Join-Path $HOME '.cache\opencode\packages\@cortexkit\opencode-antigravity-auth@latest')

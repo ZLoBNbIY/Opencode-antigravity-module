@@ -584,11 +584,61 @@
           </div>
         </div>
 
+        <!-- Storage & System Cleanup Center -->
+        <h2 class="settings-section-heading">📦 Хранение данных и очистка системы</h2>
+        <p class="help-text">Все данные приложения изолированы в единой папке. Управление занятым местом и полное удаление без оставления следов.</p>
+        
+        <div class="glass-card" style="margin-bottom: 16px;">
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 12px; margin-bottom: 12px;">
+            <div>
+              <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 4px;">Единая изолированная директория данных</div>
+              <div id="storage-root-path" style="font-size: 12px; font-family: monospace; color: var(--accent-amber-light); word-break: break-all;">
+                %APPDATA%\AntigravityHub
+              </div>
+            </div>
+            <button class="btn-secondary" onclick="openHubDataDir()">
+              <span>📂</span> Открыть в Проводнике
+            </button>
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 14px;">
+            <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px;">
+              <div style="font-size: 11px; color: var(--text-secondary);">Ядра VLESS</div>
+              <div id="storage-bin-size" style="font-size: 16px; font-weight: 700; color: #fff; margin-top: 2px;">—</div>
+            </div>
+            <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px;">
+              <div style="font-size: 11px; color: var(--text-secondary);">Профили браузера</div>
+              <div id="storage-browser-size" style="font-size: 16px; font-weight: 700; color: #fff; margin-top: 2px;">—</div>
+            </div>
+            <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px;">
+              <div style="font-size: 11px; color: var(--text-secondary);">Логи и кэш</div>
+              <div id="storage-log-size" style="font-size: 16px; font-weight: 700; color: #fff; margin-top: 2px;">—</div>
+            </div>
+            <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px;">
+              <div style="font-size: 11px; color: var(--text-secondary);">Всего занято</div>
+              <div id="storage-total-size" style="font-size: 16px; font-weight: 700; color: var(--accent-amber); margin-top: 2px;">—</div>
+            </div>
+          </div>
+
+          <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <button class="btn-secondary" onclick="cleanLogsAndCache()">
+              <span>🧹</span> Очистить логи и кэш
+            </button>
+            <button class="btn-secondary" onclick="cleanBrowserProfiles()">
+              <span>🗑</span> Сбросить профили браузера
+            </button>
+            <button class="btn-secondary" onclick="uninstallHubCompletely()" style="color: var(--accent-red); margin-left: auto;">
+              <span>⚠️</span> Полное удаление модуля
+            </button>
+          </div>
+          <p class="help-text" id="storage-status-text" style="margin-top: 8px;"></p>
+        </div>
+
         <div class="glass-card">
           <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 12px;">Быстрый доступ к папкам</div>
           <div style="display: flex; gap: 10px;">
-            <button class="btn-secondary" onclick="openFolder('config')">📂 Конфиги (~/.config/opencode)</button>
-            <button class="btn-secondary" onclick="openFolder('logs')">📂 Логи</button>
+            <button class="btn-secondary" onclick="openFolder('config')">📂 Конфиги OpenCode</button>
+            <button class="btn-secondary" onclick="openFolder('logs')">📂 Логи Hub</button>
           </div>
         </div>
       </section>

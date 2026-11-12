@@ -29,7 +29,7 @@ def get_opencode_config_path(config_dir: Optional[Path] = None) -> Path:
 def _parse_config_text(raw: str) -> Dict[str, Any]:
     """Parses JSON or JSONC text safely."""
     try:
-        from deepseek_config import jsonc_text
+        from jsonc_config import jsonc_text
         cleaned = jsonc_text(raw)
     except Exception:
         cleaned = raw
@@ -143,8 +143,8 @@ def ensure_session_title_config(config_path: Optional[Path] = None) -> Tuple[boo
     content = json.dumps(data, indent=4, ensure_ascii=False)
     try:
         try:
-            import deepseek_storage
-            deepseek_storage.atomic_write(path, content)
+            import secure_storage
+            secure_storage.atomic_write(path, content)
         except Exception:
             path.write_text(content, encoding="utf-8")
 

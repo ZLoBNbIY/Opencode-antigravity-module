@@ -1,4 +1,4 @@
-"""Small, comment-preserving JSONC edits for the optional DeepSeek integration."""
+"""Small, comment-preserving JSONC edits for OpenCode configuration."""
 
 import json
 import re
@@ -95,10 +95,8 @@ def set_property(text: str, path: tuple[str, ...], value) -> str:
         for key in reversed(keys[1:]):
             nested = {key: nested}
         rendered = json.dumps(keys[0], ensure_ascii=False) + ": " + json.dumps(nested, indent=2, ensure_ascii=False)
-        # A trailing comma may already exist in the original JSONC.
         tail = jsonc_text(text[last_end:i], mask_trailing_commas=False) if last_end is not None else ""
         comma = "" if last_end is None or "," in tail else ","
-        # Insert a separator immediately after the last value, before any // comment.
         if comma:
             text_with_comma = text[:last_end] + "," + text[last_end:]
             return text_with_comma[:i + 1] + "\n  " + rendered + "\n" + text_with_comma[i + 1:]
@@ -114,5 +112,5 @@ def config_path(directory: Path) -> Path:
     json_path = directory / "opencode.json"
     jsonc_path = directory / "opencode.jsonc"
     if json_path.exists() and jsonc_path.exists():
-        raise ValueError("Найдены opencode.json и opencode.jsonc одновременно. Оставьте один активный конфиг перед подключением DeepSeek.")
+        raise ValueError("Найдены opencode.json и opencode.jsonc одновременно. Оставьте один активный конфиг.")
     return jsonc_path if jsonc_path.exists() else json_path

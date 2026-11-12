@@ -42,10 +42,7 @@ LOCAL_ROUTES = {
         "claudeusercontent.com",
     ),
     "openrouter-free": ("openrouter.ai",),
-    "mwapi": ("mwapi.dev",),
     "xpiki": ("api.xpiki.com", "xpiki.com"),
-    "deepseek-account": ("api.deepseek.com", "deepseek.com"),
-    "deepseek-web": ("chat.deepseek.com", "deepseek.com"),
 }
 _server = None
 _thread = None

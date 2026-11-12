@@ -19,8 +19,13 @@ import shutil
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 
-CONFIG_DIR = Path.home() / ".config" / "opencode"
-VLESS_RUNTIME_DIR = CONFIG_DIR / "vless"
+try:
+    import hub_paths
+    CONFIG_DIR = hub_paths.OPENCODE_CONFIG_DIR
+    VLESS_RUNTIME_DIR = hub_paths.VLESS_RUNTIME_DIR
+except Exception:
+    CONFIG_DIR = Path.home() / ".config" / "opencode"
+    VLESS_RUNTIME_DIR = CONFIG_DIR / "vless"
 VLESS_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 
 # Non-standard ports to avoid collisions with other local VPN/proxy tools
@@ -240,28 +245,32 @@ class VlessManager:
         self._last_test_result: Optional[Dict[str, Any]] = None
 
     def get_bin_dir(self) -> Path:
-        local_bin = Path(__file__).resolve().parent / "bin"
-        local_bin.mkdir(parents=True, exist_ok=True)
-        return local_bin
+        try:
+            import hub_paths
+            p = hub_paths.BIN_DIR
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+        except Exception:
+            local_bin = Path(__file__).resolve().parent / "bin"
+            local_bin.mkdir(parents=True, exist_ok=True)
+            return local_bin
 
     def find_core_executable(self, custom_path: Optional[str] = None, core_type: Optional[str] = None) -> Optional[Path]:
         if custom_path and os.path.exists(custom_path) and os.path.isfile(custom_path):
             return Path(custom_path)
 
-        # Check local module bin
-        bin_dir = self.get_bin_dir()
         names = (f"{core_type}.exe", core_type) if core_type else ("xray.exe", "sing-box.exe", "xray", "sing-box")
-        for name in names:
-            cand = bin_dir / name
-            if cand.exists():
-                return cand
-
-        # Check user config bin
-        user_bin = CONFIG_DIR / "bin"
-        for name in names:
-            cand = user_bin / name
-            if cand.exists():
-                return cand
+        search_dirs = [self.get_bin_dir(), CONFIG_DIR / "bin"]
+        # Legacy module-bundled engines remain a fallback for normal runtime
+        # discovery, but must not mask an engine-specific install/download.
+        if core_type is None:
+            search_dirs.append(Path(__file__).resolve().parent / "bin")
+        for b_dir in search_dirs:
+            if b_dir.exists():
+                for name in names:
+                    cand = b_dir / name
+                    if cand.exists():
+                        return cand
 
         # Check system PATH
         for cmd in names:

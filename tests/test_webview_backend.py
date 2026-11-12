@@ -54,6 +54,7 @@ class WebviewBackendTests(unittest.TestCase):
         self.backend.CONFIG_DIR = Path(self.temp.name)
         self.backend.ANTIGRAVITY_CONFIG_FILE = Path(self.temp.name) / 'antigravity.json'
         self.backend.OPENCODE_CONFIG_FILE = Path(self.temp.name) / 'opencode.json'
+        self.backend.HUB_CONFIG_FILE = Path(self.temp.name) / 'hub_antigravity.json'
 
     def test_google_login_waits_and_migrates_before_reporting_success(self):
         self.manager.get_node_executable = Mock(return_value="node")

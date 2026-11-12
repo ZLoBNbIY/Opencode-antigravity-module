@@ -47,16 +47,16 @@ class ProxyConfigTests(unittest.TestCase):
                 "hub": {"options": {"baseURL": "http://127.0.0.1:51186/v1", "proxy": "http://127.0.0.1:51180"}},
             },
             "providers": {
-                "deepseek": {"settings": {"baseURL": "https://api.deepseek.com/anthropic/v1"}},
-                "deepseek-web": {"settings": {"baseURL": "http://127.0.0.1:1/v1"}},
+                "custom": {"settings": {"baseURL": "https://api.custom.example/v1"}},
+                "hub-local": {"settings": {"baseURL": "http://127.0.0.1:1/v1"}},
             },
         }
         sync_provider_proxies(config, "http://127.0.0.1:20809")
         self.assertEqual(config["provider"]["google"]["options"]["proxy"], "http://127.0.0.1:20809")
         self.assertEqual(config["provider"]["openrouter"]["options"]["proxy"], "http://127.0.0.1:20809")
         self.assertNotIn("proxy", config["provider"]["hub"]["options"])
-        self.assertEqual(config["providers"]["deepseek"]["settings"]["proxy"], "http://127.0.0.1:20809")
-        self.assertNotIn("proxy", config["providers"]["deepseek-web"]["settings"])
+        self.assertEqual(config["providers"]["custom"]["settings"]["proxy"], "http://127.0.0.1:20809")
+        self.assertNotIn("proxy", config["providers"]["hub-local"]["settings"])
 
     def test_proxy_is_removed_from_external_providers_when_disabled(self):
         config = {"provider": {"google": {"options": {"proxy": DNS_PROXY}}}}
@@ -67,7 +67,7 @@ class ProxyConfigTests(unittest.TestCase):
         config = {"provider": {
             "google": {"options": {}},
             "openrouter": {"options": {}},
-            "deepseek": {"options": {"proxy": "old"}},
+            "xpiki": {"options": {"proxy": "old"}},
             "custom": {"options": {"baseURL": "https://api.example/v1", "proxy": "old"}},
             "hub": {"options": {"baseURL": "http://localhost:9000/v1", "proxy": "old"}},
         }}
@@ -78,12 +78,12 @@ class ProxyConfigTests(unittest.TestCase):
         }
         sync_provider_routes(config, hub, 10879, {
             "google": "vless", "openrouter": "direct",
-            "deepseek": "proxy", "custom": "dns", "hub": "vless",
+            "xpiki": "proxy", "custom": "dns", "hub": "vless",
         })
         opts = config["provider"]
         self.assertEqual(opts["google"]["options"]["proxy"], ROUTE_PROXY)
         self.assertEqual(opts["openrouter"]["options"]["proxy"], ROUTE_PROXY)
-        self.assertEqual(opts["deepseek"]["options"]["proxy"], ROUTE_PROXY)
+        self.assertEqual(opts["xpiki"]["options"]["proxy"], ROUTE_PROXY)
         self.assertEqual(opts["custom"]["options"]["proxy"], ROUTE_PROXY)
         self.assertNotIn("proxy", opts["hub"]["options"])
 

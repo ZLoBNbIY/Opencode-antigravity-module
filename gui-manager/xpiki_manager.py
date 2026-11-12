@@ -17,7 +17,11 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 
 CONFIG_DIR = Path.home() / ".config" / "opencode"
-XPIKI_CONFIG_FILE = CONFIG_DIR / "xpiki.json"
+try:
+    import hub_paths
+    XPIKI_CONFIG_FILE = hub_paths.XPIKI_CONFIG_FILE
+except Exception:
+    XPIKI_CONFIG_FILE = CONFIG_DIR / "xpiki.json"
 DEFAULT_BASE_URL = "https://api.xpiki.com/v1"
 BALANCE_URL = "https://api.xpiki.com/key"
 USER_AGENT = "AntigravityHub-Xpiki/1.0 (Windows NT 10.0; Win64; x64)"

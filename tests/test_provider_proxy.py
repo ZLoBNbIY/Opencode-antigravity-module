@@ -26,13 +26,13 @@ class ProviderRouteProxyTests(unittest.TestCase):
         self.opencode = {"provider": {
             "google": {"options": {}},
             "openai": {"options": {}},
-            "mwapi": {"options": {"baseURL": "https://api.mwapi.dev/v1"}},
+            "xpiki": {"options": {"baseURL": "https://api.xpiki.com/v1"}},
         }}
 
     def test_builtin_hosts_resolve_to_expected_provider(self):
         self.assertEqual(provider_for_host("daily-cloudcode-pa.googleapis.com", self.opencode), "google")
         self.assertEqual(provider_for_host("api.openai.com", self.opencode), "openai")
-        self.assertEqual(provider_for_host("api.mwapi.dev", self.opencode), "mwapi")
+        self.assertEqual(provider_for_host("api.xpiki.com", self.opencode), "xpiki")
 
     def test_updated_gemini_domain_is_routed_as_google(self):
         with patch("gemini_routes.matches", return_value=True):

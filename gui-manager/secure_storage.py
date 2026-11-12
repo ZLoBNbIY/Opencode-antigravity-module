@@ -1,4 +1,4 @@
-"""Private files and user-bound DPAPI protection for Hub secrets and channels."""
+"""Private files and user-bound DPAPI protection for Hub secrets."""
 import base64
 import ctypes
 from ctypes import wintypes
@@ -6,7 +6,10 @@ import json
 import os
 from pathlib import Path
 import secrets
-from deepseek_browser import WebError
+
+
+class StorageError(Exception):
+    pass
 
 
 def atomic_write(path: Path, text: str):
@@ -35,7 +38,7 @@ def dpapi(data, decrypt=False):
     operation.restype = wintypes.BOOL
     kernel.LocalFree.argtypes = [ctypes.c_void_p]
     if not operation(ctypes.byref(source), None, None, None, None, 1, ctypes.byref(output)):
-        raise WebError("browser-protocol")
+        raise StorageError("dpapi-operation-failed")
     try:
         return ctypes.string_at(output.data, output.size)
     finally:
@@ -43,44 +46,31 @@ def dpapi(data, decrypt=False):
         kernel.LocalFree(output.data)
 
 
-def protect_channel(payload):
-    if os.name == "nt":
-        return {"version": 3, "protection": "dpapi-current-user", "payload": base64.b64encode(dpapi(json.dumps(payload).encode())).decode()}
-    return {"version": 3, "protection": "private-file", "payload": payload}
-
-
-def protect_secret(purpose, payload):
+def protect_secret(purpose: str, payload: dict) -> dict:
     """Protect Hub secrets at rest; never serialize them raw on Windows."""
-    if purpose not in {"deepseek-web-session", "openrouter-api-key", "mwapi-api-key", "mwapi-dashboard-token"}:
-        raise ValueError("Unknown protected secret purpose")
     raw = json.dumps({"purpose": purpose, "data": payload}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     if os.name == "nt":
         return {"version": 1, "protection": "dpapi-current-user", "payload": base64.b64encode(dpapi(raw)).decode("ascii")}
     return {"version": 1, "protection": "private-file", "payload": json.loads(raw)}
 
 
-def unprotect_secret(record, purpose):
+def unprotect_secret(record: dict, purpose: str) -> dict:
     if not isinstance(record, dict) or record.get("version") != 1:
-        raise WebError("login-required")
+        raise StorageError("invalid-secret-record")
     protection = record.get("protection")
     if os.name == "nt" and protection == "dpapi-current-user":
         try:
             raw = dpapi(base64.b64decode(record["payload"], validate=True), decrypt=True)
             value = json.loads(raw)
         except Exception:
-            raise WebError("login-required") from None
+            raise StorageError("dpapi-decrypt-failed") from None
     elif os.name != "nt" and protection == "private-file":
         value = record.get("payload")
     else:
-        raise WebError("login-required")
+        raise StorageError("unsupported-protection")
     if not isinstance(value, dict) or value.get("purpose") != purpose or not isinstance(value.get("data"), dict):
-        raise WebError("login-required")
+        raise StorageError("secret-purpose-mismatch")
     data = value["data"]
-    if purpose == "deepseek-web-session" and (not isinstance(data.get("token"), str) or not data["token"]
-            or not isinstance(data.get("cookies"), dict) or not isinstance(data.get("userAgent"), str)):
-        raise WebError("login-required")
-    if purpose in {"openrouter-api-key", "mwapi-api-key"} and (not isinstance(data.get("apiKey"), str) or not data["apiKey"].strip()):
-        raise WebError("login-required")
-    if purpose == "mwapi-dashboard-token" and (not isinstance(data.get("accessToken"), str) or not data["accessToken"].strip()):
-        raise WebError("login-required")
+    if not isinstance(data.get("apiKey"), str) or not data["apiKey"].strip():
+        raise StorageError("invalid-api-key")
     return data

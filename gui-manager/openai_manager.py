@@ -27,7 +27,11 @@ OPENAI_CALLBACK_PORT = 1455
 OPENAI_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 
 CONFIG_DIR = Path(os.path.expanduser("~/.config/opencode"))
-OPENAI_ACCOUNTS_FILE = CONFIG_DIR / "openai-accounts.json"
+try:
+    import hub_paths
+    OPENAI_ACCOUNTS_FILE = hub_paths.OPENAI_ACCOUNTS_FILE
+except Exception:
+    OPENAI_ACCOUNTS_FILE = CONFIG_DIR / "openai-accounts.json"
 AUTH_FILES = [
     Path(os.path.expanduser("~/.local/share/opencode/auth.json")),
     Path(os.path.expanduser("~/.opencode/auth.json")),

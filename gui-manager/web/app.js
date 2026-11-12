@@ -862,7 +862,7 @@ async function setProviderRoute(provider, route) {
 
 const providerTabs = {google:'google', openai:'openai', claude:'claude-pro', xpiki:'xpiki', openrouter:'openrouter-free'};
 const diagnosticDomains = {
-  google:['daily-cloudcode-pa.googleapis.com','cloudcode-pa.googleapis.com','cloudaicompanion.googleapis.com','generativelanguage.googleapis.com','oauth2.googleapis.com','clients6.google.com','www.googleapis.com'],
+  google:['daily-cloudcode-pa.googleapis.com','cloudcode-pa.googleapis.com','cloudaicompanion.googleapis.com','generativelanguage.googleapis.com','oauth2.googleapis.com','aiplatform.googleapis.com','clients6.google.com','www.googleapis.com'],
   openai:['chatgpt.com','auth.openai.com','api.openai.com'],
   claude:['claude.ai','api.anthropic.com','console.anthropic.com'],
   xpiki:['api.xpiki.com'], openrouter:['openrouter.ai']
@@ -1629,6 +1629,7 @@ function renderSettingsTab() {
   const swTray = document.getElementById("switch-close-to-tray");
   if (swTray) swTray.checked = cfg.close_to_tray !== false;
   for (const item of Object.values(providerSettings)) document.getElementById(`provider-enabled-${item.key}`).checked = cfg.providers_visibility?.[item.key] !== false;
+  refreshStorageStats();
 }
 
 function selectStrategy(strat, save = true) {
@@ -1712,6 +1713,80 @@ async function fixSessionTitle() {
 async function openFolder(type) {
   if (!window.pywebview?.api) return;
   await window.pywebview.api.open_folder(type);
+}
+
+// --- Storage & System Cleanup Center ---
+async function refreshStorageStats() {
+  if (!window.pywebview?.api?.get_storage_stats) return;
+  try {
+    const stats = await window.pywebview.api.get_storage_stats();
+    if (!stats) return;
+    const rootEl = document.getElementById('storage-root-path');
+    if (rootEl) rootEl.textContent = stats.root_path;
+    const binEl = document.getElementById('storage-bin-size');
+    if (binEl) binEl.textContent = stats.bin_size_str;
+    const browserEl = document.getElementById('storage-browser-size');
+    if (browserEl) browserEl.textContent = stats.browser_size_str;
+    const logEl = document.getElementById('storage-log-size');
+    if (logEl) logEl.textContent = stats.log_size_str;
+    const totalEl = document.getElementById('storage-total-size');
+    if (totalEl) totalEl.textContent = stats.total_size_str;
+  } catch {}
+}
+
+async function openHubDataDir() {
+  if (!window.pywebview?.api?.open_hub_data_dir) return;
+  await window.pywebview.api.open_hub_data_dir();
+}
+
+async function cleanLogsAndCache() {
+  if (!window.pywebview?.api?.clean_logs_and_cache) return;
+  const statusEl = document.getElementById('storage-status-text');
+  if (statusEl) statusEl.textContent = 'Очистка логов и кэша...';
+  try {
+    const res = await window.pywebview.api.clean_logs_and_cache();
+    if (statusEl) statusEl.textContent = res.message;
+    showToast(res.message);
+    await refreshStorageStats();
+  } catch (e) {
+    if (statusEl) statusEl.textContent = String(e);
+    showToast(`Ошибка очистки: ${e}`);
+  }
+}
+
+async function cleanBrowserProfiles() {
+  if (!window.pywebview?.api?.clean_browser_profiles) return;
+  if (!confirm('Сбросить сохранённые профили браузеров (сессии Claude)?\nПотребуется повторный вход в веб-сессию.')) return;
+  const statusEl = document.getElementById('storage-status-text');
+  if (statusEl) statusEl.textContent = 'Очистка профилей браузера...';
+  try {
+    const res = await window.pywebview.api.clean_browser_profiles();
+    if (statusEl) statusEl.textContent = res.message;
+    showToast(res.message);
+    await refreshStorageStats();
+  } catch (e) {
+    if (statusEl) statusEl.textContent = String(e);
+    showToast(`Ошибка очистки профилей: ${e}`);
+  }
+}
+
+async function uninstallHubCompletely() {
+  if (!window.pywebview?.api?.uninstall_hub_completely) return;
+  const answer = prompt('ВНИМАНИЕ! Это действие полностью удалит модуль Antigravity Hub из OpenCode и сотрёт все локальные данные приложения.\n\nДля подтверждения введите DELETE:');
+  if (answer !== 'DELETE') {
+    showToast('Удаление отменено');
+    return;
+  }
+  showToast('Удаление Antigravity Hub из системы...');
+  try {
+    const res = await window.pywebview.api.uninstall_hub_completely();
+    alert(res.message || 'Antigravity Hub полностью удалён.');
+    if (window.pywebview?.api?.stop_opencode) {
+      window.close();
+    }
+  } catch (e) {
+    alert(`Ошибка деинсталляции: ${e}`);
+  }
 }
 
 // --- Account Actions ---
@@ -1817,10 +1892,7 @@ async function addOpenAiAccount() {
 }
 
 async function addClaudeAccount() {
-  if (!window.pywebview?.api) return;
-  showToast("Запуск браузера для входа Claude...");
-  await window.pywebview.api.add_claude_account();
-  refreshState();
+  await loginAccount('claude', 'add_claude_account', 'Claude');
 }
 
 async function checkUpdates() {
@@ -1885,7 +1957,16 @@ async function importBackup() {
   const statusEl = document.getElementById('backup-status-text');
   if (statusEl) statusEl.textContent = 'Чтение файла резервной копии…';
   try {
-    const res = await window.pywebview.api.import_backup();
+    let res = await window.pywebview.api.import_backup();
+    if (res && res.requires_password) {
+      const pwd = prompt('Резервная копия зашифрована паролем.\nВведите пароль для расшифровки:');
+      if (!pwd) {
+        if (statusEl) statusEl.textContent = 'Импорт отменён (не указан пароль)';
+        showToast('Импорт отменён: не указан пароль');
+        return;
+      }
+      res = await window.pywebview.api.import_backup(res.source_path, pwd);
+    }
     if (res && res.ok) {
       if (statusEl) statusEl.textContent = res.message;
       showToast(res.message);

@@ -519,14 +519,14 @@ if (-not $SkipPython) {
             Write-Info "Установка библиотек интерфейса из requirements.txt..."
             & "$PythonPath" -m pip install -r "$ReqFile" --quiet
             if ($LASTEXITCODE -eq 0) {
-                Write-Success "Пакеты CustomTkinter успешно установлены!"
+                Write-Success "Зависимости GUI успешно установлены!"
             } else {
                 Write-WarningMsg "Предупреждение при установке pip-зависимостей. Попробуйте выполнить вручную: & `"$PythonPath`" -m pip install -r `"$ReqFile`""
             }
         }
     } else {
         Write-ErrorMsg "Пропуск установки зависимостей GUI: Python 3 не обнаружен."
-        Write-WarningMsg "Библиотеки интерфейса (customtkinter, pillow и др.) не установлены. Хаб не запустится без Python!"
+        Write-WarningMsg "Библиотеки интерфейса (pywebview, playwright и др.) не установлены. Хаб не запустится без Python!"
     }
 } else {
     Write-Info "Пропуск установки зависимостей Python (-SkipPython)."

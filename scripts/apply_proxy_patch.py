@@ -37,7 +37,7 @@ from pathlib import Path
 
 home = Path.home()
 candidates = [
-    Path(r"D:\Opencode-antigravity-module") / "plugin",
+    Path(__file__).resolve().parent.parent / "plugin",
     home / "Opencode-antigravity-module" / "plugin",
     home / ".cache" / "opencode" / "packages",
     home / ".cache" / "opencode" / "npm",

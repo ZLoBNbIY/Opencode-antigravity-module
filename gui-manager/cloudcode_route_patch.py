@@ -7,10 +7,13 @@ def patch_auth_plugin_transport(plugin_cache: Path | None = None) -> bool:
 
     root = plugin_cache or (Path.home() / ".cache" / "opencode" / "npm")
     candidates = list(root.glob("**/@cortexkit/opencode-antigravity-auth/dist/server.js"))
+    candidates.extend(root.glob("**/@cortexkit/opencode-antigravity-auth/dist/index.js"))
     if plugin_cache is None:
-        local_server = Path(__file__).resolve().parent.parent / "plugin" / "dist" / "server.js"
-        if local_server.exists() and local_server not in candidates:
-            candidates.append(local_server)
+        local_plugin = Path(__file__).resolve().parent.parent / "plugin" / "dist"
+        for name in ("server.js", "index.js"):
+            cand = local_plugin / name
+            if cand.exists() and cand not in candidates:
+                candidates.append(cand)
 
     if not candidates:
         return False
@@ -76,8 +79,8 @@ def patch_auth_plugin_transport(plugin_cache: Path | None = None) -> bool:
 def restore_auth_plugin_transport(plugin_cache: Path | None = None) -> None:
     """Restore patched plugin files before a plugin upgrade or Hub removal."""
     root = plugin_cache or (Path.home() / ".cache" / "opencode" / "npm")
-    for backup in root.glob("**/server.js.hub-route.bak"):
-        target = backup.with_name("server.js")
+    for backup in list(root.glob("**/server.js.hub-route.bak")) + list(root.glob("**/index.js.hub-route.bak")):
+        target = backup.with_name(backup.name.replace(".hub-route.bak", ""))
         try:
             target.write_text(backup.read_text(encoding="utf-8"), encoding="utf-8")
             backup.unlink()

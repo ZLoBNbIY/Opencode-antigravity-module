@@ -5,8 +5,8 @@ import subprocess
 import urllib.error
 import urllib.request
 
-import deepseek_storage
-import deepseek_config
+import secure_storage
+import jsonc_config
 import openai_manager
 
 
@@ -14,7 +14,11 @@ API_MODELS_URL = "https://openrouter.ai/api/v1/models"
 API_KEY_URL = "https://openrouter.ai/api/v1/key"
 PROVIDER_ID = "openrouter-free"
 SECRET_PURPOSE = "openrouter-api-key"
-SECRET_FILE = Path.home() / ".local" / "share" / "antigravity-hub" / "openrouter.json"
+try:
+    import hub_paths
+    SECRET_FILE = hub_paths.OPENROUTER_SECRET_FILE
+except Exception:
+    SECRET_FILE = Path.home() / ".local" / "share" / "antigravity-hub" / "openrouter.json"
 CONFIG_DIR = Path.home() / ".config" / "opencode"
 LOCAL_PROXY = "http://127.0.0.1:51180"
 
@@ -86,8 +90,8 @@ def fetch_free_models(api_key, timeout=20):
 
 
 def save_api_key(api_key):
-    record = deepseek_storage.protect_secret(SECRET_PURPOSE, {"apiKey": api_key})
-    deepseek_storage.atomic_write(SECRET_FILE, json.dumps(record))
+    record = secure_storage.protect_secret(SECRET_PURPOSE, {"apiKey": api_key})
+    secure_storage.atomic_write(SECRET_FILE, json.dumps(record))
 
 
 def load_api_key():
@@ -95,7 +99,7 @@ def load_api_key():
         return ""
     try:
         record = json.loads(SECRET_FILE.read_text(encoding="utf-8"))
-        return deepseek_storage.unprotect_secret(record, SECRET_PURPOSE)["apiKey"]
+        return secure_storage.unprotect_secret(record, SECRET_PURPOSE)["apiKey"]
     except Exception:
         return ""
 
@@ -127,9 +131,9 @@ def sync_opencode_credential(api_key):
 
 def configure_models(models, config_dir=None):
     """Create a separate OpenRouter Free provider containing only selected IDs."""
-    config_path = deepseek_config.config_path(Path(config_dir) if config_dir else CONFIG_DIR)
+    config_path = jsonc_config.config_path(Path(config_dir) if config_dir else CONFIG_DIR)
     original = config_path.read_text(encoding="utf-8-sig") if config_path.exists() else "{}\n"
-    data = deepseek_config.parse_config(original)
+    data = jsonc_config.parse_config(original)
     providers = data.get("provider", {})
     if not isinstance(providers, dict):
         raise ValueError("Поле provider в конфигурации OpenCode должно быть объектом.")
@@ -148,7 +152,7 @@ def configure_models(models, config_dir=None):
             },
         }
         configured_models[model["id"]] = model_config
-    updated = deepseek_config.set_property(updated, ("provider", PROVIDER_ID), {
+    updated = jsonc_config.set_property(updated, ("provider", PROVIDER_ID), {
         "npm": "@ai-sdk/openai-compatible",
         "name": "OpenRouter Free",
         "options": {"baseURL": "https://openrouter.ai/api/v1"},
@@ -158,13 +162,13 @@ def configure_models(models, config_dir=None):
     if not isinstance(disabled, list):
         raise ValueError("Поле disabled_providers в конфигурации OpenCode должно быть списком.")
     if "openrouter" not in disabled:
-        updated = deepseek_config.set_property(
+        updated = jsonc_config.set_property(
             updated, ("disabled_providers",), [*disabled, "openrouter"],
         )
     if "$schema" not in data:
-        updated = deepseek_config.set_property(updated, ("$schema",), "https://opencode.ai/config.json")
+        updated = jsonc_config.set_property(updated, ("$schema",), "https://opencode.ai/config.json")
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    deepseek_storage.atomic_write(config_path, updated)
+    secure_storage.atomic_write(config_path, updated)
 
 
 def disconnect():
@@ -175,14 +179,14 @@ def disconnect():
         result = subprocess.run([cli, "auth", "logout", provider_id], capture_output=True, timeout=15)
         if result.returncode != 0:
             raise ValueError("OpenCode не удалил сохранённые учётные данные. Ключ Hub оставлен без изменений.")
-    config_path = deepseek_config.config_path(CONFIG_DIR)
+    config_path = jsonc_config.config_path(CONFIG_DIR)
     if config_path.exists():
         original = config_path.read_text(encoding="utf-8-sig")
-        data = deepseek_config.parse_config(original)
+        data = jsonc_config.parse_config(original)
         disabled = data.get("disabled_providers", [])
         if isinstance(disabled, list) and "openrouter" in disabled:
-            updated = deepseek_config.set_property(
+            updated = jsonc_config.set_property(
                 original, ("disabled_providers",), [item for item in disabled if item != "openrouter"],
             )
-            deepseek_storage.atomic_write(config_path, updated)
+            secure_storage.atomic_write(config_path, updated)
     SECRET_FILE.unlink(missing_ok=True)

@@ -9,8 +9,13 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-CONFIG_DIR = Path.home() / ".config" / "opencode"
-CACHE_PATH = CONFIG_DIR / "gemini_domains.json"
+try:
+    import hub_paths
+    CONFIG_DIR = hub_paths.CONFIG_DIR
+    CACHE_PATH = hub_paths.GEMINI_DOMAINS_FILE
+except Exception:
+    CONFIG_DIR = Path.home() / ".config" / "opencode"
+    CACHE_PATH = CONFIG_DIR / "gemini_domains.json"
 REFRESH_SECONDS = 24 * 60 * 60
 SOURCES = (
     "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/google-gemini",
