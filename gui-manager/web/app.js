@@ -1261,11 +1261,11 @@ function renderDashboard() {
       const valid = ['ok','stale'].includes(q.status);
       const amount = value => value != null && Number.isFinite(Number(value)) ? Number(value).toLocaleString('ru-RU',{maximumFractionDigits:2}) : '—';
       const low = valid && (q.is_available === false || (q.total_balance != null && Number(q.total_balance) <= 10));
-      const tone = !valid ? 'muted' : low ? 'error' : 'ok';
+      const tone = !valid ? 'muted' : q.is_available === false ? 'error' : q.is_available === true ? 'ok' : 'muted';
       limits = `<div class="dashboard-token-balance">
         <div style="display:flex; justify-content:space-between; align-items:baseline;">
           <span>Баланс DeepSeek</span>
-          <strong class="dashboard-tone-${tone}" style="font-size:11px; font-weight:700;">${valid && q.is_available === false ? 'Недостаточно' : valid ? 'Доступен' : 'Нет данных'}</strong>
+          <strong class="dashboard-tone-${tone}" style="font-size:11px; font-weight:700;">${!valid || q.is_available == null ? 'Нет данных' : q.is_available ? 'Доступен' : 'Недоступен'}</strong>
         </div>
         <strong>${valid ? `${amount(q.total_balance)} ${html(q.currency || '')}` : 'Нет данных'}</strong>
         <small>${valid ? `Бонусы ${amount(q.granted_balance)} · пополнено ${amount(q.topped_up_balance)}${q.status === 'stale' ? ' · сохранённые данные' : ''}` : 'Обновите баланс во вкладке DeepSeek'}</small>
@@ -1739,8 +1739,9 @@ function renderDeepSeekTab() {
   const currency = html(balance.currency || '');
   const statusText = !valid
     ? (balance.status === 'no_key' ? 'Ключ не задан' : 'Нет данных')
-    : balance.is_available === false ? 'Недостаточно средств' : 'Достаточно средств';
-  const statusTone = !valid ? 'muted' : balance.is_available === false ? 'error' : 'ok';
+    : balance.is_available == null ? 'Нет данных'
+      : balance.is_available ? 'Доступен' : 'Недоступен';
+  const statusTone = !valid || balance.is_available == null ? 'muted' : balance.is_available ? 'ok' : 'error';
   const box = document.getElementById('deepseek-balance');
   if (box) {
     box.innerHTML = `

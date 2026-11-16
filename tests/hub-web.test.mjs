@@ -184,7 +184,8 @@ test('DeepSeek tab shows real balance and does not invent numbers on error', () 
   const {elements} = frontend(fixture);
   const card = elements.get('deepseek-balance').innerHTML;
   assert.match(card, /110,5 CNY/);
-  assert.match(card, /Достаточно средств/);
+  assert.match(card, /Доступен/);
+  assert.match(card, /dashboard-tone-ok/);
   assert.equal(elements.get('deepseek-connection-status').textContent, '● Подключён');
 
   fixture.providers.deepseek.balance = {status:'error',error:'HTTP 401'};
@@ -193,6 +194,11 @@ test('DeepSeek tab shows real balance and does not invent numbers on error', () 
   assert.match(errorCard, /Нет данных/);
   assert.doesNotMatch(errorCard, /110,5/);
   assert.match(errorCard, /HTTP 401/);
+
+  fixture.providers.deepseek.balance = {status:'ok',is_available:false,currency:'CNY',total_balance:0,granted_balance:0,topped_up_balance:0};
+  const {elements: unavailableElements} = frontend(fixture);
+  assert.match(unavailableElements.get('deepseek-balance').innerHTML, /Недоступен/);
+  assert.match(unavailableElements.get('deepseek-balance').innerHTML, /dashboard-tone-error/);
 });
 
 test('each provider sidebar shows the actual active profile or masked API key', () => {
