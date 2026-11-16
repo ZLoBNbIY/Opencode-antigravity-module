@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gui-manager"))
-from auto_router import AutoRouter, AutoRouteUnavailable, configured_routes
+from auto_router import AutoRouter, AutoRouteUnavailable, configured_routes, probe_hosts
 
 
 class AutoRouterTests(unittest.TestCase):
@@ -20,6 +20,21 @@ class AutoRouterTests(unittest.TestCase):
     def ready(self, router, provider="openai", hub=None):
         self.assertTrue(router.refresh(provider, hub or self.hub, self.oc).wait(2))
         return router.state(provider, hub or self.hub, self.oc)
+
+    def test_deepseek_has_probe_host_and_auto_can_select_a_route(self):
+        self.assertEqual(probe_hosts("deepseek-account", {}), ("api.deepseek.com",))
+        configured = {"provider": {"deepseek": {"options": {"baseURL": "https://ds.example.com/v1"}}}}
+        self.assertEqual(probe_hosts("deepseek-account", configured), ("ds.example.com",))
+        with patch("deepseek_api.api_origin", return_value="https://custom.deepseek.test"):
+            self.assertEqual(probe_hosts("deepseek-account", {}), ("custom.deepseek.test",))
+
+        probe = lambda upstream, host, hub: {"host": host, "ok": True,
+                                             "latency_ms": 1 if upstream == "dns://hub" else 20}
+        router = AutoRouter(Mock(), probe=probe)
+        state = self.ready(router, "deepseek-account")
+        self.assertEqual(state["status"], "ready")
+        self.assertEqual(state["selected"], "dns")
+        self.assertTrue(all(row["total"] == 1 for row in state["rows"]))
 
     def test_best_route_is_measured_per_provider_not_fixed_priority(self):
         def probe(upstream, host, hub):

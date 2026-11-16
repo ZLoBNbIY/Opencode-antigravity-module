@@ -17,6 +17,7 @@ DEFAULT_HOSTS = {
     "google": ("daily-cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis.com"),
     "openai": ("api.openai.com", "chatgpt.com"), "claude-pro": ("claude.ai",),
     "xpiki": ("api.xpiki.com",), "openrouter-free": ("openrouter.ai",),
+    "deepseek-account": ("api.deepseek.com",),
 }
 REFRESH_SECONDS = 60
 PROBE_SECONDS = 6
@@ -48,13 +49,27 @@ def configured_routes(hub):
 
 
 def probe_hosts(provider, opencode):
+    names = (provider,)
+    if provider == "deepseek-account":
+        # OpenCode usually registers this provider simply as "deepseek".
+        names = ("deepseek-account", "deepseek")
     for section in ("provider", "providers"):
-        data = opencode.get(section, {}).get(provider, {})
-        for key in ("options", "settings"):
-            options = data.get(key) or {}
-            host = urlparse(options.get("baseURL") or options.get("baseUrl") or "").hostname
+        for name in names:
+            data = opencode.get(section, {}).get(name, {})
+            for key in ("options", "settings"):
+                options = data.get(key) or {}
+                host = urlparse(options.get("baseURL") or options.get("baseUrl") or "").hostname
+                if host and host not in ("127.0.0.1", "localhost", "::1"):
+                    return (host,)
+    if provider == "deepseek-account":
+        # Respect a custom Base URL saved in the Hub's DeepSeek tab.
+        try:
+            import deepseek_api
+            host = urlparse(deepseek_api.api_origin()).hostname
             if host and host not in ("127.0.0.1", "localhost", "::1"):
                 return (host,)
+        except Exception:
+            pass
     return DEFAULT_HOSTS.get(provider, ())
 
 
