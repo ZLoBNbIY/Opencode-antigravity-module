@@ -299,6 +299,8 @@ def fetch_balance(api_key: Optional[str] = None, base_url: Optional[str] = None,
         return stale
     result = empty_balance("error")
     result["error"] = error
+    cfg["cached_balance"] = result
+    save_config(cfg)
     return result
 
 
