@@ -7,10 +7,12 @@ balance rather than the 5h/weekly window quotas used by Google or ChatGPT.
 
 import json
 import os
+import sqlite3
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import hub_paths
@@ -22,10 +24,12 @@ DEFAULT_BASE_URL = "https://api.deepseek.com"
 USER_AGENT = "AntigravityHub-DeepSeek/1.0 (Windows NT 10.0; Win64; x64)"
 _ENV_KEYS = ("DEEPSEEK_API_KEY", "DEEPSEEK_KEY")
 _PLACEHOLDERS = {"hub-web-placeholder", "sk-...", "your-api-key", "your_api_key", "changeme", "none", "null"}
+_auto_import_pending = False
 
 
 def _default_config() -> Dict[str, Any]:
-    return {"base_url": DEFAULT_BASE_URL, "connected": False, "cached_balance": {}}
+    return {"base_url": DEFAULT_BASE_URL, "connected": False, "cached_balance": {},
+            "auto_import_disabled": False}
 
 
 def load_config() -> Dict[str, Any]:
@@ -90,6 +94,7 @@ def clear_api_key() -> bool:
     cfg = load_config()
     cfg["connected"] = False
     cfg["cached_balance"] = {}
+    cfg["auto_import_disabled"] = True
     save_config(cfg)
     return True
 
@@ -100,6 +105,27 @@ def _key_from_environment() -> str:
         if is_valid_key(value):
             return value
     return ""
+
+
+def _key_from_opencode_db() -> str:
+    """OpenCode stores API-key credentials in its SQLite credential table."""
+    db = Path(os.path.expanduser("~/.local/share/opencode/opencode.db"))
+    if not db.exists():
+        return ""
+    try:
+        with sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=2) as conn:
+            row = conn.execute(
+                "SELECT value FROM credential WHERE integration_id = 'deepseek' "
+                "ORDER BY time_updated DESC LIMIT 1"
+            ).fetchone()
+        if not row:
+            return ""
+        value = json.loads(row[0])
+        if not isinstance(value, dict) or value.get("type") not in ("key", None):
+            return ""
+        return clean_key(value.get("key") or value.get("apiKey"))
+    except Exception:
+        return ""
 
 
 def _key_from_opencode_config() -> str:
@@ -129,16 +155,20 @@ def _key_from_opencode_config() -> str:
 
 def load_api_key() -> str:
     """Return the stored key; on first run adopt it from env or OpenCode config."""
+    global _auto_import_pending
     if SECRET_FILE.exists():
         try:
             record = json.loads(SECRET_FILE.read_text(encoding="utf-8"))
             return clean_key(unprotect_secret(record, "deepseek-api-key").get("apiKey"))
         except Exception:
             return ""
-    imported = _key_from_environment() or _key_from_opencode_config()
+    if load_config().get("auto_import_disabled"):
+        return ""
+    imported = _key_from_environment() or _key_from_opencode_db() or _key_from_opencode_config()
     if imported:
         try:
             save_api_key(imported)
+            _auto_import_pending = True
         except Exception:
             pass
     return imported
@@ -288,8 +318,15 @@ def refresh_balance_silent() -> Dict[str, Any]:
 
 def provider_state() -> Dict[str, Any]:
     """Non-secret state for the web frontend."""
+    global _auto_import_pending
     cfg = load_config()
     key = load_api_key()
+    if _auto_import_pending:
+        _auto_import_pending = False
+        try:
+            fetch_balance()
+        except Exception:
+            pass
     balance = cached_balance()
     return {
         "connected": bool(key and cfg.get("connected")),

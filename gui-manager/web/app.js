@@ -199,8 +199,8 @@ async function refreshAutoRoutes(tab) {
 
 function renderNetworkTab() {
   const routes = appState.routes || {};
-  for (const provider of ['google', 'claude', 'openai', 'xpiki', 'openrouter']) {
-    const key = provider === 'claude' ? 'claude-pro' : provider === 'openrouter' ? 'openrouter-free' : provider;
+  for (const provider of ['google', 'claude', 'openai', 'xpiki', 'deepseek', 'openrouter']) {
+    const key = provider === 'claude' ? 'claude-pro' : provider === 'openrouter' ? 'openrouter-free' : provider === 'deepseek' ? 'deepseek-account' : provider;
     const options = ['default', 'dns', 'vless', 'direct', 'proxy'];
     updateSegmentedGroup(`seg-group-${provider}`, routes[key] || 'default',
       options.map(val => ({val, label:routeLabel(val, key)})));

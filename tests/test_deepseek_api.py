@@ -26,6 +26,7 @@ BALANCE_PAYLOAD = {
 
 class DeepSeekApiTests(unittest.TestCase):
     def setUp(self):
+        deepseek_api._auto_import_pending = False
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         self.config_file = root / "deepseek-api.json"
@@ -110,6 +111,21 @@ class DeepSeekApiTests(unittest.TestCase):
         deepseek_api.clear_api_key()
         self.assertEqual(deepseek_api.load_api_key(), "")
         self.assertFalse(deepseek_api.provider_state()["hasKey"])
+
+    def test_auto_import_from_opencode_credential_db(self):
+        conn = MagicMock()
+        conn.execute.return_value.fetchone.return_value = (
+            json.dumps({"type": "key", "key": "sk-db-key-1234567890"}),
+        )
+        conn.__enter__.return_value = conn
+        with patch.object(deepseek_api.sqlite3, "connect", return_value=conn):
+            self.assertEqual(deepseek_api._key_from_opencode_db(), "sk-db-key-1234567890")
+
+        with patch.object(deepseek_api, "_key_from_environment", return_value=""), \
+             patch.object(deepseek_api, "_key_from_opencode_config", return_value=""), \
+             patch.object(deepseek_api, "_key_from_opencode_db", return_value="sk-db-key-1234567890"):
+            self.assertEqual(deepseek_api.load_api_key(), "sk-db-key-1234567890")
+        self.assertTrue(deepseek_api._auto_import_pending)
 
     def test_auto_import_from_environment(self):
         with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "sk-env-key-1234567890"}, clear=True):

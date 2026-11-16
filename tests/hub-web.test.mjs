@@ -68,6 +68,7 @@ test('failed domains show error indicators and no invented milliseconds', () => 
   assert.equal(elements.get('diag-tbody-xpiki').children.length, 1);
   assert.equal(elements.get('diag-tbody-deepseek').children.length, 1);
   assert.equal(elements.get('diag-tbody-openrouter').children.length, 1);
+  assert.equal(elements.get('seg-group-deepseek').children.length, 5);
 });
 
 test('polling preserves edited DNS inputs and unknown quota stays unknown', () => {

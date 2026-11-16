@@ -335,8 +335,8 @@ class HubApi:
         return health_checker.test_provider_deep_probe(provider, timeout=20)
 
     def set_provider_route(self, provider: str, route: str) -> bool:
-        provider = {"claude": "claude-pro", "openrouter": "openrouter-free"}.get(provider, provider)
-        if provider not in ("google", "openai", "claude-pro", "xpiki", "openrouter-free"):
+        provider = {"claude": "claude-pro", "openrouter": "openrouter-free", "deepseek": "deepseek-account"}.get(provider, provider)
+        if provider not in ("google", "openai", "claude-pro", "xpiki", "openrouter-free", "deepseek-account"):
             raise ValueError("Неизвестный провайдер")
         if route not in ("direct", "default", "auto", "vless", "dns", "proxy"):
             raise ValueError("Неизвестный маршрут")
