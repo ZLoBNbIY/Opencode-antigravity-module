@@ -39,7 +39,8 @@ const state = {
   routes:{google:'dns'}, network:{cores:{'sing-box':{installed:true,selected:true,path:'sing-box.exe'},xray:{installed:false}},vlessCore:'sing-box.exe'},
   openaiAccounts:[{email:'chat@example.com',is_active:true,plan_type:'plus',quota:{status:'ok',primary:{remaining_percent:0},secondary:{remaining_percent:42}}}],
   claudeAccounts:[], diagnostics:{openai:{rows:[{domain:'chatgpt.com',status:'error',latency_ms:null,error:'TimeoutError'}]}},
-  providers:{xpiki:{models:[{id:'claude-test',name:'Claude Test'}],enabledModels:['claude-test'],quota:{},baseUrl:'https://api.xpiki.com/v1'},openrouter:{hasKey:true}},
+  providers:{xpiki:{models:[{id:'claude-test',name:'Claude Test'}],enabledModels:['claude-test'],quota:{},baseUrl:'https://api.xpiki.com/v1'},openrouter:{hasKey:true},
+    deepseek:{connected:false,hasKey:false,keyLabel:null,baseUrl:'https://api.deepseek.com',balance:{status:'no_key'}}},
 };
 
 test('all account tabs render with active identity and real zero ChatGPT quota', () => {
@@ -65,6 +66,7 @@ test('failed domains show error indicators and no invented milliseconds', () => 
   assert.equal(elements.get('diag-tbody-google').children.length, 8);
   assert.equal(elements.get('diag-tbody-claude').children.length, 3);
   assert.equal(elements.get('diag-tbody-xpiki').children.length, 1);
+  assert.equal(elements.get('diag-tbody-deepseek').children.length, 1);
   assert.equal(elements.get('diag-tbody-openrouter').children.length, 1);
 });
 
@@ -155,7 +157,7 @@ test('service cards show labeled green, amber and red domain summaries', () => {
 
 test('automatic checks run for enabled providers, are throttled, and refresh after route changes', async () => {
   const fixture = structuredClone(state);
-  fixture.config.providers_visibility = {antigravity:true,openai:true,claude:false,xpiki:false,openrouter:false};
+  fixture.config.providers_visibility = {antigravity:true,openai:true,claude:false,xpiki:false,deepseek:false,openrouter:false};
   const {context} = frontend(fixture);
   const calls = [];
   context.window.pywebview = {api:{run_provider_diagnostics:async provider => {
@@ -170,6 +172,26 @@ test('automatic checks run for enabled providers, are throttled, and refresh aft
   assert.equal(calls.length, 4);
   await vm.runInContext("diagnosticAttempts.get('google').time -= 61000; refreshEnabledDiagnostics()", context);
   assert.equal(calls.length, 5);
+});
+
+test('DeepSeek tab shows real balance and does not invent numbers on error', () => {
+  const fixture = structuredClone(state);
+  fixture.providers.deepseek = {
+    connected:true, hasKey:true, keyLabel:'sk-••••9abc', baseUrl:'https://api.deepseek.com',
+    balance:{status:'ok',is_available:true,currency:'CNY',total_balance:110.5,granted_balance:10,topped_up_balance:100.5,checked_at:1794309000},
+  };
+  const {elements} = frontend(fixture);
+  const card = elements.get('deepseek-balance').innerHTML;
+  assert.match(card, /110,5 CNY/);
+  assert.match(card, /Достаточно средств/);
+  assert.equal(elements.get('deepseek-connection-status').textContent, '● Подключён');
+
+  fixture.providers.deepseek.balance = {status:'error',error:'HTTP 401'};
+  const {elements: errorElements} = frontend(fixture);
+  const errorCard = errorElements.get('deepseek-balance').innerHTML;
+  assert.match(errorCard, /Нет данных/);
+  assert.doesNotMatch(errorCard, /110,5/);
+  assert.match(errorCard, /HTTP 401/);
 });
 
 test('each provider sidebar shows the actual active profile or masked API key', () => {
@@ -191,7 +213,7 @@ test('each provider sidebar shows the actual active profile or masked API key', 
 
 test('DNS checks start after loading state, share pending requests, and refresh only expired addresses', async () => {
   const fixture = structuredClone(state);
-  fixture.config.providers_visibility = {antigravity:false,openai:false,claude:false,xpiki:false,openrouter:false};
+  fixture.config.providers_visibility = {antigravity:false,openai:false,claude:false,xpiki:false,deepseek:false,openrouter:false};
   const {elements, context} = frontend(fixture);
   const calls = [];
   context.window.pywebview = {api:{get_state:async ()=>fixture, test_dns:async (mode,value) => {
@@ -236,7 +258,7 @@ test('synchronous DNS bridge errors do not leave a permanent pending request', a
 
 test('Dashboard summarizes enabled providers and preserves real zero and unknown quotas', () => {
   const fixture = structuredClone(state);
-  fixture.config.providers_visibility = {antigravity:true,openai:true,claude:false,xpiki:false,openrouter:false};
+  fixture.config.providers_visibility = {antigravity:true,openai:true,claude:false,xpiki:false,deepseek:false,openrouter:false};
   const {elements} = frontend(fixture);
   const cards = elements.get('dashboard-providers').children;
   assert.equal(cards.length, 2);
@@ -269,7 +291,7 @@ test('Dashboard uses saved DNS status and hides proxy credentials', async () => 
 
 test('Dashboard handles all providers disabled and navigation places Network above Diagnostics', () => {
   const fixture = structuredClone(state);
-  fixture.config.providers_visibility = {antigravity:false,openai:false,claude:false,xpiki:false,openrouter:false};
+  fixture.config.providers_visibility = {antigravity:false,openai:false,claude:false,xpiki:false,deepseek:false,openrouter:false};
   const {elements, nav, context} = frontend(fixture);
   assert.equal(vm.runInContext('activeTab', context), 'dashboard');
   assert.equal(nav[0].dataset.tab, 'dashboard');

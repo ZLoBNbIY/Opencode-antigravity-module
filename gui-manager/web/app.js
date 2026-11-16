@@ -18,6 +18,7 @@ let lastStateUpdatedAt = null;
 const providerSettings = {
   google:{key:'antigravity',id:'google'}, openai:{key:'openai',id:'openai'},
   claude:{key:'claude',id:'claude-pro'}, xpiki:{key:'xpiki',id:'xpiki'},
+  deepseek:{key:'deepseek',id:'deepseek-account'},
   openrouter:{key:'openrouter',id:'openrouter-free'}
 };
 function providerEnabled(tab) {
@@ -113,6 +114,7 @@ function renderAll() {
   renderClaudeTab();
   renderSettingsTab();
   renderXpikiTab();
+  renderDeepSeekTab();
   renderOpenRouterState();
   renderActiveAccounts();
   renderProviderDiagnostics();
@@ -983,12 +985,12 @@ async function setProviderRoute(provider, route) {
   }
 }
 
-const providerTabs = {google:'google', openai:'openai', claude:'claude-pro', xpiki:'xpiki', openrouter:'openrouter-free'};
+const providerTabs = {google:'google', openai:'openai', claude:'claude-pro', xpiki:'xpiki', deepseek:'deepseek-account', openrouter:'openrouter-free'};
 const diagnosticDomains = {
   google:['daily-cloudcode-pa.googleapis.com','cloudcode-pa.googleapis.com','cloudaicompanion.googleapis.com','generativelanguage.googleapis.com','oauth2.googleapis.com','aiplatform.googleapis.com','clients6.google.com','www.googleapis.com'],
   openai:['chatgpt.com','auth.openai.com','api.openai.com'],
   claude:['claude.ai','api.anthropic.com','console.anthropic.com'],
-  xpiki:['api.xpiki.com'], openrouter:['openrouter.ai']
+  xpiki:['api.xpiki.com'], deepseek:['api.deepseek.com'], openrouter:['openrouter.ai']
 };
 const diagnosticBusy = new Set();
 const diagnosticAttempts = new Map();
@@ -1124,6 +1126,7 @@ const dashboardProviderInfo = {
   openai:{name:'ChatGPT',icon:'◎',color:'#42d6a0'},
   claude:{name:'Claude Pro',icon:'✦',color:'#e6a36b'},
   xpiki:{name:'Claude API · Xpiki',icon:'ϟ',color:'#f0b257'},
+  deepseek:{name:'DeepSeek API',icon:'🔷',color:'#5b8cff'},
   openrouter:{name:'OpenRouter Free',icon:'◉',color:'#b29aff'}
 };
 function dashboardAccess(tab) {
@@ -1147,6 +1150,10 @@ function dashboardQuota(tab, active) {
       {label:'5 часов', value: val5h, variant:'5h'},
       {label:'Неделя', value: valWeekly, variant:'weekly'}
     ];
+  }
+  if (tab === 'deepseek') {
+    // Balance is money, not a percentage — rendered by a dedicated card.
+    return [];
   }
   if (tab === 'openai') {
     const quota = active?.quota || {};
@@ -1248,6 +1255,22 @@ function renderDashboard() {
         <small>${valid ? `из ${amount(q.quota_limit)}${q.status === 'stale' ? ' · сохранённые данные' : ''}` : 'Обновите квоту во вкладке Xpiki'}</small>
       </div>`;
       if (valid && pct != null && pct <= 20) alerts.push({priority:1,tab,text:`Xpiki: осталось ${pct}% квоты`});
+    }
+    if (tab === 'deepseek') {
+      const q = cfg.balance || {};
+      const valid = ['ok','stale'].includes(q.status);
+      const amount = value => value != null && Number.isFinite(Number(value)) ? Number(value).toLocaleString('ru-RU',{maximumFractionDigits:2}) : '—';
+      const low = valid && (q.is_available === false || (q.total_balance != null && Number(q.total_balance) <= 10));
+      const tone = !valid ? 'muted' : low ? 'error' : 'ok';
+      limits = `<div class="dashboard-token-balance">
+        <div style="display:flex; justify-content:space-between; align-items:baseline;">
+          <span>Баланс DeepSeek</span>
+          <strong class="dashboard-tone-${tone}" style="font-size:11px; font-weight:700;">${valid && q.is_available === false ? 'Недостаточно' : valid ? 'Доступен' : 'Нет данных'}</strong>
+        </div>
+        <strong>${valid ? `${amount(q.total_balance)} ${html(q.currency || '')}` : 'Нет данных'}</strong>
+        <small>${valid ? `Бонусы ${amount(q.granted_balance)} · пополнено ${amount(q.topped_up_balance)}${q.status === 'stale' ? ' · сохранённые данные' : ''}` : 'Обновите баланс во вкладке DeepSeek'}</small>
+      </div>`;
+      if (low) alerts.push({priority:1,tab,text:`DeepSeek: баланс почти исчерпан (${amount(q.total_balance)} ${html(q.currency || '')})`});
     }
     if (tab === 'openrouter') limits = `<div class="dashboard-token-balance"><span>Моделей в OpenCode</span><strong>${cfg.selectedModels?.length || 0}</strong><small>Выбор каталога во вкладке OpenRouter</small></div>`;
     if (tab === 'claude') limits = `<div class="dashboard-token-balance"><span>Тариф</span><strong>${html(access.active?.plan || '—')}</strong><small>Данные о лимитах сессии не получены</small></div>`;
@@ -1609,6 +1632,7 @@ function renderClaudeTab() {
 }
 
 let xpikiFormInitialized = false;
+let deepseekFormInitialized = false;
 let openrouterModels = [];
 function renderXpikiTab() {
   const cfg = appState.providers?.xpiki;
@@ -1690,6 +1714,81 @@ async function disconnectXpiki() {
   if (!confirm('Отключить Xpiki в OpenCode?')) return;
   try { await window.pywebview.api.disconnect_xpiki(); await refreshState(); document.getElementById('xpiki-result').textContent = 'Xpiki отключён'; }
   catch (e) { showToast(String(e)); }
+}
+
+function renderDeepSeekTab() {
+  const cfg = appState.providers?.deepseek;
+  if (!cfg) return;
+  const badge = document.getElementById('deepseek-connection-status');
+  if (badge) {
+    badge.textContent = cfg.connected ? '● Подключён' : cfg.hasKey ? 'Ключ сохранён' : 'Не подключён';
+    badge.className = `badge-pill ${cfg.connected ? 'badge-available' : 'badge-pool'}`;
+  }
+  const keyInput = document.getElementById('deepseek-key');
+  if (keyInput) keyInput.placeholder = cfg.hasKey ? 'Ключ сохранён · оставьте пустым для замены' : 'sk-…';
+  if (!deepseekFormInitialized) {
+    const urlInput = document.getElementById('deepseek-base-url');
+    if (urlInput) urlInput.value = cfg.baseUrl || 'https://api.deepseek.com';
+    deepseekFormInitialized = true;
+  }
+
+  const balance = cfg.balance || {};
+  const valid = ['ok','stale'].includes(balance.status);
+  const amount = value => value != null && Number.isFinite(Number(value))
+    ? Number(value).toLocaleString('ru-RU', {maximumFractionDigits: 2}) : 'Нет данных';
+  const currency = html(balance.currency || '');
+  const statusText = !valid
+    ? (balance.status === 'no_key' ? 'Ключ не задан' : 'Нет данных')
+    : balance.is_available === false ? 'Недостаточно средств' : 'Достаточно средств';
+  const statusTone = !valid ? 'muted' : balance.is_available === false ? 'error' : 'ok';
+  const box = document.getElementById('deepseek-balance');
+  if (box) {
+    box.innerHTML = `
+      <h2>Баланс DeepSeek API</h2>
+      <div class="quota-summary">
+        <div class="help-text">Общий остаток<strong class="dashboard-tone-${statusTone}">${valid ? `${amount(balance.total_balance)} ${currency}` : 'Нет данных'}</strong></div>
+        <div class="help-text">Бонусный баланс<strong>${valid ? `${amount(balance.granted_balance)} ${currency}` : '—'}</strong></div>
+        <div class="help-text">Пополненный баланс<strong>${valid ? `${amount(balance.topped_up_balance)} ${currency}` : '—'}</strong></div>
+      </div>
+      <p class="help-text" style="margin-top:12px;">Статус: <strong class="dashboard-tone-${statusTone}">${html(statusText)}</strong>${balance.checked_at ? ` · обновлён ${dashboardTime(balance.checked_at * 1000)}` : ''}${balance.status === 'stale' ? ' · сохранённые данные' : ''}</p>
+      ${balance.error ? `<p class="help-text" style="color:var(--accent-red);">${html(balance.error)}</p>` : ''}
+    `;
+  }
+}
+
+async function configureDeepSeekApi() {
+  const result = document.getElementById('deepseek-result');
+  if (!window.pywebview?.api) return;
+  result.textContent = 'Сохранение ключа и запрос баланса…';
+  try {
+    const key = document.getElementById('deepseek-key').value.trim();
+    const baseUrl = document.getElementById('deepseek-base-url').value.trim();
+    const response = await window.pywebview.api.configure_deepseek_api(key, baseUrl);
+    result.textContent = response.message;
+    document.getElementById('deepseek-key').value = '';
+    await refreshState();
+  } catch (e) { result.textContent = String(e); }
+}
+async function refreshDeepSeekBalance() {
+  const result = document.getElementById('deepseek-result');
+  if (!window.pywebview?.api) return;
+  result.textContent = 'Обновление баланса…';
+  try {
+    const balance = await window.pywebview.api.refresh_deepseek_balance();
+    if (appState.providers?.deepseek) appState.providers.deepseek.balance = balance;
+    renderDeepSeekTab();
+    result.textContent = balance.status === 'ok' ? 'Баланс обновлён' : balance.error || 'Не удалось получить баланс';
+  } catch (e) { result.textContent = String(e); }
+}
+async function disconnectDeepSeekApi() {
+  if (!confirm('Удалить сохранённый API-ключ DeepSeek?')) return;
+  if (!window.pywebview?.api) return;
+  try {
+    await window.pywebview.api.disconnect_deepseek_api();
+    document.getElementById('deepseek-key').value = '';
+    await refreshState();
+    document.getElementById('deepseek-result').textContent = 'API-ключ DeepSeek удалён';
+  } catch (e) { showToast(String(e)); }
 }
 
 function renderOpenRouterState() {

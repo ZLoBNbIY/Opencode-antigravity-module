@@ -51,6 +51,8 @@
 
         <div class="nav-item" data-tab="xpiki" onclick="switchTab('xpiki')"><span class="nav-icon">⚡</span><div class="nav-text"><span>Claude API · Xpiki</span><span class="nav-sub">Ключ · Модели · Квота</span></div></div>
 
+        <div class="nav-item" data-tab="deepseek" onclick="switchTab('deepseek')"><span class="nav-icon">🔷</span><div class="nav-text"><span>DeepSeek API</span><span class="nav-sub">Platform API · Баланс</span></div></div>
+
         <div class="nav-item" data-tab="openrouter" onclick="switchTab('openrouter')">
           <span class="nav-icon">🟣</span>
           <div class="nav-text">
@@ -376,6 +378,39 @@
         </div>
       </section>
 
+      <section id="view-deepseek" class="view-tab" style="display: none">
+        <div class="page-header"><div class="header-left"><h1>🔷 DeepSeek API</h1><p>Прямое подключение к Platform API (sk-ключ) и контроль баланса</p></div><span class="badge-pill badge-pool" id="deepseek-connection-status">Загрузка…</span></div>
+        <div class="provider-account-layout">
+          <div class="provider-account-content">
+            <div class="glass-card network-panel" id="deepseek-balance"></div>
+            <div class="glass-card network-panel">
+              <label class="field-label">API-ключ (sk-...)<input id="deepseek-key" type="password" autocomplete="off" placeholder="Введите API-ключ DeepSeek"></label>
+              <label class="field-label">Base URL API<input id="deepseek-base-url" value="https://api.deepseek.com"></label>
+              <div class="button-row"><button class="btn-primary" onclick="configureDeepSeekApi()">Сохранить ключ</button><button class="btn-secondary" onclick="refreshDeepSeekBalance()">Обновить баланс</button><button class="btn-secondary" onclick="disconnectDeepSeekApi()">Отключить</button></div>
+              <p class="help-text" role="status" id="deepseek-result"></p>
+              <p class="help-text">Ключ хранится в защищённом хранилище Hub (DPAPI на Windows) и используется только для запроса <code>GET /user/balance</code>. При первом запуске хаб может автоматически подхватить ключ из переменной <code>DEEPSEEK_API_KEY</code> или из конфигурации OpenCode. У DeepSeek предоплаченный баланс, а не 5-часовые окна: показываются общий остаток, бонусы и пополненные средства.</p>
+            </div>
+          </div>
+          <aside class="provider-route-sidebar" aria-label="Маршрут DeepSeek">
+            <div class="glass-card service-card" data-provider-card="deepseek">
+              <div class="service-card-header"><div class="service-name">DeepSeek Platform API</div><span class="badge-pill badge-pool provider-status" id="provider-status-deepseek" role="status"><span class="connection-indicator idle"></span> Не проверено</span></div>
+              <div class="route-section-title">Маршрут подключения</div><div class="segmented-group" id="seg-group-deepseek"></div>
+              <p class="help-text provider-route-description" id="card-route-deepseek"></p>
+              <details class="auto-comparison"><summary>Сравнение маршрутов Auto</summary><div id="auto-routes-deepseek"></div><button class="btn-secondary" id="auto-check-deepseek" onclick="refreshAutoRoutes('deepseek')">Сравнить маршруты</button></details>
+              <div class="provider-check-row"><span class="help-text" id="card-check-time-deepseek">Проверка ещё не запускалась</span><div style="display:flex; gap:6px;"><button class="btn-secondary" id="card-check-deepseek" onclick="showDiagnostics('deepseek')">Диагностика →</button></div></div>
+            </div>
+            <div class="glass-card active-account-panel">
+              <h2>Активный доступ</h2>
+              <div class="details-list">
+                <div class="detail-row"><span class="detail-key">Статус</span><span class="detail-val" id="active-status-deepseek">Не определён</span></div>
+                <div class="detail-row"><span class="detail-key">API-ключ</span><span class="detail-val" id="active-account-deepseek">—</span></div>
+                <div class="detail-row"><span class="detail-key">Баланс</span><span class="detail-val" id="active-count-deepseek">0</span></div>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
       <section id="view-openrouter" class="view-tab" style="display: none;">
         <div class="page-header">
           <div class="header-left">
@@ -513,6 +548,21 @@
             <p class="help-text">● зелёный — TCP доступен · ● красный — ошибка · ● серый — ещё не проверялся. IP соединения может принадлежать локальному прокси.</p>
           </details>
         </div>
+        <div class="glass-card diag-card provider-diagnostics" id="diagnostics-deepseek">
+          <div class="diag-header"><div><h2>Диагностика DeepSeek API</h2><p class="help-text">Хост Platform API через выбранный маршрут. Баланс и ключ проверяются во вкладке DeepSeek.</p></div><div style="display:flex; gap:8px;"><button class="btn-primary" id="btn-diag-deepseek" onclick="runDiagnostics('deepseek')">Проверить домены</button></div></div>
+          <details class="diag-details" id="diag-details-deepseek">
+            <summary class="diag-summary-toggle">
+              <span class="diag-summary-left">
+                <span class="diag-arrow">▶</span>
+                <span>Список хостов и доменов DeepSeek</span>
+                <span class="badge-pill diag-status-badge" id="diag-badge-deepseek">Показать</span>
+              </span>
+              <span class="help-text diag-toggle-hint">Нажмите для просмотра</span>
+            </summary>
+            <div class="diagnostic-scroll"><table class="diag-table"><thead><tr><th>Сервис / домен</th><th>Доступность</th><th>Задержка</th><th>Маршрут</th><th>IP соединения</th></tr></thead><tbody id="diag-tbody-deepseek"></tbody></table></div>
+            <p class="help-text">● зелёный — TCP доступен · ● красный — ошибка · ● серый — ещё не проверялся. IP соединения может принадлежать локальному прокси.</p>
+          </details>
+        </div>
       </section>
 
       <section id="view-settings" class="view-tab" style="display: none;">
@@ -534,6 +584,7 @@
           <label class="provider-toggle-row"><span>ChatGPT (OpenAI)</span><input type="checkbox" class="switch-input" id="provider-enabled-openai" checked onchange="markSettingsDirty()" aria-label="Включить ChatGPT (OpenAI)"></label>
           <label class="provider-toggle-row"><span>Claude Pro</span><input type="checkbox" class="switch-input" id="provider-enabled-claude" checked onchange="markSettingsDirty()" aria-label="Включить Claude Pro"></label>
           <label class="provider-toggle-row"><span>Claude API · Xpiki</span><input type="checkbox" class="switch-input" id="provider-enabled-xpiki" checked onchange="markSettingsDirty()" aria-label="Включить Claude API · Xpiki"></label>
+          <label class="provider-toggle-row"><span>DeepSeek API</span><input type="checkbox" class="switch-input" id="provider-enabled-deepseek" checked onchange="markSettingsDirty()" aria-label="Включить DeepSeek API"></label>
           <label class="provider-toggle-row"><span>OpenRouter Free</span><input type="checkbox" class="switch-input" id="provider-enabled-openrouter" checked onchange="markSettingsDirty()" aria-label="Включить OpenRouter Free"></label>
           <p class="help-text" id="provider-settings-result" role="status"></p>
         </div>

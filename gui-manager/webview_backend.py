@@ -43,6 +43,7 @@ import dns_tester
 import xpiki_manager
 import openrouter_manager
 import hub_paths
+import deepseek_api
 
 CONFIG_DIR = Path(os.path.expanduser("~/.config/opencode"))
 ANTIGRAVITY_CONFIG_FILE = CONFIG_DIR / "antigravity.json"
@@ -68,9 +69,11 @@ PROVIDER_DOMAINS = {
     "claude-pro": ["claude.ai", "api.anthropic.com", "console.anthropic.com"],
     "xpiki": ["api.xpiki.com"],
     "openrouter-free": ["openrouter.ai"],
+    "deepseek-account": ["api.deepseek.com"],
 }
 PROVIDER_SETTING_IDS = {"antigravity": "google", "openai": "openai", "claude": "claude-pro",
-                        "xpiki": "xpiki", "openrouter": "openrouter-free"}
+                        "xpiki": "xpiki", "openrouter": "openrouter-free",
+                        "deepseek": "deepseek-account"}
 
 
 class HubApi:
@@ -215,7 +218,8 @@ class HubApi:
         oc = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8-sig")) if OPENCODE_CONFIG_FILE.exists() else {}
         auto_states = {}
         for provider in PROVIDER_DOMAINS:
-            visibility_key = {"google":"antigravity", "claude-pro":"claude", "openrouter-free":"openrouter"}.get(provider, provider)
+            visibility_key = {"google":"antigravity", "claude-pro":"claude", "openrouter-free":"openrouter",
+                              "deepseek-account":"deepseek"}.get(provider, provider)
             enabled = cfg.get("providers_visibility", {}).get(visibility_key, True) and provider not in oc.get("disabled_providers", [])
             if enabled and cfg.get("provider_routes", {}).get(provider, "default") in ("default", "auto"):
                 auto_router.router.refresh(provider, cfg, oc)
@@ -648,6 +652,10 @@ class HubApi:
     def refresh_all_quotas(self) -> dict:
         self.refresh_openai_quotas()
         try:
+            deepseek_api.refresh_balance_silent()
+        except Exception:
+            pass
+        try:
             xpiki_manager.refresh_xpiki_quota_silent()
         except Exception:
             pass
@@ -685,7 +693,8 @@ class HubApi:
                           "models": [{"id": mid, "name": meta["name"]} for mid, meta in xpiki_manager.XPIKI_MODELS.items()],
                           "quota": xpiki.get("cached_quota") or {}},
                 "openrouter": {"hasKey": bool(openrouter_key), "keyLabel": key_label(openrouter_key),
-                               "connected": bool(openrouter_key and selected), "selectedModels": selected}}
+                               "connected": bool(openrouter_key and selected), "selectedModels": selected},
+                "deepseek": deepseek_api.provider_state()}
 
     def configure_xpiki(self, key: str, base_url: str, models: list) -> dict:
         with self._provider_lock:
@@ -715,6 +724,34 @@ class HubApi:
             if not xpiki_manager.disconnect_xpiki():
                 raise OSError("Не удалось отключить Xpiki")
         return True
+
+    def configure_deepseek_api(self, key: str = "", base_url: str = "") -> dict:
+        """Saves an encrypted DeepSeek Platform API key and reads its balance."""
+        with self._provider_lock:
+            base_url = str(base_url or "").strip() or deepseek_api.DEFAULT_BASE_URL
+            deepseek_api.api_origin(base_url)
+            final_key = str(key or "").strip() or deepseek_api.load_api_key()
+            if not final_key:
+                raise ValueError("Укажите API-ключ DeepSeek (sk-...)")
+            deepseek_api.save_api_key(final_key)
+            cfg = deepseek_api.load_config()
+            cfg["base_url"] = base_url
+            cfg["connected"] = True
+            deepseek_api.save_config(cfg)
+            balance = deepseek_api.fetch_balance(final_key, base_url)
+            return {
+                "ok": balance.get("status") in ("ok", "stale"),
+                "message": (balance.get("error") or "Ключ DeepSeek сохранён, баланс получен")
+                if balance.get("status") == "ok" else (balance.get("error") or "Ключ сохранён, но получить баланс не удалось"),
+                "balance": balance,
+            }
+
+    def refresh_deepseek_balance(self) -> dict:
+        return deepseek_api.refresh_balance_silent()
+
+    def disconnect_deepseek_api(self) -> bool:
+        with self._provider_lock:
+            return deepseek_api.clear_api_key()
 
     def load_openrouter_models(self, key: str = "") -> list:
         with self._provider_lock:
@@ -1358,6 +1395,10 @@ def run_webview_app():
             print(f"Network startup: {exc}")
         while True:
             api.refresh_openai_quotas()
+            try:
+                api.refresh_deepseek_balance()
+            except Exception:
+                pass
             time.sleep(300)
             try:
                 node_exe = antigravity_manager.get_node_executable()

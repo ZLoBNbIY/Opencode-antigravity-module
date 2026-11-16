@@ -43,6 +43,7 @@ LOCAL_ROUTES = {
     ),
     "openrouter-free": ("openrouter.ai",),
     "xpiki": ("api.xpiki.com", "xpiki.com"),
+    "deepseek-account": ("api.deepseek.com", "platform.deepseek.com"),
 }
 _server = None
 _thread = None
