@@ -114,7 +114,7 @@
       <section id="view-dashboard" class="view-tab active">
         <div class="page-header dashboard-header">
           <div class="header-left"><h1>◈ Dashboard</h1><p>Аккаунты, лимиты и подключения — в одном месте</p></div>
-          <div class="header-right"><span class="dashboard-updated" id="dashboard-updated">Обновление каждые 10 с</span><button class="btn-secondary" onclick="refreshState()">Обновить сводку</button><button class="btn-primary" id="dashboard-check" onclick="runAllDiagnostics()">Проверить домены</button></div>
+          <div class="header-right"><span class="dashboard-updated" id="dashboard-updated">Обновление каждые 10 с</span><button class="btn-secondary" onclick="refreshState()">Обновить сводку</button><button class="btn-secondary" id="btn-restart-hub" onclick="restartHub()">🔄 Перезапустить Хаб</button><button class="btn-primary" id="dashboard-check" onclick="runAllDiagnostics()">Проверить домены</button></div>
         </div>
         <div class="dashboard-metrics" id="dashboard-metrics"></div>
         <div class="dashboard-section-title"><div><h2>Провайдеры и лимиты</h2><p class="help-text">Активный доступ, остаток квоты и фактический маршрут</p></div><button class="btn-secondary" onclick="switchTab('settings')">Управлять провайдерами →</button></div>
@@ -757,19 +757,19 @@
           </div>
 
           <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 14px;">
-            <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px;">
+            <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--glass-border); border-radius: 8px; padding: 10px;">
               <div style="font-size: 11px; color: var(--text-secondary);">Ядра VLESS</div>
               <div id="storage-bin-size" style="font-size: 16px; font-weight: 700; color: #fff; margin-top: 2px;">—</div>
             </div>
-            <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px;">
+            <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--glass-border); border-radius: 8px; padding: 10px;">
               <div style="font-size: 11px; color: var(--text-secondary);">Профили браузера</div>
               <div id="storage-browser-size" style="font-size: 16px; font-weight: 700; color: #fff; margin-top: 2px;">—</div>
             </div>
-            <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px;">
+            <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--glass-border); border-radius: 8px; padding: 10px;">
               <div style="font-size: 11px; color: var(--text-secondary);">Логи и кэш</div>
               <div id="storage-log-size" style="font-size: 16px; font-weight: 700; color: #fff; margin-top: 2px;">—</div>
             </div>
-            <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px;">
+            <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--glass-border); border-radius: 8px; padding: 10px;">
               <div style="font-size: 11px; color: var(--text-secondary);">Всего занято</div>
               <div id="storage-total-size" style="font-size: 16px; font-weight: 700; color: var(--accent-amber); margin-top: 2px;">—</div>
             </div>

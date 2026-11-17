@@ -27,10 +27,12 @@ try:
     CONFIG_DIR = hub_paths.CONFIG_DIR
     CLAUDE_ACCOUNTS_FILE = hub_paths.ACCOUNTS_DIR / "claude-accounts.json"
     CLAUDE_PROFILE_DIR = hub_paths.CLAUDE_PROFILE_DIR
+    BRIDGE_TOKEN_FILE = hub_paths.SECURE_DIR / "claude-bridge-token.json"
 except Exception:
     CONFIG_DIR = Path.home() / ".config" / "opencode"
     CLAUDE_ACCOUNTS_FILE = CONFIG_DIR / "claude-accounts.json"
     CLAUDE_PROFILE_DIR = CONFIG_DIR / "claude_profile"
+    BRIDGE_TOKEN_FILE = CONFIG_DIR / "claude-bridge-token.json"
 DEFAULT_BRIDGE_PORT = 51186
 
 CLAUDE_MODELS = {
@@ -352,16 +354,13 @@ class ClaudeAccountManager:
             return False, f"Ошибка проверки сессии: {e}", None
 
     def configure_opencode_provider(self) -> bool:
-        """Configures the claude-pro provider in ~/.config/opencode/opencode.json."""
+        """Configures the claude-pro provider in ~/.config/opencode/opencode.json(c)."""
+        import jsonc_config
         active_acc = self.get_active_account()
-        cfg_path = CONFIG_DIR / "opencode.json"
         try:
-            cfg_data: Dict[str, Any] = {}
-            if cfg_path.exists():
-                cfg_data = json.loads(cfg_path.read_text(encoding="utf-8"))
-
-            if "provider" not in cfg_data:
-                cfg_data["provider"] = {}
+            cfg_path = jsonc_config.config_path(CONFIG_DIR)
+            original = cfg_path.read_text(encoding="utf-8-sig") if cfg_path.exists() else "{}\n"
+            cfg_data = jsonc_config.parse_config(original)
 
             if active_acc:
                 bridge_service.ensure_running()
@@ -379,11 +378,16 @@ class ClaudeAccountManager:
                         "name": info["name"],
                         "limit": info["limit"],
                     }
-                cfg_data["provider"]["claude-pro"] = provider_cfg
+                updated = jsonc_config.set_property(original, ("provider", "claude-pro"), provider_cfg)
             else:
-                cfg_data["provider"].pop("claude-pro", None)
+                providers = cfg_data.get("provider", {})
+                if isinstance(providers, dict) and "claude-pro" in providers:
+                    updated = jsonc_config.set_property(original, ("provider", "claude-pro", "models"), {})
+                else:
+                    updated = original
 
-            cfg_path.write_text(json.dumps(cfg_data, indent=4, ensure_ascii=False), encoding="utf-8")
+            if updated != original or not cfg_path.exists():
+                secure_storage.atomic_write(cfg_path, updated)
             try:
                 import opencode_config
                 opencode_config.ensure_session_title_config(cfg_path)
@@ -627,10 +631,47 @@ class ClaudeSubscriptionBridge:
 
     def __init__(self, port: int = DEFAULT_BRIDGE_PORT):
         self.port = port
-        self.bridge_token = secrets.token_hex(16)
+        self.bridge_token = self._load_or_create_token()
         self._server: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
+
+    @staticmethod
+    def _load_or_create_token() -> str:
+        try:
+            if BRIDGE_TOKEN_FILE.exists():
+                record = json.loads(BRIDGE_TOKEN_FILE.read_text(encoding="utf-8"))
+                data = secure_storage.unprotect_payload(record, "claude-bridge-token")
+                tok = str(data.get("token") or "").strip()
+                if tok:
+                    return tok
+        except Exception:
+            pass
+        # Adopt existing token from opencode.json(c) if already configured
+        try:
+            import jsonc_config
+            oc_path = jsonc_config.config_path(CONFIG_DIR)
+            if oc_path.exists():
+                oc = jsonc_config.parse_config(oc_path.read_text(encoding="utf-8-sig"))
+                existing = str(
+                    oc.get("provider", {}).get("claude-pro", {}).get("options", {}).get("apiKey") or ""
+                ).strip()
+                if existing:
+                    try:
+                        rec = secure_storage.protect_payload("claude-bridge-token", {"token": existing})
+                        secure_storage.atomic_write(BRIDGE_TOKEN_FILE, json.dumps(rec))
+                    except Exception:
+                        pass
+                    return existing
+        except Exception:
+            pass
+        token = secrets.token_hex(16)
+        try:
+            rec = secure_storage.protect_payload("claude-bridge-token", {"token": token})
+            secure_storage.atomic_write(BRIDGE_TOKEN_FILE, json.dumps(rec))
+        except Exception:
+            pass
+        return token
 
     def _is_authorized(self, headers) -> bool:
         auth = str(headers.get("Authorization") or "").strip()

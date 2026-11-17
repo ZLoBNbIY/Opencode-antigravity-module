@@ -1244,7 +1244,7 @@ function renderDashboard() {
     const route = appState.routes?.[providerTabs[tab]] || 'default';
     const card = document.createElement('div');
     card.className = 'glass-card dashboard-provider';
-    card.innerHTML = `<div class="dashboard-provider-heading"><span class="dashboard-provider-icon" style="color:${info.color}">${info.icon}</span><h3>${html(info.name)}</h3><span class="badge-pill ${badge}"><span class="connection-indicator ${domainState}"></span>${html(domainText)}</span></div><div class="dashboard-access"><span>${access.connected ? 'Активный доступ' : 'Подключение не настроено'}</span><strong>${html(access.label)}</strong></div><div class="dashboard-provider-limits">${limits}</div>${quota.length ? `<p class="dashboard-quota-note">${html(quotaNote)}</p>` : ''}<div class="dashboard-provider-route"><span>Маршрут</span><strong>${html(routeLabel(route,providerTabs[tab]))}</strong></div><button class="btn-secondary dashboard-provider-open">Открыть ${tab === 'xpiki' || tab === 'openrouter' ? 'провайдера' : 'аккаунты'} →</button>`;
+    card.innerHTML = `<div class="dashboard-provider-heading"><span class="dashboard-provider-icon" style="color:${info.color}">${info.icon}</span><h3>${html(info.name)}</h3><span class="badge-pill ${badge}"><span class="connection-indicator ${domainState}"></span>${html(domainText)}</span></div><div class="dashboard-access"><span>${access.connected ? 'Активный доступ' : 'Подключение не настроено'}</span><strong>${html(access.label)}</strong></div><div class="dashboard-provider-limits">${limits}</div>${quota.length ? `<p class="dashboard-quota-note">${html(quotaNote)}</p>` : ''}<div class="dashboard-provider-route"><span>Маршрут</span><strong>${html(routeLabel(route,providerTabs[tab]))}</strong></div><button class="btn-secondary dashboard-provider-open">Открыть ${['xpiki', 'openrouter', 'deepseek', 'tokenlavka'].includes(tab) ? 'провайдера' : 'аккаунты'} →</button>`;
     card.querySelector('button')?.addEventListener('click',()=>switchTab(tab));
     providerGrid.appendChild(card);
     if (!access.connected) alerts.push({priority:3,tab,text:`${info.name}: ${access.count ? 'активный доступ не подключён' : 'добавьте аккаунт или ключ'}`});
@@ -1937,7 +1937,7 @@ function renderTokenLavkaState() {
         <strong style="font-size:22px;color:var(--text-primary);">${valid ? num(b.balance) : '—'} <span class="muted small">ед. осталось</span></strong>
         <strong class="dashboard-tone-${tone}" style="font-size:13px;">${!valid ? 'Нет данных' : pct == null ? '—' : pct + '% доступно'}</strong>
       </div>
-      <div class="progress-track"><div class="progress-fill-${tone === 'warning' ? 'amber' : tone === 'error' ? 'amber' : 'emerald'}" style="width:${fill}%;"></div></div>
+      <div class="progress-track"><div class="progress-fill-${tone === 'warning' ? 'amber' : tone === 'error' ? 'red' : 'emerald'}" style="width:${fill}%;"></div></div>
       <div class="kv-rows" style="margin-top:12px;">
         <div class="kv"><span class="muted">Выдано</span><b>${valid ? num(b.issued) : '—'}</b></div>
         <div class="kv"><span class="muted">Использовано</span><b>${valid ? num(b.spent) : '—'}</b></div>
@@ -2044,6 +2044,8 @@ function selectStrategy(strat, save = true) {
   if (save && window.pywebview?.api) {
     window.pywebview.api.set_strategy(strat).then(() => {
       showToast(`Стратегия выбора обновлена: ${strat}`);
+    }).catch(e => {
+      showToast(`Ошибка смены стратегии: ${e?.message || e}`);
     });
   }
 }
@@ -2098,25 +2100,54 @@ async function restartOpenCode() {
   }
 }
 
+async function restartHub() {
+  if (!window.pywebview?.api?.restart_hub) return;
+  const btn = document.getElementById('btn-restart-hub');
+  const originalText = btn ? btn.textContent : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Перезапуск…';
+  }
+  showToast('Перезапуск Antigravity Hub...');
+  try {
+    const res = await window.pywebview.api.restart_hub();
+    if (!res?.ok) {
+      throw new Error(res?.message || 'Не удалось перезапустить Hub');
+    }
+  } catch (e) {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+    showToast(`Ошибка перезапуска Hub: ${e?.message || e}`);
+  }
+}
+
 async function stopOpenCode() {
   if (!window.pywebview?.api) return;
   showToast("Остановка OpenCode...");
-  await window.pywebview.api.stop_opencode();
-  setTimeout(refreshState, 1500);
+  try {
+    await window.pywebview.api.stop_opencode();
+    setTimeout(refreshState, 1500);
+  } catch (e) { showToast(`Ошибка остановки OpenCode: ${e?.message || e}`); }
 }
 
 async function startOpenCode() {
   if (!window.pywebview?.api) return;
   showToast("Запуск OpenCode...");
-  await window.pywebview.api.start_opencode();
-  setTimeout(refreshState, 1500);
+  try {
+    await window.pywebview.api.start_opencode();
+    setTimeout(refreshState, 1500);
+  } catch (e) { showToast(`Ошибка запуска OpenCode: ${e?.message || e}`); }
 }
 
 async function fixSessionTitle() {
   if (!window.pywebview?.api) return;
   showToast("Проверка подписи сессий opencode/big-pickle...");
-  const res = await window.pywebview.api.fix_session_title();
-  showToast(res || "Настройка проверена");
+  try {
+    const res = await window.pywebview.api.fix_session_title();
+    showToast(res || "Настройка проверена");
+  } catch (e) { showToast(`Ошибка настройки подписи сессий: ${e?.message || e}`); }
 }
 
 async function fixOpenCodePlugin() {
@@ -2284,68 +2315,86 @@ async function activateGoogleAccount(idx) {
 async function deleteGoogleAccount(id) {
   if (!confirm("Удалить этот Google аккаунт из пула?")) return;
   if (!window.pywebview?.api) return;
-  await window.pywebview.api.delete_google_account(id);
-  showToast("Аккаунт удален");
-  refreshState();
+  try {
+    await window.pywebview.api.delete_google_account(id);
+    showToast("Аккаунт удален");
+    await refreshState();
+  } catch (e) { showToast(`Ошибка удаления: ${e?.message || e}`); }
 }
 
 async function testGoogleAccount(id) {
   if (!window.pywebview?.api) return;
   showToast("Тестирование токена и квот...");
-  const res = await window.pywebview.api.test_google_account(id);
-  showToast(res || "Аккаунт активен и отвечает");
-  await refreshState();
+  try {
+    const res = await window.pywebview.api.test_google_account(id);
+    showToast(res || "Аккаунт активен и отвечает");
+    await refreshState();
+  } catch (e) { showToast(`Ошибка проверки: ${e?.message || e}`); }
 }
 
 async function toggleGoogleEnabled(id, enabled) {
   if (!window.pywebview?.api) return;
-  await window.pywebview.api.toggle_google_enabled(id, enabled);
-  showToast(`Google аккаунт ${enabled ? "включен" : "отключен"}`);
-  await refreshState();
+  try {
+    await window.pywebview.api.toggle_google_enabled(id, enabled);
+    showToast(`Google аккаунт ${enabled ? "включен" : "отключен"}`);
+    await refreshState();
+  } catch (e) { showToast(`Ошибка переключения: ${e?.message || e}`); }
 }
 
 async function toggleCandidate(id, enabled) {
   if (!window.pywebview?.api) return;
-  await window.pywebview.api.toggle_google_candidate(id, enabled);
-  showToast(`Авторотация ${enabled ? "включена" : "отключена"}`);
-  await refreshState();
+  try {
+    await window.pywebview.api.toggle_google_candidate(id, enabled);
+    showToast(`Авторотация ${enabled ? "включена" : "отключена"}`);
+    await refreshState();
+  } catch (e) { showToast(`Ошибка переключения: ${e?.message || e}`); }
 }
 
 async function activateOpenAiAccount(id) {
   if (!window.pywebview?.api) return;
-  await window.pywebview.api.activate_openai_account(id);
-  showToast("Активный аккаунт ChatGPT переключен");
-  await refreshState();
+  try {
+    await window.pywebview.api.activate_openai_account(id);
+    showToast("Активный аккаунт ChatGPT переключен");
+    await refreshState();
+  } catch (e) { showToast(`Ошибка переключения ChatGPT: ${e?.message || e}`); }
 }
 
 async function testOpenAiAccount(id) {
   if (!window.pywebview?.api) return;
   showToast("Проверка генерации ChatGPT модели...");
-  const res = await window.pywebview.api.test_openai_account(id);
-  showToast(res || "Аккаунт отвечает");
-  await refreshState();
+  try {
+    const res = await window.pywebview.api.test_openai_account(id);
+    showToast(res || "Аккаунт отвечает");
+    await refreshState();
+  } catch (e) { showToast(`Ошибка проверки ChatGPT: ${e?.message || e}`); }
 }
 
 async function deleteOpenAiAccount(id) {
   if (!confirm("Удалить этот ChatGPT аккаунт из пула?")) return;
   if (!window.pywebview?.api) return;
-  await window.pywebview.api.delete_openai_account(id);
-  showToast("ChatGPT аккаунт удалён");
-  await refreshState();
+  try {
+    await window.pywebview.api.delete_openai_account(id);
+    showToast("ChatGPT аккаунт удалён");
+    await refreshState();
+  } catch (e) { showToast(`Ошибка удаления ChatGPT: ${e?.message || e}`); }
 }
 
 async function toggleOpenAiEnabled(id, enabled) {
   if (!window.pywebview?.api) return;
-  await window.pywebview.api.toggle_openai_enabled(id, enabled);
-  showToast(`ChatGPT аккаунт ${enabled ? "включен" : "отключен"}`);
-  await refreshState();
+  try {
+    await window.pywebview.api.toggle_openai_enabled(id, enabled);
+    showToast(`ChatGPT аккаунт ${enabled ? "включен" : "отключен"}`);
+    await refreshState();
+  } catch (e) { showToast(`Ошибка переключения ChatGPT: ${e?.message || e}`); }
 }
 
 async function toggleOpenAiCandidate(id, enabled) {
   if (!window.pywebview?.api) return;
-  await window.pywebview.api.toggle_openai_candidate(id, enabled);
-  showToast(`Авторотация ChatGPT ${enabled ? "включена" : "отключена"}`);
-  await refreshState();
+  try {
+    await window.pywebview.api.toggle_openai_candidate(id, enabled);
+    showToast(`Авторотация ChatGPT ${enabled ? "включена" : "отключена"}`);
+    await refreshState();
+  } catch (e) { showToast(`Ошибка переключения ChatGPT: ${e?.message || e}`); }
 }
 
 async function addOpenAiAccount() {

@@ -696,6 +696,13 @@ body {
   border-radius: 3px;
 }
 
+.progress-fill-red {
+  height: 100%;
+  background: linear-gradient(90deg, #dc2626, #f87171);
+  box-shadow: 0 0 10px rgba(248, 113, 113, 0.45);
+  border-radius: 3px;
+}
+
 .progress-fill-cyan {
   height: 100%;
   background: linear-gradient(90deg, #0284c7, #38bdf8);

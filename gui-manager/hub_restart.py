@@ -2,6 +2,7 @@
 import ctypes
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import time
@@ -32,14 +33,65 @@ def wait_for_exit(pid, timeout=60):
     return False
 
 
+def _force_kill_pid(pid: int) -> None:
+    try:
+        if os.name == "nt":
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            subprocess.run(
+                ["taskkill", "/f", "/t", "/pid", str(pid)],
+                capture_output=True, creationflags=flags, timeout=10,
+            )
+        else:
+            os.kill(pid, signal.SIGKILL)
+    except Exception:
+        pass
+
+
+def _kill_stray_hub_processes(exclude_pids: set[int]) -> None:
+    if os.name != "nt":
+        return
+    try:
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        ps_cmd = (
+            "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue "
+            "| Where-Object { $_.CommandLine -match 'antigravity_manager\\.pyw' } "
+            "| Select-Object -ExpandProperty ProcessId"
+        )
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_cmd],
+            capture_output=True, text=True, creationflags=flags, timeout=10,
+        )
+        for line in proc.stdout.splitlines():
+            line = line.strip()
+            if line.isdigit():
+                pid = int(line)
+                if pid not in exclude_pids:
+                    _force_kill_pid(pid)
+                    wait_for_exit(pid, timeout=3)
+    except Exception:
+        pass
+
+
 def schedule_restart():
+    kwargs = {"cwd": str(Path(__file__).resolve().parent)}
+    if os.name == "nt":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     subprocess.Popen(
         [sys.executable, str(Path(__file__).resolve()), str(os.getpid())],
-        cwd=str(Path(__file__).resolve().parent),
+        **kwargs,
     )
 
 
 if __name__ == "__main__":
-    if wait_for_exit(int(sys.argv[1])):
-        script = Path(__file__).resolve().with_name("antigravity_manager.pyw")
-        subprocess.Popen([sys.executable, str(script)], cwd=str(script.parent))
+    if len(sys.argv) < 2:
+        sys.exit(1)
+    try:
+        parent_pid = int(sys.argv[1])
+    except ValueError:
+        sys.exit(1)
+    if not wait_for_exit(parent_pid, timeout=10):
+        _force_kill_pid(parent_pid)
+        wait_for_exit(parent_pid, timeout=5)
+    _kill_stray_hub_processes({os.getpid(), parent_pid})
+    script = Path(__file__).resolve().with_name("antigravity_manager.pyw")
+    subprocess.Popen([sys.executable, str(script)], cwd=str(script.parent), close_fds=True)

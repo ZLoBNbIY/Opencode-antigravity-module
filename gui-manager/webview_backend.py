@@ -122,6 +122,37 @@ def _normalize_vless_pool(value) -> list[dict]:
     return entries
 
 
+def _opencode_config_path() -> Path:
+    if OPENCODE_CONFIG_FILE.exists():
+        return OPENCODE_CONFIG_FILE
+    jsonc_candidate = CONFIG_DIR / "opencode.jsonc"
+    if jsonc_candidate.exists():
+        return jsonc_candidate
+    return OPENCODE_CONFIG_FILE
+
+
+def _read_opencode_config() -> dict:
+    path = _opencode_config_path()
+    if not path.exists():
+        return {}
+    try:
+        import jsonc_config
+        return jsonc_config.parse_config(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+
+def _is_hub_local_proxy(parsed) -> bool:
+    host = (parsed.hostname or "").lower()
+    if host not in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+        return False
+    return parsed.port in (provider_proxy.PORT, 51180, get_http_port())
+
+
 class HubApi:
     """Exposed to window.pywebview.api in JavaScript."""
 
@@ -129,6 +160,7 @@ class HubApi:
         # pywebview recursively inspects public API attributes. A public Window
         # reference exposes native GUI properties and can block bridge startup.
         self._window_holder = window_holder
+        self._tray_holder = None
         try:
             hub_paths.migrate_legacy_locations()
         except Exception:
@@ -146,6 +178,7 @@ class HubApi:
         self._provider_lock = threading.RLock()
         self._core_lock = threading.Lock()
         self._restart_lock = threading.Lock()
+        self._hub_restart_lock = threading.Lock()
         self._uninstalled = False
         self._login_locks = {name: threading.Lock() for name in ("google", "openai", "claude")}
 
@@ -213,7 +246,7 @@ class HubApi:
         cfg = self.load_config()
         routes = cfg.get("provider_routes", {})
         try:
-            oc = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8-sig")) if OPENCODE_CONFIG_FILE.exists() else {}
+            oc = _read_opencode_config()
             disabled = oc.get("disabled_providers", [])
             visibility = dict(cfg.get("providers_visibility", {}))
             for key, provider_id in PROVIDER_SETTING_IDS.items():
@@ -262,7 +295,7 @@ class HubApi:
 
     def get_network_state(self) -> dict:
         cfg = self.load_config()
-        oc = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8-sig")) if OPENCODE_CONFIG_FILE.exists() else {}
+        oc = _read_opencode_config()
         auto_states = {}
         for provider in PROVIDER_DOMAINS:
             visibility_key = {"google":"antigravity", "claude-pro":"claude", "openrouter-free":"openrouter",
@@ -287,17 +320,32 @@ class HubApi:
         if provider not in PROVIDER_DOMAINS:
             raise ValueError("Неизвестный провайдер")
         cfg = self.load_config()
-        oc = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8-sig")) if OPENCODE_CONFIG_FILE.exists() else {}
+        oc = _read_opencode_config()
         auto_router.router.refresh(provider, cfg, oc, force=True)
         return True
 
     def _sync_routes(self, cfg):
-        if OPENCODE_CONFIG_FILE.exists():
-            oc_data = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8-sig"))
-            sync_provider_routes(oc_data, cfg, get_http_port(), cfg.get("provider_routes", {}))
-            pending = OPENCODE_CONFIG_FILE.with_suffix(".json.hub.tmp")
-            pending.write_text(json.dumps(oc_data, indent=2, ensure_ascii=False), encoding="utf-8")
-            pending.replace(OPENCODE_CONFIG_FILE)
+        oc_path = _opencode_config_path()
+        if oc_path.exists():
+            try:
+                import jsonc_config
+                original = oc_path.read_text(encoding="utf-8-sig")
+                oc_data = jsonc_config.parse_config(original)
+                sync_provider_routes(oc_data, cfg, get_http_port(), cfg.get("provider_routes", {}))
+                if oc_path.suffix.lower() == ".jsonc" or "//" in original or "/*" in original:
+                    updated = original
+                    if "provider" in oc_data:
+                        updated = jsonc_config.set_property(updated, ("provider",), oc_data["provider"])
+                    if "providers" in oc_data:
+                        updated = jsonc_config.set_property(updated, ("providers",), oc_data["providers"])
+                    content = updated
+                else:
+                    content = json.dumps(oc_data, indent=2, ensure_ascii=False)
+                pending = oc_path.with_suffix(oc_path.suffix + ".hub.tmp")
+                pending.write_text(content, encoding="utf-8")
+                pending.replace(oc_path)
+            except Exception:
+                pass
         if not provider_proxy.start():
             raise RuntimeError("Маршрутизатор Hub недоступен на порту 10880")
 
@@ -338,7 +386,7 @@ class HubApi:
             if host:
                 domains = [host]
         try:
-            oc = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8-sig")) if OPENCODE_CONFIG_FILE.exists() else {}
+            oc = _read_opencode_config()
             oc = copy.deepcopy(oc)
             entry = oc.setdefault("provider", {}).setdefault(provider, {})
             if provider == "xpiki":
@@ -486,7 +534,7 @@ class HubApi:
                 parsed = urlparse(proxy)
                 if parsed.scheme not in ("http", "https") or not parsed.hostname:
                     raise ValueError("Внешний прокси: укажите http:// или https:// адрес")
-                if parsed.hostname in ("localhost", "127.0.0.1") and parsed.port == provider_proxy.PORT:
+                if _is_hub_local_proxy(parsed):
                     raise ValueError("Нельзя использовать собственный маршрутизатор как внешний прокси")
             cfg["proxy"] = proxy
 
@@ -499,7 +547,7 @@ class HubApi:
                     if p_str:
                         p_parsed = urlparse(p_str)
                         if p_parsed.scheme in ("http", "https") and p_parsed.hostname:
-                            if not (p_parsed.hostname in ("localhost", "127.0.0.1") and p_parsed.port == provider_proxy.PORT):
+                            if not _is_hub_local_proxy(p_parsed):
                                 if p_str not in valid_pool:
                                     valid_pool.append(p_str)
             if "proxy_failover" in cfg:
@@ -524,16 +572,26 @@ class HubApi:
     def start_vless(self) -> dict:
         with self._config_lock:
             cfg = self.load_config()
+            started_here = False
             if vless_service.is_running():
                 ok, message = True, "VLESS-туннель уже запущен"
             else:
                 ok, message = vless_service.start_tunnel(cfg.get("vless_url", ""),
                                                        custom_core_path=cfg.get("vless_core_path"))
+                started_here = ok
             if ok:
                 cfg["vless_enabled"] = True
-                if not self.save_config(cfg):
-                    raise OSError("Туннель запущен, но его настройки не сохранены")
-                self._sync_routes(cfg)
+                try:
+                    if not self.save_config(cfg):
+                        raise OSError("Туннель запущен, но его настройки не сохранены")
+                    self._sync_routes(cfg)
+                except Exception:
+                    if started_here:
+                        try:
+                            vless_service.stop_tunnel()
+                        except Exception:
+                            pass
+                    raise
             return {"ok": ok, "message": message}
 
     def stop_vless(self) -> dict:
@@ -543,6 +601,9 @@ class HubApi:
             cfg["vless_enabled"] = False
             if not self.save_config(cfg):
                 raise OSError("Не удалось сохранить состояние туннеля")
+            self._sync_routes(cfg)
+            with self._diagnostic_lock:
+                self._diagnostics.clear()
             return {"ok": ok, "message": message}
 
     def set_vless_core(self, core_type: str) -> dict:
@@ -766,7 +827,7 @@ class HubApi:
         parsed = urlparse(proxy_url)
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
             return {"ok": False, "message": "Неверный формат адреса: требуется http:// или https://"}
-        if parsed.hostname in ("localhost", "127.0.0.1") and parsed.port == provider_proxy.PORT:
+        if _is_hub_local_proxy(parsed):
             return {"ok": False, "message": "Нельзя использовать собственный маршрутизатор как внешний прокси"}
 
         with self._config_lock:
@@ -887,10 +948,9 @@ class HubApi:
             return "••••" + key[-4:] if len(key) > 8 else "Ключ сохранён" if key else None
         selected = []
         try:
-            if OPENCODE_CONFIG_FILE.exists():
-                oc = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8-sig"))
-                selected = list(oc.get("provider", {}).get("openrouter-free", {}).get("models", {}))
-        except (OSError, ValueError):
+            oc = _read_opencode_config()
+            selected = list(oc.get("provider", {}).get("openrouter-free", {}).get("models", {}))
+        except (OSError, ValueError, AttributeError):
             pass
         deepseek_state = deepseek_api.provider_state()
         try:
@@ -914,11 +974,12 @@ class HubApi:
     def configure_xpiki(self, key: str, base_url: str, models: list) -> dict:
         with self._provider_lock:
             cfg = xpiki_manager.load_xpiki_config()
-            key = key.strip() or cfg.get("api_key", "")
+            key = str(key or "").strip() or cfg.get("api_key", "")
+            base_url = str(base_url or "").strip().rstrip("/")
             parsed = urlparse(base_url)
-            if not key or parsed.scheme != "https" or not parsed.hostname:
+            if not key or parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
                 raise ValueError("Укажите ключ Xpiki и HTTPS URL шлюза")
-            if not models or any(mid not in xpiki_manager.XPIKI_MODELS for mid in models):
+            if not isinstance(models, list) or not models or any(mid not in xpiki_manager.XPIKI_MODELS for mid in models):
                 raise ValueError("Выберите модели Xpiki")
             if not xpiki_manager.configure_opencode(key, base_url, models):
                 raise OSError("Не удалось настроить Xpiki в OpenCode")
@@ -1172,6 +1233,8 @@ class HubApi:
             self._login_locks["claude"].release()
 
     def set_strategy(self, strat: str) -> bool:
+        if strat not in ("hybrid", "sticky", "round-robin"):
+            raise ValueError("Неизвестная стратегия выбора аккаунтов")
         with self._config_lock:
             cfg = self.load_config()
             cfg["account_selection_strategy"] = strat
@@ -1187,12 +1250,13 @@ class HubApi:
                         raise ValueError(f"Неверное значение настройки {key}")
                     cfg[key] = settings[key]
             oc = None
+            oc_path = _opencode_config_path()
             if "providers_visibility" in settings:
                 visibility = settings["providers_visibility"]
                 if not isinstance(visibility, dict) or any(key not in PROVIDER_SETTING_IDS or not isinstance(value, bool)
                                                           for key, value in visibility.items()):
                     raise ValueError("Неверные настройки провайдеров")
-                oc = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8-sig")) if OPENCODE_CONFIG_FILE.exists() else {}
+                oc = _read_opencode_config()
                 disabled = oc.get("disabled_providers", [])
                 if not isinstance(disabled, list):
                     raise ValueError("disabled_providers должен быть списком")
@@ -1208,9 +1272,18 @@ class HubApi:
                 return False
             if oc is not None:
                 try:
-                    pending = OPENCODE_CONFIG_FILE.with_suffix(".json.hub.tmp")
-                    pending.write_text(json.dumps(oc, indent=2, ensure_ascii=False), encoding="utf-8")
-                    pending.replace(OPENCODE_CONFIG_FILE)
+                    import jsonc_config
+                    if oc_path.exists():
+                        original = oc_path.read_text(encoding="utf-8-sig")
+                        if oc_path.suffix.lower() == ".jsonc" or "//" in original or "/*" in original:
+                            content = jsonc_config.set_property(original, ("disabled_providers",), oc["disabled_providers"])
+                        else:
+                            content = json.dumps(oc, indent=2, ensure_ascii=False)
+                    else:
+                        content = json.dumps(oc, indent=2, ensure_ascii=False)
+                    pending = oc_path.with_suffix(oc_path.suffix + ".hub.tmp")
+                    pending.write_text(content, encoding="utf-8")
+                    pending.replace(oc_path)
                 except Exception:
                     self.save_config(previous)
                     raise
@@ -1712,6 +1785,54 @@ class HubApi:
         except Exception as e:
             return {"ok": False, "message": f"Ошибка установки обновления: {e}"}
 
+    def restart_hub(self) -> dict:
+        """Stop all Hub child processes/servers, exit cleanly, and relaunch Hub."""
+        if not self._hub_restart_lock.acquire(blocking=False):
+            return {"ok": False, "message": "Перезапуск Hub уже выполняется"}
+        try:
+            import hub_restart
+            hub_restart.schedule_restart()
+        except Exception as exc:
+            self._hub_restart_lock.release()
+            return {"ok": False, "message": f"Не удалось запланировать перезапуск Hub: {exc}"}
+
+        def _shutdown_and_exit():
+            time.sleep(0.15)
+            try:
+                vless_service.stop_tunnel()
+            except Exception:
+                pass
+            try:
+                srv = getattr(provider_proxy, "_server", None)
+                if srv is not None:
+                    srv.shutdown()
+                    srv.server_close()
+            except Exception:
+                pass
+            try:
+                if claude_service is not None:
+                    import claude_manager
+                    bsrv = getattr(claude_manager.bridge_service, "_server", None)
+                    if bsrv is not None:
+                        bsrv.shutdown()
+                        bsrv.server_close()
+            except Exception:
+                pass
+            try:
+                if self._tray_holder is not None:
+                    self._tray_holder.remove()
+            except Exception:
+                pass
+            try:
+                if self._window_holder is not None:
+                    self._window_holder.destroy()
+            except Exception:
+                pass
+            os._exit(0)
+
+        threading.Thread(target=_shutdown_and_exit, daemon=True, name="hub-restart-exit").start()
+        return {"ok": True, "message": "Перезапуск Antigravity Hub..."}
+
 
 def run_webview_app():
     """Starts the native WebView2 Frosted Glass UI with taskbar icon and system tray."""
@@ -1782,6 +1903,7 @@ def run_webview_app():
             on_exit=on_tray_exit,
         )
         tray.start()
+        api._tray_holder = tray
     except Exception as e:
         print(f"Tray initialization warning: {e}")
 
@@ -1875,6 +1997,8 @@ def run_webview_app():
                 if not result["ok"]:
                     print(result["message"])
             provider_proxy.start()
+            if claude_service and claude_service.get_active_account():
+                claude_manager.bridge_service.ensure_running()
         except Exception as exc:
             print(f"Network startup: {exc}")
         while not getattr(api, "_uninstalled", False):

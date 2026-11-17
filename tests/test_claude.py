@@ -90,6 +90,28 @@ class ClaudeManagerTests(unittest.TestCase):
                 loaded = mgr.load_accounts()
                 self.assertEqual(loaded[0]["session_key"], "sk-ant-secret")
 
+    def test_bridge_token_persists_across_restarts_and_configures_jsonc(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            token_file = root / "claude-bridge-token.json"
+            jsonc_file = root / "opencode.jsonc"
+            jsonc_file.write_text('{\n  // keep comment\n  "model": "google/antigravity-gemini-3.8-flash"\n}\n', encoding="utf-8")
+            with patch.object(claude_manager, "BRIDGE_TOKEN_FILE", token_file), \
+                 patch.object(claude_manager, "CONFIG_DIR", root):
+                b1 = ClaudeSubscriptionBridge(port=0)
+                b2 = ClaudeSubscriptionBridge(port=0)
+                self.assertEqual(b1.bridge_token, b2.bridge_token)
+
+                mgr = ClaudeAccountManager()
+                with patch.object(mgr, "get_active_account", return_value={"email": "c@example.com", "session_key": "sk-ant-1"}), \
+                     patch.object(claude_manager, "bridge_service", b1), \
+                     patch.object(b1, "ensure_running"):
+                    self.assertTrue(mgr.configure_opencode_provider())
+                updated = jsonc_file.read_text(encoding="utf-8")
+                self.assertIn("// keep comment", updated)
+                self.assertIn(b1.bridge_token, updated)
+
 
 if __name__ == "__main__":
     unittest.main()

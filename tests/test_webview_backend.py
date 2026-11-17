@@ -607,6 +607,64 @@ class WebviewBackendTests(unittest.TestCase):
         oc_after = json.loads(self.backend.OPENCODE_CONFIG_FILE.read_text(encoding="utf-8"))
         self.assertIn("openai", oc_after.get("disabled_providers", []))
 
+    def test_set_strategy_validates_and_stop_vless_syncs_routes(self):
+        api = self.backend.HubApi()
+        with self.assertRaises(ValueError):
+            api.set_strategy("invalid-strategy")
+        self.assertTrue(api.set_strategy("sticky"))
+        self.assertEqual(api.load_config()["account_selection_strategy"], "sticky")
+
+        api.save_config({"vless_enabled": True})
+        res = api.stop_vless()
+        self.assertTrue(res["ok"])
+        self.assertFalse(api.load_config()["vless_enabled"])
+        self.router.start.assert_called()
+
+    def test_jsonc_opencode_config_is_supported_across_backend(self):
+        jsonc_file = Path(self.temp.name) / "opencode.jsonc"
+        jsonc_file.write_text(
+            '{\n  // user comment\n  "disabled_providers": ["openai"],\n  "provider": {"openrouter-free": {"models": {"free/m1": {"name": "M1"}}}}\n}\n',
+            encoding="utf-8",
+        )
+        api = self.backend.HubApi()
+        with patch.object(api, "is_opencode_running", return_value=False):
+            state = api.get_state()
+        self.assertFalse(state["config"]["providers_visibility"]["openai"])
+        self.assertEqual(state["providers"]["openrouter"]["selectedModels"], ["free/m1"])
+        self.assertTrue(api.save_general_settings({"providers_visibility": {"openai": True}}))
+        self.assertIn("// user comment", jsonc_file.read_text(encoding="utf-8"))
+
+    def test_restart_hub_schedules_restart_and_stops_services(self):
+        api = self.backend.HubApi()
+        api._tray_holder = SimpleNamespace(remove=Mock())
+        api._window_holder = SimpleNamespace(destroy=Mock())
+        fake_srv = SimpleNamespace(shutdown=Mock(), server_close=Mock())
+        self.router._server = fake_srv
+        spawned = []
+
+        class FakeThread:
+            def __init__(self, target=None, daemon=None, name=None):
+                self.target = target
+
+            def start(self):
+                spawned.append(self.target)
+
+        with patch("hub_restart.schedule_restart") as sched, \
+             patch.object(self.backend.threading, "Thread", FakeThread), \
+             patch.object(self.backend.time, "sleep"), \
+             patch.object(self.backend.os, "_exit") as exit_mock:
+            res = api.restart_hub()
+            self.assertTrue(res["ok"])
+            sched.assert_called_once()
+            self.assertEqual(len(spawned), 1)
+            spawned[0]()
+            self.vless.stop_tunnel.assert_called_once()
+            fake_srv.shutdown.assert_called_once()
+            fake_srv.server_close.assert_called_once()
+            api._tray_holder.remove.assert_called_once()
+            api._window_holder.destroy.assert_called_once()
+            exit_mock.assert_called_once_with(0)
+
 
 if __name__ == "__main__":
     unittest.main()

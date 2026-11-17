@@ -428,3 +428,13 @@ test('DeepSeek usage chart escapes currency in innerHTML and failover toggle mar
   const statusBadgeRule = css.match(/\.status-badge\s*\{[^}]*\}/);
   assert.ok(statusBadgeRule && /justify-content:\s*center/.test(statusBadgeRule[0]), '.status-badge should center its content');
 });
+
+test('Dashboard has Restart Hub button wired to restart_hub API', async () => {
+  assert.match(markup, /<section id="view-dashboard"[\s\S]*id="btn-restart-hub"[^>]*onclick="restartHub\(\)"/);
+  const {elements, context} = frontend(state);
+  let called = 0;
+  context.window.pywebview = {api: {restart_hub: async () => { called++; return {ok: true, message: 'restarting'}; }}};
+  await vm.runInContext('restartHub()', context);
+  assert.equal(called, 1);
+  assert.equal(elements.get('btn-restart-hub').disabled, true);
+});
