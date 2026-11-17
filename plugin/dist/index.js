@@ -17633,7 +17633,6 @@ var QUOTA_GROUP_BY_MODEL_ID = {
   "gpt-oss-120b-medium": "non-gemini"
 };
 var ANTIGRAVITY_OPENCODE_MODEL_IDS = [
-  "antigravity-gemini-4-argon",
   "antigravity-gemini-4-hydrogen",
   "antigravity-gemini-3.8-flash",
   "antigravity-claude-opus-5-5",
@@ -17649,6 +17648,15 @@ var ANTIGRAVITY_OPENCODE_MODEL_IDS = [
 
 // --- Dynamic Model Catalog & Google CloudCode Sync ---
 var DYNAMIC_MODELS_CACHE_FILE = "antigravity-models-cache.json";
+var DYNAMIC_WIRE_MODEL_BY_OPENCODE_ID = {};
+function getDynamicWireModel(id) {
+  return DYNAMIC_WIRE_MODEL_BY_OPENCODE_ID[id];
+}
+function rememberDynamicWireModel(openCodeId, wireModel) {
+  if (openCodeId && wireModel) {
+    DYNAMIC_WIRE_MODEL_BY_OPENCODE_ID[openCodeId] = wireModel;
+  }
+}
 function getDynamicModelsCachePath() {
   try {
     const configDir = typeof getLegacyWindowsConfigDir === "function" ? getLegacyWindowsConfigDir() : (process.env.USERPROFILE ? join(process.env.USERPROFILE, ".config", "opencode") : "");
@@ -25192,10 +25200,21 @@ function resolveModelWithTier(requestedModel, options = {}) {
       explicitQuota
     };
   }
+  const isGemini4Hydrogen = /^gemini-4-hydrogen/i.test(baseName) || baseName === "hydrogen";
+  if (isGemini4Hydrogen && quotaPreference === "antigravity") {
+    return {
+      actualModel: getDynamicWireModel("antigravity-gemini-4-hydrogen") || "gemini-4-hydrogen-sonar",
+      thinkingBudget: getAgyGeminiFlashThinkingBudget(tier, -1),
+      tier: tier ?? "medium",
+      isThinkingModel: true,
+      quotaPreference,
+      explicitQuota
+    };
+  }
   const isGemini4Argon = /^gemini-4-argon/i.test(baseName) || baseName === "argon";
   if (isGemini4Argon && quotaPreference === "antigravity") {
     return {
-      actualModel: getGemini4ArgonAntigravityModel(tier ?? "medium"),
+      actualModel: getDynamicWireModel("antigravity-gemini-4-argon") || getGemini4ArgonAntigravityModel(tier ?? "medium"),
       thinkingBudget: getAgyGeminiFlashThinkingBudget(tier, -1),
       tier: tier ?? "medium",
       isThinkingModel: true,

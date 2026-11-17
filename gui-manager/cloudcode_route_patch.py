@@ -105,6 +105,7 @@ PROMPT_FIX_MARKER = "function sanitizeAntigravitySystemInstruction("
 PROMPT_FIX_CALL = "sanitizeAntigravitySystemInstruction(requestPayload);"
 PROMPT_FIX_ANCHOR = "function sanitizeRequestPayloadForAntigravity(payload) {"
 PROMPT_FIX_BACKUP_SUFFIX = ".hub-prompt.bak"
+GEMINI4_FIX_MARKER = 'getDynamicWireModel("antigravity-gemini-4-hydrogen") || "gemini-4-hydrogen-sonar"'
 PROMPT_FIX_BLOCK = r'''var ANTIGRAVITY_BLOCKED_SYSTEM_INSTRUCTION_PATTERNS = [
   [/tools\.opencode\.session_move/gi, 'tools.opencode["session_move"]']
 ];
@@ -173,6 +174,44 @@ def _read_text_exact(path: Path) -> str:
 def _write_text_exact(path: Path, text: str) -> None:
     with open(path, "w", encoding="utf-8", newline="") as handle:
         handle.write(text)
+
+
+def _local_plugin_dist_dir() -> Path | None:
+    candidate = Path(__file__).resolve().parent.parent / "plugin" / "dist"
+    return candidate if (candidate / "server.js").exists() else None
+
+
+def sync_local_plugin_bundles(plugin_cache: Path | None = None) -> dict:
+    """Copy the verified local plugin bundle over installed OpenCode caches.
+
+    This is the same strategy as ``scripts/patch_plugin.mjs``: after an
+    OpenCode/plugin update the installed bundle may be replaced by a stock
+    one, so restore the module's verified bundle first.
+    """
+    local = _local_plugin_dist_dir()
+    if local is None:
+        return {"ok": False, "copied": [], "message": "Локальный бандл плагина не найден."}
+    target_dirs = {path.parent for path in _prompt_fix_candidates(plugin_cache)}
+    copied: list[str] = []
+    for target in target_dirs:
+        for name in ("cli.js", "server.js", "index.js"):
+            source = local / name
+            destination = target / name
+            if not source.exists() or not destination.exists():
+                continue
+            try:
+                if source.read_bytes() == destination.read_bytes():
+                    continue
+                destination.write_bytes(source.read_bytes())
+                copied.append(str(destination))
+            except OSError:
+                continue
+    return {
+        "ok": bool(copied),
+        "copied": copied,
+        "message": f"Синхронизировано файлов бандла: {len(copied)}."
+        if copied else "Бандл плагина уже совпадает с локальным.",
+    }
 
 
 def patch_prompt_sanitizer(plugin_cache: Path | None = None) -> dict:
@@ -266,7 +305,11 @@ def get_prompt_sanitizer_status(plugin_cache: Path | None = None) -> dict:
             source = _read_text_exact(path)
         except OSError:
             continue
-        if PROMPT_FIX_MARKER in source and PROMPT_FIX_CALL in source:
+        if (
+            PROMPT_FIX_MARKER in source
+            and PROMPT_FIX_CALL in source
+            and GEMINI4_FIX_MARKER in source
+        ):
             patched += 1
     pending = len(candidates) - patched
     if pending == 0:
@@ -275,14 +318,14 @@ def get_prompt_sanitizer_status(plugin_cache: Path | None = None) -> dict:
             "found": len(candidates),
             "patched": patched,
             "pending": 0,
-            "message": "Фикс 429 активен во всех найденных копиях плагина.",
+            "message": "Фикс плагина активен во всех найденных копиях.",
         }
     return {
         "state": "pending",
         "found": len(candidates),
         "patched": patched,
         "pending": pending,
-        "message": f"Фикс 429 не применён: {pending} из {len(candidates)} копий плагина.",
+        "message": f"Фикс плагина не применён: {pending} из {len(candidates)} копий.",
     }
 
 

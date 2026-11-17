@@ -4,11 +4,18 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gui-manager"))
-from cloudcode_route_patch import get_prompt_sanitizer_status, patch_prompt_sanitizer
+from cloudcode_route_patch import (
+    get_prompt_sanitizer_status,
+    patch_prompt_sanitizer,
+    sync_local_plugin_bundles,
+)
 
 
 PLUGIN_SOURCE = '''function sanitizeRequestPayloadForAntigravity(payload) {
   return payload;
+}
+function resolveModelWithTier() {
+  return getDynamicWireModel("antigravity-gemini-4-hydrogen") || "gemini-4-hydrogen-sonar";
 }
 function buildRequest(requestPayload) {
         if ("system_instruction" in requestPayload) {
@@ -110,6 +117,27 @@ class PromptSanitizerPatchTests(unittest.TestCase):
             status = get_prompt_sanitizer_status(Path(directory))
             self.assertEqual(status["state"], "missing")
             self.assertEqual(status["found"], 0)
+
+    def test_sync_local_bundle_replaces_stock_cached_bundle(self):
+        local_dist = Path(__file__).resolve().parent.parent / "plugin" / "dist"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "node_modules" / "@cortexkit" / "opencode-antigravity-auth" / "dist"
+            target.mkdir(parents=True)
+            for name in ("cli.js", "server.js", "index.js"):
+                (target / name).write_text("stock bundle\n", encoding="utf-8")
+
+            result = sync_local_plugin_bundles(root)
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(len(result["copied"]), 3)
+            self.assertEqual(
+                (target / "server.js").read_bytes(),
+                (local_dist / "server.js").read_bytes(),
+            )
+            second = sync_local_plugin_bundles(root)
+            self.assertFalse(second["ok"])
+            self.assertEqual(second["copied"], [])
 
 
 if __name__ == "__main__":

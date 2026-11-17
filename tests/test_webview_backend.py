@@ -402,6 +402,8 @@ class WebviewBackendTests(unittest.TestCase):
 
     def test_fix_opencode_plugin_applies_prompt_and_route_patches(self):
         patcher = SimpleNamespace(
+            sync_local_plugin_bundles=Mock(return_value={
+                "ok": True, "copied": ["server.js"], "message": "synced"}),
             patch_prompt_sanitizer=Mock(return_value={
                 "ok": True, "changed": ["server.js"], "already": [], "missing": [],
                 "message": "Фикс применён."}),
@@ -411,7 +413,9 @@ class WebviewBackendTests(unittest.TestCase):
             result = self.backend.HubApi().fix_opencode_plugin()
         self.assertTrue(result["ok"])
         self.assertTrue(result["route_patched"])
+        self.assertEqual(result["synced"], ["server.js"])
         self.assertIn("Маршрут Hub проверен", result["message"])
+        patcher.sync_local_plugin_bundles.assert_called_once()
         patcher.patch_prompt_sanitizer.assert_called_once()
         patcher.patch_auth_plugin_transport.assert_called_once()
 

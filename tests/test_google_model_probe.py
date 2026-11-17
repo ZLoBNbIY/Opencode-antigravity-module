@@ -49,6 +49,18 @@ class GoogleModelProbeTests(unittest.TestCase):
         # Explicit direct mode must suppress inherited environment proxies.
         self.assertEqual(self.build.call_args.args[0].proxies, {})
 
+    def test_hydrogen_uses_available_daily_wire_model(self):
+        self.opener.open.return_value = response({"response": {"candidates": [
+            {"content": {"parts": [{"text": "OK"}]}, "finishReason": "STOP"}]}})
+        result = health_checker.test_antigravity_model(
+            {"accessToken": "secret", "projectId": "project"},
+            "antigravity-gemini-4-hydrogen", proxy_url="")
+        self.assertTrue(result["ok"])
+        request = self.opener.open.call_args.args[0]
+        self.assertEqual(json.loads(request.data)["model"], "gemini-4-hydrogen-sonar")
+        self.assertTrue(request.full_url.startswith(
+            "https://daily-cloudcode-pa.googleapis.com/"))
+
     def test_thinking_or_candidate_alone_is_not_success(self):
         self.opener.open.return_value = response({"response": {"candidates": [
             {"content": {"parts": [{"text": "thinking", "thought": True}]}, "finishReason": "MAX_TOKENS"}]}})

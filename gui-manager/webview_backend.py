@@ -1244,6 +1244,10 @@ class HubApi:
         """Re-apply module patches after an OpenCode or plugin update."""
         import cloudcode_route_patch
         try:
+            synced = cloudcode_route_patch.sync_local_plugin_bundles()
+        except Exception:
+            synced = {"ok": False, "copied": [], "message": ""}
+        try:
             result = cloudcode_route_patch.patch_prompt_sanitizer()
         except Exception as exc:
             return {
@@ -1253,6 +1257,12 @@ class HubApi:
                 "missing": [],
                 "message": f"Ошибка патча плагина: {exc}",
             }
+        result["synced"] = synced.get("copied", [])
+        if result.get("synced"):
+            result["message"] = (
+                f"Бандл плагина синхронизирован ({len(result['synced'])} файл(ов)). "
+                + result["message"]
+            )
         try:
             route_patched = bool(cloudcode_route_patch.patch_auth_plugin_transport())
         except Exception:
