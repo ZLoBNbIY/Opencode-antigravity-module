@@ -159,6 +159,23 @@ LOG_DIR = Path(os.path.expanduser(r"~/.local/share/opencode/log"))
 CONFIG_DIR = Path(os.path.expanduser(r"~/.config/opencode"))
 
 
+def ordered_generation_dirs(config_dir: Path | None = None) -> list[Path]:
+    """Generation stores with the pointer-selected (canonical) store first.
+
+    The account store keeps a pointer file next to one or more ``*.generation``
+    directories.  A raw ``glob`` returns them in filesystem order, which can
+    pick a stale store while a migration is still settling.  Always prefer the
+    pointer target, then fall back to newest-by-mtime.  All account readers and
+    writers must use this helper instead of ``list(glob(...))[0]``.
+    """
+    base = Path(config_dir) if config_dir else CONFIG_DIR
+    active = get_active_generation_dir(base)
+    dirs = list(base.glob("*.generation"))
+    if active is not None and active in dirs:
+        return [active] + [p for p in dirs if p != active]
+    return sorted(dirs, key=lambda p: p.stat().st_mtime, reverse=True)
+
+
 def open_url_in_browser(url: str) -> bool:
     """Reliably opens a URL in the user's default browser on Windows and other platforms."""
     try:
@@ -195,6 +212,8 @@ DEFAULT_CONFIG = {
         "claude": True,
         "openrouter": True,
         "xpiki": True,
+        "deepseek": True,
+        "tokenlavka": True,
     },
     "close_to_tray": True,
     "max_rate_limit_wait_seconds": 300,
@@ -236,7 +255,7 @@ def run_google_route_cmd(cmd, timeout=30):
 
 def get_active_google_account_index() -> int:
     config_dir = Path(os.path.expanduser("~/.config/opencode"))
-    gen_dirs = list(config_dir.glob("*.generation"))
+    gen_dirs = ordered_generation_dirs(config_dir)
     if gen_dirs:
         cfg_file = gen_dirs[0] / "config.json"
         if cfg_file.exists():
@@ -273,7 +292,7 @@ def get_active_google_account_index() -> int:
 
 def set_active_google_account_index(target_index: int) -> bool:
     config_dir = Path(os.path.expanduser("~/.config/opencode"))
-    gen_dirs = list(config_dir.glob("*.generation"))
+    gen_dirs = ordered_generation_dirs(config_dir)
     changed = False
     if gen_dirs:
         cfg_file = gen_dirs[0] / "config.json"
@@ -324,7 +343,7 @@ def set_active_google_account_index(target_index: int) -> bool:
 def set_google_account_candidate(target_email_or_id: str, candidate: bool) -> bool:
     """Persists account auto-rotation candidate flag without disabling the account itself."""
     config_dir = Path(os.path.expanduser("~/.config/opencode"))
-    gen_dirs = list(config_dir.glob("*.generation"))
+    gen_dirs = ordered_generation_dirs(config_dir)
     changed = False
 
     if gen_dirs:
@@ -385,7 +404,7 @@ def set_google_account_candidate(target_email_or_id: str, candidate: bool) -> bo
 def set_google_account_enabled(target_email_or_id: str, enabled: bool) -> bool:
     """Persists account enabled/disabled state to commonAuthPool and config."""
     config_dir = Path(os.path.expanduser("~/.config/opencode"))
-    gen_dirs = list(config_dir.glob("*.generation"))
+    gen_dirs = ordered_generation_dirs(config_dir)
     changed = False
 
     if gen_dirs:
@@ -459,7 +478,7 @@ def set_google_account_enabled(target_email_or_id: str, enabled: bool) -> bool:
 
 def export_google_accounts() -> list[dict]:
     config_dir = Path(os.path.expanduser("~/.config/opencode"))
-    gen_dirs = list(config_dir.glob("*.generation"))
+    gen_dirs = ordered_generation_dirs(config_dir)
     accounts = []
     if gen_dirs:
         gen_dir = gen_dirs[0]
@@ -505,7 +524,7 @@ def get_active_google_health_account():
     """Match the stored active row by ID; exported rows can omit incomplete accounts."""
     accounts = export_google_accounts()
     index = get_active_google_account_index()
-    generations = list((Path.home() / ".config" / "opencode").glob("*.generation"))
+    generations = ordered_generation_dirs(Path.home() / ".config" / "opencode")
     if generations and (generations[0] / "config.json").exists():
         config = json.loads((generations[0] / "config.json").read_text(encoding="utf-8"))
         rows = config.get("accounts", [])
@@ -518,7 +537,7 @@ def get_active_google_health_account():
 
 def delete_google_account(target_email_or_id: str) -> bool:
     config_dir = Path(os.path.expanduser("~/.config/opencode"))
-    gen_dirs = list(config_dir.glob("*.generation"))
+    gen_dirs = ordered_generation_dirs(config_dir)
     deleted = False
 
     if gen_dirs:
@@ -598,7 +617,7 @@ def delete_google_account(target_email_or_id: str) -> bool:
 
 def enrich_google_accounts_with_generation_store(accounts: list[dict]) -> list[dict]:
     config_dir = Path(os.path.expanduser("~/.config/opencode"))
-    gen_dirs = list(config_dir.glob("*.generation"))
+    gen_dirs = ordered_generation_dirs(config_dir)
     if not gen_dirs:
         return accounts
 

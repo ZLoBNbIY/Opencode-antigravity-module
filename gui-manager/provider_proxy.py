@@ -44,6 +44,7 @@ LOCAL_ROUTES = {
     "openrouter-free": ("openrouter.ai",),
     "xpiki": ("api.xpiki.com", "xpiki.com"),
     "deepseek-account": ("api.deepseek.com", "platform.deepseek.com"),
+    "tokenlavka": ("tokenlavka.com",),
 }
 _server = None
 _thread = None
@@ -399,7 +400,8 @@ def start() -> bool:
 
 def _maintain_auto_routes():
     from auto_router import router
-    visibility_keys = {"google":"antigravity", "claude-pro":"claude", "openrouter-free":"openrouter"}
+    visibility_keys = {"google":"antigravity", "claude-pro":"claude", "openrouter-free":"openrouter",
+                       "tokenlavka":"tokenlavka"}
     while True:
         try:
             hub = _read_json(CONFIG_DIR / "antigravity.json")

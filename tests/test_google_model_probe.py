@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gui-manager"))
 import health_checker
+import antigravity_manager
 
 
 def response(data):
@@ -90,7 +91,8 @@ class ActiveAccountSelectionTests(unittest.TestCase):
                       and n.name == "get_active_google_health_account")
         namespace = {"Path": Path, "json": json,
                      "export_google_accounts": lambda: [{"id": "second", "email": "active@example.test"}],
-                     "get_active_google_account_index": lambda: 1}
+                     "get_active_google_account_index": lambda: 1,
+                     "ordered_generation_dirs": antigravity_manager.ordered_generation_dirs}
         exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), "exec"), namespace)
         with tempfile.TemporaryDirectory() as directory, patch.object(Path, "home", return_value=Path(directory)):
             generation = Path(directory) / ".config" / "opencode" / "test.generation"

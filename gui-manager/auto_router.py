@@ -18,6 +18,7 @@ DEFAULT_HOSTS = {
     "openai": ("api.openai.com", "chatgpt.com"), "claude-pro": ("claude.ai",),
     "xpiki": ("api.xpiki.com",), "openrouter-free": ("openrouter.ai",),
     "deepseek-account": ("api.deepseek.com",),
+    "tokenlavka": ("tokenlavka.com",),
 }
 REFRESH_SECONDS = 60
 PROBE_SECONDS = 6

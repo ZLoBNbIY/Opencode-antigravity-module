@@ -133,6 +133,36 @@ class AccountExportImportTests(unittest.TestCase):
         self.assertEqual(st1_updated["access"], "access-token-1-updated")
         self.assertEqual(len(saved_state2["accounts"]), 2)
 
+    def test_export_uses_pointer_store_when_stale_generation_dir_exists(self):
+        canonical = self.config_dir / "antigravity-accounts.json.store.aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.generation"
+        stale = self.config_dir / "antigravity-accounts.json.store.11111111-2222-3333-4444-555555555555.generation"
+        canonical.mkdir(parents=True)
+        stale.mkdir(parents=True)
+        (self.config_dir / "antigravity-accounts.json.store.pointer.json").write_text(json.dumps({
+            "schemaVersion": 1,
+            "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "directoryBasename": canonical.name
+        }))
+
+        def write_store(directory, email, token):
+            (directory / "config.json").write_text(json.dumps({"accounts": [{"id": "a1"}]}))
+            (directory / "state.json").write_text(json.dumps({"accounts": {
+                "a1": {"refresh": token,
+                       "commonAuthProviderState": {"metadata": {"email": email}}}
+            }}))
+
+        write_store(canonical, "new@example.com", "new-refresh")
+        write_store(stale, "old@example.com", "old-refresh")
+        # Ensure the stale directory would win a plain glob[0] on this platform.
+        os.utime(stale, (time.time() + 100, time.time() + 100))
+
+        self.assertEqual(antigravity_manager.get_active_generation_dir(self.config_dir), canonical)
+        self.assertEqual(antigravity_manager.ordered_generation_dirs(self.config_dir)[0], canonical)
+        exported = antigravity_manager.export_google_accounts()
+        self.assertEqual(len(exported), 1)
+        self.assertEqual(exported[0]["email"], "new@example.com")
+        self.assertEqual(exported[0]["refreshToken"], "new-refresh")
+
     def test_openai_import_merges_and_refreshes_tokens(self):
         openai_manager.CONFIG_DIR = self.config_dir
         openai_manager.OPENAI_ACCOUNTS_FILE = self.config_dir / "openai-accounts.json"

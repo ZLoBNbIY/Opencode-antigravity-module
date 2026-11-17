@@ -40,7 +40,8 @@ const state = {
   openaiAccounts:[{email:'chat@example.com',is_active:true,plan_type:'plus',quota:{status:'ok',primary:{remaining_percent:0},secondary:{remaining_percent:42}}}],
   claudeAccounts:[], diagnostics:{openai:{rows:[{domain:'chatgpt.com',status:'error',latency_ms:null,error:'TimeoutError'}]}},
   providers:{xpiki:{models:[{id:'claude-test',name:'Claude Test'}],enabledModels:['claude-test'],quota:{},baseUrl:'https://api.xpiki.com/v1'},openrouter:{hasKey:true},
-    deepseek:{connected:false,hasKey:false,keyLabel:null,baseUrl:'https://api.deepseek.com',balance:{status:'no_key'}}},
+    deepseek:{connected:false,hasKey:false,keyLabel:null,baseUrl:'https://api.deepseek.com',balance:{status:'no_key'}},
+    tokenlavka:{hasKey:false,connected:false,selectedModels:[],models:[{id:'gpt-6-luna',name:'GPT-6 Luna',context:512000,output:65536}],baseUrl:'https://tokenlavka.com/v1'}},
 };
 
 test('all account tabs render with active identity and real zero ChatGPT quota', () => {
@@ -68,7 +69,10 @@ test('failed domains show error indicators and no invented milliseconds', () => 
   assert.equal(elements.get('diag-tbody-xpiki').children.length, 1);
   assert.equal(elements.get('diag-tbody-deepseek').children.length, 1);
   assert.equal(elements.get('diag-tbody-openrouter').children.length, 1);
+  assert.equal(elements.get('diag-tbody-tokenlavka').children.length, 1);
   assert.equal(elements.get('seg-group-deepseek').children.length, 5);
+  assert.equal(elements.get('seg-group-tokenlavka').children.length, 5);
+  assert.equal(elements.get('tokenlavka-models-list').children.length, 1);
 });
 
 test('polling preserves edited DNS inputs and unknown quota stays unknown', () => {
@@ -158,7 +162,7 @@ test('service cards show labeled green, amber and red domain summaries', () => {
 
 test('automatic checks run for enabled providers, are throttled, and refresh after route changes', async () => {
   const fixture = structuredClone(state);
-  fixture.config.providers_visibility = {antigravity:true,openai:true,claude:false,xpiki:false,deepseek:false,openrouter:false};
+  fixture.config.providers_visibility = {antigravity:true,openai:true,claude:false,xpiki:false,deepseek:false,openrouter:false,tokenlavka:false};
   const {context} = frontend(fixture);
   const calls = [];
   context.window.pywebview = {api:{run_provider_diagnostics:async provider => {
@@ -220,7 +224,7 @@ test('each provider sidebar shows the actual active profile or masked API key', 
 
 test('DNS checks start after loading state, share pending requests, and refresh only expired addresses', async () => {
   const fixture = structuredClone(state);
-  fixture.config.providers_visibility = {antigravity:false,openai:false,claude:false,xpiki:false,deepseek:false,openrouter:false};
+  fixture.config.providers_visibility = {antigravity:false,openai:false,claude:false,xpiki:false,deepseek:false,openrouter:false,tokenlavka:false};
   const {elements, context} = frontend(fixture);
   const calls = [];
   context.window.pywebview = {api:{get_state:async ()=>fixture, test_dns:async (mode,value) => {
@@ -265,7 +269,7 @@ test('synchronous DNS bridge errors do not leave a permanent pending request', a
 
 test('Dashboard summarizes enabled providers and preserves real zero and unknown quotas', () => {
   const fixture = structuredClone(state);
-  fixture.config.providers_visibility = {antigravity:true,openai:true,claude:false,xpiki:false,deepseek:false,openrouter:false};
+  fixture.config.providers_visibility = {antigravity:true,openai:true,claude:false,xpiki:false,deepseek:false,openrouter:false,tokenlavka:false};
   const {elements} = frontend(fixture);
   const cards = elements.get('dashboard-providers').children;
   assert.equal(cards.length, 2);
@@ -298,7 +302,7 @@ test('Dashboard uses saved DNS status and hides proxy credentials', async () => 
 
 test('Dashboard handles all providers disabled and navigation places Network above Diagnostics', () => {
   const fixture = structuredClone(state);
-  fixture.config.providers_visibility = {antigravity:false,openai:false,claude:false,xpiki:false,deepseek:false,openrouter:false};
+  fixture.config.providers_visibility = {antigravity:false,openai:false,claude:false,xpiki:false,deepseek:false,openrouter:false,tokenlavka:false};
   const {elements, nav, context} = frontend(fixture);
   assert.equal(vm.runInContext('activeTab', context), 'dashboard');
   assert.equal(nav[0].dataset.tab, 'dashboard');

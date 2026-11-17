@@ -24,6 +24,9 @@ session/
 
 *.map
 
+# Local backups (may contain live configs with credentials)
+.backups/
+
 # Binaries & downloaded cores
 gui-manager/bin/
 *.exe

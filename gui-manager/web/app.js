@@ -19,7 +19,8 @@ const providerSettings = {
   google:{key:'antigravity',id:'google'}, openai:{key:'openai',id:'openai'},
   claude:{key:'claude',id:'claude-pro'}, xpiki:{key:'xpiki',id:'xpiki'},
   deepseek:{key:'deepseek',id:'deepseek-account'},
-  openrouter:{key:'openrouter',id:'openrouter-free'}
+  openrouter:{key:'openrouter',id:'openrouter-free'},
+  tokenlavka:{key:'tokenlavka',id:'tokenlavka'}
 };
 function providerEnabled(tab) {
   const item = providerSettings[tab];
@@ -116,6 +117,7 @@ function renderAll() {
   renderXpikiTab();
   renderDeepSeekTab();
   renderOpenRouterState();
+  renderTokenLavkaState();
   renderActiveAccounts();
   renderProviderDiagnostics();
   applyProviderVisibility();
@@ -199,7 +201,7 @@ async function refreshAutoRoutes(tab) {
 
 function renderNetworkTab() {
   const routes = appState.routes || {};
-  for (const provider of ['google', 'claude', 'openai', 'xpiki', 'deepseek', 'openrouter']) {
+  for (const provider of ['google', 'claude', 'openai', 'xpiki', 'deepseek', 'openrouter', 'tokenlavka']) {
     const key = provider === 'claude' ? 'claude-pro' : provider === 'openrouter' ? 'openrouter-free' : provider === 'deepseek' ? 'deepseek-account' : provider;
     const options = ['default', 'dns', 'vless', 'direct', 'proxy'];
     updateSegmentedGroup(`seg-group-${provider}`, routes[key] || 'default',
@@ -985,12 +987,13 @@ async function setProviderRoute(provider, route) {
   }
 }
 
-const providerTabs = {google:'google', openai:'openai', claude:'claude-pro', xpiki:'xpiki', deepseek:'deepseek-account', openrouter:'openrouter-free'};
+const providerTabs = {google:'google', openai:'openai', claude:'claude-pro', xpiki:'xpiki', deepseek:'deepseek-account', openrouter:'openrouter-free', tokenlavka:'tokenlavka'};
 const diagnosticDomains = {
   google:['daily-cloudcode-pa.googleapis.com','cloudcode-pa.googleapis.com','cloudaicompanion.googleapis.com','generativelanguage.googleapis.com','oauth2.googleapis.com','aiplatform.googleapis.com','clients6.google.com','www.googleapis.com'],
   openai:['chatgpt.com','auth.openai.com','api.openai.com'],
   claude:['claude.ai','api.anthropic.com','console.anthropic.com'],
-  xpiki:['api.xpiki.com'], deepseek:['api.deepseek.com'], openrouter:['openrouter.ai']
+  xpiki:['api.xpiki.com'], deepseek:['api.deepseek.com'], openrouter:['openrouter.ai'],
+  tokenlavka:['tokenlavka.com']
 };
 const diagnosticBusy = new Set();
 const diagnosticAttempts = new Map();
@@ -1127,7 +1130,8 @@ const dashboardProviderInfo = {
   claude:{name:'Claude Pro',icon:'✦',color:'#e6a36b'},
   xpiki:{name:'Claude API · Xpiki',icon:'ϟ',color:'#f0b257'},
   deepseek:{name:'DeepSeek API',icon:'🔷',color:'#5b8cff'},
-  openrouter:{name:'OpenRouter Free',icon:'◉',color:'#b29aff'}
+  openrouter:{name:'OpenRouter Free',icon:'◉',color:'#b29aff'},
+  tokenlavka:{name:'TokenLavka',icon:'🎟️',color:'#4fd1c5'}
 };
 function dashboardAccess(tab) {
   if (['google','openai','claude'].includes(tab)) {
@@ -1273,6 +1277,7 @@ function renderDashboard() {
       if (low) alerts.push({priority:1,tab,text:`DeepSeek: баланс почти исчерпан (${amount(q.total_balance)} ${html(q.currency || '')})`});
     }
     if (tab === 'openrouter') limits = `<div class="dashboard-token-balance"><span>Моделей в OpenCode</span><strong>${cfg.selectedModels?.length || 0}</strong><small>Выбор каталога во вкладке OpenRouter</small></div>`;
+    if (tab === 'tokenlavka') limits = `<div class="dashboard-token-balance"><span>Моделей в OpenCode</span><strong>${cfg.selectedModels?.length || 0}</strong><small>Выбор моделей во вкладке TokenLavka</small></div>`;
     if (tab === 'claude') limits = `<div class="dashboard-token-balance"><span>Тариф</span><strong>${html(access.active?.plan || '—')}</strong><small>Данные о лимитах сессии не получены</small></div>`;
     const activeQuota = access.active?.quota || {};
     const quotaNote = tab === 'openai' && activeQuota.last_checked ? `Лимиты: ${dashboardTime(activeQuota.last_checked*1000)}${activeQuota.status === 'stale' ? ' · сохранённые данные' : ''}` : 'Лимиты показаны по последним полученным данным';
@@ -1459,7 +1464,7 @@ function renderActiveAccounts() {
     status.className = `detail-val ${active ? 'status-good' : ''}`;
     count.textContent = String(accounts.length);
   }
-  for (const tab of ['xpiki','openrouter']) {
+  for (const tab of ['xpiki','openrouter','tokenlavka']) {
     const cfg = appState.providers?.[tab] || {};
     document.getElementById(`active-account-${tab}`).textContent = cfg.hasKey ? `API-ключ ${cfg.keyLabel || 'сохранён'}` : 'Ключ не задан';
     const status = document.getElementById(`active-status-${tab}`);
@@ -1834,6 +1839,63 @@ async function disconnectOpenRouter() {
     document.getElementById('openrouter-models-list').innerHTML = '';
     document.getElementById('btn-apply-openrouter').disabled = true;
     document.getElementById('openrouter-status-text').textContent = 'OpenRouter отключён';
+    await refreshState();
+  } catch (e) { showToast(String(e)); }
+}
+
+// --- TokenLavka Tab ---
+function renderTokenLavkaState() {
+  const cfg = appState.providers?.tokenlavka;
+  if (!cfg) return;
+  const keyInput = document.getElementById('tokenlavka-key-input');
+  if (keyInput) keyInput.placeholder = cfg.hasKey ? 'Ключ сохранён · оставьте пустым для замены' : 'sk-…';
+  const list = document.getElementById('tokenlavka-models-list');
+  if (list && !list.dataset.ready) {
+    list.innerHTML = '';
+    for (const model of cfg.models || []) {
+      const label = document.createElement('label'); label.className = 'model-choice';
+      const input = document.createElement('input'); input.type = 'checkbox'; input.value = model.id;
+      input.checked = cfg.selectedModels?.length ? cfg.selectedModels.includes(model.id) : model.id === 'gpt-6-luna';
+      label.append(input, document.createTextNode(`${model.name} · ${model.id} · контекст ${Number(model.context).toLocaleString('ru-RU')}`));
+      list.appendChild(label);
+    }
+    list.dataset.ready = '1';
+  }
+  const btn = document.getElementById('btn-apply-tokenlavka');
+  if (btn) btn.disabled = !(cfg.models || []).length;
+}
+async function checkTokenLavkaKey() {
+  const output = document.getElementById('tokenlavka-status-text');
+  if (!window.pywebview?.api) return;
+  output.textContent = 'Проверка ключа…';
+  try {
+    const res = await window.pywebview.api.check_tokenlavka_key(document.getElementById('tokenlavka-key-input').value);
+    output.textContent = res.message;
+    if (res.ok) await refreshState();
+  } catch (e) { output.textContent = String(e); }
+}
+async function applyTokenLavkaModels() {
+  const output = document.getElementById('tokenlavka-status-text');
+  try {
+    const key = document.getElementById('tokenlavka-key-input').value.trim();
+    const ids = [...document.querySelectorAll('#tokenlavka-models-list input:checked')].map(i => i.value);
+    const res = await window.pywebview.api.configure_tokenlavka_api(key, ids);
+    output.textContent = res.message;
+    if (res.ok) {
+      document.getElementById('tokenlavka-key-input').value = '';
+      await refreshState();
+    }
+  } catch (e) { output.textContent = String(e); }
+}
+async function disconnectTokenLavka() {
+  if (!confirm('Удалить сохранённый ключ TokenLavka из Hub и OpenCode?')) return;
+  try {
+    await window.pywebview.api.disconnect_tokenlavka();
+    const list = document.getElementById('tokenlavka-models-list');
+    if (list) { list.innerHTML = ''; delete list.dataset.ready; }
+    const btn = document.getElementById('btn-apply-tokenlavka');
+    if (btn) btn.disabled = true;
+    document.getElementById('tokenlavka-status-text').textContent = 'TokenLavka отключена';
     await refreshState();
   } catch (e) { showToast(String(e)); }
 }

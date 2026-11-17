@@ -27,6 +27,14 @@ class WebviewBackendTests(unittest.TestCase):
                                      XPIKI_MODELS={'claude-test': {'name': 'Claude Test'}})
         self.openrouter = SimpleNamespace(load_api_key=Mock(return_value=''), configure_models=Mock(),
                                           sync_opencode_credential=Mock())
+        self.tokenlavka = SimpleNamespace(
+            load_api_key=Mock(return_value=''), provider_state=Mock(return_value={
+                'hasKey': False, 'connected': False, 'selectedModels': [], 'models': [],
+                'keyLabel': None, 'baseUrl': 'https://tokenlavka.com/v1'}),
+            test_connection=Mock(return_value=(True, 'ok')), save_api_key=Mock(),
+            sync_opencode_credential=Mock(), configure_models=Mock(return_value=['gpt-6-luna']),
+            selected_models=Mock(return_value=[]), disconnect=Mock(),
+            DEFAULT_MODEL='gpt-6-luna', TOKENLAVKA_MODELS={'gpt-6-luna': {}})
         self.claude = SimpleNamespace(load_accounts=Mock(return_value=[{"email": "test@example.com"}]))
         modules = {
             "antigravity_manager": manager,
@@ -42,6 +50,7 @@ class WebviewBackendTests(unittest.TestCase):
             "dns_tester": ModuleType("dns_tester"),
             "xpiki_manager": self.xpiki,
             "openrouter_manager": self.openrouter,
+            "tokenlavka_manager": self.tokenlavka,
         }
         path = Path(__file__).resolve().parent.parent / "gui-manager" / "webview_backend.py"
         spec = importlib.util.spec_from_file_location("hub_backend_test", path)
@@ -56,16 +65,57 @@ class WebviewBackendTests(unittest.TestCase):
         self.backend.OPENCODE_CONFIG_FILE = Path(self.temp.name) / 'opencode.json'
         self.backend.HUB_CONFIG_FILE = Path(self.temp.name) / 'hub_antigravity.json'
 
-    def test_google_login_waits_and_migrates_before_reporting_success(self):
+    def test_tokenlavka_configure_validates_saves_and_registers_models(self):
+        self.tokenlavka.test_connection.return_value = (True, 'ok')
+        api = self.backend.HubApi()
+        result = api.configure_tokenlavka_api('sk-new-key', ['gpt-6-luna'])
+        self.assertTrue(result['ok'])
+        self.tokenlavka.test_connection.assert_called_once_with('sk-new-key')
+        self.tokenlavka.save_api_key.assert_called_once_with('sk-new-key')
+        self.tokenlavka.sync_opencode_credential.assert_called_once_with('sk-new-key')
+        self.tokenlavka.configure_models.assert_called_once_with(['gpt-6-luna'], 'sk-new-key')
+
+    def test_tokenlavka_invalid_key_is_reported_without_saving(self):
+        self.tokenlavka.test_connection.return_value = (False, 'ключ отклонён')
+        api = self.backend.HubApi()
+        result = api.configure_tokenlavka_api('sk-bad', ['gpt-6-luna'])
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['message'], 'ключ отклонён')
+        self.tokenlavka.save_api_key.assert_not_called()
+        self.tokenlavka.sync_opencode_credential.assert_not_called()
+
+    def test_google_login_waits_migrates_refreshes_and_restarts_before_reporting_success(self):
         self.manager.get_node_executable = Mock(return_value="node")
         self.manager.get_cli_js = Mock(return_value="cli.js")
+        self.manager.get_opencode_cli = Mock(return_value="cli.exe")
         self.manager.repair_legacy_google_account_file = Mock(return_value=None)
         self.manager.run_silent_cmd = Mock(return_value=SimpleNamespace(returncode=0, stdout="", stderr=""))
+        self.manager.run_google_route_cmd = Mock(return_value=SimpleNamespace(returncode=0, stdout="", stderr=""))
         with patch.object(self.backend.os.path, "exists", return_value=True):
             result = self.backend.HubApi().add_google_account()
         self.assertEqual(result['status'], 'ok')
+        self.assertIn('квоты обновлены', result['message'])
+        self.assertIn('перезапущен', result['message'])
+        self.manager.run_google_route_cmd.assert_called_once_with(
+            ["node", "cli.js", "quota", "--refresh", "--json"], timeout=60)
         self.assertEqual([c.args[0] for c in self.manager.run_silent_cmd.call_args_list],
-                         [["node", "cli.js", "login"], ["node", "cli.js", "migrate", "--offline", "--yes"]])
+                         [["node", "cli.js", "login"],
+                          ["node", "cli.js", "migrate", "--offline", "--yes"],
+                          ["cli.exe", "service", "restart"]])
+
+    def test_google_login_reports_when_state_refresh_or_service_restart_fails(self):
+        self.manager.get_node_executable = Mock(return_value="node")
+        self.manager.get_cli_js = Mock(return_value="cli.js")
+        self.manager.get_opencode_cli = Mock(return_value=None)
+        self.manager.repair_legacy_google_account_file = Mock(return_value=None)
+        self.manager.run_silent_cmd = Mock(return_value=SimpleNamespace(returncode=0, stdout="", stderr=""))
+        self.manager.run_google_route_cmd = Mock(return_value=SimpleNamespace(returncode=1, stdout="", stderr="quota failed"))
+        with patch.object(self.backend.os.path, "exists", return_value=True):
+            result = self.backend.HubApi().add_google_account()
+        self.assertEqual(result['status'], 'ok')
+        self.assertIn('квоты обновить не удалось', result['message'])
+        self.assertIn('CLI OpenCode не найден', result['message'])
+        self.assertIn('перезапустите OpenCode вручную', result['message'])
 
     def test_google_login_failure_is_reported_without_migration(self):
         self.manager.get_node_executable = Mock(return_value="node")

@@ -54,6 +54,7 @@ OPENAI_ACCOUNTS_FILE = ACCOUNTS_DIR / "openai-accounts.json"
 XPIKI_CONFIG_FILE = ACCOUNTS_DIR / "xpiki.json"
 
 OPENROUTER_SECRET_FILE = SECURE_DIR / "openrouter.json"
+TOKENLAVKA_SECRET_FILE = SECURE_DIR / "tokenlavka.json"
 
 VLESS_RUNTIME_DIR = VLESS_DIR
 CLAUDE_PROFILE_DIR = BROWSER_DIR / "claude_profile"
@@ -93,6 +94,7 @@ def migrate_legacy_locations():
         (legacy_opencode_dir / "xpiki.json", XPIKI_CONFIG_FILE),
         (legacy_opencode_dir / "gemini_domains.json", GEMINI_DOMAINS_FILE),
         (legacy_share_dir / "openrouter.json", OPENROUTER_SECRET_FILE),
+        (legacy_share_dir / "tokenlavka.json", TOKENLAVKA_SECRET_FILE),
     ]
 
     for old_path, new_path in pairs:

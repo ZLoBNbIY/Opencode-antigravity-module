@@ -42,6 +42,7 @@ import auto_router
 import dns_tester
 import xpiki_manager
 import openrouter_manager
+import tokenlavka_manager
 import hub_paths
 import deepseek_api
 
@@ -70,10 +71,11 @@ PROVIDER_DOMAINS = {
     "xpiki": ["api.xpiki.com"],
     "openrouter-free": ["openrouter.ai"],
     "deepseek-account": ["api.deepseek.com"],
+    "tokenlavka": ["tokenlavka.com"],
 }
 PROVIDER_SETTING_IDS = {"antigravity": "google", "openai": "openai", "claude": "claude-pro",
                         "xpiki": "xpiki", "openrouter": "openrouter-free",
-                        "deepseek": "deepseek-account"}
+                        "deepseek": "deepseek-account", "tokenlavka": "tokenlavka"}
 
 
 class HubApi:
@@ -219,7 +221,7 @@ class HubApi:
         auto_states = {}
         for provider in PROVIDER_DOMAINS:
             visibility_key = {"google":"antigravity", "claude-pro":"claude", "openrouter-free":"openrouter",
-                              "deepseek-account":"deepseek"}.get(provider, provider)
+                              "deepseek-account":"deepseek", "tokenlavka":"tokenlavka"}.get(provider, provider)
             enabled = cfg.get("providers_visibility", {}).get(visibility_key, True) and provider not in oc.get("disabled_providers", [])
             if enabled and cfg.get("provider_routes", {}).get(provider, "default") in ("default", "auto"):
                 auto_router.router.refresh(provider, cfg, oc)
@@ -329,14 +331,16 @@ class HubApi:
         Checks real model answers, tokens, and geoblocks (e.g. Google Region not supported).
         """
         import health_checker
-        provider = {"claude": "claude-pro", "openrouter": "openrouter-free"}.get(provider, provider)
-        if provider not in ("google", "openai", "claude-pro", "xpiki", "openrouter-free"):
+        provider = {"claude": "claude-pro", "openrouter": "openrouter-free",
+                    "tokenlavka": "tokenlavka"}.get(provider, provider)
+        if provider not in ("google", "openai", "claude-pro", "xpiki", "openrouter-free", "tokenlavka"):
             raise ValueError("Неизвестный провайдер")
         return health_checker.test_provider_deep_probe(provider, timeout=20)
 
     def set_provider_route(self, provider: str, route: str) -> bool:
-        provider = {"claude": "claude-pro", "openrouter": "openrouter-free", "deepseek": "deepseek-account"}.get(provider, provider)
-        if provider not in ("google", "openai", "claude-pro", "xpiki", "openrouter-free", "deepseek-account"):
+        provider = {"claude": "claude-pro", "openrouter": "openrouter-free", "deepseek": "deepseek-account",
+                    "tokenlavka": "tokenlavka"}.get(provider, provider)
+        if provider not in ("google", "openai", "claude-pro", "xpiki", "openrouter-free", "deepseek-account", "tokenlavka"):
             raise ValueError("Неизвестный провайдер")
         if route not in ("direct", "default", "auto", "vless", "dns", "proxy"):
             raise ValueError("Неизвестный маршрут")
@@ -694,7 +698,8 @@ class HubApi:
                           "quota": xpiki.get("cached_quota") or {}},
                 "openrouter": {"hasKey": bool(openrouter_key), "keyLabel": key_label(openrouter_key),
                                "connected": bool(openrouter_key and selected), "selectedModels": selected},
-                "deepseek": deepseek_api.provider_state()}
+                "deepseek": deepseek_api.provider_state(),
+                "tokenlavka": tokenlavka_manager.provider_state()}
 
     def configure_xpiki(self, key: str, base_url: str, models: list) -> dict:
         with self._provider_lock:
@@ -782,6 +787,34 @@ class HubApi:
             self._openrouter_models = []
         return True
 
+    def check_tokenlavka_key(self, key: str = "") -> dict:
+        key = str(key or "").strip() or tokenlavka_manager.load_api_key()
+        if not key:
+            raise ValueError("Укажите API-ключ TokenLavka (sk-...)")
+        ok, message = tokenlavka_manager.test_connection(key)
+        return {"ok": ok, "message": message}
+
+    def configure_tokenlavka_api(self, key: str = "", model_ids: list = None) -> dict:
+        """Validate, save and register the TokenLavka key plus selected models."""
+        with self._provider_lock:
+            final_key = str(key or "").strip() or tokenlavka_manager.load_api_key()
+            if not final_key:
+                raise ValueError("Укажите API-ключ TokenLavka (sk-...)")
+            ok, message = tokenlavka_manager.test_connection(final_key)
+            if not ok:
+                return {"ok": False, "message": message}
+            tokenlavka_manager.save_api_key(final_key)
+            tokenlavka_manager.sync_opencode_credential(final_key)
+            chosen = model_ids or tokenlavka_manager.selected_models() or [tokenlavka_manager.DEFAULT_MODEL]
+            selected = tokenlavka_manager.configure_models(chosen, final_key)
+            self._sync_routes(self.load_config())
+            return {"ok": True, "message": f"TokenLavka подключена. Моделей в OpenCode: {len(selected)}"}
+
+    def disconnect_tokenlavka(self) -> bool:
+        with self._provider_lock:
+            tokenlavka_manager.disconnect()
+        return True
+
     def add_google_account(self) -> dict:
         if not self._login_locks["google"].acquire(blocking=False):
             return {"status": "error", "message": "Вход в Google уже выполняется"}
@@ -803,7 +836,41 @@ class HubApi:
                 [node_exe, cli_js, "migrate", "--offline", "--yes"], timeout=30)
             if result.returncode:
                 raise RuntimeError("Миграция аккаунта не завершилась: " + (result.stderr or result.stdout))
-            return {"status": "ok", "message": "Google аккаунт добавлен в пул"}
+
+            # A freshly logged-in row exists in config.json, but its state.json
+            # metadata (email/refresh) is written lazily. export_google_accounts()
+            # skips rows without both, so without this synchronous refresh the
+            # new account stays invisible until the Hub's startup refresher runs.
+            notes = []
+            try:
+                quota = antigravity_manager.run_google_route_cmd(
+                    [node_exe, cli_js, "quota", "--refresh", "--json"], timeout=60)
+                if quota.returncode != 0:
+                    notes.append("квоты обновить не удалось")
+            except Exception:
+                notes.append("квоты обновить не удалось")
+
+            # The plugin opens the account store once per process. Restart the
+            # v2 background service so it reopens the store and picks up the new
+            # account instead of answering 401 with the old in-memory token.
+            try:
+                cli = antigravity_manager.get_opencode_cli()
+                if cli and os.path.exists(cli):
+                    svc = antigravity_manager.run_silent_cmd(
+                        [cli, "service", "restart"], timeout=45)
+                    if svc.returncode != 0:
+                        notes.append("перезапустить сервис OpenCode не удалось")
+                else:
+                    notes.append("CLI OpenCode не найден")
+            except Exception:
+                notes.append("перезапустить сервис OpenCode не удалось")
+
+            message = "Google аккаунт добавлен в пул"
+            if notes:
+                message += "; " + ", ".join(notes) + " — перезапустите OpenCode вручную"
+            else:
+                message += "; квоты обновлены, сервис OpenCode перезапущен"
+            return {"status": "ok", "message": message}
         except Exception as exc:
             return {"status": "error", "message": str(exc)}
         finally:
@@ -1049,6 +1116,8 @@ class HubApi:
             claude_accs = claude_service.load_accounts() if claude_service else []
             xpiki_cfg = xpiki_manager.load_xpiki_config()
             openrouter_key = openrouter_manager.load_api_key()
+            tokenlavka_key = tokenlavka_manager.load_api_key()
+            tokenlavka_models = tokenlavka_manager.selected_models()
 
             selected_or_models = []
             try:
@@ -1074,6 +1143,10 @@ class HubApi:
                 "openrouter": {
                     "api_key": openrouter_key or "",
                     "selected_models": selected_or_models,
+                },
+                "tokenlavka": {
+                    "api_key": tokenlavka_key or "",
+                    "selected_models": tokenlavka_models,
                 },
                 "config": self.load_config(),
             }
@@ -1179,7 +1252,20 @@ class HubApi:
                     models = [{"id": mid, "name": mid} for mid in or_data["selected_models"]]
                     openrouter_manager.configure_models(models)
 
-            # 6. Hub Config (settings, routes, proxies, DNS)
+            # 6. TokenLavka
+            tl_data = data.get("tokenlavka")
+            if isinstance(tl_data, dict) and tl_data.get("api_key"):
+                tl_key = tl_data["api_key"]
+                tokenlavka_manager.save_api_key(tl_key)
+                tokenlavka_manager.sync_opencode_credential(tl_key)
+                if tl_data.get("selected_models"):
+                    tokenlavka_manager.configure_models(
+                        [mid for mid in tl_data["selected_models"]
+                         if mid in tokenlavka_manager.TOKENLAVKA_MODELS],
+                        tl_key,
+                    )
+
+            # 7. Hub Config (settings, routes, proxies, DNS)
             backup_cfg = data.get("config")
             if isinstance(backup_cfg, dict):
                 current_cfg = self.load_config()

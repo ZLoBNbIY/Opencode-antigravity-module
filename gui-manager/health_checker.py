@@ -680,8 +680,19 @@ def test_provider_deep_probe(provider: str, timeout: int = 15) -> dict:
     catching HTTP 400 Region not supported, geoblocks, quota limits and auth failures.
     Only triggered manually to preserve quotas and tokens.
     """
-    provider = {"claude": "claude-pro", "openrouter": "openrouter-free"}.get(provider, provider)
-    
+    provider = {"claude": "claude-pro", "openrouter": "openrouter-free",
+                "tokenlavka": "tokenlavka"}.get(provider, provider)
+
+    if provider == "tokenlavka":
+        import tokenlavka_manager
+        api_key = tokenlavka_manager.load_api_key()
+        if not api_key:
+            return {"ok": False, "status": "no_key", "message": "API-ключ TokenLavka не задан"}
+        t0 = time.perf_counter()
+        ok, message = tokenlavka_manager.test_connection(api_key, timeout=timeout)
+        return {"ok": ok, "status": "active" if ok else "error", "message": message,
+                "latency_ms": round((time.perf_counter() - t0) * 1000)}
+
     if provider == "google":
         import antigravity_manager
         accs = antigravity_manager.export_google_accounts()
