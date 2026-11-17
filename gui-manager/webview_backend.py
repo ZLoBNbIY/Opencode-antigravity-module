@@ -387,11 +387,8 @@ class HubApi:
             raise ValueError("Неизвестный провайдер")
         if route not in ("direct", "default", "auto", "vless", "dns", "proxy"):
             raise ValueError("Неизвестный маршрут")
-        # "auto" is a legacy alias for the AutoRouter mode. The UI's single Auto
-        # button writes "default" (the Hub's default policy), so normalize any
-        # "auto" write to the same canonical value to avoid dual spellings.
-        if route == "auto":
-            route = "default"
+        # Both spellings select AutoRouter. The UI now writes "auto"; older
+        # configs with "default" keep working, so store whichever was chosen.
         with self._config_lock:
             cfg = self.load_config()
             if route == "vless" and not vless_service.is_running():

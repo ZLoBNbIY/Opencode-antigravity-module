@@ -292,10 +292,10 @@ class WebviewBackendTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             api.set_provider_route('google', 'google-smart')
 
-    def test_auto_route_alias_is_normalized_to_default(self):
+    def test_auto_and_default_are_both_accepted_route_modes(self):
         api = self.backend.HubApi()
         api.set_provider_route('google', 'auto')
-        self.assertEqual(api.load_config()['provider_routes']['google'], 'default')
+        self.assertEqual(api.load_config()['provider_routes']['google'], 'auto')
         api.set_provider_route('google', 'default')
         self.assertEqual(api.load_config()['provider_routes']['google'], 'default')
 
