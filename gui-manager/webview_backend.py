@@ -44,6 +44,7 @@ import openrouter_manager
 import tokenlavka_manager
 import hub_paths
 import deepseek_api
+import opencode_usage
 
 CONFIG_DIR = Path(os.path.expanduser("~/.config/opencode"))
 ANTIGRAVITY_CONFIG_FILE = CONFIG_DIR / "antigravity.json"
@@ -880,6 +881,12 @@ class HubApi:
                 selected = list(oc.get("provider", {}).get("openrouter-free", {}).get("models", {}))
         except (OSError, ValueError):
             pass
+        deepseek_state = deepseek_api.provider_state()
+        try:
+            deepseek_state["usage"] = opencode_usage.deepseek_usage()
+        except Exception as exc:
+            deepseek_state["usage"] = {"status": "error", "error": str(exc)[:160], "days": [],
+                                       "totals": {"cost": 0.0, "tokens_total": 0, "messages": 0}}
         return {"xpiki": {"connected": bool(xpiki.get("connected") and xpiki_key), "hasKey": bool(xpiki_key),
                           "keyLabel": key_label(xpiki_key),
                           "baseUrl": xpiki.get("base_url") or xpiki_manager.DEFAULT_BASE_URL,
@@ -888,7 +895,7 @@ class HubApi:
                           "quota": xpiki.get("cached_quota") or {}},
                 "openrouter": {"hasKey": bool(openrouter_key), "keyLabel": key_label(openrouter_key),
                                "connected": bool(openrouter_key and selected), "selectedModels": selected},
-                "deepseek": deepseek_api.provider_state(),
+                "deepseek": deepseek_state,
                 "tokenlavka": tokenlavka_manager.provider_state()}
 
     def configure_xpiki(self, key: str, base_url: str, models: list) -> dict:

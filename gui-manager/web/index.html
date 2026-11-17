@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Antigravity Hub</title>
-  <link rel="stylesheet" href="style.css?v=20261117e">
+  <link rel="stylesheet" href="style.css?v=20261117d">
 </head>
 <body>
 
@@ -366,6 +366,7 @@
         <div class="provider-account-layout">
           <div class="provider-account-content">
             <div class="glass-card network-panel" id="deepseek-balance"></div>
+            <div class="glass-card network-panel" id="deepseek-usage"></div>
             <div class="glass-card network-panel">
               <label class="field-label">API-ключ (sk-...)<input id="deepseek-key" type="password" autocomplete="off" placeholder="Введите API-ключ DeepSeek"></label>
               <label class="field-label">Base URL API<input id="deepseek-base-url" value="https://api.deepseek.com"></label>
@@ -702,7 +703,15 @@
             </button>
           </div>
         </div>
-        <h2 class="settings-section-heading">OpenCode и система</h2><p class="help-text">Плагин, подписи сессий и доступ к конфигурации и логам</p>
+        <h2 class="settings-section-heading">OpenCode и система</h2><p class="help-text">Управление приложением, подписи сессий и доступ к конфигурации и логам</p>
+        <div class="glass-card" style="margin-bottom: 16px;">
+          <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 12px;">Управление OpenCode</div>
+          <div style="display: flex; gap: 10px;">
+            <button class="btn-secondary" onclick="stopOpenCode()" style="color: var(--accent-red);">⏹ Остановить</button>
+            <button class="btn-secondary" onclick="startOpenCode()">▶ Запустить</button>
+          </div>
+        </div>
+
         <div class="glass-card" style="margin-bottom: 16px;">
           <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 6px;">Исправление плагина OpenCode</div>
           <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
@@ -819,6 +828,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20261117e"></script>
+<script src="app.js?v=20261117d"></script>
 </body>
 </html>

@@ -197,6 +197,9 @@ test('DeepSeek tab shows real balance and does not invent numbers on error', () 
   assert.match(card, /Доступен/);
   assert.match(card, /dashboard-tone-ok/);
   assert.equal(elements.get('deepseek-connection-status').textContent, '● Подключён');
+  assert.equal(elements.get('active-account-deepseek').textContent, 'API-ключ sk-••••9abc');
+  assert.equal(elements.get('active-status-deepseek').textContent, '● Подключён');
+  assert.match(elements.get('active-count-deepseek').textContent, /110,5 CNY/);
 
   fixture.providers.deepseek.balance = {status:'error',error:'HTTP 401'};
   const {elements: errorElements} = frontend(fixture);
@@ -209,6 +212,46 @@ test('DeepSeek tab shows real balance and does not invent numbers on error', () 
   const {elements: unavailableElements} = frontend(fixture);
   assert.match(unavailableElements.get('deepseek-balance').innerHTML, /Недоступен/);
   assert.match(unavailableElements.get('deepseek-balance').innerHTML, /dashboard-tone-error/);
+
+  fixture.providers.deepseek.balance = {
+    status:'ok', is_available:true, currency:'CNY', total_balance:110.5,
+    granted_balance:0, topped_up_balance:110.5,
+    balances:[{currency:'CNY',total_balance:110.5,granted_balance:0,topped_up_balance:110.5},
+      {currency:'USD',total_balance:5,granted_balance:0,topped_up_balance:5}],
+  };
+  const {elements: multiElements} = frontend(fixture);
+  assert.match(multiElements.get('deepseek-balance').innerHTML, /Также на счету: 5 USD/);
+});
+
+test('DeepSeek tab charts real OpenCode money and token usage', () => {
+  const fixture = structuredClone(state);
+  fixture.providers.deepseek = {
+    connected:true, hasKey:true, keyLabel:'sk-••••9abc', baseUrl:'https://api.deepseek.com',
+    balance:{status:'ok',is_available:true,currency:'CNY',total_balance:110.5,granted_balance:10,topped_up_balance:100.5,checked_at:1794309000},
+    usage:{status:'ok',source:'OpenCode',currency:'USD',window_days:30,checked_at:1794309000,
+      days:[
+        {date:'2026-11-16',cost:0.02,tokens_total:2212941,tokens_input:58950,tokens_output:8942,tokens_reasoning:5497,tokens_cache_read:2119552,messages:52},
+        {date:'2026-11-17',cost:0.55,tokens_total:98275326,tokens_input:759296,tokens_output:104612,tokens_reasoning:140602,tokens_cache_read:96050816,messages:396},
+      ],
+      totals:{cost:0.57304,tokens_total:100488267,messages:448}},
+  };
+  const {elements, context} = frontend(fixture);
+  const card = elements.get('deepseek-usage').innerHTML;
+  assert.match(card, /Расход токенов и денег/);
+  assert.match(card, /usage-bar-money/);
+  assert.match(card, /usage-bar-tokens/);
+  assert.match(card, /\$0,57/);
+  assert.match(card, /млн/);
+  assert.match(card, /По данным OpenCode/);
+  assert.match(card, /14 дн\./);
+
+  vm.runInContext('setDeepseekUsagePeriod(7)', context);
+  assert.match(elements.get('deepseek-usage').innerHTML, /class="seg-btn active"[^>]*>7 дн\./);
+
+  fixture.providers.deepseek.usage = {status:'unavailable', error:'Локальная база OpenCode не найдена'};
+  const {elements: missingElements} = frontend(fixture);
+  assert.match(missingElements.get('deepseek-usage').innerHTML, /Локальная база OpenCode не найдена/);
+  assert.doesNotMatch(missingElements.get('deepseek-usage').innerHTML, /usage-bar-money/);
 });
 
 test('each provider sidebar shows the actual active profile or masked API key', () => {
@@ -365,6 +408,4 @@ test('OpenCode restart button is placed in sidebar above status indicator and re
   const settingsMatch = markup.match(/<section id="view-settings"[\s\S]*?<\/section>/);
   assert.ok(settingsMatch, 'view-settings should exist');
   assert.doesNotMatch(settingsMatch[0], /onclick="restartOpenCode\(\)"/);
-  assert.doesNotMatch(settingsMatch[0], /onclick="stopOpenCode\(\)"/);
-  assert.doesNotMatch(settingsMatch[0], /onclick="startOpenCode\(\)"/);
 });

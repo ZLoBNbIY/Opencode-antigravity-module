@@ -71,6 +71,38 @@ class DeepSeekApiTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             deepseek_api.parse_balance_payload({"balance_infos": []})
 
+    def test_parse_balance_payload_prefers_funded_currency_whatever_the_order(self):
+        # The live API flips the order of balance_infos between calls; a zero
+        # USD entry must not shadow the funded CNY balance.
+        usd_first = {
+            "is_available": True,
+            "balance_infos": [
+                {"currency": "USD", "total_balance": "0.00",
+                 "granted_balance": "0.00", "topped_up_balance": "0.00"},
+                {"currency": "CNY", "total_balance": "6.05",
+                 "granted_balance": "0.00", "topped_up_balance": "6.05"},
+            ],
+        }
+        for payload in (usd_first, {"is_available": True,
+                                    "balance_infos": list(reversed(usd_first["balance_infos"]))}):
+            result = deepseek_api.parse_balance_payload(payload)
+            self.assertEqual(result["currency"], "CNY")
+            self.assertEqual(result["total_balance"], 6.05)
+
+    def test_parse_balance_payload_all_zero_prefers_cny(self):
+        payload = {
+            "is_available": False,
+            "balance_infos": [
+                {"currency": "USD", "total_balance": "0.00",
+                 "granted_balance": "0.00", "topped_up_balance": "0.00"},
+                {"currency": "CNY", "total_balance": "0.00",
+                 "granted_balance": "0.00", "topped_up_balance": "0.00"},
+            ],
+        }
+        result = deepseek_api.parse_balance_payload(payload)
+        self.assertEqual(result["currency"], "CNY")
+        self.assertEqual(result["total_balance"], 0.0)
+
     def test_fetch_balance_success_and_cache(self):
         opener = self._fake_opener()
         with patch.object(deepseek_api, "get_http_opener", return_value=opener):

@@ -203,6 +203,22 @@ def empty_balance(status: str = "error") -> Dict[str, Any]:
     }
 
 
+def _pick_primary_balance(balances: list) -> Dict[str, Any]:
+    """Pick the currency that is actually worth showing.
+
+    ``GET /user/balance`` returns one entry per currency and their order is not
+    stable: the same account may answer ``[USD, CNY]`` and a second later
+    ``[CNY, USD]``. Taking the first entry made the Hub flash between the real
+    CNY balance and ``0.00 USD``. Prefer a funded currency, then the largest
+    amount, and fall back to CNY when every entry is empty.
+    """
+    funded = [item for item in balances if (item.get("total_balance") or 0) > 0]
+    if funded:
+        return max(funded, key=lambda item: item.get("total_balance") or 0)
+    cny = [item for item in balances if str(item.get("currency") or "").upper() == "CNY"]
+    return cny[0] if cny else balances[0]
+
+
 def parse_balance_payload(payload: Any) -> Dict[str, Any]:
     """Convert GET /user/balance JSON into a stable Hub quota object."""
     if not isinstance(payload, dict):
@@ -231,7 +247,7 @@ def parse_balance_payload(payload: Any) -> Dict[str, Any]:
     if not balances:
         raise ValueError("DeepSeek не вернул данные о балансе")
 
-    primary = balances[0]
+    primary = _pick_primary_balance(balances)
     available = payload.get("is_available")
     return {
         "status": "ok",

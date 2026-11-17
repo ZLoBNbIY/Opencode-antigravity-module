@@ -1586,6 +1586,7 @@ function renderClaudeTab() {
 
 let xpikiFormInitialized = false;
 let deepseekFormInitialized = false;
+let deepseekUsageDays = 14;
 let openrouterModels = [];
 function renderXpikiTab() {
   const cfg = appState.providers?.xpiki;
@@ -1690,11 +1691,27 @@ function renderDeepSeekTab() {
   const amount = value => value != null && Number.isFinite(Number(value))
     ? Number(value).toLocaleString('ru-RU', {maximumFractionDigits: 2}) : 'Нет данных';
   const currency = html(balance.currency || '');
+  // DeepSeek returns one balance per currency in an unstable order; keep the
+  // funded currencies visible even when one of them is zero.
+  const otherBalances = valid && Array.isArray(balance.balances)
+    ? balance.balances.filter(item => item && item.currency !== balance.currency
+        && Number(item.total_balance) > 0)
+        .map(item => `${amount(item.total_balance)} ${html(item.currency || '')}`.trim())
+    : [];
   const statusText = !valid
     ? (balance.status === 'no_key' ? 'Ключ не задан' : 'Нет данных')
     : balance.is_available == null ? 'Нет данных'
       : balance.is_available ? 'Доступен' : 'Недоступен';
   const statusTone = !valid || balance.is_available == null ? 'muted' : balance.is_available ? 'ok' : 'error';
+  const activeKey = document.getElementById('active-account-deepseek');
+  if (activeKey) activeKey.textContent = cfg.hasKey ? `API-ключ ${cfg.keyLabel || 'сохранён'}` : 'Ключ не задан';
+  const activeStatus = document.getElementById('active-status-deepseek');
+  if (activeStatus) {
+    activeStatus.textContent = cfg.connected ? '● Подключён' : cfg.hasKey ? 'Ключ сохранён · не подключён' : 'Не подключён';
+    activeStatus.className = `detail-val ${cfg.connected ? 'status-good' : ''}`;
+  }
+  const activeBalance = document.getElementById('active-count-deepseek');
+  if (activeBalance) activeBalance.textContent = valid ? `${amount(balance.total_balance)} ${currency}`.trim() : 'Нет данных';
   const box = document.getElementById('deepseek-balance');
   if (box) {
     box.innerHTML = `
@@ -1705,9 +1722,99 @@ function renderDeepSeekTab() {
         <div class="help-text">Пополненный баланс<strong>${valid ? `${amount(balance.topped_up_balance)} ${currency}` : '—'}</strong></div>
       </div>
       <p class="help-text" style="margin-top:12px;">Статус: <strong class="dashboard-tone-${statusTone}">${html(statusText)}</strong>${balance.checked_at ? ` · обновлён ${dashboardTime(balance.checked_at * 1000)}` : ''}${balance.status === 'stale' ? ' · сохранённые данные' : ''}</p>
+      ${otherBalances.length ? `<p class="help-text">Также на счету: ${otherBalances.join(' · ')}</p>` : ''}
       ${balance.error ? `<p class="help-text" style="color:var(--accent-red);">${html(balance.error)}</p>` : ''}
     `;
   }
+  renderDeepSeekUsage(cfg.usage);
+}
+
+function usageMoney(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '—';
+  return '$' + number.toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 4});
+}
+function usageTokens(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return '0';
+  if (number >= 1e9) return `${(number / 1e9).toLocaleString('ru-RU', {maximumFractionDigits: 2})} млрд`;
+  if (number >= 1e6) return `${(number / 1e6).toLocaleString('ru-RU', {maximumFractionDigits: 2})} млн`;
+  if (number >= 1e3) return `${(number / 1e3).toLocaleString('ru-RU', {maximumFractionDigits: 1})} тыс.`;
+  return number.toLocaleString('ru-RU');
+}
+function setDeepseekUsagePeriod(days) {
+  deepseekUsageDays = days;
+  renderDeepSeekTab();
+}
+function renderDeepSeekUsage(usage) {
+  const box = document.getElementById('deepseek-usage');
+  if (!box) return;
+  const periods = [7, 14, 30];
+  const periodButtons = period => `<div class="segmented-group usage-period">${periods.map(days =>
+    `<button type="button" class="seg-btn ${days === period ? 'active' : ''}" onclick="setDeepseekUsagePeriod(${days})">${days} дн.</button>`).join('')}</div>`;
+  if (!usage) {
+    box.innerHTML = `<h2>Расход токенов и денег</h2><p class="help-text">Нет данных о расходе DeepSeek в базе OpenCode.</p>`;
+    return;
+  }
+  if (usage.status !== 'ok') {
+    box.innerHTML = `<h2>Расход токенов и денег</h2><p class="help-text">${html(usage.error || 'Нет данных о расходе DeepSeek в базе OpenCode')}</p>`;
+    return;
+  }
+  const all = Array.isArray(usage.days) ? usage.days : [];
+  const period = deepseekUsageDays;
+  const days = all.slice(-period);
+  if (!days.length) {
+    box.innerHTML = `<h2>Расход токенов и денег</h2><p class="help-text">Нет данных о расходе DeepSeek в базе OpenCode.</p>`;
+    return;
+  }
+  const sum = key => days.reduce((total, day) => total + (Number(day[key]) || 0), 0);
+  const totalCost = sum('cost');
+  const totalTokens = sum('tokens_total');
+  const totalMessages = sum('messages');
+  const maxCost = Math.max(0, ...days.map(day => Number(day.cost) || 0));
+  const maxTokens = Math.max(0, ...days.map(day => Number(day.tokens_total) || 0));
+  const percent = (value, max) => max > 0 ? Math.max((Number(value) || 0) > 0 ? 3 : 0, Math.min(100, (Number(value) || 0) / max * 100)) : 0;
+  const labelEvery = days.length <= 7 ? 1 : Math.ceil(days.length / 7);
+  const dateLabel = iso => {
+    const [, month, day] = String(iso).split('-');
+    return `${day}.${month}`;
+  };
+  const columns = days.map((day, index) => {
+    const moneyPercent = percent(day.cost, maxCost);
+    const tokenPercent = percent(day.tokens_total, maxTokens);
+    const tip = [
+      dateLabel(day.date),
+      `расход ${usageMoney(day.cost)}`,
+      `токены ${usageTokens(day.tokens_total)}`,
+      `вход ${usageTokens(day.tokens_input)} · кэш ${usageTokens(day.tokens_cache_read)}`,
+      `выход ${usageTokens(day.tokens_output)} · reasoning ${usageTokens(day.tokens_reasoning)}`,
+      `запросов ${day.messages}`,
+    ].join(' · ');
+    return `<div class="usage-col" title="${html(tip)}">
+      <div class="usage-bars">
+        <span class="usage-bar usage-bar-money" style="height:${moneyPercent.toFixed(2)}%"></span>
+        <span class="usage-bar usage-bar-tokens" style="height:${tokenPercent.toFixed(2)}%"></span>
+      </div>
+      <span class="usage-day">${index % labelEvery === 0 ? html(dateLabel(day.date)) : ''}</span>
+    </div>`;
+  }).join('');
+  box.innerHTML = `
+    <div class="usage-head">
+      <h2>Расход токенов и денег</h2>
+      ${periodButtons(period)}
+    </div>
+    <div class="usage-summary">
+      <div><span>Деньги</span><strong>${usageMoney(totalCost)}</strong></div>
+      <div><span>Токены</span><strong>${usageTokens(totalTokens)}</strong></div>
+      <div><span>Запросов</span><strong>${totalMessages.toLocaleString('ru-RU')}</strong></div>
+    </div>
+    <div class="usage-chart">${columns}</div>
+    <div class="usage-legend">
+      <span><i class="usage-dot usage-dot-money"></i>Деньги, $ (макс. ${usageMoney(maxCost)})</span>
+      <span><i class="usage-dot usage-dot-tokens"></i>Токены (макс. ${usageTokens(maxTokens)})</span>
+      <span class="usage-source">По данным ${html(usage.source || 'OpenCode')} · баланс выше в валюте DeepSeek</span>
+    </div>
+  `;
 }
 
 async function configureDeepSeekApi() {
@@ -1968,6 +2075,20 @@ async function restartOpenCode() {
     setTimeout(refreshState, 1500);
     void refreshPluginFixStatus();
   }
+}
+
+async function stopOpenCode() {
+  if (!window.pywebview?.api) return;
+  showToast("Остановка OpenCode...");
+  await window.pywebview.api.stop_opencode();
+  setTimeout(refreshState, 1500);
+}
+
+async function startOpenCode() {
+  if (!window.pywebview?.api) return;
+  showToast("Запуск OpenCode...");
+  await window.pywebview.api.start_opencode();
+  setTimeout(refreshState, 1500);
 }
 
 async function fixSessionTitle() {
