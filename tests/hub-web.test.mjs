@@ -424,4 +424,7 @@ test('DeepSeek usage chart escapes currency in innerHTML and failover toggle mar
   assert.doesNotMatch(usageHtml, /<img src=x/);
   assert.match(usageHtml, /&lt;img src=x onerror=alert\(1\)&gt;/);
   assert.match(markup, /id="switch-proxy-failover"[^>]*onchange="networkDirty = true"/);
+  const css = fs.readFileSync(new URL('../gui-manager/web/style.css', import.meta.url), 'utf8');
+  const statusBadgeRule = css.match(/\.status-badge\s*\{[^}]*\}/);
+  assert.ok(statusBadgeRule && /justify-content:\s*center/.test(statusBadgeRule[0]), '.status-badge should center its content');
 });
