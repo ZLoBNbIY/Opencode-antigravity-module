@@ -1,3 +1,4 @@
 # Windows command scripts require CRLF, including after a fresh checkout.
 *.bat text eol=crlf
 *.cmd text eol=crlf
+plugin/dist/*.js text eol=lf

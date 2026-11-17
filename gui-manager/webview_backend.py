@@ -146,6 +146,7 @@ class HubApi:
         self._provider_lock = threading.RLock()
         self._core_lock = threading.Lock()
         self._restart_lock = threading.Lock()
+        self._uninstalled = False
         self._login_locks = {name: threading.Lock() for name in ("google", "openai", "claude")}
 
     def load_config(self) -> dict:
@@ -407,8 +408,8 @@ class HubApi:
         return True
 
     def save_network_settings(self, settings: dict) -> dict:
-        allowed = {"vless_url", "vless_core_path", "vless_kill_switch", "dns_mode", "custom_dns", "dot_host", "doh_url",
-                   "proxy", "dns_presets"}
+        allowed = {"vless_url", "vless_kill_switch", "dns_mode", "custom_dns", "dot_host", "doh_url",
+                   "proxy", "proxy_pool", "proxy_failover", "dns_presets"}
         with self._config_lock:
             cfg = self.load_config()
             previous = dict(cfg)
@@ -501,10 +502,13 @@ class HubApi:
                             if not (p_parsed.hostname in ("localhost", "127.0.0.1") and p_parsed.port == provider_proxy.PORT):
                                 if p_str not in valid_pool:
                                     valid_pool.append(p_str)
+            if "proxy_failover" in cfg:
+                cfg["proxy_failover"] = bool(cfg["proxy_failover"])
+            if proxy and proxy not in valid_pool:
+                valid_pool.insert(0, proxy)
             cfg["proxy_pool"] = valid_pool
             if valid_pool:
-                if not proxy or proxy not in valid_pool:
-                    cfg["proxy"] = valid_pool[0]
+                cfg["proxy"] = proxy if proxy in valid_pool else valid_pool[0]
             else:
                 cfg["proxy"] = proxy
             if vless_service.is_running() and any(cfg.get(k) != previous.get(k) for k in
@@ -661,10 +665,12 @@ class HubApi:
                 return {"ok": False, "message": "Не удалось сохранить активный конфиг"}
             self._sync_routes(cfg)
             result = None
+            tunnel_active = was_running
             with self._core_lock:
                 if was_running and previous != url:
                     vless_service.stop_tunnel()
                     ok, message = vless_service.start_tunnel(url, custom_core_path=cfg.get("vless_core_path"))
+                    tunnel_active = ok
                     result = (vless_service.test_connection(timeout=10) if ok else
                               {"ok": False, "message": message, "ip": None, "country": None, "latency_ms": None})
                 elif was_running:
@@ -673,8 +679,13 @@ class HubApi:
                     # There is no Start button in the UI: activating a config
                     # starts the tunnel and leaves it running.
                     ok, message = vless_service.start_tunnel(url, custom_core_path=cfg.get("vless_core_path"))
+                    tunnel_active = ok
                     result = (vless_service.test_connection(timeout=10) if ok else
                               {"ok": False, "message": message, "ip": None, "country": None, "latency_ms": None})
+            if tunnel_active and not cfg.get("vless_enabled"):
+                cfg["vless_enabled"] = True
+                self.save_config(cfg)
+                self._sync_routes(cfg)
             if result and result.get("ip"):
                 pool = self._cache_vless_result(cfg, url, result)
             else:
@@ -698,7 +709,7 @@ class HubApi:
                     result = self._vless_probe(url, cfg)
                 finally:
                     # Always bring the previously active config back online.
-                    if was_running and active and active != url:
+                    if was_running and active:
                         vless_service.start_tunnel(active, custom_core_path=cfg.get("vless_core_path"))
             pool = self._cache_vless_result(cfg, url, result)
             return {"ok": bool(result.get("ok")), "message": result.get("message", "Ошибка проверки"),
@@ -1112,6 +1123,7 @@ class HubApi:
         return antigravity_manager.set_google_account_candidate(aid_or_email, candidate)
 
     def test_openai_account(self, aid_or_email: str) -> str:
+        import health_checker
         accs = openai_manager.load_openai_accounts() if hasattr(openai_manager, "load_openai_accounts") else []
         acc = next((a for a in accs if a.get("id") == aid_or_email or a.get("accountId") == aid_or_email or a.get("email") == aid_or_email), None)
         if not acc:
@@ -1169,7 +1181,11 @@ class HubApi:
         with self._config_lock:
             cfg = self.load_config()
             previous = copy.deepcopy(cfg)
-            cfg.update({k: v for k, v in settings.items() if k == "switch_on_first_rate_limit"})
+            for key in ("switch_on_first_rate_limit", "close_to_tray"):
+                if key in settings:
+                    if not isinstance(settings[key], bool):
+                        raise ValueError(f"Неверное значение настройки {key}")
+                    cfg[key] = settings[key]
             oc = None
             if "providers_visibility" in settings:
                 visibility = settings["providers_visibility"]
@@ -1315,6 +1331,7 @@ class HubApi:
 
     def uninstall_hub_completely(self) -> dict:
         try:
+            self._uninstalled = True
             try:
                 vless_service.stop_tunnel()
             except Exception:
@@ -1330,11 +1347,12 @@ class HubApi:
                         cfg.get("provider", {}).pop("google", None)
                         if not cfg.get("provider"):
                             cfg.pop("provider", None)
-                    OPENCODE_CONFIG_FILE.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+                    pending = OPENCODE_CONFIG_FILE.with_suffix(".json.hub.tmp")
+                    pending.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+                    pending.replace(OPENCODE_CONFIG_FILE)
                 except Exception:
                     pass
-            # This is the plugin compatibility mirror, owned by Hub. Do not
-            # touch opencode.json or any unrelated OpenCode data.
+            # Remove the Hub-owned plugin compatibility mirror and Hub data directory.
             ANTIGRAVITY_CONFIG_FILE.unlink(missing_ok=True)
             hub_root = hub_paths.get_hub_data_dir()
             shutil.rmtree(hub_root, ignore_errors=True)
@@ -1342,23 +1360,30 @@ class HubApi:
         except Exception as e:
             return {"ok": False, "message": f"Ошибка деинсталляции: {e}"}
 
-    def export_backup(self, target_path: str = None) -> dict:
+    def export_backup(self, target_path: str = None, password: str = None) -> dict:
         try:
             import webview
+            import crypto_backup
+            import secrets
             if not target_path and self._window_holder:
                 dialog_res = self._window_holder.create_file_dialog(
                     webview.FileDialog.SAVE,
-                    save_filename="AntigravityHub_Backup.json",
-                    file_types=("JSON Backup (*.json)", "All files (*.*)")
+                    save_filename="AntigravityHub_Backup.agb" if password else "AntigravityHub_Backup.json",
+                    file_types=("Antigravity Backup (*.agb;*.json)", "All files (*.*)")
                 )
                 if not dialog_res:
                     return {"ok": False, "cancelled": True, "message": "Экспорт отменён"}
                 target_path = dialog_res[0] if isinstance(dialog_res, (list, tuple)) else dialog_res
 
-            if not target_path:
+            if not target_path or not isinstance(target_path, str):
                 return {"ok": False, "message": "Не указан путь для сохранения файла"}
 
             target = Path(target_path)
+            if target.exists() and target.is_dir():
+                return {"ok": False, "message": "Указанный путь является каталогом"}
+            if target.suffix.lower() not in (".json", ".agb"):
+                return {"ok": False, "message": "Допустимы только файлы резервных копий .json или .agb"}
+
             google_accs = antigravity_manager.export_google_accounts()
             openai_accs = openai_manager.load_openai_accounts() if hasattr(openai_manager, "load_openai_accounts") else []
             claude_accs = claude_service.load_accounts() if claude_service else []
@@ -1401,10 +1426,22 @@ class HubApi:
             }
 
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(json.dumps(backup_data, indent=2, ensure_ascii=False), encoding="utf-8")
+            if isinstance(password, str) and password:
+                payload_bytes = crypto_backup.encrypt_backup(backup_data, password)
+            else:
+                payload_bytes = json.dumps(backup_data, indent=2, ensure_ascii=False).encode("utf-8")
+            tmp_target = target.with_name(f"{target.name}.{secrets.token_hex(6)}.tmp")
+            try:
+                fd = os.open(tmp_target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(payload_bytes)
+                os.replace(tmp_target, target)
+            finally:
+                tmp_target.unlink(missing_ok=True)
             return {
                 "ok": True,
                 "path": str(target),
+                "encrypted": bool(isinstance(password, str) and password),
                 "message": f"Резервная копия сохранена в {target.name}",
                 "counts": {
                     "google": len(google_accs),
@@ -1428,10 +1465,12 @@ class HubApi:
                     return {"ok": False, "cancelled": True, "message": "Импорт отменён"}
                 source_path = dialog_res[0] if isinstance(dialog_res, (list, tuple)) else dialog_res
 
-            if not source_path or not Path(source_path).exists():
+            if not source_path or not isinstance(source_path, str):
+                return {"ok": False, "message": "Файл резервной копии не найден"}
+            source = Path(source_path)
+            if not source.is_file():
                 return {"ok": False, "message": "Файл резервной копии не найден"}
 
-            source = Path(source_path)
             raw = source.read_bytes()
 
             if crypto_backup.is_encrypted_backup(raw):
@@ -1469,21 +1508,36 @@ class HubApi:
             c_list = data.get("claude_accounts") or []
             if isinstance(c_list, list) and c_list and claude_service:
                 existing = claude_service.load_accounts()
-                existing_emails = {a.get("email") for a in existing if a.get("email")}
+                existing_emails = {a.get("email") for a in existing if isinstance(a, dict) and a.get("email")}
                 for ca in c_list:
-                    if ca.get("email") not in existing_emails:
+                    if not isinstance(ca, dict):
+                        continue
+                    ca_email = ca.get("email")
+                    if not isinstance(ca_email, str) or not ca_email.strip():
+                        continue
+                    if ca_email not in existing_emails:
                         existing.append(ca)
+                        existing_emails.add(ca_email)
                         imported_c += 1
                 claude_service.save_accounts(existing)
 
             # 4. Xpiki
             xpiki_data = data.get("xpiki")
-            if isinstance(xpiki_data, dict) and xpiki_data.get("api_key"):
+            if isinstance(xpiki_data, dict) and isinstance(xpiki_data.get("api_key"), str) and xpiki_data["api_key"].strip():
+                raw_base = str(xpiki_data.get("base_url") or xpiki_manager.DEFAULT_BASE_URL).strip()
+                parsed_xpiki = urlparse(raw_base)
+                if parsed_xpiki.scheme != "https" or not parsed_xpiki.hostname or parsed_xpiki.username or parsed_xpiki.password:
+                    raw_base = xpiki_manager.DEFAULT_BASE_URL
+                raw_models = xpiki_data.get("enabled_models")
+                if isinstance(raw_models, list):
+                    enabled_models = [str(m) for m in raw_models if isinstance(m, str) and m in xpiki_manager.XPIKI_MODELS]
+                else:
+                    enabled_models = list(xpiki_manager.XPIKI_MODELS)
                 x_cfg = xpiki_manager.load_xpiki_config()
                 x_cfg.update(
-                    api_key=xpiki_data["api_key"],
-                    base_url=xpiki_data.get("base_url") or xpiki_manager.DEFAULT_BASE_URL,
-                    enabled_models=xpiki_data.get("enabled_models", list(xpiki_manager.XPIKI_MODELS)),
+                    api_key=xpiki_data["api_key"].strip(),
+                    base_url=raw_base,
+                    enabled_models=enabled_models or list(xpiki_manager.XPIKI_MODELS),
                     connected=True,
                 )
                 xpiki_manager.save_xpiki_config(x_cfg)
@@ -1493,24 +1547,25 @@ class HubApi:
 
             # 5. OpenRouter
             or_data = data.get("openrouter")
-            if isinstance(or_data, dict) and or_data.get("api_key"):
-                or_key = or_data["api_key"]
+            if isinstance(or_data, dict) and isinstance(or_data.get("api_key"), str) and or_data["api_key"].strip():
+                or_key = or_data["api_key"].strip()
                 openrouter_manager.save_api_key(or_key)
                 openrouter_manager.sync_opencode_credential(or_key)
-                if or_data.get("selected_models"):
-                    models = [{"id": mid, "name": mid} for mid in or_data["selected_models"]]
-                    openrouter_manager.configure_models(models)
+                if isinstance(or_data.get("selected_models"), list):
+                    models = [{"id": str(mid), "name": str(mid)} for mid in or_data["selected_models"] if isinstance(mid, str)]
+                    if models:
+                        openrouter_manager.configure_models(models)
 
             # 6. TokenLavka
             tl_data = data.get("tokenlavka")
-            if isinstance(tl_data, dict) and tl_data.get("api_key"):
-                tl_key = tl_data["api_key"]
+            if isinstance(tl_data, dict) and isinstance(tl_data.get("api_key"), str) and tl_data["api_key"].strip():
+                tl_key = tl_data["api_key"].strip()
                 tokenlavka_manager.save_api_key(tl_key)
                 tokenlavka_manager.sync_opencode_credential(tl_key)
-                if tl_data.get("selected_models"):
+                if isinstance(tl_data.get("selected_models"), list):
                     tokenlavka_manager.configure_models(
                         [mid for mid in tl_data["selected_models"]
-                         if mid in tokenlavka_manager.TOKENLAVKA_MODELS],
+                         if isinstance(mid, str) and mid in tokenlavka_manager.TOKENLAVKA_MODELS],
                         tl_key,
                     )
                 cached = tl_data.get("cached_balance")
@@ -1519,13 +1574,44 @@ class HubApi:
                     cfg["cached_balance"] = cached
                     tokenlavka_manager.save_config(cfg)
 
-            # 7. Hub Config (settings, routes, proxies, DNS)
+            # 7. Hub Config (settings, routes, proxies, DNS) — whitelist safe keys only
             backup_cfg = data.get("config")
             if isinstance(backup_cfg, dict):
+                allowed_backup_keys = {
+                    "account_selection_strategy", "soft_quota_threshold_percent",
+                    "switch_on_first_rate_limit", "max_account_switches",
+                    "quota_style_fallback", "close_to_tray", "providers_visibility",
+                    "provider_routes", "vless_kill_switch", "vless_enabled",
+                    "dns_mode", "custom_dns", "dot_host", "doh_url", "dns_presets",
+                    "proxy", "proxy_pool", "proxy_failover", "vless_url", "vless_pool",
+                }
                 current_cfg = self.load_config()
                 for k, v in backup_cfg.items():
-                    if k not in ("$schema",):
+                    if k in allowed_backup_keys:
                         current_cfg[k] = v
+                # Validate critical network fields from backup
+                if current_cfg.get("dns_mode") not in (None, "system", "standard", "dot", "doh"):
+                    current_cfg["dns_mode"] = "system"
+                if current_cfg.get("doh_url"):
+                    p_doh = urlparse(str(current_cfg["doh_url"]))
+                    if p_doh.scheme != "https" or not p_doh.hostname or p_doh.username or p_doh.password:
+                        current_cfg["doh_url"] = ""
+                if current_cfg.get("proxy"):
+                    p_proxy = urlparse(str(current_cfg["proxy"]))
+                    if p_proxy.scheme not in ("http", "https") or not p_proxy.hostname:
+                        current_cfg["proxy"] = ""
+                if isinstance(current_cfg.get("proxy_pool"), list):
+                    current_cfg["proxy_pool"] = [
+                        str(p).strip() for p in current_cfg["proxy_pool"]
+                        if isinstance(p, str) and urlparse(p.strip()).scheme in ("http", "https") and urlparse(p.strip()).hostname
+                    ]
+                if current_cfg.get("vless_url"):
+                    try:
+                        VlessParser.parse_url(str(current_cfg["vless_url"]))
+                    except Exception:
+                        current_cfg["vless_url"] = ""
+                if "vless_pool" in current_cfg:
+                    current_cfg["vless_pool"] = _normalize_vless_pool(current_cfg.get("vless_pool"))
                 self.save_config(current_cfg)
                 self._sync_routes(current_cfg)
 
@@ -1653,6 +1739,17 @@ def run_webview_app():
         print(f"Tray initialization warning: {e}")
 
     def on_window_closing():
+        if getattr(api, "_uninstalled", False):
+            try:
+                if tray:
+                    tray.remove()
+            except Exception:
+                pass
+            try:
+                vless_service.stop_tunnel()
+            except Exception:
+                pass
+            return True
         cfg = api.load_config()
         close_to_tray = cfg.get("close_to_tray", True)
         if close_to_tray:
@@ -1733,7 +1830,7 @@ def run_webview_app():
             provider_proxy.start()
         except Exception as exc:
             print(f"Network startup: {exc}")
-        while True:
+        while not getattr(api, "_uninstalled", False):
             api.refresh_openai_quotas()
             try:
                 api.refresh_deepseek_balance()
@@ -1744,6 +1841,8 @@ def run_webview_app():
             except Exception:
                 pass
             time.sleep(300)
+            if getattr(api, "_uninstalled", False):
+                break
             try:
                 node_exe = antigravity_manager.get_node_executable()
                 cli_js = antigravity_manager.get_cli_js()

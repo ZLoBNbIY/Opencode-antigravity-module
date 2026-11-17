@@ -29,6 +29,22 @@ class AutoUpdaterTests(unittest.TestCase):
             self.assertTrue(auto_updater._git_commit_contains(Path("repo"), "remote-sha"))
         self.assertEqual(run.call_args.args[0], ["git", "merge-base", "--is-ancestor", "remote-sha", "HEAD"])
 
+    def test_apply_update_git_aborts_rebase_on_pull_failure(self):
+        calls = []
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[:3] == ["git", "status", "--porcelain"]:
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            if cmd[:3] == ["git", "pull", "--rebase"]:
+                return subprocess.CompletedProcess(cmd, 1, "", "conflict")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with patch.object(auto_updater.subprocess, "run", side_effect=fake_run):
+            ok, msg = auto_updater.apply_update_git(Path("repo"))
+        self.assertFalse(ok)
+        self.assertIn("conflict", msg)
+        self.assertIn(["git", "rebase", "--abort"], calls)
+
 
 if __name__ == "__main__":
     unittest.main()

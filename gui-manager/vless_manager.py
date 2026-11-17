@@ -6,8 +6,11 @@ and routing traffic from OpenCode and Antigravity Hub.
 
 import os
 import sys
+import csv
+import io
 import json
 import time
+import secrets
 import socket
 import ssl
 import urllib.parse
@@ -313,7 +316,7 @@ class VlessManager:
                 f"https://ghfast.top/{XRAY_DOWNLOAD_URL}",
             ])
 
-        archive_path = bin_dir / "core_archive.zip"
+        archive_path = bin_dir / f"core_archive_{secrets.token_hex(4)}.zip"
 
         last_error = None
         for candidate_url in candidate_urls:
@@ -321,6 +324,8 @@ class VlessManager:
                 if progress_callback:
                     progress_callback(f"Загрузка {core_type}...")
 
+                if not str(candidate_url).startswith("https://"):
+                    raise ValueError("Разрешена загрузка ядер только по HTTPS")
                 req = urllib.request.Request(
                     candidate_url,
                     headers={
@@ -329,19 +334,7 @@ class VlessManager:
                     }
                 )
                 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-                try:
-                    resp = opener.open(req, timeout=30)
-                except Exception as open_err:
-                    err_str = str(open_err).lower()
-                    if "cert" in err_str or "ssl" in err_str:
-                        ctx = ssl._create_unverified_context()
-                        opener = urllib.request.build_opener(
-                            urllib.request.ProxyHandler({}),
-                            urllib.request.HTTPSHandler(context=ctx),
-                        )
-                        resp = opener.open(req, timeout=30)
-                    else:
-                        raise
+                resp = opener.open(req, timeout=30)
 
                 with resp, open(archive_path, "wb") as f:
                     total_size = resp.length or 0
@@ -361,6 +354,9 @@ class VlessManager:
 
                 with zipfile.ZipFile(archive_path, "r") as zf:
                     for member in zf.namelist():
+                        member_path = Path(member)
+                        if member_path.is_absolute() or ".." in member_path.parts:
+                            raise ValueError("Небезопасный путь в архиве ядра")
                         basename = os.path.basename(member)
                         if basename in ("sing-box.exe", "xray.exe") or (basename.endswith(".dll") and "cronet" in basename.lower()):
                             with zf.open(member) as source:
@@ -578,11 +574,12 @@ class VlessManager:
     # (for example the one spawned by a browser VLESS-bridge extension).
     # ------------------------------------------------------------------
     def _get_listener_pids(self, port: int) -> list:
-        """Returns PIDs of processes listening on 127.0.0.1:port."""
+        """Returns PIDs of processes listening on loopback/wildcard:port."""
         pids = []
         try:
             ps_cmd = (
                 "Get-NetTCPConnection -LocalPort %d -State Listen -ErrorAction SilentlyContinue "
+                "| Where-Object { $_.LocalAddress -in @('127.0.0.1','0.0.0.0','::','::1') } "
                 "| Select-Object -ExpandProperty OwningProcess" % port
             )
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -593,7 +590,9 @@ class VlessManager:
             for line in proc.stdout.splitlines():
                 line = line.strip()
                 if line.isdigit():
-                    pids.append(int(line))
+                    pid = int(line)
+                    if pid > 4:
+                        pids.append(pid)
         except Exception:
             pass
         return sorted(set(pids))
@@ -605,10 +604,11 @@ class VlessManager:
                 ["tasklist", "/fi", f"PID eq {pid}", "/fo", "csv", "/nh"],
                 capture_output=True, text=True, creationflags=flags, timeout=10,
             )
-            for line in proc.stdout.splitlines():
-                if not line.strip():
-                    continue
-                return line.strip().split('","')[0].strip('"')
+            if proc.returncode != 0:
+                return ""
+            for row in csv.reader(io.StringIO(proc.stdout)):
+                if len(row) >= 2 and row[1].strip() == str(pid):
+                    return row[0].strip()
         except Exception:
             pass
         return ""
@@ -706,21 +706,30 @@ class VlessManager:
 
             # Log core output to file for diagnosis
             log_file = VLESS_RUNTIME_DIR / "core.log"
+            log_fh = None
             try:
                 log_fh = open(log_file, "w", encoding="utf-8")
+                stdout_target = log_fh
             except Exception:
-                log_fh = subprocess.DEVNULL
+                stdout_target = subprocess.DEVNULL
 
             try:
-                self._process = subprocess.Popen(
+                proc = subprocess.Popen(
                     cmd,
                     cwd=str(VLESS_RUNTIME_DIR),
                     creationflags=creation_flags,
-                    stdout=log_fh,
+                    stdout=stdout_target,
                     stderr=subprocess.STDOUT,
                 )
+                self._process = proc
             except Exception as e:
                 return False, f"Не удалось запустить процесс ядра: {e}"
+            finally:
+                if log_fh is not None:
+                    try:
+                        log_fh.close()
+                    except Exception:
+                        pass
 
         # Wait for port to become active
         for _ in range(35):
@@ -730,7 +739,10 @@ class VlessManager:
                 return True, f"VLESS туннель успешно запущен на 127.0.0.1:{http_port}"
 
         # Check if process died
-        if self._process and self._process.poll() is not None:
+        with self._lock:
+            current_proc = self._process
+            rc = current_proc.poll() if current_proc is not None else None
+        if current_proc is not None and rc is not None:
             err_details = ""
             log_file = VLESS_RUNTIME_DIR / "core.log"
             if log_file.exists():
@@ -740,10 +752,9 @@ class VlessManager:
                         err_details = "\n".join(lines[-4:])
                 except Exception:
                     pass
-            return False, f"Процесс ядра завершился с кодом ошибки {self._process.returncode}.{err_details}"
+            return False, f"Процесс ядра завершился с кодом ошибки {rc}.{err_details}"
 
-        self._status = "running"
-        return True, f"VLESS процесс запущен (порт {http_port})."
+        return False, f"Туннель не открыл порт {http_port} за отведённое время."
 
     def stop_tunnel(self) -> Tuple[bool, str]:
         cfg_http, cfg_socks = get_configured_ports()
@@ -821,6 +832,7 @@ class VlessManager:
         ]
 
         for url, service_type in endpoints:
+            attempt_start = time.time()
             try:
                 req = urllib.request.Request(
                     url,
@@ -828,7 +840,7 @@ class VlessManager:
                 )
                 with opener.open(req, timeout=timeout) as resp:
                     data = resp.read().decode("utf-8", errors="ignore")
-                    elapsed = int((time.time() - start) * 1000)
+                    elapsed = int((time.time() - attempt_start) * 1000)
 
                     ip = ""
                     country = ""

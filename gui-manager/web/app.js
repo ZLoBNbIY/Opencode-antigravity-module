@@ -77,6 +77,7 @@ function showToast(msg) {
 // DATA FETCHING & RENDERING
 // ============================================================================
 let stateRefreshing = false;
+let stateRefreshQueued = false;
 let networkFormInitialized = false;
 let networkDirty = false;
 
@@ -85,22 +86,33 @@ function html(value) {
 }
 
 async function refreshState() {
-  if (!window.pywebview?.api || stateRefreshing) return;
+  if (!window.pywebview?.api) return;
+  if (stateRefreshing) {
+    stateRefreshQueued = true;
+    return;
+  }
   stateRefreshing = true;
   try {
     const data = await window.pywebview.api.get_state();
     if (!data) return;
     appState = data;
     lastStateUpdatedAt = Date.now();
+    const statusLeft = document.getElementById('status-left');
+    if (statusLeft) statusLeft.textContent = 'Готов к работе';
     renderAll();
     void refreshEnabledDiagnostics();
     void refreshDnsChecks();
     void refreshProxyChecks();
   } catch (e) {
     console.error("Failed to refresh state:", e);
-    document.getElementById('status-left').textContent = 'Ошибка загрузки: ' + e;
+    const statusLeft = document.getElementById('status-left');
+    if (statusLeft) statusLeft.textContent = 'Ошибка загрузки: ' + e;
   } finally {
     stateRefreshing = false;
+    if (stateRefreshQueued) {
+      stateRefreshQueued = false;
+      void refreshState();
+    }
   }
 }
 
@@ -1666,7 +1678,12 @@ async function refreshXpikiQuota() {
 }
 async function disconnectXpiki() {
   if (!confirm('Отключить Xpiki в OpenCode?')) return;
-  try { await window.pywebview.api.disconnect_xpiki(); await refreshState(); document.getElementById('xpiki-result').textContent = 'Xpiki отключён'; }
+  try {
+    await window.pywebview.api.disconnect_xpiki();
+    xpikiFormInitialized = false;
+    await refreshState();
+    document.getElementById('xpiki-result').textContent = 'Xpiki отключён';
+  }
   catch (e) { showToast(String(e)); }
 }
 
@@ -1806,13 +1823,13 @@ function renderDeepSeekUsage(usage) {
       ${periodButtons(period)}
     </div>
     <div class="usage-summary">
-      <div><span>Деньги</span><strong>${usageMoney(totalCost, usage.currency)}</strong></div>
+      <div><span>Деньги</span><strong>${html(usageMoney(totalCost, usage.currency))}</strong></div>
       <div><span>Токены</span><strong>${usageTokens(totalTokens)}</strong></div>
       <div><span>Запросов</span><strong>${totalMessages.toLocaleString('ru-RU')}</strong></div>
     </div>
     <div class="usage-chart">${columns}</div>
     <div class="usage-legend">
-      <span><i class="usage-dot usage-dot-money"></i>Деньги, ${currency} (макс. ${usageMoney(maxCost, usage.currency)})</span>
+      <span><i class="usage-dot usage-dot-money"></i>Деньги, ${currency} (макс. ${html(usageMoney(maxCost, usage.currency))})</span>
       <span><i class="usage-dot usage-dot-tokens"></i>Токены (макс. ${usageTokens(maxTokens)})</span>
       <span class="usage-source">По официальному тарифу DeepSeek в ${currency} · токены из базы ${html(usage.source || 'OpenCode')} · пиковые часы ×2</span>
     </div>
@@ -1850,6 +1867,7 @@ async function disconnectDeepSeekApi() {
   try {
     await window.pywebview.api.disconnect_deepseek_api();
     document.getElementById('deepseek-key').value = '';
+    deepseekFormInitialized = false;
     await refreshState();
     document.getElementById('deepseek-result').textContent = 'API-ключ DeepSeek удалён';
   } catch (e) { showToast(String(e)); }
@@ -2224,7 +2242,7 @@ async function uninstallHubCompletely() {
   try {
     const res = await window.pywebview.api.uninstall_hub_completely();
     alert(res.message || 'Antigravity Hub полностью удалён.');
-    if (window.pywebview?.api?.stop_opencode) {
+    if (res?.ok) {
       window.close();
     }
   } catch (e) {
@@ -2376,10 +2394,15 @@ async function checkUpdates() {
 async function exportBackup() {
   if (!window.pywebview?.api?.export_backup) return;
   const statusEl = document.getElementById('backup-status-text');
+  const pwd = prompt('Введите пароль для шифрования резервной копии (или оставьте пустым для сохранения без пароля):');
+  if (pwd === null) {
+    if (statusEl) statusEl.textContent = 'Экспорт отменён';
+    return;
+  }
   if (statusEl) statusEl.textContent = 'Сохранение резервной копии…';
   showToast('Экспорт профилей и настроек…');
   try {
-    const res = await window.pywebview.api.export_backup();
+    const res = await window.pywebview.api.export_backup(null, pwd || null);
     if (res && res.ok) {
       if (statusEl) statusEl.textContent = res.message;
       showToast(res.message);
@@ -2413,6 +2436,11 @@ async function importBackup() {
     if (res && res.ok) {
       if (statusEl) statusEl.textContent = res.message;
       showToast(res.message);
+      networkFormInitialized = false;
+      xpikiFormInitialized = false;
+      deepseekFormInitialized = false;
+      const tlList = document.getElementById('tokenlavka-models-list');
+      if (tlList) delete tlList.dataset.ready;
       await refreshState();
       alert(`${res.message}\n\nПрофили и настройки успешно перенесены!`);
     } else if (res && res.cancelled) {

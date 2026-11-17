@@ -65,11 +65,20 @@ def patch_auth_plugin_transport(plugin_cache: Path | None = None) -> bool:
 
             # 2. Do not hang in retry loop on fatal 404 (model not found)
             if "response.status === 404" in source and "/* no retry on 404 */" not in source:
-                old_retry = "const shouldRetryEndpoint = geoBlockedLocation || response.status === 403 || response.status === 404 || response.status >= 500;"
-                new_retry = "const shouldRetryEndpoint = geoBlockedLocation || response.status === 403 || response.status >= 500; /* no retry on 404 */"
-                if old_retry in source:
-                    source = source.replace(old_retry, new_retry, 1)
-                    changed = True
+                for old_retry, new_retry in (
+                    (
+                        "const shouldRetryEndpoint = geoBlockedLocation || response.status === 403 || response.status === 404 || response.status >= 500;",
+                        "const shouldRetryEndpoint = geoBlockedLocation || response.status === 403 || response.status >= 500; /* no retry on 404 */",
+                    ),
+                    (
+                        "const shouldRetryEndpoint = response.status === 403 || response.status === 404 || response.status >= 500;",
+                        "const shouldRetryEndpoint = response.status === 403 || response.status >= 500; /* no retry on 404 */",
+                    ),
+                ):
+                    if old_retry in source:
+                        source = source.replace(old_retry, new_retry, 1)
+                        changed = True
+                        break
 
             if changed:
                 backup = path.with_suffix(path.suffix + ".hub-route.bak")

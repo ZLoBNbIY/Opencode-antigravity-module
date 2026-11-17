@@ -16,6 +16,8 @@ import urllib.error
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 
+import secure_storage
+
 CONFIG_DIR = Path.home() / ".config" / "opencode"
 try:
     import hub_paths
@@ -77,40 +79,55 @@ def get_http_opener(timeout: int = 15) -> urllib.request.OpenerDirector:
 
 
 def load_xpiki_config() -> Dict[str, Any]:
+    default = {
+        "api_key": "",
+        "base_url": DEFAULT_BASE_URL,
+        "enabled_models": list(XPIKI_MODELS.keys()),
+        "connected": False,
+    }
     if not XPIKI_CONFIG_FILE.exists():
-        return {
-            "api_key": "",
-            "base_url": DEFAULT_BASE_URL,
-            "enabled_models": list(XPIKI_MODELS.keys()),
-            "connected": False,
-        }
+        return default
     try:
-        return json.loads(XPIKI_CONFIG_FILE.read_text(encoding="utf-8"))
+        raw = json.loads(XPIKI_CONFIG_FILE.read_text(encoding="utf-8"))
+        if isinstance(raw, dict) and "protection" in raw and "payload" in raw:
+            data = secure_storage.unprotect_payload(raw, "xpiki-config")
+            return data if isinstance(data, dict) else default
+        return raw if isinstance(raw, dict) else default
     except Exception:
-        return {
-            "api_key": "",
-            "base_url": DEFAULT_BASE_URL,
-            "enabled_models": list(XPIKI_MODELS.keys()),
-            "connected": False,
-        }
+        return default
 
 
 def save_xpiki_config(data: Dict[str, Any]) -> bool:
     try:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        XPIKI_CONFIG_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        record = secure_storage.protect_payload("xpiki-config", data)
+        secure_storage.atomic_write(
+            XPIKI_CONFIG_FILE,
+            json.dumps(record, indent=2, ensure_ascii=False),
+        )
         return True
     except Exception as e:
         print(f"[Xpiki] Failed to save config: {e}")
         return False
 
 
+def _validate_xpiki_base_url(base_url: str) -> str:
+    clean = (base_url or DEFAULT_BASE_URL).strip().rstrip("/")
+    parsed = urllib.parse.urlparse(clean)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("Укажите корректный HTTPS URL Xpiki без логина и пароля")
+    return clean
+
+
 def test_xpiki_connection(api_key: str, base_url: str = DEFAULT_BASE_URL, timeout: int = 12) -> Tuple[bool, str, Dict[str, Any]]:
     """Tests connection to the Claude API gateway using Anthropic protocol."""
-    api_key = api_key.strip()
-    base_url = (base_url or DEFAULT_BASE_URL).strip().rstrip("/")
-    if not api_key:
+    api_key = str(api_key or "").strip()
+    if not api_key or any(c in api_key for c in "\r\n\x00"):
         return False, "Укажите API-ключ Claude (sk-...)", {}
+    try:
+        base_url = _validate_xpiki_base_url(base_url)
+    except ValueError as exc:
+        return False, str(exc), {}
 
     opener = get_http_opener(timeout=timeout)
     headers = {
@@ -121,16 +138,23 @@ def test_xpiki_connection(api_key: str, base_url: str = DEFAULT_BASE_URL, timeou
         "Content-Type": "application/json",
     }
 
-    # 1. Try /models first
+    # 1. Try /models first; do not mask 401/403 auth errors with a paid /messages probe.
     try:
         req = urllib.request.Request(f"{base_url}/models", headers=headers)
         with opener.open(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             return True, "Подключение успешно установлено (каталог моделей доступен)!", data
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            return False, f"Ошибка 401: Неверный API-ключ для {base_url}.", {}
+        if e.code == 403:
+            return False, "Ошибка 403: Доступ запрещен (проверьте VPN и баланс токенов).", {}
+        if e.code not in (404, 405):
+            return False, f"Сервер вернул HTTP {e.code}: {e.reason}", {}
     except Exception:
         pass
 
-    # 2. Try lightweight ping to /messages
+    # 2. Try lightweight ping to /messages only when /models is unsupported
     try:
         probe = {
             "model": "claude-haiku-4-5",
@@ -149,27 +173,24 @@ def test_xpiki_connection(api_key: str, base_url: str = DEFAULT_BASE_URL, timeou
         if e.code == 401:
             return False, f"Ошибка 401: Неверный API-ключ для {base_url}.", {}
         if e.code == 403:
-            return False, f"Ошибка 403: Доступ запрещен (проверьте VPN и баланс токенов).", {}
+            return False, "Ошибка 403: Доступ запрещен (проверьте VPN и баланс токенов).", {}
         return False, f"Сервер вернул HTTP {e.code}: {e.reason}", {}
     except Exception as e:
         return False, f"Не удалось подключиться к {base_url}: {e}", {}
 
 
 def configure_opencode(api_key: str, base_url: str = DEFAULT_BASE_URL, enabled_models: Optional[List[str]] = None) -> bool:
-    """Configures the xpiki provider in ~/.config/opencode/opencode.json."""
-    cfg_path = CONFIG_DIR / "opencode.json"
-    api_key = api_key.strip()
+    """Configures the xpiki provider in ~/.config/opencode/opencode.json(c)."""
+    import jsonc_config
+    api_key = str(api_key or "").strip()
     base_url = (base_url or DEFAULT_BASE_URL).strip().rstrip("/")
     if enabled_models is None:
         enabled_models = list(XPIKI_MODELS.keys())
 
     try:
-        cfg_data: Dict[str, Any] = {}
-        if cfg_path.exists():
-            cfg_data = json.loads(cfg_path.read_text(encoding="utf-8"))
-
-        if "provider" not in cfg_data:
-            cfg_data["provider"] = {}
+        cfg_path = jsonc_config.config_path(CONFIG_DIR)
+        original = cfg_path.read_text(encoding="utf-8-sig") if cfg_path.exists() else "{}\n"
+        cfg_data = jsonc_config.parse_config(original)
 
         if api_key:
             models_dict = {}
@@ -180,7 +201,7 @@ def configure_opencode(api_key: str, base_url: str = DEFAULT_BASE_URL, enabled_m
                     "limit": info.get("limit", {"context": 200000, "output": 64000}),
                 }
 
-            cfg_data["provider"]["xpiki"] = {
+            updated = jsonc_config.set_property(original, ("provider", "xpiki"), {
                 "npm": "@ai-sdk/anthropic",
                 "name": "Claude API (Xpiki)",
                 "options": {
@@ -188,11 +209,16 @@ def configure_opencode(api_key: str, base_url: str = DEFAULT_BASE_URL, enabled_m
                     "apiKey": api_key,
                 },
                 "models": models_dict,
-            }
+            })
         else:
-            cfg_data["provider"].pop("xpiki", None)
+            providers = cfg_data.get("provider", {})
+            if isinstance(providers, dict) and "xpiki" in providers:
+                updated = jsonc_config.set_property(original, ("provider", "xpiki", "models"), {})
+            else:
+                updated = original
 
-        cfg_path.write_text(json.dumps(cfg_data, indent=4, ensure_ascii=False), encoding="utf-8")
+        if updated != original or not cfg_path.exists():
+            secure_storage.atomic_write(cfg_path, updated)
         try:
             import opencode_config
             opencode_config.ensure_session_title_config(cfg_path)
@@ -205,9 +231,11 @@ def configure_opencode(api_key: str, base_url: str = DEFAULT_BASE_URL, enabled_m
 
 
 def disconnect_xpiki() -> bool:
-    """Removes Xpiki from OpenCode provider configuration."""
+    """Removes Xpiki from OpenCode provider configuration and clears stored key."""
     cfg = load_xpiki_config()
     cfg["connected"] = False
+    cfg["api_key"] = ""
+    cfg["cached_quota"] = {}
     save_xpiki_config(cfg)
     return configure_opencode("")
 
@@ -254,8 +282,13 @@ def fetch_xpiki_quota(api_key: str, base_url: str = DEFAULT_BASE_URL, timeout: i
             raise ValueError(raw.get("message", "Некорректный ответ Xpiki") if isinstance(raw, dict) else "Некорректный ответ Xpiki")
 
         d = raw["data"]
-        total = int(d["quota_limit"] or 0)
-        used = int(d.get("quota_used") or 0)
+        def _safe_int(val, default=0):
+            try:
+                return int(float(val)) if val is not None else default
+            except (TypeError, ValueError):
+                return default
+        total = _safe_int(d.get("quota_limit"), 0)
+        used = _safe_int(d.get("quota_used"), 0)
         remaining = max(0, total - used)
         quota_info = {
             "status": "ok",
@@ -263,8 +296,8 @@ def fetch_xpiki_quota(api_key: str, base_url: str = DEFAULT_BASE_URL, timeout: i
             "quota_used": used,
             "remaining_tokens": remaining,
             "remaining_percent": round((remaining / total) * 100, 1) if total > 0 else 0.0,
-            "effective_rpm": int(d["effective_rpm"]) if d.get("effective_rpm") is not None else None,
-            "effective_tpm": int(d["effective_tpm"]) if d.get("effective_tpm") is not None else None,
+            "effective_rpm": _safe_int(d.get("effective_rpm"), None),
+            "effective_tpm": _safe_int(d.get("effective_tpm"), None),
             "expires_at": d.get("expires_at") or "",
         }
         cfg = load_xpiki_config()

@@ -1,6 +1,0 @@
-CODE=0
----STDOUT---
-Authenticated k.tkachenko2011@gmail.com
-
----STDERR---
-

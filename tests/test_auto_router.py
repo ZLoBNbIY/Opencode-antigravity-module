@@ -151,6 +151,17 @@ class AutoRouterTests(unittest.TestCase):
         self.assertNotEqual(upstream, 'dns://hub')
         self.assertEqual(router.state('google', self.hub, self.oc)['selected'], 'dns')
 
+    def test_probe_hosts_handles_none_sections_and_refresh_sets_expiry_on_error(self):
+        self.assertEqual(probe_hosts("openai", {"provider": None}), ("api.openai.com", "chatgpt.com"))
+        now = [100]
+        router = AutoRouter(Mock(), clock=lambda: now[0])
+        with patch.object(router, "_measure", side_effect=RuntimeError("boom")):
+            ev = router.refresh("openai", self.hub, self.oc)
+            self.assertTrue(ev.wait(2))
+        entry = next(iter(router._entries.values()))
+        self.assertFalse(entry["running"])
+        self.assertEqual(entry["expires"], 110)
+
 
 if __name__ == "__main__":
     unittest.main()

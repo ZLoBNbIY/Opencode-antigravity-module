@@ -70,9 +70,13 @@ if (-not $HasLocalRepo) {
     if ($gitCmd) {
         Write-Info "Клонирование/обновление репозитория через git (ветка V2) в $TargetDir..."
         if (Test-Path -LiteralPath (Join-Path $TargetDir ".git")) {
+            & git -C "$TargetDir" stash push --include-untracked -m "antigravity-install-backup" --quiet 2>$null
             & git -C "$TargetDir" fetch origin V2 --quiet
-            & git -C "$TargetDir" reset --hard origin/V2 --quiet
-            & git -C "$TargetDir" clean -fd --quiet
+            & git -C "$TargetDir" pull --rebase origin V2 --quiet
+            if ($LASTEXITCODE -ne 0) {
+                & git -C "$TargetDir" rebase --abort --quiet 2>$null
+                & git -C "$TargetDir" checkout -B V2 origin/V2 --quiet
+            }
         } else {
             & git clone --branch V2 --quiet "$RepoUrl" "$TargetDir"
         }
@@ -94,7 +98,7 @@ if (-not $HasLocalRepo) {
             Remove-Item -LiteralPath $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
         } catch {
             Write-ErrorMsg "Не удалось загрузить файлы репозитория: $_"
-            return
+            exit 1
         }
     }
 
@@ -168,7 +172,14 @@ if (-not $NodePath -or (Get-NodeVersion $NodePath) -lt $MinimumNodeVersion) {
 
     if (-not $installedOk) {
         Write-Info "Загрузка официального MSI-установщика Node.js LTS с nodejs.org..."
-        $nodeLtsVersion = "24.20.0"
+        $nodeLtsVersion = "22.14.0"
+        try {
+            $distIndex = Invoke-RestMethod -Uri "https://nodejs.org/dist/index.json" -TimeoutSec 10
+            $ltsEntry = $distIndex | Where-Object { $_.lts -and $_.version } | Select-Object -First 1
+            if ($ltsEntry) {
+                $nodeLtsVersion = ($ltsEntry.version -replace '^v', '')
+            }
+        } catch { }
         $msiUrl = "https://nodejs.org/dist/v$nodeLtsVersion/node-v$nodeLtsVersion-x64.msi"
         $tempMsi = Join-Path $env:TEMP "node-v$nodeLtsVersion-x64.msi"
         try {
@@ -371,9 +382,12 @@ if (Test-Path -LiteralPath $OpencodeConfigFile) {
         if (-not $cfg.plugin) {
             $cfg | Add-Member -MemberType NoteProperty -Name "plugin" -Value @($PluginPackageName)
             $modified = $true
-        } elseif (-not ($cfg.plugin -contains $PluginPackageName)) {
-            $cfg.plugin += $PluginPackageName
-            $modified = $true
+        } else {
+            $pluginList = @($cfg.plugin)
+            if (-not ($pluginList | Where-Object { $_ -match '^@cortexkit/opencode-antigravity-auth(?:@|$)' })) {
+                $cfg | Add-Member -MemberType NoteProperty -Name "plugin" -Value ($pluginList + $PluginPackageName) -Force
+                $modified = $true
+            }
         }
 
         if (-not $cfg.provider) {
@@ -464,16 +478,16 @@ if (Test-Path -LiteralPath $AntigravityConfigFile) {
         $agCfg = $raw | ConvertFrom-Json
         $agMod = $false
 
-        if ($agCfg.soft_quota_threshold_percent -ne 100) {
-            $agCfg.soft_quota_threshold_percent = 100
+        if ($null -eq $agCfg.soft_quota_threshold_percent) {
+            $agCfg | Add-Member -MemberType NoteProperty -Name "soft_quota_threshold_percent" -Value 100 -Force
             $agMod = $true
         }
         if (-not $agCfg.account_selection_strategy) {
-            $agCfg.account_selection_strategy = "hybrid"
+            $agCfg | Add-Member -MemberType NoteProperty -Name "account_selection_strategy" -Value "hybrid" -Force
             $agMod = $true
         }
-        if ($agCfg.switch_on_first_rate_limit -ne $true) {
-            $agCfg.switch_on_first_rate_limit = $true
+        if ($null -eq $agCfg.switch_on_first_rate_limit) {
+            $agCfg | Add-Member -MemberType NoteProperty -Name "switch_on_first_rate_limit" -Value $true -Force
             $agMod = $true
         }
 

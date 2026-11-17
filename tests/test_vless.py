@@ -310,6 +310,33 @@ class ActiveProxyPriorityTests(unittest.TestCase):
                                return_value={"vless_http_port": 20801}):
             self.assertEqual(vless_manager.get_http_port(), 20801)
 
+    def test_download_core_never_disables_tls_verification(self):
+        import ssl
+        root = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory(dir=root) as directory:
+            folder = Path(directory)
+            manager = vless_manager.VlessManager()
+            opener = mock.MagicMock()
+            opener.open.side_effect = ssl.SSLCertVerificationError("bad cert")
+            with mock.patch.object(manager, "get_bin_dir", return_value=folder), \
+                 mock.patch.object(vless_manager, "CONFIG_DIR", folder), \
+                 mock.patch("vless_manager.shutil.which", return_value=None), \
+                 mock.patch("vless_manager.resolve_sing_box_download_url", return_value="https://mock/sb.zip"), \
+                 mock.patch("vless_manager.urllib.request.build_opener", return_value=opener), \
+                 mock.patch("vless_manager.ssl._create_unverified_context") as unverified:
+                ok, _ = manager.download_core("sing-box")
+            self.assertFalse(ok)
+            unverified.assert_not_called()
+
+    def test_get_process_image_ignores_localized_info_messages(self):
+        svc = vless_manager.VlessManager()
+        fake_proc = mock.MagicMock(returncode=0, stdout="ИНФОРМАЦИЯ: Задачи, отвечающие заданным критериям, отсутствуют.\n")
+        with mock.patch("vless_manager.subprocess.run", return_value=fake_proc):
+            self.assertEqual(svc._get_process_image(99999), "")
+        valid_proc = mock.MagicMock(returncode=0, stdout='"sing-box.exe","4242","Console","1","12,000 K"\n')
+        with mock.patch("vless_manager.subprocess.run", return_value=valid_proc):
+            self.assertEqual(svc._get_process_image(4242), "sing-box.exe")
+
 
 if __name__ == "__main__":
     unittest.main()

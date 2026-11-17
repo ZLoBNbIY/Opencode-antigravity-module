@@ -166,6 +166,19 @@ class OpenCodeUsageTests(unittest.TestCase):
         second = opencode_usage.deepseek_usage(30, now=self.now)
         self.assertEqual(first["totals"], second["totals"])
 
+    def test_standard_deepseek_aliases_and_cache_isolation(self):
+        tokens = {"input": 1_000_000}
+        self.assertAlmostEqual(opencode_usage._token_cost("deepseek-chat", tokens, "CNY", False), 1.0)
+        self.assertAlmostEqual(opencode_usage._token_cost("deepseek-v3", tokens, "CNY", False), 1.0)
+        self.assertAlmostEqual(opencode_usage._token_cost("deepseek-reasoner", tokens, "CNY", False), 4.5)
+        self.assertAlmostEqual(opencode_usage._token_cost("deepseek-r1", tokens, "CNY", False), 4.5)
+
+        self._create_db()
+        first = opencode_usage.deepseek_usage(30, now=self.now)
+        first["totals"]["cost"] = 999.0
+        second = opencode_usage.deepseek_usage(30, now=self.now)
+        self.assertNotEqual(second["totals"]["cost"], 999.0)
+
 
 if __name__ == "__main__":
     unittest.main()

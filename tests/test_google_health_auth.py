@@ -65,3 +65,16 @@ class GoogleHealthAuthTests(unittest.TestCase):
         self.assertEqual(request.get_header("Authorization"), "Bearer fresh-from-node")
         self.assertEqual(json.loads(request.data)["project"], "fresh-project")
         self.assertEqual(old["accessToken"], "old")
+
+    def test_rejects_flag_like_email_and_non_finite_expires(self):
+        run = Mock()
+        with self.assertRaisesRegex(ValueError, "^Google token refresh failed$"):
+            refresh_google_health_account({"email": "--help"}, run, "node", "cli.js")
+        run.assert_not_called()
+
+        inf_run = Mock(return_value=SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"email": "a@b.com", "accessToken": "tok", "expires": float("inf")}),
+        ))
+        with self.assertRaisesRegex(ValueError, "^Google token refresh failed$"):
+            refresh_google_health_account({"email": "a@b.com"}, inf_run, "node", "cli.js")

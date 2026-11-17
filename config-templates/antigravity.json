@@ -1,13 +1,9 @@
 {
-  "$schema": "./schema.json",
   "account_selection_strategy": "hybrid",
   "soft_quota_threshold_percent": 100,
   "switch_on_first_rate_limit": true,
-  "dns_mode": "standard",
-  "custom_dns": [
-    "143.20.64.55",
-    "31.58.216.201"
-  ],
-  "dot_host": "dns.bezmezhau.com",
-  "doh_url": "https://dns.bezmezhau.com/dns-query"
+  "dns_mode": "system",
+  "custom_dns": [],
+  "dot_host": "",
+  "doh_url": ""
 }

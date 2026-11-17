@@ -50,6 +50,19 @@ class CloudCodeRoutePatchTests(unittest.TestCase):
             plugin.write_text("function getHttpsProxy() {}", encoding="utf-8")
             self.assertFalse(patch_auth_plugin_transport(Path(directory)))
 
+    def test_patches_404_retry_without_geoblocked_prefix(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = Path(directory) / "node_modules/@cortexkit/opencode-antigravity-auth/dist/server.js"
+            plugin.parent.mkdir(parents=True)
+            plugin.write_text(
+                PLUGIN_SOURCE.replace("geoBlockedLocation || ", ""),
+                encoding="utf-8",
+            )
+            self.assertTrue(patch_auth_plugin_transport(Path(directory)))
+            patched = plugin.read_text(encoding="utf-8")
+            self.assertIn("/* no retry on 404 */", patched)
+            self.assertNotIn("response.status === 404", patched)
+
 
 if __name__ == "__main__":
     unittest.main()

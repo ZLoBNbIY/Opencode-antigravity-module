@@ -457,6 +457,81 @@ class WebviewBackendTests(unittest.TestCase):
         self.assertIn("get_state", names)
         self.assertTrue(all("window_holder" not in name for name in names))
 
+    def test_save_general_settings_persists_close_to_tray(self):
+        api = self.backend.HubApi()
+        self.assertTrue(api.save_general_settings({"close_to_tray": False, "switch_on_first_rate_limit": False}))
+        saved = api.load_config()
+        self.assertFalse(saved["close_to_tray"])
+        self.assertFalse(saved["switch_on_first_rate_limit"])
+
+    def test_save_network_settings_persists_proxy_pool_failover_and_typed_proxy(self):
+        api = self.backend.HubApi()
+        api.save_network_settings({
+            "proxy": "http://new.example:8080",
+            "proxy_pool": ["http://old.example:8080"],
+            "proxy_failover": False,
+        })
+        saved = api.load_config()
+        self.assertFalse(saved["proxy_failover"])
+        self.assertEqual(saved["proxy"], "http://new.example:8080")
+        self.assertEqual(saved["proxy_pool"], ["http://new.example:8080", "http://old.example:8080"])
+
+    def test_activate_vless_config_sets_vless_enabled_and_test_restarts_active(self):
+        api = self.backend.HubApi()
+        url = "vless://aaa@1.1.1.1:443?security=reality#DE"
+        api.add_vless_config(url)
+        res = api.activate_vless_config(url)
+        self.assertTrue(res["ok"])
+        self.assertTrue(api.load_config()["vless_enabled"])
+
+        self.vless.is_running.return_value = True
+        self.vless.start_tunnel.reset_mock()
+        api.test_vless_config(url)
+        # Once for _vless_probe, once to restore the active tunnel afterward.
+        self.assertEqual(self.vless.start_tunnel.call_count, 2)
+
+    def test_test_openai_account_imports_health_checker(self):
+        self.openai.load_openai_accounts.return_value = [{"id": "oa-1", "email": "oa@example.com"}]
+        api = self.backend.HubApi()
+        with patch("health_checker.test_openai_model_generation", return_value={"message": "OK"}) as mocked:
+            msg = api.test_openai_account("oa-1")
+        self.assertEqual(msg, "OK")
+        mocked.assert_called_once()
+
+    def test_save_network_settings_ignores_vless_core_path(self):
+        api = self.backend.HubApi()
+        api.save_network_settings({"vless_core_path": "C:/evil/calc.exe", "dns_mode": "system"})
+        self.assertNotIn("vless_core_path", api.load_config())
+
+    def test_encrypted_backup_roundtrip_and_import_sanitizes_dangerous_fields(self):
+        import crypto_backup
+        api = self.backend.HubApi()
+        api.save_config({"dns_mode": "system", "vless_core_path": "C:/safe/xray.exe"})
+        backup_file = Path(self.temp.name) / "backup.agb"
+        res = api.export_backup(str(backup_file), password="strong-password")
+        self.assertTrue(res["ok"])
+        self.assertTrue(res["encrypted"])
+        raw = backup_file.read_bytes()
+        self.assertTrue(crypto_backup.is_encrypted_backup(raw))
+        self.assertNotIn(b"google_accounts", raw)
+
+        # Tamper a plaintext backup with dangerous fields and verify import filters them.
+        malicious = Path(self.temp.name) / "malicious.json"
+        malicious.write_text(json.dumps({
+            "config": {
+                "vless_core_path": "C:/evil/payload.exe",
+                "doh_url": "http://insecure.example/dns-query",
+                "proxy": "ftp://bad.example:21",
+                "dns_mode": "doh",
+            }
+        }), encoding="utf-8")
+        imp = api.import_backup(str(malicious))
+        self.assertTrue(imp["ok"])
+        saved = api.load_config()
+        self.assertEqual(saved["vless_core_path"], "C:/safe/xray.exe")
+        self.assertEqual(saved["doh_url"], "")
+        self.assertEqual(saved["proxy"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

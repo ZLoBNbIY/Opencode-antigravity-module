@@ -16927,7 +16927,6 @@ var QUOTA_GROUP_BY_MODEL_ID = {
   "gpt-oss-120b-medium": "non-gemini"
 };
 var ANTIGRAVITY_OPENCODE_MODEL_IDS = [
-  "antigravity-gemini-4-argon",
   "antigravity-gemini-4-hydrogen",
   "antigravity-gemini-3.8-flash",
   "antigravity-claude-opus-5-5",
@@ -18013,6 +18012,21 @@ function noProxyIncludes(hostname) {
 function getHttpsProxy(url) {
   if (url.protocol !== "https:" || noProxyIncludes(url.hostname))
     return void 0;
+  try {
+    const configPath = join(process.env.OPENCODE_CONFIG_DIR || join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "opencode"), "antigravity.json");
+    if (existsSync2(configPath)) {
+      const parsed = JSON.parse(readFileSync(configPath, "utf-8"));
+      if (parsed.vless_enabled && parsed.vless_url) {
+        const hubRoutePort = 10880;
+        const gateHost = url.hostname === 'daily-cloudcode-pa.googleapis.com' || url.hostname === 'cloudcode-pa.googleapis.com' || url.hostname === 'cloudaicompanion.googleapis.com' || url.hostname === 'generativelanguage.googleapis.com' || url.hostname === 'oauth2.googleapis.com' || url.hostname === 'aiplatform.googleapis.com' || url.hostname.endsWith('.googleapis.com') || url.hostname.endsWith('.google.com') || url.hostname.endsWith('.google');
+        const vlessPort = Number(parsed.vless_http_port) > 0 ? Number(parsed.vless_http_port) : 10879;
+        return new URL(`http://127.0.0.1:${gateHost ? hubRoutePort : vlessPort}`);
+      }
+      if (parsed.proxy && typeof parsed.proxy === "string" && parsed.proxy.trim()) {
+        return new URL(parsed.proxy.trim());
+      }
+    }
+  } catch {}
   const rawProxy = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.ALL_PROXY || process.env.all_proxy;
   if (!rawProxy)
     return void 0;
@@ -18156,7 +18170,10 @@ function parseDnsAnswerIp(data) {
   return null;
 }
 async function resolveViaDoH(dohUrl, hostname, onDebug, signal) {
+  let dohHost = "";
   try {
+    dohHost = new URL(dohUrl).hostname;
+    if (dohHost) gDnsInFlight.add(dohHost);
     const wire = buildDnsQueryWire(hostname);
     const resp = await fetch(dohUrl, {
       method: "POST",
@@ -18177,18 +18194,21 @@ async function resolveViaDoH(dohUrl, hostname, onDebug, signal) {
     }
   } catch (err) {
     onDebug?.(`[DoH] Error resolving ${hostname} via ${dohUrl}: ${err?.message || err}`);
+  } finally {
+    if (dohHost) gDnsInFlight.delete(dohHost);
   }
   return null;
 }
 async function resolveViaDoT(dotHost, hostname, onDebug, signal) {
+  let host = dotHost;
   try {
-    let host = dotHost;
     let port = 853;
     if (host.includes(":")) {
       const parts = host.split(":");
       host = parts[0];
       port = Number(parts[1]) || 853;
     }
+    if (host) gDnsInFlight.add(host);
     const wire = buildDnsQueryWire(hostname);
     const prefix = Buffer2.alloc(2);
     prefix.writeUInt16BE(wire.length, 0);
@@ -18220,10 +18240,13 @@ async function resolveViaDoT(dotHost, hostname, onDebug, signal) {
     }
   } catch (err) {
     onDebug?.(`[DoT] Error resolving ${hostname} via ${dotHost}: ${err?.message || err}`);
+  } finally {
+    if (host) gDnsInFlight.delete(host);
   }
   return null;
 }
 async function resolveHostWithCustomDns(hostname, onDebug, callerSignal, timeoutMs = 5000) {
+  gDnsInFlight.add(hostname);
   const controller = new AbortController();
   const abort = () => controller.abort(callerSignal.reason);
   const timer = setTimeout(() => controller.abort(new Error("Custom DNS timed out")), Math.min(timeoutMs, 5000));
@@ -18285,6 +18308,7 @@ async function resolveHostWithCustomDns(hostname, onDebug, callerSignal, timeout
     if (callerSignal?.aborted) throw callerSignal.reason;
     throw new Error(`Antigravity DNS: ${dnsErr?.message || dnsErr}`);
   } finally {
+    gDnsInFlight.delete(hostname);
     clearTimeout(timer);
     callerSignal?.removeEventListener("abort", abort);
   }
@@ -18293,6 +18317,7 @@ async function resolveHostWithCustomDns(hostname, onDebug, callerSignal, timeout
 
 // --- Global DNS Interceptor for OpenCode Runtime (OpenAI, Gemini, Anthropic, etc.) ---
 const gDnsCache = new Map();
+const gDnsInFlight = new Set();
 function initGlobalDnsHook() {
   try {
     let cjsDns;
@@ -18310,7 +18335,7 @@ function initGlobalDnsHook() {
           cb = opts;
           opts = {};
         }
-        if (!hostname || typeof hostname !== "string" || hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || /^\d+\.\d+\.\d+\.\d+$/.test(hostname)) {
+        if (!hostname || typeof hostname !== "string" || hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || /^\d+\.\d+\.\d+\.\d+$/.test(hostname) || gDnsInFlight.has(hostname)) {
           return origLookup.call(cjsDns, hostname, options, callback);
         }
         const now = Date.now();
@@ -18325,6 +18350,7 @@ function initGlobalDnsHook() {
           return origLookup.call(cjsDns, hostname, options, callback);
         }
         resolveHostWithCustomDns(hostname).then((ip) => {
+          if (gDnsCache.size > 500) gDnsCache.clear();
           if (ip && ip !== hostname) {
             gDnsCache.set(hostname, { ip, expires: now + 60000 });
             if (opts && opts.all) {

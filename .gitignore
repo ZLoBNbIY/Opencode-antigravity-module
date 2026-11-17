@@ -30,4 +30,5 @@ session/
 # Binaries & downloaded cores
 gui-manager/bin/
 *.exe
+*.result.txt
 

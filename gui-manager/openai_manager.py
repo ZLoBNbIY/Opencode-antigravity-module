@@ -12,7 +12,6 @@ import hashlib
 import webbrowser
 import threading
 import subprocess
-import tempfile
 import sqlite3
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -20,6 +19,8 @@ import urllib.request
 import urllib.parse
 from contextlib import closing
 from html import escape
+
+import secure_storage
 
 OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 OPENAI_ISSUER = "https://auth.openai.com"
@@ -37,6 +38,7 @@ AUTH_FILES = [
     Path(os.path.expanduser("~/.opencode/auth.json")),
 ]
 OPENCODE_DB_FILE = Path(os.path.expanduser("~/.local/share/opencode/opencode.db"))
+_accounts_lock = threading.RLock()
 
 
 def find_opencode_cli() -> str | None:
@@ -59,13 +61,12 @@ def find_opencode_cli() -> str | None:
 def get_openai_cred_id() -> str:
     if OPENCODE_DB_FILE.exists():
         try:
-            conn = sqlite3.connect(str(OPENCODE_DB_FILE), timeout=5)
-            cur = conn.cursor()
-            cur.execute("SELECT id FROM credential WHERE integration_id = 'openai'")
-            row = cur.fetchone()
-            conn.close()
-            if row:
-                return row[0]
+            with closing(sqlite3.connect(str(OPENCODE_DB_FILE), timeout=5)) as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT id FROM credential WHERE integration_id = 'openai'")
+                row = cur.fetchone()
+                if row:
+                    return row[0]
         except Exception:
             pass
     return "cred_openai_active"
@@ -76,46 +77,57 @@ def sync_opencode_db_openai(account: dict | None):
     if not OPENCODE_DB_FILE.exists():
         return
     try:
-        conn = sqlite3.connect(str(OPENCODE_DB_FILE), timeout=5)
-        cur = conn.cursor()
-        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='credential'")
-        if not cur.fetchone():
-            conn.close()
-            return
+        with closing(sqlite3.connect(str(OPENCODE_DB_FILE), timeout=5)) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='credential'")
+            if not cur.fetchone():
+                return
+            cols = {row[1] for row in cur.execute("PRAGMA table_info(credential)").fetchall()}
 
-        if account:
-            val_json = json.dumps({
-                "type": "oauth",
-                "methodID": "chatgpt-browser",
-                "refresh": account.get("refresh", ""),
-                "access": account.get("access", ""),
-                "expires": account.get("expires", 0),
-                "metadata": {
-                    "accountID": account.get("accountId", ""),
-                    "email": account.get("email", ""),
-                }
-            }, ensure_ascii=False)
-            label = account.get("name") or account.get("email") or "ChatGPT OAuth"
-            now_ms = int(time.time() * 1000)
+            if account:
+                val_json = json.dumps({
+                    "type": "oauth",
+                    "methodID": "chatgpt-browser",
+                    "refresh": account.get("refresh", ""),
+                    "access": account.get("access", ""),
+                    "expires": account.get("expires", 0),
+                    "metadata": {
+                        "accountID": account.get("accountId", ""),
+                        "email": account.get("email", ""),
+                    }
+                }, ensure_ascii=False)
+                label = account.get("name") or account.get("email") or "ChatGPT OAuth"
+                now_ms = int(time.time() * 1000)
 
-            cur.execute("SELECT id FROM credential WHERE integration_id = 'openai'")
-            row = cur.fetchone()
-            if row:
-                cur.execute(
-                    "UPDATE credential SET label = ?, value = ?, time_updated = ? WHERE integration_id = 'openai'",
-                    (label, val_json, now_ms)
-                )
+                cur.execute("SELECT id FROM credential WHERE integration_id = 'openai'")
+                row = cur.fetchone()
+                if row:
+                    if "active" in cols:
+                        cur.execute(
+                            "UPDATE credential SET label = ?, value = ?, active = 1, time_updated = ? WHERE integration_id = 'openai'",
+                            (label, val_json, now_ms)
+                        )
+                    else:
+                        cur.execute(
+                            "UPDATE credential SET label = ?, value = ?, time_updated = ? WHERE integration_id = 'openai'",
+                            (label, val_json, now_ms)
+                        )
+                else:
+                    cred_id = get_openai_cred_id()
+                    if "active" in cols:
+                        cur.execute(
+                            "INSERT INTO credential (id, integration_id, label, active, value, time_created, time_updated) VALUES (?, 'openai', ?, 1, ?, ?, ?)",
+                            (cred_id, label, val_json, now_ms, now_ms)
+                        )
+                    else:
+                        cur.execute(
+                            "INSERT INTO credential (id, integration_id, label, value, time_created, time_updated) VALUES (?, 'openai', ?, ?, ?, ?)",
+                            (cred_id, label, val_json, now_ms, now_ms)
+                        )
             else:
-                cred_id = get_openai_cred_id()
-                cur.execute(
-                    "INSERT INTO credential (id, integration_id, label, value, time_created, time_updated) VALUES (?, 'openai', ?, ?, ?, ?)",
-                    (cred_id, label, val_json, now_ms, now_ms)
-                )
-        else:
-            cur.execute("DELETE FROM credential WHERE integration_id = 'openai'")
+                cur.execute("DELETE FROM credential WHERE integration_id = 'openai'")
 
-        conn.commit()
-        conn.close()
+            conn.commit()
     except Exception as e:
         print(f"[OpenAI Manager] SQLite sync warning: {e}")
 
@@ -148,14 +160,14 @@ def sync_opencode_cli_openai(account: dict | None):
                     }
                 }
             ]
-            tmp_file = Path(tempfile.gettempdir()) / "opencode_openai_import.json"
-            with open(tmp_file, "w", encoding="utf-8") as f:
-                json.dump(payload, f)
-            subprocess.run([cli, "auth", "import", str(tmp_file)], capture_output=True, timeout=10)
-            try:
-                tmp_file.unlink(missing_ok=True)
-            except Exception:
-                pass
+            subprocess.run(
+                [cli, "auth", "import"],
+                input=json.dumps(payload),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=10,
+            )
         else:
             subprocess.run([cli, "auth", "logout", "openai"], capture_output=True, timeout=10)
     except Exception as e:
@@ -240,93 +252,105 @@ def get_active_auth_openai() -> dict | None:
 
 
 def write_active_auth_openai(account: dict | None) -> bool:
-    try:
-        for auth_path in AUTH_FILES:
-            data = {}
-            if auth_path.exists():
-                try:
-                    with open(auth_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                except Exception:
-                    data = {}
+    with _accounts_lock:
+        try:
+            for auth_path in AUTH_FILES:
+                data = {}
+                if auth_path.exists():
+                    try:
+                        with open(auth_path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                    except Exception:
+                        data = {}
 
-            if account:
-                data["openai"] = {
-                    "type": "oauth",
-                    "access": account.get("access", ""),
-                    "refresh": account.get("refresh", ""),
-                    "expires": account.get("expires", 0),
-                    "accountId": account.get("accountId", ""),
-                }
-            else:
-                data.pop("openai", None)
+                if account:
+                    data["openai"] = {
+                        "type": "oauth",
+                        "access": account.get("access", ""),
+                        "refresh": account.get("refresh", ""),
+                        "expires": account.get("expires", 0),
+                        "accountId": account.get("accountId", ""),
+                    }
+                else:
+                    data.pop("openai", None)
 
-            auth_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(auth_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+                secure_storage.atomic_write(
+                    auth_path,
+                    json.dumps(data, indent=2, ensure_ascii=False),
+                )
 
-        # Sync into OpenCode 2.0 database & notify daemon
-        sync_opencode_db_openai(account)
-        sync_opencode_cli_openai(account)
+            # Sync into OpenCode 2.0 database & notify daemon
+            sync_opencode_db_openai(account)
+            sync_opencode_cli_openai(account)
 
-        return True
-    except Exception as e:
-        print(f"[OpenAI Manager] Error updating auth: {e}")
-        return False
+            return True
+        except Exception as e:
+            print(f"[OpenAI Manager] Error updating auth: {e}")
+            return False
 
 
 def load_openai_accounts() -> list[dict]:
-    accounts = []
-    if OPENAI_ACCOUNTS_FILE.exists():
-        try:
-            with open(OPENAI_ACCOUNTS_FILE, "r", encoding="utf-8") as f:
-                accounts = json.load(f)
-        except Exception as e:
-            print(f"[OpenAI Manager] Error reading openai-accounts.json: {e}")
+    with _accounts_lock:
+        accounts = []
+        if OPENAI_ACCOUNTS_FILE.exists():
+            try:
+                raw_data = json.loads(OPENAI_ACCOUNTS_FILE.read_text(encoding="utf-8"))
+                if isinstance(raw_data, dict) and "protection" in raw_data and "payload" in raw_data:
+                    unprotected = secure_storage.unprotect_payload(raw_data, "openai-accounts")
+                    loaded = unprotected.get("accounts", [])
+                    accounts = loaded if isinstance(loaded, list) else []
+                elif isinstance(raw_data, list):
+                    accounts = raw_data
+            except Exception as e:
+                print(f"[OpenAI Manager] Error reading openai-accounts.json: {e}")
 
-    # Seed an empty Hub pool from the active OpenCode credential.
-    active_auth = get_active_auth_openai()
-    if not accounts and active_auth and active_auth.get("access"):
-        claims = extract_claims_info("", active_auth.get("access", ""))
-        imported_acc = {
-            "id": active_auth.get("accountId") or claims["accountId"] or "openai_default",
-            "accountId": active_auth.get("accountId") or claims["accountId"],
-            "email": active_auth.get("email") or claims["email"],
-            "name": claims["name"],
-            "plan_type": claims["plan_type"],
-            "access": active_auth.get("access", ""),
-            "refresh": active_auth.get("refresh", ""),
-            "expires": active_auth.get("expires", 0),
-            "added_at": int(time.time()),
-            "last_used": int(time.time()),
-            "is_active": True,
-            "quota": None,
-        }
-        accounts.append(imported_acc)
-        save_openai_accounts(accounts)
+        # Seed an empty Hub pool from the active OpenCode credential.
+        active_auth = get_active_auth_openai()
+        if not accounts and active_auth and active_auth.get("access"):
+            claims = extract_claims_info("", active_auth.get("access", ""))
+            imported_acc = {
+                "id": active_auth.get("accountId") or claims["accountId"] or "openai_default",
+                "accountId": active_auth.get("accountId") or claims["accountId"],
+                "email": active_auth.get("email") or claims["email"],
+                "name": claims["name"],
+                "plan_type": claims["plan_type"],
+                "access": active_auth.get("access", ""),
+                "refresh": active_auth.get("refresh", ""),
+                "expires": active_auth.get("expires", 0),
+                "added_at": int(time.time()),
+                "last_used": int(time.time()),
+                "is_active": True,
+                "quota": None,
+            }
+            accounts.append(imported_acc)
+            save_openai_accounts(accounts)
 
-    # Sync is_active with the active OpenCode credential.
-    active_account_id = active_auth.get("accountId") if active_auth else None
-    for acc in accounts:
-        if active_account_id and acc.get("accountId") == active_account_id:
-            acc["is_active"] = True
-        elif not active_account_id and accounts and acc == accounts[0]:
-            acc["is_active"] = True
-        else:
-            acc["is_active"] = False
+        # Sync is_active with the active OpenCode credential.
+        active_account_id = active_auth.get("accountId") if active_auth else None
+        for acc in accounts:
+            if active_account_id and acc.get("accountId") == active_account_id:
+                acc["is_active"] = True
+            elif not active_account_id and accounts and acc == accounts[0]:
+                acc["is_active"] = True
+            else:
+                acc["is_active"] = False
 
-    return accounts
+        return accounts
 
 
 def save_openai_accounts(accounts: list[dict]) -> bool:
-    try:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        with open(OPENAI_ACCOUNTS_FILE, "w", encoding="utf-8") as f:
-            json.dump(accounts, f, indent=2, ensure_ascii=False)
-        return True
-    except Exception as e:
-        print(f"[OpenAI Manager] Error saving openai-accounts.json: {e}")
-        return False
+    with _accounts_lock:
+        try:
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            record = secure_storage.protect_payload("openai-accounts", {"accounts": accounts})
+            secure_storage.atomic_write(
+                OPENAI_ACCOUNTS_FILE,
+                json.dumps(record, indent=2, ensure_ascii=False),
+            )
+            return True
+        except Exception as e:
+            print(f"[OpenAI Manager] Error saving openai-accounts.json: {e}")
+            return False
 
 
 def import_openai_accounts(imported_list: list[dict]) -> int:

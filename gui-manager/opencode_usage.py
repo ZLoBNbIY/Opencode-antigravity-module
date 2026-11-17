@@ -11,9 +11,11 @@ product).
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import sqlite3
+import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -37,16 +39,21 @@ PRICES: Dict[str, Dict[str, Tuple[float, float, float]]] = {
 }
 MODEL_ALIASES = {
     "deepseek-flash": FLASH,
+    "deepseek-chat": FLASH,
+    "deepseek-v3": FLASH,
     "deepseek-v4-flash": FLASH,
     "deepseek-v4-flash-vision-exp": FLASH,
     "deepseek-v4.1-flash": FLASH,
     "deepseek-v4.1-flash-1017": FLASH,
     "deepseek-v4-pro": PRO,
     "deepseek-v4-pro-0813": PRO,
+    "deepseek-reasoner": PRO,
+    "deepseek-r1": PRO,
 }
 PEAK_MULTIPLIER = 2.0
 
-_cache: Dict[Tuple[int, str], Tuple[float, Dict[str, Any]]] = {}
+_cache: Dict[Tuple[int, str, str], Tuple[float, Dict[str, Any]]] = {}
+_cache_lock = threading.Lock()
 
 
 def _empty_day(day: str) -> Dict[str, Any]:
@@ -186,7 +193,10 @@ def _add(buckets: Dict[str, Dict[str, Any]], ts_ms: Any, model_id: str,
     ts = _int(ts_ms)
     if not ts:
         return False
-    day = datetime.fromtimestamp(ts / 1000).date().isoformat()
+    try:
+        day = datetime.fromtimestamp(ts / 1000).date().isoformat()
+    except (OSError, OverflowError, ValueError):
+        return False
     bucket = buckets.get(day)
     if bucket is None:
         return False
@@ -223,11 +233,13 @@ def deepseek_usage(days: int = 30, now: Optional[datetime] = None,
     if currency not in PRICES[FLASH]:
         currency = DEFAULT_CURRENCY
 
-    cached = _cache.get((days, currency))
-    if cached and time.time() - cached[0] < CACHE_TTL_SECONDS:
-        return dict(cached[1])
-
     current = now or datetime.now()
+    cache_key = (days, currency, current.date().isoformat())
+    with _cache_lock:
+        cached = _cache.get(cache_key)
+        if cached and time.time() - cached[0] < CACHE_TTL_SECONDS:
+            return copy.deepcopy(cached[1])
+
     buckets = _series(days, current.date())
     result: Dict[str, Any] = {
         "status": "ok",
@@ -248,8 +260,9 @@ def deepseek_usage(days: int = 30, now: Optional[datetime] = None,
     if not db.exists():
         result["status"] = "unavailable"
         result["error"] = "Локальная база OpenCode не найдена — расход пока недоступен"
-        _cache[(days, currency)] = (time.time(), result)
-        return dict(result)
+        with _cache_lock:
+            _cache[cache_key] = (time.time(), copy.deepcopy(result))
+        return result
 
     con = None
     try:
@@ -285,8 +298,9 @@ def deepseek_usage(days: int = 30, now: Optional[datetime] = None,
     except sqlite3.Error:
         result["status"] = "error"
         result["error"] = "Не удалось прочитать базу OpenCode (файл занят или повреждён)"
-        _cache[(days, currency)] = (time.time(), result)
-        return dict(result)
+        with _cache_lock:
+            _cache[cache_key] = (time.time(), copy.deepcopy(result))
+        return result
     finally:
         if con is not None:
             try:
@@ -304,5 +318,6 @@ def deepseek_usage(days: int = 30, now: Optional[datetime] = None,
     for key in ("cost", "cost_usd"):
         totals[key] = round(totals[key], 8)
     result["totals"] = totals
-    _cache[(days, currency)] = (time.time(), result)
-    return dict(result)
+    with _cache_lock:
+        _cache[cache_key] = (time.time(), copy.deepcopy(result))
+    return result

@@ -22016,6 +22016,8 @@ function noProxyIncludes(hostname) {
   });
 }
 function getHttpsProxy(url) {
+  if (url.protocol !== "https:" || noProxyIncludes(url.hostname))
+    return void 0;
   try {
     const configPath = getUserConfigPath();
     if (existsSync5(configPath)) {
@@ -22031,8 +22033,6 @@ function getHttpsProxy(url) {
       }
     }
   } catch {}
-  if (url.protocol !== "https:" || noProxyIncludes(url.hostname))
-    return void 0;
   const rawProxy = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.ALL_PROXY || process.env.all_proxy;
   if (!rawProxy)
     return void 0;
@@ -22176,7 +22176,10 @@ function parseDnsAnswerIp(data) {
   return null;
 }
 async function resolveViaDoH(dohUrl, hostname, onDebug, signal) {
+  let dohHost = "";
   try {
+    dohHost = new URL(dohUrl).hostname;
+    if (dohHost) gDnsInFlight.add(dohHost);
     const wire = buildDnsQueryWire(hostname);
     const resp = await fetch(dohUrl, {
       method: "POST",
@@ -22197,18 +22200,21 @@ async function resolveViaDoH(dohUrl, hostname, onDebug, signal) {
     }
   } catch (err) {
     onDebug?.(`[DoH] Error resolving ${hostname} via ${dohUrl}: ${err?.message || err}`);
+  } finally {
+    if (dohHost) gDnsInFlight.delete(dohHost);
   }
   return null;
 }
 async function resolveViaDoT(dotHost, hostname, onDebug, signal) {
+  let host = dotHost;
   try {
-    let host = dotHost;
     let port = 853;
     if (host.includes(":")) {
       const parts = host.split(":");
       host = parts[0];
       port = Number(parts[1]) || 853;
     }
+    if (host) gDnsInFlight.add(host);
     const wire = buildDnsQueryWire(hostname);
     const prefix = Buffer3.alloc(2);
     prefix.writeUInt16BE(wire.length, 0);
@@ -22240,10 +22246,13 @@ async function resolveViaDoT(dotHost, hostname, onDebug, signal) {
     }
   } catch (err) {
     onDebug?.(`[DoT] Error resolving ${hostname} via ${dotHost}: ${err?.message || err}`);
+  } finally {
+    if (host) gDnsInFlight.delete(host);
   }
   return null;
 }
 async function resolveHostWithCustomDns(hostname, onDebug, callerSignal, timeoutMs = 5000) {
+  gDnsInFlight.add(hostname);
   const controller = new AbortController();
   const abort = () => controller.abort(callerSignal.reason);
   const timer = setTimeout(() => controller.abort(new Error("Custom DNS timed out")), Math.min(timeoutMs, 5000));
@@ -22303,6 +22312,7 @@ async function resolveHostWithCustomDns(hostname, onDebug, callerSignal, timeout
     if (callerSignal?.aborted) throw callerSignal.reason;
     throw new Error(`Antigravity DNS: ${dnsErr?.message || dnsErr}`);
   } finally {
+    gDnsInFlight.delete(hostname);
     clearTimeout(timer);
     callerSignal?.removeEventListener("abort", abort);
   }
@@ -22311,6 +22321,7 @@ async function resolveHostWithCustomDns(hostname, onDebug, callerSignal, timeout
 
 // --- Global DNS Interceptor for OpenCode Runtime (OpenAI, Gemini, Anthropic, etc.) ---
 const gDnsCache = new Map();
+const gDnsInFlight = new Set();
 function initGlobalDnsHook() {
   try {
     let cjsDns;
@@ -22328,7 +22339,7 @@ function initGlobalDnsHook() {
           cb = opts;
           opts = {};
         }
-        if (!hostname || typeof hostname !== "string" || hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || /^\d+\.\d+\.\d+\.\d+$/.test(hostname)) {
+        if (!hostname || typeof hostname !== "string" || hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || /^\d+\.\d+\.\d+\.\d+$/.test(hostname) || gDnsInFlight.has(hostname)) {
           return origLookup.call(cjsDns, hostname, options, callback);
         }
         const now = Date.now();
@@ -22343,6 +22354,7 @@ function initGlobalDnsHook() {
           return origLookup.call(cjsDns, hostname, options, callback);
         }
         resolveHostWithCustomDns(hostname).then((ip) => {
+          if (gDnsCache.size > 500) gDnsCache.clear();
           if (ip && ip !== hostname) {
             gDnsCache.set(hostname, { ip, expires: now + 60000 });
             if (opts && opts.all) {
@@ -25224,22 +25236,24 @@ function resolveModelWithTier(requestedModel, options = {}) {
   }
   const isClaude55Opus = /^claude-opus-5-5/i.test(baseName);
   if (isClaude55Opus && quotaPreference === "antigravity") {
+    const isThinking = /-thinking$/i.test(baseName);
     return {
-      actualModel: "claude-opus-5-5-thinking",
-      thinkingBudget: 1024,
+      actualModel: isThinking ? "claude-opus-5-5-thinking" : "claude-opus-5-5",
+      thinkingBudget: isThinking ? 1024 : 0,
       tier: tier ?? "medium",
-      isThinkingModel: true,
+      isThinkingModel: isThinking,
       quotaPreference,
       explicitQuota
     };
   }
   const isClaude55Sonnet = /^claude-sonnet-5-5/i.test(baseName);
   if (isClaude55Sonnet && quotaPreference === "antigravity") {
+    const isThinking = /-thinking$/i.test(baseName);
     return {
-      actualModel: "claude-sonnet-5-5",
-      thinkingBudget: 1024,
+      actualModel: isThinking ? "claude-sonnet-5-5-thinking" : "claude-sonnet-5-5",
+      thinkingBudget: isThinking ? 1024 : 0,
       tier: tier ?? "medium",
-      isThinkingModel: true,
+      isThinkingModel: isThinking,
       quotaPreference,
       explicitQuota
     };
@@ -44055,7 +44069,7 @@ function createRequestExecutor(deps) {
             model
           );
           const maxWaitMs2 = (config.max_rate_limit_wait_seconds ?? 300) * 1e3;
-          if (softQuotaWaitMs === null || accountCount > 1 && maxWaitMs2 > 0 && softQuotaWaitMs > maxWaitMs2) {
+          if (softQuotaWaitMs === null || maxWaitMs2 > 0 && softQuotaWaitMs > maxWaitMs2) {
             const waitTimeFormatted = softQuotaWaitMs ? formatWaitTime(softQuotaWaitMs) : "unknown";
             await showToast(
               `All accounts over ${threshold}% quota threshold. Resets in ${waitTimeFormatted}.`,

@@ -54,10 +54,53 @@ IDM_EXIT = 103
 
 # Correct 64-bit compatible Win32 types
 LRESULT = ctypes.c_ssize_t
-WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM) if sys.platform == "win32" else None
 
-ctypes.windll.user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-ctypes.windll.user32.DefWindowProcW.restype = LRESULT
+if sys.platform == "win32":
+    _user32 = ctypes.windll.user32
+    _kernel32 = ctypes.windll.kernel32
+    _shell32 = ctypes.windll.shell32
+
+    _user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    _user32.DefWindowProcW.restype = LRESULT
+    _kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+    _kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+    _user32.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+    _user32.LoadImageW.restype = wintypes.HANDLE
+    _user32.LoadIconW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR]
+    _user32.LoadIconW.restype = wintypes.HICON
+    _user32.DestroyIcon.argtypes = [wintypes.HICON]
+    _user32.DestroyIcon.restype = wintypes.BOOL
+    _user32.CreateWindowExW.argtypes = [
+        wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID,
+    ]
+    _user32.CreateWindowExW.restype = wintypes.HWND
+    _user32.UnregisterClassW.argtypes = [wintypes.LPCWSTR, wintypes.HINSTANCE]
+    _user32.UnregisterClassW.restype = wintypes.BOOL
+    _user32.CreatePopupMenu.argtypes = []
+    _user32.CreatePopupMenu.restype = wintypes.HMENU
+    _user32.AppendMenuW.argtypes = [wintypes.HMENU, wintypes.UINT, wintypes.UINT, wintypes.LPCWSTR]
+    _user32.AppendMenuW.restype = wintypes.BOOL
+    _user32.TrackPopupMenu.argtypes = [wintypes.HMENU, wintypes.UINT, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.HWND, ctypes.c_void_p]
+    _user32.TrackPopupMenu.restype = wintypes.BOOL
+    _user32.DestroyMenu.argtypes = [wintypes.HMENU]
+    _user32.DestroyMenu.restype = wintypes.BOOL
+    _user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+    _user32.SetForegroundWindow.restype = wintypes.BOOL
+    _user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    _user32.PostMessageW.restype = wintypes.BOOL
+    _user32.PostQuitMessage.argtypes = [ctypes.c_int]
+    _user32.PostQuitMessage.restype = None
+    _user32.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT]
+    _user32.GetMessageW.restype = wintypes.BOOL
+    _user32.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
+    _user32.TranslateMessage.restype = wintypes.BOOL
+    _user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
+    _user32.DispatchMessageW.restype = LRESULT
+    _shell32.Shell_NotifyIconW.argtypes = [wintypes.DWORD, ctypes.c_void_p]
+    _shell32.Shell_NotifyIconW.restype = wintypes.BOOL
 
 class WNDCLASSEXW(ctypes.Structure):
     _fields_ = [
@@ -108,20 +151,25 @@ class WindowsTrayIcon:
 
         self.hwnd = None
         self.h_icon = None
+        self._owns_icon = False
+        self._class_name = None
+        self._hinst = None
         self.is_visible = False
         self._wndproc = None
         self._thread = None
         self._ready_event = threading.Event()
 
-        if icon_path:
+        if sys.platform == "win32" and icon_path:
             try:
                 self.h_icon = ctypes.windll.user32.LoadImageW(
                     None, icon_path, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE
                 )
+                if self.h_icon:
+                    self._owns_icon = True
             except Exception:
                 self.h_icon = None
 
-        if not self.h_icon:
+        if sys.platform == "win32" and not self.h_icon:
             self.h_icon = ctypes.windll.user32.LoadIconW(None, wintypes.LPCWSTR(32512))
 
     def start(self):
@@ -164,13 +212,20 @@ class WindowsTrayIcon:
         wcex.lpszClassName = class_name
         wcex.hIconSm = self.h_icon
 
+        ctypes.windll.user32.RegisterClassExW.argtypes = [ctypes.POINTER(WNDCLASSEXW)]
+        ctypes.windll.user32.RegisterClassExW.restype = wintypes.ATOM
         ctypes.windll.user32.RegisterClassExW(ctypes.byref(wcex))
+        self._class_name = class_name
+        self._hinst = hinst
 
         self.hwnd = ctypes.windll.user32.CreateWindowExW(
             0, class_name, "AntigravityTrayWindow",
             0, 0, 0, 0, 0,
             None, None, hinst, None
         )
+        if not self.hwnd:
+            self._ready_event.set()
+            return
 
         self.add()
         self._ready_event.set()
@@ -179,6 +234,12 @@ class WindowsTrayIcon:
         while ctypes.windll.user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
             ctypes.windll.user32.TranslateMessage(ctypes.byref(msg))
             ctypes.windll.user32.DispatchMessageW(ctypes.byref(msg))
+
+        if self._class_name and self._hinst:
+            try:
+                ctypes.windll.user32.UnregisterClassW(self._class_name, self._hinst)
+            except Exception:
+                pass
 
     def _show_context_menu(self, hwnd):
         hmenu = ctypes.windll.user32.CreatePopupMenu()
@@ -199,14 +260,15 @@ class WindowsTrayIcon:
             hwnd,
             None
         )
+        ctypes.windll.user32.PostMessageW(hwnd, 0, 0, 0)
         ctypes.windll.user32.DestroyMenu(hmenu)
 
         if cmd == IDM_SHOW and self.on_show:
-            self.on_show()
+            threading.Thread(target=self.on_show, daemon=True).start()
         elif cmd == IDM_REFRESH and self.on_refresh:
-            self.on_refresh()
+            threading.Thread(target=self.on_refresh, daemon=True).start()
         elif cmd == IDM_EXIT and self.on_exit:
-            self.on_exit()
+            threading.Thread(target=self.on_exit, daemon=True).start()
 
     def add(self):
         if not self.hwnd:
@@ -238,12 +300,21 @@ class WindowsTrayIcon:
         ctypes.windll.shell32.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(nid))
 
     def remove(self):
-        if not self.hwnd or not self.is_visible:
+        if sys.platform != "win32":
             return
-        nid = NOTIFYICONDATAW()
-        nid.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
-        nid.hWnd = self.hwnd
-        nid.uID = 1001
-        ctypes.windll.shell32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(nid))
-        self.is_visible = False
-        ctypes.windll.user32.PostMessageW(self.hwnd, WM_DESTROY, 0, 0)
+        if self.hwnd and self.is_visible:
+            nid = NOTIFYICONDATAW()
+            nid.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
+            nid.hWnd = self.hwnd
+            nid.uID = 1001
+            ctypes.windll.shell32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(nid))
+            self.is_visible = False
+        if self.hwnd:
+            ctypes.windll.user32.PostMessageW(self.hwnd, WM_DESTROY, 0, 0)
+        if self._owns_icon and self.h_icon:
+            try:
+                ctypes.windll.user32.DestroyIcon(self.h_icon)
+            except Exception:
+                pass
+            self.h_icon = None
+            self._owns_icon = False

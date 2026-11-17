@@ -21,7 +21,8 @@ def browser_paths() -> dict[str, Path]:
             for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
                 try:
                     with winreg.OpenKey(hive, rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{filename}") as key:
-                        value = Path(winreg.QueryValue(key, None).strip('"'))
+                        raw_val = winreg.QueryValue(key, None)
+                        value = Path(os.path.expandvars(str(raw_val).strip('"')))
                     if value.is_file() and value.name.lower() == filename:
                         found[brand] = value
                 except OSError:
@@ -29,12 +30,13 @@ def browser_paths() -> dict[str, Path]:
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice") as key:
                 prog_id = winreg.QueryValueEx(key, "ProgId")[0]
-            with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, prog_id + r"\shell\open\command") as key:
-                command = winreg.QueryValueEx(key, None)[0]
-            match = re.match(r'^\s*"([^\"]+\.exe)"|^\s*(.+?\.exe)(?:\s|$)', command, re.IGNORECASE)
-            executable = Path(next(group for group in match.groups() if group).strip()) if match else None
-            if executable and executable.is_file():
-                found["default"] = executable
+            if prog_id:
+                with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, prog_id + r"\shell\open\command") as key:
+                    command = os.path.expandvars(str(winreg.QueryValueEx(key, None)[0]))
+                match = re.match(r'^\s*"([^\"]+\.exe)"|^\s*(.+?\.exe)(?:\s|$)', command, re.IGNORECASE)
+                executable = Path(next(group for group in match.groups() if group).strip()) if match else None
+                if executable and executable.is_file():
+                    found["default"] = executable
         except (OSError, StopIteration, AttributeError):
             pass
         roots = [
@@ -68,4 +70,5 @@ def supports_cdp(path: str | Path) -> bool:
     return name in {
         "chrome.exe", "msedge.exe", "browser.exe", "brave.exe", "opera.exe", "vivaldi.exe",
         "chromium.exe", "chrome", "microsoft-edge", "google-chrome", "chromium", "chromium-browser",
+        "google chrome", "microsoft edge",
     }

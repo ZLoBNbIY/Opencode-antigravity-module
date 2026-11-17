@@ -114,6 +114,38 @@ class TokenLavkaManagerTests(unittest.TestCase):
         self.assertEqual(imported[0]["integrationID"], "tokenlavka")
         self.assertEqual(imported[0]["value"], {"type": "key", "key": "sk-test-key"})
 
+    @patch("tokenlavka_manager._opener")
+    def test_connection_strips_key_and_disconnect_resets_balance_state(self, get_opener):
+        opener = Mock()
+        get_opener.return_value = opener
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = b'{"data": []}'
+        opener.open.return_value = response
+
+        ok, _ = tokenlavka_manager.test_connection("  sk-trimmed  ")
+        self.assertTrue(ok)
+        self.assertEqual(opener.open.call_args.args[0].get_header("Authorization"), "Bearer sk-trimmed")
+        ok_bad, _ = tokenlavka_manager.test_connection("sk-bad\r\nX-Test: 1")
+        self.assertFalse(ok_bad)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cfg_file = root / "tokenlavka-state.json"
+            cfg_file.write_text(json.dumps({"connected": True, "cached_balance": {"balance": 500}}), encoding="utf-8")
+            secret_file = root / "tokenlavka.json"
+            secret_file.write_text("{}", encoding="utf-8")
+            with patch.object(tokenlavka_manager, "CONFIG_DIR", root), \
+                 patch.object(tokenlavka_manager, "BALANCE_CONFIG_FILE", cfg_file), \
+                 patch.object(tokenlavka_manager, "SECRET_FILE", secret_file), \
+                 patch.object(tokenlavka_manager.openai_manager, "find_opencode_cli", return_value="opencode-cli"), \
+                 patch("tokenlavka_manager.subprocess.run", return_value=Mock(returncode=0)):
+                tokenlavka_manager.disconnect()
+            saved = json.loads(cfg_file.read_text(encoding="utf-8"))
+            self.assertFalse(saved["connected"])
+            self.assertEqual(saved["cached_balance"], {})
+
 
 if __name__ == "__main__":
     unittest.main()

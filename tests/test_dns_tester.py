@@ -24,6 +24,21 @@ class DnsAvailabilityTests(unittest.TestCase):
         self.assertIn(b'chatgpt', request.data)
         urlopen.assert_not_called()
 
+    def test_rejects_nxdomain_txid_mismatch_and_plaintext_doh(self):
+        import struct
+        # NXDOMAIN (rcode=3) with an A record in additional section must be rejected
+        nxdomain = struct.pack('!HHHHHH', 0x1234, 0x8183, 0, 0, 0, 1) + b'\x00\x00\x01\x00\x01\x00\x00\x00\x01\x00\x04\x01\x02\x03\x04'
+        self.assertIsNone(dns_tester._parse_a_record_ip(nxdomain, expected_txid=0x1234))
+
+        # Valid answer with wrong txid must be rejected
+        valid_other_txid = struct.pack('!HHHHHH', 0x9999, 0x8180, 0, 1, 0, 0) + b'\x00\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04\x01\x02\x03\x04'
+        self.assertIsNone(dns_tester._parse_a_record_ip(valid_other_txid, expected_txid=0x1234))
+        self.assertEqual(dns_tester._parse_a_record_ip(valid_other_txid, expected_txid=0x9999), '1.2.3.4')
+
+        # Plaintext http:// DoH must be rejected
+        res = dns_tester.test_doh_endpoint('http://resolver.test/dns-query')
+        self.assertFalse(res['ok'])
+
 
 if __name__ == '__main__':
     unittest.main()

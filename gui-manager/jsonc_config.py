@@ -8,6 +8,8 @@ from pathlib import Path
 def jsonc_text(text: str, *, mask_trailing_commas=True) -> str:
     """Mask comments/trailing commas without changing source offsets."""
     chars = list(text)
+    if chars and chars[0] == "\ufeff":
+        chars[0] = " "
     i = 0
     quoted = False
     while i < len(chars):
@@ -61,6 +63,8 @@ def parse_config(text: str) -> dict:
 
 def set_property(text: str, path: tuple[str, ...], value) -> str:
     """Replace only the requested value; preserve all other source text."""
+    if not path:
+        raise ValueError("Путь свойства конфигурации не может быть пустым")
     clean = jsonc_text(text)
     decoder = json.JSONDecoder()
 
@@ -85,7 +89,7 @@ def set_property(text: str, path: tuple[str, ...], value) -> str:
             if key == keys[0]:
                 if len(keys) > 1:
                     return edit(value_start, keys[1:])
-                if current == value:
+                if type(current) is type(value) and current == value:
                     return text
                 rendered = json.dumps(value, indent=2, ensure_ascii=False)
                 return text[:value_start] + rendered + text[value_end:]

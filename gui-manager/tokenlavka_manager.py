@@ -243,11 +243,12 @@ def refresh_balance_silent() -> Dict[str, Any]:
 
 def test_connection(api_key, timeout=20):
     """Validate the key against GET /v1/models. Returns (ok, message)."""
-    if not api_key or not api_key.strip().startswith("sk-"):
+    clean = str(api_key or "").strip()
+    if not clean.startswith("sk-") or any(c in clean for c in "\r\n\x00"):
         return False, "Ключ tokenlavka должен начинаться с sk-"
     request = urllib.request.Request(
         MODELS_URL,
-        headers={"Authorization": f"Bearer {api_key}", "User-Agent": "Antigravity-Hub"},
+        headers={"Authorization": f"Bearer {clean}", "User-Agent": "Antigravity-Hub"},
     )
     try:
         with _opener().open(request, timeout=timeout) as response:
@@ -282,13 +283,15 @@ def sync_opencode_credential(api_key):
     try:
         result = subprocess.run(
             [cli, "auth", "import"],
-            input=json.dumps(credential), capture_output=True, text=True, timeout=15,
+            input=json.dumps(credential), capture_output=True, text=True, encoding="utf-8", timeout=15,
         )
         if result.returncode != 0:
             # Never expose CLI output: it may include credential data.
             raise ValueError("OpenCode не принял API-ключ. Перезапустите OpenCode и попробуйте снова.")
     except subprocess.TimeoutExpired:
         raise ValueError("OpenCode CLI не ответил вовремя при сохранении ключа.") from None
+    except OSError:
+        raise ValueError("Не удалось запустить OpenCode CLI для сохранения ключа.") from None
 
 
 def configure_models(model_ids, api_key=None, config_dir=None):
@@ -344,7 +347,10 @@ def disconnect():
     cli = openai_manager.find_opencode_cli()
     if not cli:
         raise ValueError("Не найден OpenCode CLI. Ключ Hub оставлен без изменений.")
-    result = subprocess.run([cli, "auth", "logout", PROVIDER_ID], capture_output=True, timeout=15)
+    try:
+        result = subprocess.run([cli, "auth", "logout", PROVIDER_ID], capture_output=True, timeout=15)
+    except (subprocess.TimeoutExpired, OSError):
+        raise ValueError("OpenCode CLI не ответил при удалении учётных данных. Ключ Hub оставлен без изменений.") from None
     if result.returncode != 0:
         raise ValueError("OpenCode не удалил сохранённые учётные данные. Ключ Hub оставлен без изменений.")
     config_path = jsonc_config.config_path(CONFIG_DIR)
@@ -361,6 +367,10 @@ def disconnect():
         except Exception:
             pass
     SECRET_FILE.unlink(missing_ok=True)
+    cfg = load_config()
+    cfg["connected"] = False
+    cfg["cached_balance"] = {}
+    save_config(cfg)
 
 
 def provider_state():

@@ -184,7 +184,7 @@
             <!-- Rendered dynamically -->
           </div>
           <label class="switch-label" style="margin-top: 4px;">
-            <input type="checkbox" class="switch-input" id="switch-proxy-failover" onchange="markSettingsDirty()" checked>
+            <input type="checkbox" class="switch-input" id="switch-proxy-failover" onchange="networkDirty = true" checked>
             <span>Автоматическая ротация и переключение на следующий прокси при отказе (Failover)</span>
           </label>
           <p class="help-text" id="http-proxy-status" style="margin-top: 6px;"></p>

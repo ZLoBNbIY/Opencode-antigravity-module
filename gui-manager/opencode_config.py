@@ -8,7 +8,6 @@ and never reset or overwritten.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -90,14 +89,16 @@ def ensure_session_title_config(config_path: Optional[Path] = None) -> Tuple[boo
     path.parent.mkdir(parents=True, exist_ok=True)
 
     path_existed = path.exists()
+    raw = ""
     data: Dict[str, Any] = {}
     if path_existed:
         try:
             raw = path.read_text(encoding="utf-8-sig")
             data = _parse_config_text(raw)
         except Exception as e:
-            print(f"[OpenCode Config] Ошибка чтения {path}: {e}")
-            data = {}
+            err = f"Ошибка чтения конфигурации {path}: {e}"
+            print(f"[OpenCode Config] {err}")
+            return False, err
     else:
         # Load template if available
         template_file = Path(__file__).resolve().parent.parent / "config-templates" / "opencode.json"
@@ -126,21 +127,39 @@ def ensure_session_title_config(config_path: Optional[Path] = None) -> Tuple[boo
         return False, f"Конфигурация уже корректна ({TITLE_MODEL})"
 
     # Apply fixes
-    data["small_model"] = TITLE_MODEL
+    content = None
+    if path_existed and (path.suffix.lower() == ".jsonc" or "//" in raw or "/*" in raw):
+        try:
+            import jsonc_config
+            updated_raw = jsonc_config.set_property(raw, ("small_model",), TITLE_MODEL)
+            if isinstance(data.get("agent"), dict):
+                updated_raw = jsonc_config.set_property(updated_raw, ("agent", "title", "model"), TITLE_MODEL)
+            else:
+                updated_raw = jsonc_config.set_property(updated_raw, ("agent",), {"title": {"model": TITLE_MODEL}})
+            if isinstance(data.get("agents"), dict):
+                updated_raw = jsonc_config.set_property(updated_raw, ("agents", "title", "model"), TITLE_MODEL)
+            else:
+                updated_raw = jsonc_config.set_property(updated_raw, ("agents",), {"title": {"model": TITLE_MODEL}})
+            content = updated_raw
+        except Exception:
+            content = None
 
-    if "agent" not in data or not isinstance(data["agent"], dict):
-        data["agent"] = {}
-    if "title" not in data["agent"] or not isinstance(data["agent"]["title"], dict):
-        data["agent"]["title"] = {}
-    data["agent"]["title"]["model"] = TITLE_MODEL
+    if content is None:
+        data["small_model"] = TITLE_MODEL
 
-    if "agents" not in data or not isinstance(data["agents"], dict):
-        data["agents"] = {}
-    if "title" not in data["agents"] or not isinstance(data["agents"]["title"], dict):
-        data["agents"]["title"] = {}
-    data["agents"]["title"]["model"] = TITLE_MODEL
+        if "agent" not in data or not isinstance(data["agent"], dict):
+            data["agent"] = {}
+        if "title" not in data["agent"] or not isinstance(data["agent"]["title"], dict):
+            data["agent"]["title"] = {}
+        data["agent"]["title"]["model"] = TITLE_MODEL
 
-    content = json.dumps(data, indent=4, ensure_ascii=False)
+        if "agents" not in data or not isinstance(data["agents"], dict):
+            data["agents"] = {}
+        if "title" not in data["agents"] or not isinstance(data["agents"]["title"], dict):
+            data["agents"]["title"] = {}
+        data["agents"]["title"]["model"] = TITLE_MODEL
+
+        content = json.dumps(data, indent=4, ensure_ascii=False)
     try:
         try:
             import secure_storage

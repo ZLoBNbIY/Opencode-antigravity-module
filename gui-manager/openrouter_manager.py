@@ -20,7 +20,6 @@ try:
 except Exception:
     SECRET_FILE = Path.home() / ".local" / "share" / "antigravity-hub" / "openrouter.json"
 CONFIG_DIR = Path.home() / ".config" / "opencode"
-LOCAL_PROXY = "http://127.0.0.1:51180"
 
 
 def _openrouter_opener():
@@ -39,6 +38,9 @@ def _is_free(value):
 
 def fetch_free_models(api_key, timeout=20):
     """Return all zero-priced text-in/text-out models in OpenRouter's catalog."""
+    api_key = str(api_key or "").strip()
+    if not api_key or any(c in api_key for c in "\r\n\x00"):
+        raise ValueError("Укажите корректный API-ключ OpenRouter.")
     key_request = urllib.request.Request(
         API_KEY_URL,
         headers={"Authorization": f"Bearer {api_key}", "User-Agent": "Antigravity-Hub"},
@@ -120,13 +122,15 @@ def sync_opencode_credential(api_key):
     try:
         result = subprocess.run(
             [cli, "auth", "import"],
-            input=json.dumps(credential), capture_output=True, text=True, timeout=15,
+            input=json.dumps(credential), capture_output=True, text=True, encoding="utf-8", timeout=15,
         )
         if result.returncode != 0:
             # Never expose CLI output: it may include credential data.
             raise ValueError("OpenCode не принял API-ключ. Перезапустите OpenCode и попробуйте снова.")
     except subprocess.TimeoutExpired:
         raise ValueError("OpenCode CLI не ответил вовремя при сохранении ключа.") from None
+    except OSError:
+        raise ValueError("Не удалось запустить OpenCode CLI для сохранения ключа.") from None
 
 
 def configure_models(models, config_dir=None):
@@ -144,11 +148,14 @@ def configure_models(models, config_dir=None):
     updated = original
     configured_models = {}
     for model in models:
+        if not isinstance(model, dict) or not model.get("id"):
+            continue
+        limit = model.get("limit") if isinstance(model.get("limit"), dict) else {}
         model_config = {
             "name": model.get("name", model.get("id", "Model")),
             "limit": {
-                "context": model.get("context") or model.get("limit", {}).get("context", 128000),
-                "output": model.get("output") or model.get("limit", {}).get("output", 4096),
+                "context": model.get("context") or limit.get("context", 128000),
+                "output": model.get("output") or limit.get("output", 4096),
             },
         }
         configured_models[model["id"]] = model_config
@@ -176,17 +183,25 @@ def disconnect():
     if not cli:
         raise ValueError("Не найден OpenCode CLI. Ключ Hub оставлен без изменений.")
     for provider_id in (PROVIDER_ID, "openrouter"):
-        result = subprocess.run([cli, "auth", "logout", provider_id], capture_output=True, timeout=15)
+        try:
+            result = subprocess.run([cli, "auth", "logout", provider_id], capture_output=True, timeout=15)
+        except (subprocess.TimeoutExpired, OSError):
+            raise ValueError("OpenCode CLI не ответил при удалении учётных данных. Ключ Hub оставлен без изменений.") from None
         if result.returncode != 0:
             raise ValueError("OpenCode не удалил сохранённые учётные данные. Ключ Hub оставлен без изменений.")
     config_path = jsonc_config.config_path(CONFIG_DIR)
     if config_path.exists():
         original = config_path.read_text(encoding="utf-8-sig")
         data = jsonc_config.parse_config(original)
+        updated = original
+        providers = data.get("provider", {})
+        if isinstance(providers, dict) and PROVIDER_ID in providers:
+            updated = jsonc_config.set_property(updated, ("provider", PROVIDER_ID, "models"), {})
         disabled = data.get("disabled_providers", [])
         if isinstance(disabled, list) and "openrouter" in disabled:
             updated = jsonc_config.set_property(
-                original, ("disabled_providers",), [item for item in disabled if item != "openrouter"],
+                updated, ("disabled_providers",), [item for item in disabled if item != "openrouter"],
             )
+        if updated != original:
             secure_storage.atomic_write(config_path, updated)
     SECRET_FILE.unlink(missing_ok=True)

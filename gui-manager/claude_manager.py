@@ -7,16 +7,20 @@ import os
 import sys
 import json
 import time
+import hmac
 import socket
 import secrets
+import uuid
 import threading
 import urllib.request
 import urllib.parse
 import urllib.error
 import http.client
 from pathlib import Path
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from typing import Optional, Dict, Any, List, Tuple
+
+import secure_storage
 
 try:
     import hub_paths
@@ -120,16 +124,22 @@ class ClaudeAccountManager:
                 return []
             try:
                 data = json.loads(CLAUDE_ACCOUNTS_FILE.read_text(encoding="utf-8"))
-                return data.get("accounts", [])
+                if isinstance(data, dict) and "protection" in data and "payload" in data:
+                    unprotected = secure_storage.unprotect_payload(data, "claude-accounts")
+                    accs = unprotected.get("accounts", [])
+                    return accs if isinstance(accs, list) else []
+                accs = data.get("accounts", []) if isinstance(data, dict) else []
+                return accs if isinstance(accs, list) else []
             except Exception:
                 return []
 
     def save_accounts(self, accounts: List[Dict[str, Any]]) -> bool:
         with self._lock:
             try:
-                CLAUDE_ACCOUNTS_FILE.write_text(
-                    json.dumps({"accounts": accounts}, indent=2, ensure_ascii=False),
-                    encoding="utf-8",
+                record = secure_storage.protect_payload("claude-accounts", {"accounts": accounts})
+                secure_storage.atomic_write(
+                    CLAUDE_ACCOUNTS_FILE,
+                    json.dumps(record, indent=2, ensure_ascii=False),
                 )
                 return True
             except Exception as e:
@@ -618,9 +628,20 @@ class ClaudeSubscriptionBridge:
     def __init__(self, port: int = DEFAULT_BRIDGE_PORT):
         self.port = port
         self.bridge_token = secrets.token_hex(16)
-        self._server: Optional[HTTPServer] = None
+        self._server: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
+
+    def _is_authorized(self, headers) -> bool:
+        auth = str(headers.get("Authorization") or "").strip()
+        if auth.lower().startswith("bearer "):
+            token = auth[7:].strip()
+            if token and hmac.compare_digest(token, self.bridge_token):
+                return True
+        api_key = str(headers.get("x-api-key") or "").strip()
+        if api_key and hmac.compare_digest(api_key, self.bridge_token):
+            return True
+        return False
 
     def ensure_running(self):
         with self._lock:
@@ -634,13 +655,13 @@ class ClaudeSubscriptionBridge:
                         pass
 
                     def do_OPTIONS(self):
-                        self.send_response(200)
-                        self.send_header("Access-Control-Allow-Origin", "*")
-                        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-                        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+                        self.send_response(204)
                         self.end_headers()
 
                     def do_GET(self):
+                        if not bridge_self._is_authorized(self.headers):
+                            self.send_error(401, "Unauthorized")
+                            return
                         if self.path == "/v1/models":
                             data = {
                                 "object": "list",
@@ -659,11 +680,21 @@ class ClaudeSubscriptionBridge:
                             self.send_error(404, "Not Found")
 
                     def do_POST(self):
+                        if not bridge_self._is_authorized(self.headers):
+                            self.send_error(401, "Unauthorized")
+                            return
                         if not self.path.startswith("/v1/chat/completions") and not self.path.startswith("/v1/messages"):
                             self.send_error(404, "Not Found")
                             return
 
-                        length = int(self.headers.get("Content-Length", 0))
+                        try:
+                            length = int(self.headers.get("Content-Length", 0))
+                        except (TypeError, ValueError):
+                            self.send_error(400, "Invalid Content-Length")
+                            return
+                        if length < 0 or length > 10 * 1024 * 1024:
+                            self.send_error(413, "Payload Too Large")
+                            return
                         body_bytes = self.rfile.read(length)
                         try:
                             payload = json.loads(body_bytes.decode("utf-8"))
@@ -679,11 +710,25 @@ class ClaudeSubscriptionBridge:
                         # Forward to claude.ai API
                         bridge_self.handle_completion_request(self, payload, acc)
 
-                self._server = HTTPServer(("127.0.0.1", self.port), Handler)
+                self._server = ThreadingHTTPServer(("127.0.0.1", self.port), Handler)
+                self._server.daemon_threads = True
                 self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
                 self._thread.start()
             except Exception as e:
                 print(f"[Claude Bridge] Failed to start server on port {self.port}: {e}")
+
+    def _claude_web_completion_url(self, opener, org_id: str, req_headers: dict) -> str:
+        safe_org = urllib.parse.quote(str(org_id or ""), safe="")
+        conv_uuid = str(uuid.uuid4())
+        create_url = f"https://claude.ai/api/organizations/{safe_org}/chat_conversations"
+        create_req = urllib.request.Request(
+            create_url,
+            data=json.dumps({"uuid": conv_uuid, "name": ""}).encode("utf-8"),
+            headers={**req_headers, "Accept": "application/json"},
+        )
+        with opener.open(create_req, timeout=20) as resp:
+            resp.read()
+        return f"https://claude.ai/api/organizations/{safe_org}/chat_conversations/{conv_uuid}/completion"
 
     def handle_completion_request(self, handler: BaseHTTPRequestHandler, payload: dict, account: dict):
         """Translates completion requests into claude.ai conversation calls with streaming and compaction filtering."""
@@ -829,7 +874,7 @@ class ClaudeSubscriptionBridge:
                                 except Exception:
                                     pass
                 else:
-                    target_url = f"https://claude.ai/api/organizations/{org_id}/chat_conversations"
+                    target_url = self._claude_web_completion_url(opener, org_id, req_headers)
                     req = urllib.request.Request(target_url, data=json.dumps(claude_payload).encode("utf-8"), headers=req_headers)
                     with opener.open(req, timeout=45) as resp:
                         for line in resp:
@@ -900,30 +945,46 @@ class ClaudeSubscriptionBridge:
                         text_blocks = [c.get("text", "") for c in res_json.get("content", []) if c.get("type") == "text"]
                         raw_text = "".join(text_blocks)
                 else:
-                    target_url = f"https://claude.ai/api/organizations/{org_id}/chat_conversations"
+                    target_url = self._claude_web_completion_url(opener, org_id, req_headers)
                     req = urllib.request.Request(target_url, data=json.dumps(claude_payload).encode("utf-8"), headers=req_headers)
                     with opener.open(req, timeout=45) as resp:
-                        raw_text = resp.read().decode("utf-8")
+                        body_text = resp.read().decode("utf-8", errors="ignore")
+                    if "data: " in body_text:
+                        parts = []
+                        for line_str in body_text.splitlines():
+                            if line_str.startswith("data: "):
+                                try:
+                                    ev = json.loads(line_str[6:].strip())
+                                    parts.append(ev.get("completion") or ev.get("text") or "")
+                                except Exception:
+                                    pass
+                        raw_text = "".join(parts)
+                    else:
+                        try:
+                            parsed_body = json.loads(body_text)
+                            raw_text = parsed_body.get("completion") or parsed_body.get("text") or body_text
+                        except Exception:
+                            raw_text = body_text
 
                 if is_compaction and "<summary>" in raw_text:
                     raw_text = raw_text[raw_text.index("<summary>"):]
-                    resp_obj = {
-                        "id": f"chatcmpl-{secrets.token_hex(6)}",
-                        "object": "chat.completion",
-                        "created": int(time.time()),
-                        "model": requested_model,
-                        "choices": [{
-                            "index": 0,
-                            "message": {"role": "assistant", "content": raw_text},
-                            "finish_reason": "stop"
-                        }],
-                    }
-                    data_bytes = json.dumps(resp_obj).encode("utf-8")
-                    handler.send_response(200)
-                    handler.send_header("Content-Type", "application/json")
-                    handler.send_header("Content-Length", str(len(data_bytes)))
-                    handler.end_headers()
-                    handler.wfile.write(data_bytes)
+                resp_obj = {
+                    "id": f"chatcmpl-{secrets.token_hex(6)}",
+                    "object": "chat.completion",
+                    "created": int(time.time()),
+                    "model": requested_model,
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": raw_text},
+                        "finish_reason": "stop"
+                    }],
+                }
+                data_bytes = json.dumps(resp_obj).encode("utf-8")
+                handler.send_response(200)
+                handler.send_header("Content-Type", "application/json")
+                handler.send_header("Content-Length", str(len(data_bytes)))
+                handler.end_headers()
+                handler.wfile.write(data_bytes)
             except Exception as e:
                 handler.send_error(500, f"Claude Proxy Error: {e}")
 

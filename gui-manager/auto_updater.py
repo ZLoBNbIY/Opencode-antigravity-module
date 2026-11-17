@@ -89,7 +89,6 @@ def check_for_updates(repo_dir: Path, timeout=12) -> dict:
         "User-Agent": "Antigravity-Hub-Updater/2.0",
         "Accept": "application/vnd.github.v3+json",
     }
-    ctx = ssl.create_default_context()
 
     # Hub self-updates must NEVER go through the VLESS tunnel or custom proxies:
     # updating the Hub through its own tunnel breaks when the tunnel is down and
@@ -209,6 +208,7 @@ def apply_update_git(repo_dir: Path) -> tuple[bool, str]:
         proc = git("pull", "--rebase", "origin", BRANCH, timeout=60)
         if proc.returncode != 0:
             detail = proc.stderr or proc.stdout
+            git("rebase", "--abort", timeout=10)
             if stashed:
                 restored = restore_stash()
                 if restored.returncode != 0:
@@ -243,6 +243,14 @@ def apply_update_git(repo_dir: Path) -> tuple[bool, str]:
         patch_script = repo_dir / "scripts" / "patch_plugin.mjs"
         if patch_script.exists():
             node = shutil.which("node")
+            if not node:
+                try:
+                    import antigravity_manager
+                    cand = antigravity_manager.get_node_executable()
+                    if cand and os.path.exists(cand):
+                        node = cand
+                except Exception:
+                    pass
             if node:
                 patch = subprocess.run(
                     [node, str(patch_script)],

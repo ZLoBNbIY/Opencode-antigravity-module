@@ -75,7 +75,6 @@ def _test_google_account_health_once(account: dict, timeout=10) -> dict:
     }
     body = json.dumps({"project": project_id}).encode("utf-8")
 
-    ctx = ssl.create_default_context()
     start_t = time.perf_counter()
 
     try:
@@ -278,7 +277,15 @@ def test_openai_model_generation(
         except Exception:
             pass
 
-    opener = openai_manager._get_http_opener(timeout=timeout)
+    try:
+        opener = openai_manager._get_http_opener(timeout=timeout)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "status": "route_error",
+            "message": f"Не удалось подготовить маршрут OpenAI: {type(exc).__name__}",
+            "latency_ms": 0,
+        }
     url = "https://chatgpt.com/backend-api/codex/responses?client_version=0.1.0"
     body = {
         "model": model,
@@ -307,7 +314,7 @@ def test_openai_model_generation(
         with opener.open(req, timeout=timeout) as resp:
             elapsed_ms = round((time.perf_counter() - t0) * 1000)
             collected_text = []
-            for _ in range(60):
+            for _ in range(500):
                 line = resp.readline()
                 if not line:
                     break
@@ -703,7 +710,10 @@ def test_provider_deep_probe(provider: str, timeout: int = 15) -> dict:
             return {"ok": False, "status": "no_account", "message": "Нет подключенных аккаунтов Google"}
         idx = antigravity_manager.get_active_google_account_index()
         acc = accs[idx] if (0 <= idx < len(accs)) else accs[0]
-        proxy = _effective_proxy_from_config("google")
+        try:
+            proxy = _effective_proxy_from_config("google")
+        except Exception as exc:
+            return {"ok": False, "status": "route_error", "message": f"Ошибка маршрута Google: {type(exc).__name__}"}
         res = _test_antigravity_model_once(acc, "antigravity-gemini-3.8-flash", timeout=timeout, proxy_url=proxy, prompt="ping")
         if res.get("ok"):
             text = (res.get("response_text") or "").strip()
@@ -733,7 +743,10 @@ def test_provider_deep_probe(provider: str, timeout: int = 15) -> dict:
         if not accs:
             return {"ok": False, "status": "no_account", "message": "Нет подключенных аккаунтов Claude Pro"}
         active = next((a for a in accs if a.get("is_active")), accs[0])
-        proxy = _effective_proxy_from_config("claude-pro")
+        try:
+            proxy = _effective_proxy_from_config("claude-pro")
+        except Exception as exc:
+            return {"ok": False, "status": "route_error", "message": f"Ошибка маршрута Claude: {type(exc).__name__}"}
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy} if proxy else {}))
         session_key = active.get("session_key", "")
         headers = {
@@ -769,7 +782,10 @@ def test_provider_deep_probe(provider: str, timeout: int = 15) -> dict:
         api_key = openrouter_manager.load_api_key()
         if not api_key:
             return {"ok": False, "status": "no_key", "message": "API-ключ OpenRouter не задан"}
-        proxy = _effective_proxy_from_config("openrouter-free")
+        try:
+            proxy = _effective_proxy_from_config("openrouter-free")
+        except Exception as exc:
+            return {"ok": False, "status": "route_error", "message": f"Ошибка маршрута OpenRouter: {type(exc).__name__}"}
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy} if proxy else {}))
         req = urllib.request.Request("https://openrouter.ai/api/v1/auth/key", headers={
             "Authorization": f"Bearer {api_key}",

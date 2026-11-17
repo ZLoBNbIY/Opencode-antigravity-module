@@ -42,19 +42,22 @@ def dpapi(data, decrypt=False):
     try:
         return ctypes.string_at(output.data, output.size)
     finally:
+        ctypes.memset(buffer, 0, len(data))
         ctypes.memset(output.data, 0, output.size)
         kernel.LocalFree(output.data)
 
 
-def protect_secret(purpose: str, payload: dict) -> dict:
-    """Protect Hub secrets at rest; never serialize them raw on Windows."""
+def protect_payload(purpose: str, payload: dict) -> dict:
+    """Protect arbitrary JSON dict payloads at rest using DPAPI on Windows."""
+    if not isinstance(payload, dict):
+        raise StorageError("invalid-payload")
     raw = json.dumps({"purpose": purpose, "data": payload}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     if os.name == "nt":
         return {"version": 1, "protection": "dpapi-current-user", "payload": base64.b64encode(dpapi(raw)).decode("ascii")}
     return {"version": 1, "protection": "private-file", "payload": json.loads(raw)}
 
 
-def unprotect_secret(record: dict, purpose: str) -> dict:
+def unprotect_payload(record: dict, purpose: str) -> dict:
     if not isinstance(record, dict) or record.get("version") != 1:
         raise StorageError("invalid-secret-record")
     protection = record.get("protection")
@@ -70,7 +73,16 @@ def unprotect_secret(record: dict, purpose: str) -> dict:
         raise StorageError("unsupported-protection")
     if not isinstance(value, dict) or value.get("purpose") != purpose or not isinstance(value.get("data"), dict):
         raise StorageError("secret-purpose-mismatch")
-    data = value["data"]
+    return value["data"]
+
+
+def protect_secret(purpose: str, payload: dict) -> dict:
+    """Protect Hub secrets at rest; never serialize them raw on Windows."""
+    return protect_payload(purpose, payload)
+
+
+def unprotect_secret(record: dict, purpose: str) -> dict:
+    data = unprotect_payload(record, purpose)
     if not isinstance(data.get("apiKey"), str) or not data["apiKey"].strip():
         raise StorageError("invalid-api-key")
     return data

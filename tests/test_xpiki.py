@@ -68,6 +68,43 @@ class XpikiQuotaTests(unittest.TestCase):
         self.assertIsNone(result["quota_limit"])
         self.assertIsNone(result["remaining_tokens"])
 
+    def test_xpiki_config_protected_at_rest_and_reads_legacy_plaintext(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "xpiki.json"
+            with patch.object(xpiki_manager, "XPIKI_CONFIG_FILE", cfg_file), \
+                 patch.object(xpiki_manager, "CONFIG_DIR", Path(tmp)):
+                self.assertTrue(xpiki_manager.save_xpiki_config({"api_key": "sk-xpiki-secret", "connected": True}))
+                raw = cfg_file.read_text(encoding="utf-8")
+                if os.name == "nt":
+                    self.assertNotIn("sk-xpiki-secret", raw)
+                self.assertEqual(xpiki_manager.load_xpiki_config()["api_key"], "sk-xpiki-secret")
+
+                # Legacy plaintext fallback
+                cfg_file.write_text(json.dumps({"api_key": "sk-legacy", "connected": True}), encoding="utf-8")
+                self.assertEqual(xpiki_manager.load_xpiki_config()["api_key"], "sk-legacy")
+
+                with patch.object(xpiki_manager, "configure_opencode", return_value=True):
+                    self.assertTrue(xpiki_manager.disconnect_xpiki())
+                cleared = xpiki_manager.load_xpiki_config()
+                self.assertFalse(cleared["connected"])
+                self.assertEqual(cleared["api_key"], "")
+                self.assertEqual(cleared["cached_quota"], {})
+
+    def test_connection_does_not_mask_401_with_messages_probe(self):
+        import io
+        import urllib.error
+        opener = FakeOpener(None)
+        def fail_401(req, timeout):
+            raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, io.BytesIO(b""))
+        with patch.object(xpiki_manager, "get_http_opener", return_value=opener), \
+             patch.object(opener, "open", side_effect=fail_401) as open_mock:
+            ok, msg, _ = xpiki_manager.test_xpiki_connection("sk-bad")
+        self.assertFalse(ok)
+        self.assertIn("401", msg)
+        self.assertEqual(open_mock.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -70,6 +70,26 @@ class OpenRouterModelTests(unittest.TestCase):
         imported = json.loads(run.call_args.kwargs["input"])
         self.assertEqual(imported[0]["value"], {"type": "key", "key": "sk-or-test-secret"})
 
+    def test_configure_models_handles_none_limit_and_disconnect_clears_models(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "opencode.json"
+            openrouter_manager.configure_models([{"id": "free/m1", "name": "M1", "limit": None}], temp_dir)
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["provider"]["openrouter-free"]["models"]["free/m1"]["limit"]["context"], 128000)
+
+            secret_file = root / "openrouter.json"
+            secret_file.write_text("{}", encoding="utf-8")
+            with patch.object(openrouter_manager, "CONFIG_DIR", root), \
+                 patch.object(openrouter_manager, "SECRET_FILE", secret_file), \
+                 patch.object(openrouter_manager.openai_manager, "find_opencode_cli", return_value="opencode-cli"), \
+                 patch("openrouter_manager.subprocess.run", return_value=Mock(returncode=0)):
+                openrouter_manager.disconnect()
+            after = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(after["provider"]["openrouter-free"]["models"], {})
+            self.assertNotIn("openrouter", after["disabled_providers"])
+            self.assertFalse(secret_file.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

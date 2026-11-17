@@ -102,6 +102,20 @@ if (Test-Path -LiteralPath $logDir) {
         Remove-Item -Force -ErrorAction SilentlyContinue
 }
 
+# Remove Hub-owned sentinel env var and dynamic models cache.
+if ([Environment]::GetEnvironmentVariable('GOOGLE_GENERATIVE_AI_API_KEY', 'User') -eq 'antigravity') {
+    [Environment]::SetEnvironmentVariable('GOOGLE_GENERATIVE_AI_API_KEY', $null, 'User')
+    Write-Host 'Removed GOOGLE_GENERATIVE_AI_API_KEY sentinel.'
+}
+$appDataOpencode = if ($env:APPDATA) { Join-Path $env:APPDATA 'opencode' } else { $null }
+if ($appDataOpencode) {
+    $modelsCache = Join-Path $appDataOpencode 'antigravity-models-cache.json'
+    if (Test-Path -LiteralPath $modelsCache) {
+        Remove-Item -LiteralPath $modelsCache -Force -ErrorAction SilentlyContinue
+        Write-Host "Removed: $modelsCache"
+    }
+}
+
 # Remove the Windows uninstall registration and desktop shortcut.
 $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AntigravityHub'
 if (Test-Path -LiteralPath $uninstallKey) { Remove-Item -LiteralPath $uninstallKey -Recurse -Force -ErrorAction SilentlyContinue }

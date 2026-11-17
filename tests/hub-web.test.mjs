@@ -410,3 +410,18 @@ test('OpenCode restart button is placed in sidebar above status indicator and re
   assert.ok(settingsMatch, 'view-settings should exist');
   assert.doesNotMatch(settingsMatch[0], /onclick="restartOpenCode\(\)"/);
 });
+
+test('DeepSeek usage chart escapes currency in innerHTML and failover toggle marks networkDirty', () => {
+  const fixture = structuredClone(state);
+  fixture.providers.deepseek.usage = {
+    status: 'ok',
+    currency: '<img src=x onerror=alert(1)>',
+    source: 'OpenCode',
+    days: [{date: '2026-11-17', cost: 1.5, cost_usd: 0.2, tokens_total: 1000, tokens_input: 500, tokens_cache_read: 0, tokens_output: 500, tokens_reasoning: 0, messages: 1}],
+  };
+  const {elements} = frontend(fixture);
+  const usageHtml = elements.get('deepseek-usage').innerHTML;
+  assert.doesNotMatch(usageHtml, /<img src=x/);
+  assert.match(usageHtml, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.match(markup, /id="switch-proxy-failover"[^>]*onchange="networkDirty = true"/);
+});

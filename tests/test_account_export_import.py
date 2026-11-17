@@ -206,6 +206,51 @@ class AccountExportImportTests(unittest.TestCase):
             self.assertEqual(auth_data["openai"]["access"], "refreshed-access-token")
             self.assertEqual(auth_data["openai"]["refresh"], "refresh-token-openai")
 
+    def test_sync_opencode_cli_openai_uses_stdin_without_temp_file(self):
+        with patch.object(openai_manager, "find_opencode_cli", return_value="opencode-cli.exe"), \
+             patch.object(openai_manager, "get_openai_cred_id", return_value="cred-1"), \
+             patch("openai_manager.subprocess.run") as run_mock:
+            openai_manager.sync_opencode_cli_openai({
+                "email": "u@example.com",
+                "access": "acc-secret",
+                "refresh": "ref-secret",
+                "expires": 12345,
+            })
+        run_mock.assert_called_once()
+        args, kwargs = run_mock.call_args
+        self.assertEqual(args[0], ["opencode-cli.exe", "auth", "import"])
+        self.assertIn("acc-secret", kwargs["input"])
+        self.assertEqual(kwargs["encoding"], "utf-8")
+
+    def test_delete_last_google_account_handles_none_active_row(self):
+        gen_dir = self.config_dir / "antigravity-accounts.json.store.11111111-2222-3333-4444-555555555555.generation"
+        gen_dir.mkdir(parents=True)
+        (gen_dir / "config.json").write_text(json.dumps({
+            "accounts": [{"id": "acc-1", "type": "oauth"}],
+            "commonAuthPool": {"rows": {"acc-1": {"credentialEpoch": 1}}},
+            "antigravityRouting": {
+                "activeIndex": 0,
+                "activeRow": {"id": "acc-1", "credentialEpoch": 1},
+                "activeRowByFamily": {
+                    "claude": {"id": "acc-1", "credentialEpoch": 1},
+                    "gemini": {"id": "acc-1", "credentialEpoch": 1},
+                },
+            },
+        }))
+        (gen_dir / "state.json").write_text(json.dumps({
+            "accounts": {
+                "acc-1": {
+                    "refresh": "r1",
+                    "commonAuthProviderState": {"metadata": {"email": "only@example.com"}},
+                }
+            }
+        }))
+
+        with patch("os.path.expanduser", return_value=str(self.config_dir)):
+            self.assertTrue(antigravity_manager.delete_google_account("only@example.com"))
+            self.assertEqual(antigravity_manager.get_active_google_account_index(), 0)
+            self.assertFalse(antigravity_manager.delete_google_account("missing@example.com"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -32,7 +32,7 @@ def configured_routes(hub):
     """Only explicitly configured transports; direct connections are opt-in manual routes."""
     routes = []
     if hub.get("vless_enabled") and hub.get("vless_url"):
-        routes.append(("vless", f"http://127.0.0.1:{hub.get('vless_http_port', 10879)}"))
+        routes.append(("vless", f"http://127.0.0.1:{hub.get('vless_http_port') or 10879}"))
     if hub.get("dns_mode") in ("standard", "dot", "doh"):
         routes.append(("dns", "dns://hub"))
     proxy = str(hub.get("proxy") or "").strip()
@@ -55,10 +55,17 @@ def probe_hosts(provider, opencode):
         # OpenCode usually registers this provider simply as "deepseek".
         names = ("deepseek-account", "deepseek")
     for section in ("provider", "providers"):
+        sec_data = opencode.get(section)
+        if not isinstance(sec_data, dict):
+            continue
         for name in names:
-            data = opencode.get(section, {}).get(name, {})
+            data = sec_data.get(name)
+            if not isinstance(data, dict):
+                continue
             for key in ("options", "settings"):
                 options = data.get(key) or {}
+                if not isinstance(options, dict):
+                    continue
                 host = urlparse(options.get("baseURL") or options.get("baseUrl") or "").hostname
                 if host and host not in ("127.0.0.1", "localhost", "::1"):
                     return (host,)
@@ -175,6 +182,9 @@ class AutoRouter:
                 entry["failed_hosts"] = {key: until for key, until in entry["failed_hosts"].items() if until > self._clock()}
                 entry.update(rows=rows, selected=ranked[0]["mode"] if ranked else None,
                              checkedAt=time.time(), expires=self._clock() + (REFRESH_SECONDS if ranked else 10))
+        except Exception:
+            with self._lock:
+                entry["expires"] = self._clock() + 10
         finally:
             with self._lock:
                 entry["running"] = False
@@ -223,7 +233,7 @@ class AutoRouter:
         for row in ranked:
             mode = row["mode"]
             try:
-                conn = self._connector(routes[mode], host, port, hub_config=hub, timeout=PROBE_SECONDS)
+                conn = self._connector(routes[mode], host, port, hub_config=hub, timeout=20)
                 with self._lock:
                     if entry and host in probe_hosts(provider, opencode) and any(
                             result["mode"] == mode and result["available"] for result in entry["rows"]):

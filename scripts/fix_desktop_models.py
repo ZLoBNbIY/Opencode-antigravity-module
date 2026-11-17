@@ -1,6 +1,7 @@
 import sqlite3
 import json
 import os
+import re
 from pathlib import Path
 
 def fix_models_visibility():
@@ -21,16 +22,15 @@ def fix_models_visibility():
         data = json.loads(val_str)
 
         # 1. Remove discontinued models (3.7, 3.6, 3.5, 3.1)
-        deprecated_versions = ("3.7", "3.6", "3.5", "3.1")
+        _dep_re = re.compile(r"(?:^|[-.])(3\.7|3\.6|3\.5|3\.1)(?:$|[-.])")
         def is_dep(mid):
-            return any(v in mid for v in deprecated_versions)
+            return bool(_dep_re.search(str(mid or "")))
 
         user_models = [m for m in data.get("user", []) if not is_dep(m.get("modelID", ""))]
 
         # 2. Models that should be immediately visible in the quick dropdown
         to_show = [
             "antigravity-gemini-4-hydrogen",
-            "antigravity-gemini-4-argon",
             "antigravity-gemini-3.8-flash",
             "antigravity-claude-opus-5-5",
             "antigravity-claude-opus-5-5-thinking",
@@ -63,7 +63,6 @@ def fix_models_visibility():
             recent_keys = {f"{m.get('providerID')}:{m.get('modelID')}" for m in data["recent"]}
             for m_id in [
                 "antigravity-gemini-4-hydrogen",
-                "antigravity-gemini-4-argon",
                 "antigravity-claude-sonnet-5-5",
                 "antigravity-claude-opus-5-5",
                 "antigravity-claude-opus-4-6",

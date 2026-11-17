@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import os
-import select
+import posixpath
 import socket
+import ssl
 import threading
 import time
 import urllib.request
@@ -100,9 +102,37 @@ def _matches(host: str, domain: str) -> bool:
     return host == domain or host.endswith("." + domain)
 
 
+def _strip_host_port(host: str) -> str:
+    raw = (host or "").strip()
+    if raw.startswith("["):
+        end = raw.find("]")
+        if end != -1:
+            return raw[1:end].lower()
+    if raw.count(":") == 1:
+        return raw.split(":", 1)[0].lower()
+    return raw.strip("[]").lower()
+
+
+def _split_host_port(authority: str, default_port: int = 443) -> tuple[str, int]:
+    raw = (authority or "").strip()
+    if raw.startswith("["):
+        end = raw.find("]")
+        if end != -1:
+            host = raw[1:end]
+            rest = raw[end + 1:]
+            if rest.startswith(":") and rest[1:].isdigit():
+                return host, int(rest[1:])
+            return host, default_port
+    if raw.count(":") == 1:
+        host, _, port_str = raw.partition(":")
+        if port_str.isdigit():
+            return host, int(port_str)
+    return raw, default_port
+
+
 def provider_for_host(host: str, opencode_config: dict | None = None) -> str | None:
     """Resolve common built-in and configured provider hosts to provider IDs."""
-    host = host.split(":", 1)[0].strip("[]").lower()
+    host = _strip_host_port(host)
     config = opencode_config if isinstance(opencode_config, dict) else _read_json(CONFIG_DIR / "opencode.json")
     names: list[str] = []
     domains: dict[str, list[str]] = {}
@@ -178,7 +208,8 @@ def connect_routed(host, port, hub_config=None, opencode_config=None):
     hub = hub_config if isinstance(hub_config, dict) else _read_json(CONFIG_DIR / "antigravity.json")
     oc = opencode_config if isinstance(opencode_config, dict) else _read_json(CONFIG_DIR / "opencode.json")
     provider = provider_for_host(host, oc)
-    mode = hub.get("provider_routes", {}).get(provider, "default")
+    routes = hub.get("provider_routes")
+    mode = routes.get(provider, "default") if isinstance(routes, dict) else "default"
     if provider and mode in ("default", "auto"):
         from auto_router import router
         return router.connect(provider, host, port, hub, oc)
@@ -205,17 +236,28 @@ def connect_routed(host, port, hub_config=None, opencode_config=None):
 def _resolve_with_hub_dns(host: str, hub_config=None, timeout=8) -> str:
     import dns_tester
 
+    clean_host = (host or "").strip().strip("[]")
+    try:
+        ipaddress.ip_address(clean_host)
+        return clean_host
+    except ValueError:
+        pass
+
     hub = hub_config if isinstance(hub_config, dict) else _read_json(CONFIG_DIR / "antigravity.json")
     mode = hub.get("dns_mode", "system")
     if mode == "system":
         return host
     deadline = time.monotonic() + timeout
     if mode == "doh":
+        doh_url = str(hub.get("doh_url") or "").strip()
+        if not doh_url.startswith("https://"):
+            raise OSError("Invalid DoH URL")
         query = dns_tester._build_dns_query(host)
-        request = urllib.request.Request(hub.get("doh_url", ""), data=query,
+        request = urllib.request.Request(doh_url, data=query,
             headers={"Content-Type": "application/dns-message", "Accept": "application/dns-message"}, method="POST")
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open(request, timeout=timeout) as response:
+        remaining = max(0.5, deadline - time.monotonic())
+        with opener.open(request, timeout=remaining) as response:
             answer = dns_tester._parse_a_record_ip(response.read())
         result = {"ok": bool(answer), "resolved_ip": answer}
     elif mode == "dot":
@@ -250,12 +292,15 @@ def _connect_upstream(proxy_url: str | None, target_host: str, target_port: int,
             resolved = _resolve_with_hub_dns(target_host, hub_config, remaining()) if proxy_url else target_host
             upstream = socket.create_connection((resolved, target_port), timeout=remaining())
         else:
+            if any(c in str(target_host) for c in "\r\n\x00 \t"):
+                raise ValueError("Invalid target host")
             parsed = urlparse(proxy_url)
-            proxy_host = parsed.hostname or "127.0.0.1"
+            if parsed.scheme not in ("http", "https") or not parsed.hostname:
+                raise OSError(f"Unsupported proxy URL: {proxy_url}")
+            proxy_host = parsed.hostname
             proxy_port = parsed.port or (443 if parsed.scheme == "https" else 80)
             upstream = socket.create_connection((proxy_host, proxy_port), timeout=remaining())
             if parsed.scheme == "https":
-                import ssl
                 upstream.settimeout(remaining())
                 upstream = ssl.create_default_context().wrap_socket(upstream, server_hostname=proxy_host)
             auth = ""
@@ -263,8 +308,9 @@ def _connect_upstream(proxy_url: str | None, target_host: str, target_port: int,
                 from urllib.parse import unquote
                 credentials = f"{unquote(parsed.username)}:{unquote(parsed.password or '')}".encode()
                 auth = "Proxy-Authorization: Basic " + base64.b64encode(credentials).decode("ascii") + "\r\n"
-            request = (f"CONNECT {target_host}:{target_port} HTTP/1.1\r\n"
-                       f"Host: {target_host}:{target_port}\r\n{auth}Connection: Keep-Alive\r\n\r\n")
+            connect_host = f"[{target_host}]" if ":" in str(target_host) and not str(target_host).startswith("[") else target_host
+            request = (f"CONNECT {connect_host}:{target_port} HTTP/1.1\r\n"
+                       f"Host: {connect_host}:{target_port}\r\n{auth}Connection: Keep-Alive\r\n\r\n")
             upstream.settimeout(remaining())
             upstream.sendall(request.encode("ascii"))
             response = b""
@@ -285,29 +331,42 @@ def _connect_upstream(proxy_url: str | None, target_host: str, target_port: int,
 
 
 def _relay(left: socket.socket, right: socket.socket) -> None:
-    sockets = [left, right]
     # A hung tunnel must not occupy a listener slot forever: retries from
     # OpenCode can otherwise fill the backlog and cause ECONNREFUSED.
     idle_limit = 300
-    last_activity = time.monotonic()
-    try:
-        while sockets:
-            readable, _, exceptional = select.select(sockets, [], sockets, 5)
-            if exceptional:
-                return
-            if not readable:
-                if time.monotonic() - last_activity >= idle_limit:
-                    return
-                continue
-            last_activity = time.monotonic()
-            for src in readable:
-                dst = right if src is left else left
+    for sock in (left, right):
+        try:
+            sock.settimeout(idle_limit)
+        except OSError:
+            pass
+
+    def pump(src: socket.socket, dst: socket.socket) -> None:
+        try:
+            while True:
                 chunk = src.recv(65536)
                 if not chunk:
+                    try:
+                        dst.shutdown(socket.SHUT_WR)
+                    except OSError:
+                        pass
                     return
                 dst.sendall(chunk)
-    except OSError:
-        pass
+        except TimeoutError:
+            for sock in (left, right):
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+        except OSError:
+            pass
+
+    t1 = threading.Thread(target=pump, args=(left, right), daemon=True)
+    t2 = threading.Thread(target=pump, args=(right, left), daemon=True)
+    t1.start()
+    t2.start()
+    try:
+        t1.join()
+        t2.join()
     finally:
         for sock in (left, right):
             try:
@@ -368,18 +427,21 @@ class _Handler(BaseHTTPRequestHandler):
         host = target.hostname
         port = target.port or (443 if target.scheme == "https" else 80)
         base_path = target.path.rstrip("/")
+        norm_tail = posixpath.normpath("/" + tail).lstrip("/") if tail else ""
+        if norm_tail == ".":
+            norm_tail = ""
         # The local baseURL already repeats the upstream prefix (/v1), so drop
         # it from the incoming path before appending the real endpoint path.
         prefix = base_path.lstrip("/")
-        if prefix and (tail == prefix or tail.startswith(prefix + "/")):
-            tail = tail[len(prefix):].lstrip("/")
-        path = f"{base_path}/{tail}" if tail else (base_path or "/")
+        if prefix and (norm_tail == prefix or norm_tail.startswith(prefix + "/")):
+            norm_tail = norm_tail[len(prefix):].lstrip("/")
+        path = f"{base_path}/{norm_tail}" if norm_tail else (base_path or "/")
         if parsed.query:
             path += "?" + parsed.query
+        upstream = None
         try:
             upstream, _ = connect_routed(host, port)
             if target.scheme == "https":
-                import ssl
                 upstream = ssl.create_default_context().wrap_socket(upstream, server_hostname=host)
             request = f"{self.command} {path} HTTP/1.1\r\n"
             for key, value in self.headers.items():
@@ -390,22 +452,32 @@ class _Handler(BaseHTTPRequestHandler):
             upstream.sendall(request.encode("latin-1"))
             _relay(self.connection, upstream)
         except Exception:
+            if upstream is not None:
+                try:
+                    upstream.close()
+                except OSError:
+                    pass
             try:
                 self.send_error(502, "Unable to establish routed connection")
             except OSError:
                 pass
 
     def do_CONNECT(self):
-        host, _, port = self.path.rpartition(":")
+        host, target_port = _split_host_port(self.path, 443)
+        upstream = None
         try:
-            target_port = int(port) if port else 443
-            if host in (HOST, "localhost") and target_port == PORT:
+            if host.lower() in (HOST, "localhost", "::1", "0.0.0.0") and target_port == PORT:
                 raise OSError("Proxy loop")
             upstream, _ = connect_routed(host, target_port)
             self.send_response(200, "Connection Established")
             self.end_headers()
             _relay(self.connection, upstream)
         except Exception:
+            if upstream is not None:
+                try:
+                    upstream.close()
+                except OSError:
+                    pass
             try:
                 self.send_error(502, "Unable to establish routed connection")
             except OSError:
@@ -413,21 +485,33 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _plain_http(self):
         parsed = urlparse(self.path)
-        host = parsed.hostname or self.headers.get("Host", "")
+        host = parsed.hostname or _strip_host_port(self.headers.get("Host", ""))
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        upstream = None
         try:
+            if host.lower() in (HOST, "localhost", "::1", "0.0.0.0") and port == PORT:
+                raise OSError("Proxy loop")
             upstream, _ = connect_routed(host, port)
+            if parsed.scheme == "https":
+                upstream = ssl.create_default_context().wrap_socket(upstream, server_hostname=host)
             path = (parsed.path or "/") + (("?" + parsed.query) if parsed.query else "")
-            request = f"{self.command} {path} {self.request_version}\r\n"
+            request = f"{self.command} {path} HTTP/1.1\r\n"
             for key, value in self.headers.items():
-                if key.lower() not in ("proxy-authorization", "proxy-connection"):
-                    request += f"{key}: {value}\r\n"
-            upstream.sendall((request + "\r\n").encode("latin-1"))
+                if key.lower() in ("proxy-authorization", "proxy-connection", "connection", "keep-alive"):
+                    continue
+                request += f"{key}: {value}\r\n"
+            request += "Connection: close\r\n\r\n"
+            upstream.sendall(request.encode("latin-1"))
             length = int(self.headers.get("Content-Length", "0") or 0)
             if length:
                 upstream.sendall(self.rfile.read(length))
             _relay(self.connection, upstream)
         except Exception:
+            if upstream is not None:
+                try:
+                    upstream.close()
+                except OSError:
+                    pass
             try:
                 self.send_error(502, "Unable to establish routed connection")
             except OSError:
@@ -482,10 +566,13 @@ def _maintain_auto_routes():
         try:
             hub = _read_json(CONFIG_DIR / "antigravity.json")
             oc = _read_json(CONFIG_DIR / "opencode.json")
-            names = set(oc.get("provider", {})) | set(oc.get("providers", {}))
+            names = set(oc.get("provider") or {}) | set(oc.get("providers") or {})
+            visibility = hub.get("providers_visibility") or {}
+            routes = hub.get("provider_routes") or {}
+            disabled = oc.get("disabled_providers") or []
             for name in names:
-                enabled = hub.get("providers_visibility", {}).get(visibility_keys.get(name, name), True)
-                if enabled and name not in oc.get("disabled_providers", []) and hub.get("provider_routes", {}).get(name, "default") in ("default", "auto"):
+                enabled = visibility.get(visibility_keys.get(name, name), True)
+                if enabled and name not in disabled and routes.get(name, "default") in ("default", "auto"):
                     router.refresh(name, hub, oc)
         except Exception:
             pass

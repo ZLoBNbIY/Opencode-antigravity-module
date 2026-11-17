@@ -165,6 +165,31 @@ class ProviderRouteProxyTests(unittest.TestCase):
         self.assertEqual(provider_proxy._Handler.do_POST,
                          provider_proxy._Handler._dispatch)
 
+    def test_ipv6_host_parsing_and_half_close_relay(self):
+        import socket
+        import threading
+        import provider_proxy
+
+        self.assertEqual(provider_proxy._strip_host_port("[::1]:443"), "::1")
+        self.assertEqual(provider_proxy._split_host_port("[::1]:8443", 443), ("::1", 8443))
+        self.assertEqual(provider_proxy._split_host_port("example.com", 443), ("example.com", 443))
+
+        c1, s1 = socket.socketpair()
+        c2, s2 = socket.socketpair()
+        t = threading.Thread(target=provider_proxy._relay, args=(s1, s2), daemon=True)
+        t.start()
+        c1.sendall(b"ping")
+        c1.shutdown(socket.SHUT_WR)
+        self.assertEqual(c2.recv(16), b"ping")
+        self.assertEqual(c2.recv(16), b"")
+        c2.sendall(b"pong")
+        c2.shutdown(socket.SHUT_WR)
+        self.assertEqual(c1.recv(16), b"pong")
+        c1.close()
+        c2.close()
+        t.join(timeout=2)
+        self.assertFalse(t.is_alive())
+
 
 if __name__ == "__main__":
     unittest.main()

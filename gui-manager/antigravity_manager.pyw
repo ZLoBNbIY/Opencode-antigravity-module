@@ -8,25 +8,27 @@ import hashlib
 import time
 import datetime
 import subprocess
+import threading
 import uuid
 import secrets
 from pathlib import Path
 import shutil
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import openai_manager
-import win_tray
-import health_checker
-from google_health_auth import refresh_google_health_account
-import auto_updater
-import crypto_backup
-from vless_manager import vless_service, get_http_port, get_active_proxy
-from claude_manager import claude_service, CLAUDE_MODELS
-import xpiki_manager
-import opencode_config
 
 # Keep the Windows mutex handle alive for the lifetime of this process.
 _SINGLE_INSTANCE_MUTEX = None
+_google_store_lock = threading.RLock()
+
+
+def _atomic_write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{secrets.token_hex(6)}.tmp")
+    try:
+        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def acquire_single_instance():
@@ -153,9 +155,7 @@ def cleanup_opencode_locks():
 
 NODE_EXE = get_node_executable()
 CLI_JS = get_cli_js()
-CONFIG_FILE = Path(os.path.expanduser(r"~/.config/opencode/antigravity.json"))
 OPENCODE_EXE = get_opencode_exe()
-LOG_DIR = Path(os.path.expanduser(r"~/.local/share/opencode/log"))
 CONFIG_DIR = Path(os.path.expanduser(r"~/.config/opencode"))
 
 
@@ -173,23 +173,13 @@ def ordered_generation_dirs(config_dir: Path | None = None) -> list[Path]:
     dirs = list(base.glob("*.generation"))
     if active is not None and active in dirs:
         return [active] + [p for p in dirs if p != active]
-    return sorted(dirs, key=lambda p: p.stat().st_mtime, reverse=True)
+    def _safe_mtime(p: Path) -> float:
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+    return sorted(dirs, key=_safe_mtime, reverse=True)
 
-
-def open_url_in_browser(url: str) -> bool:
-    """Reliably opens a URL in the user's default browser on Windows and other platforms."""
-    try:
-        if sys.platform == "win32":
-            os.startfile(url)
-            return True
-    except Exception:
-        pass
-    try:
-        import webbrowser
-        return webbrowser.open(url)
-    except Exception as e:
-        print(f"Error opening browser for {url}: {e}")
-        return False
 
 DEFAULT_CONFIG = {
     "$schema": "https://raw.githubusercontent.com/cortexkit/opencode-antigravity-auth/main/schema.json",
@@ -261,12 +251,15 @@ def get_active_google_account_index() -> int:
         if cfg_file.exists():
             try:
                 cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
-                routing = cfg.get("antigravityRouting", {})
+                routing = cfg.get("antigravityRouting") or {}
                 accounts = cfg.get("accounts", [])
                 # Check active row for gemini first, then general activeRow
+                active_row_by_family = routing.get("activeRowByFamily") or {}
+                gemini_row = active_row_by_family.get("gemini") if isinstance(active_row_by_family, dict) else None
+                active_row = routing.get("activeRow")
                 active_row_id = (
-                    routing.get("activeRowByFamily", {}).get("gemini", {}).get("id")
-                    or routing.get("activeRow", {}).get("id")
+                    (gemini_row.get("id") if isinstance(gemini_row, dict) else None)
+                    or (active_row.get("id") if isinstance(active_row, dict) else None)
                 )
                 if active_row_id:
                     for i, acc in enumerate(accounts):
@@ -291,190 +284,197 @@ def get_active_google_account_index() -> int:
 
 
 def set_active_google_account_index(target_index: int) -> bool:
-    config_dir = Path(os.path.expanduser("~/.config/opencode"))
-    gen_dirs = ordered_generation_dirs(config_dir)
-    changed = False
-    if gen_dirs:
-        cfg_file = gen_dirs[0] / "config.json"
-        if cfg_file.exists():
+    with _google_store_lock:
+        config_dir = Path(os.path.expanduser("~/.config/opencode"))
+        gen_dirs = ordered_generation_dirs(config_dir)
+        changed = False
+        if gen_dirs:
+            cfg_file = gen_dirs[0] / "config.json"
+            if cfg_file.exists():
+                try:
+                    cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+                    accounts = cfg.get("accounts", [])
+                    if 0 <= target_index < len(accounts):
+                        target_id = accounts[target_index].get("id")
+                        routing = cfg.get("antigravityRouting") or {}
+                        routing["activeIndex"] = target_index
+                        routing["activeIndexByFamily"] = {"claude": target_index, "gemini": target_index}
+                        if target_id:
+                            routing["activeRow"] = {"id": target_id, "credentialEpoch": 1}
+                            routing["activeRowByFamily"] = {
+                                "claude": {"id": target_id, "credentialEpoch": 1},
+                                "gemini": {"id": target_id, "credentialEpoch": 1},
+                            }
+                        # Ensure selected account is enabled in commonAuthPool
+                        rows = cfg.get("commonAuthPool", {}).get("rows", {})
+                        if target_id in rows:
+                            rows[target_id]["enabled"] = True
+                            rows[target_id]["usable"] = True
+                        accounts[target_index]["enabled"] = True
+                        accounts[target_index]["candidate"] = True
+
+                        cfg["antigravityRouting"] = routing
+                        _atomic_write_json(cfg_file, cfg)
+                        changed = True
+                except Exception as e:
+                    print(f"Error updating generation config: {e}")
+
+        legacy_file = config_dir / "antigravity-accounts.json"
+        if legacy_file.exists():
             try:
-                cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
-                accounts = cfg.get("accounts", [])
-                if 0 <= target_index < len(accounts):
-                    target_id = accounts[target_index].get("id")
-                    routing = cfg.get("antigravityRouting", {})
-                    routing["activeIndex"] = target_index
-                    routing["activeIndexByFamily"] = {"claude": target_index, "gemini": target_index}
-                    if target_id:
-                        routing["activeRow"] = {"id": target_id, "credentialEpoch": 1}
-                        routing["activeRowByFamily"] = {
-                            "claude": {"id": target_id, "credentialEpoch": 1},
-                            "gemini": {"id": target_id, "credentialEpoch": 1},
-                        }
-                    # Ensure selected account is enabled in commonAuthPool
-                    rows = cfg.get("commonAuthPool", {}).get("rows", {})
-                    if target_id in rows:
-                        rows[target_id]["enabled"] = True
-                        rows[target_id]["usable"] = True
-                    accounts[target_index]["enabled"] = True
-                    accounts[target_index]["candidate"] = True
+                legacy_data = json.loads(legacy_file.read_text(encoding="utf-8"))
+                legacy_data["activeIndex"] = target_index
+                if "activeIndexByFamily" in legacy_data:
+                    legacy_data["activeIndexByFamily"] = {"claude": target_index, "gemini": target_index}
+                _atomic_write_json(legacy_file, legacy_data)
+                changed = True
+            except Exception:
+                pass
 
-                    cfg["antigravityRouting"] = routing
-                    cfg_file.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
-                    changed = True
-            except Exception as e:
-                print(f"Error updating generation config: {e}")
-
-    legacy_file = config_dir / "antigravity-accounts.json"
-    if legacy_file.exists():
-        try:
-            legacy_data = json.loads(legacy_file.read_text(encoding="utf-8"))
-            legacy_data["activeIndex"] = target_index
-            if "activeIndexByFamily" in legacy_data:
-                legacy_data["activeIndexByFamily"] = {"claude": target_index, "gemini": target_index}
-            legacy_file.write_text(json.dumps(legacy_data, indent=2, ensure_ascii=False), encoding="utf-8")
-            changed = True
-        except Exception:
-            pass
-
-    return changed
+        return changed
 
 
 def set_google_account_candidate(target_email_or_id: str, candidate: bool) -> bool:
     """Persists account auto-rotation candidate flag without disabling the account itself."""
-    config_dir = Path(os.path.expanduser("~/.config/opencode"))
-    gen_dirs = ordered_generation_dirs(config_dir)
-    changed = False
+    with _google_store_lock:
+        config_dir = Path(os.path.expanduser("~/.config/opencode"))
+        gen_dirs = ordered_generation_dirs(config_dir)
+        changed = False
 
-    if gen_dirs:
-        gen_dir = gen_dirs[0]
-        cfg_file = gen_dir / "config.json"
-        state_file = gen_dir / "state.json"
-        if cfg_file.exists():
-            try:
-                cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
-                target_id = None
-
-                if state_file.exists():
-                    try:
-                        state = json.loads(state_file.read_text(encoding="utf-8"))
-                        for aid, st in state.get("accounts", {}).items():
-                            meta = st.get("commonAuthProviderState", {}).get("metadata", {})
-                            if aid == target_email_or_id or meta.get("email") == target_email_or_id:
-                                target_id = aid
-                                break
-                    except Exception:
-                        pass
-
-                if not target_id:
-                    for acc in cfg.get("accounts", []):
-                        if acc.get("id") == target_email_or_id or acc.get("email") == target_email_or_id:
-                            target_id = acc.get("id")
-                            break
-
-                if target_id:
-                    rows = cfg.get("commonAuthPool", {}).get("rows", {})
-                    if target_id in rows:
-                        rows[target_id]["usable"] = candidate
-                    for acc in cfg.get("accounts", []):
-                        if acc.get("id") == target_id:
-                            acc["candidate"] = candidate
-
-                    cfg_file.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
-                    changed = True
-            except Exception as e:
-                print(f"Error updating candidate in generation config: {e}")
-
-    legacy_file = config_dir / "antigravity-accounts.json"
-    if legacy_file.exists():
-        try:
-            legacy_data = json.loads(legacy_file.read_text(encoding="utf-8"))
-            for acc in legacy_data.get("accounts", []):
-                if acc.get("id") == target_email_or_id or acc.get("email") == target_email_or_id:
-                    acc["candidate"] = candidate
-                    changed = True
-            if changed:
-                legacy_file.write_text(json.dumps(legacy_data, indent=2, ensure_ascii=False), encoding="utf-8")
-        except Exception:
-            pass
-
-    return changed
-
-
-def set_google_account_enabled(target_email_or_id: str, enabled: bool) -> bool:
-    """Persists account enabled/disabled state to commonAuthPool and config."""
-    config_dir = Path(os.path.expanduser("~/.config/opencode"))
-    gen_dirs = ordered_generation_dirs(config_dir)
-    changed = False
-
-    if gen_dirs:
-        gen_dir = gen_dirs[0]
-        cfg_file = gen_dir / "config.json"
-        state_file = gen_dir / "state.json"
-        if cfg_file.exists():
-            try:
-                cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
-                target_id = None
-
-                if state_file.exists():
-                    try:
-                        state = json.loads(state_file.read_text(encoding="utf-8"))
-                        for aid, st in state.get("accounts", {}).items():
-                            meta = st.get("commonAuthProviderState", {}).get("metadata", {})
-                            if aid == target_email_or_id or meta.get("email") == target_email_or_id:
-                                target_id = aid
-                                break
-                    except Exception:
-                        pass
-
-                if not target_id:
-                    for acc in cfg.get("accounts", []):
-                        if acc.get("id") == target_email_or_id or acc.get("email") == target_email_or_id:
-                            target_id = acc.get("id")
-                            break
-
-                if target_id:
-                    rows = cfg.get("commonAuthPool", {}).get("rows", {})
-                    current_cand = True
-                    for acc in cfg.get("accounts", []):
-                        if acc.get("id") == target_id:
-                            current_cand = acc.get("candidate", True)
-                            acc["enabled"] = enabled
-                            break
-
-                    if target_id in rows:
-                        rows[target_id]["enabled"] = enabled
-                        rows[target_id]["usable"] = enabled and current_cand
-
-                    cfg_file.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
-                    changed = True
+        if gen_dirs:
+            gen_dir = gen_dirs[0]
+            cfg_file = gen_dir / "config.json"
+            state_file = gen_dir / "state.json"
+            if cfg_file.exists():
+                try:
+                    cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+                    target_id = None
 
                     if state_file.exists():
                         try:
                             state = json.loads(state_file.read_text(encoding="utf-8"))
-                            if target_id in state.get("accounts", {}):
-                                meta = state["accounts"][target_id].setdefault("commonAuthProviderState", {}).setdefault("metadata", {})
-                                meta["enabled"] = enabled
-                                state_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+                            for aid, st in state.get("accounts", {}).items():
+                                meta = st.get("commonAuthProviderState", {}).get("metadata", {})
+                                if aid == target_email_or_id or meta.get("email") == target_email_or_id:
+                                    target_id = aid
+                                    break
                         except Exception:
                             pass
-            except Exception as e:
-                print(f"Error updating enabled in generation config: {e}")
 
-    legacy_file = config_dir / "antigravity-accounts.json"
-    if legacy_file.exists():
-        try:
-            legacy_data = json.loads(legacy_file.read_text(encoding="utf-8"))
-            for acc in legacy_data.get("accounts", []):
-                if acc.get("id") == target_email_or_id or acc.get("email") == target_email_or_id:
-                    acc["enabled"] = enabled
+                    if not target_id:
+                        for acc in cfg.get("accounts", []):
+                            if acc.get("id") == target_email_or_id or acc.get("email") == target_email_or_id:
+                                target_id = acc.get("id")
+                                break
+
+                    if target_id:
+                        rows = cfg.get("commonAuthPool", {}).get("rows", {})
+                        if target_id in rows:
+                            rows[target_id]["usable"] = candidate
+                        for acc in cfg.get("accounts", []):
+                            if acc.get("id") == target_id:
+                                acc["candidate"] = candidate
+
+                        _atomic_write_json(cfg_file, cfg)
+                        changed = True
+                except Exception as e:
+                    print(f"Error updating candidate in generation config: {e}")
+
+        legacy_file = config_dir / "antigravity-accounts.json"
+        if legacy_file.exists():
+            try:
+                legacy_data = json.loads(legacy_file.read_text(encoding="utf-8"))
+                legacy_changed = False
+                for acc in legacy_data.get("accounts", []):
+                    if acc.get("id") == target_email_or_id or acc.get("email") == target_email_or_id:
+                        acc["candidate"] = candidate
+                        legacy_changed = True
+                if legacy_changed:
+                    _atomic_write_json(legacy_file, legacy_data)
                     changed = True
-            if changed:
-                legacy_file.write_text(json.dumps(legacy_data, indent=2, ensure_ascii=False), encoding="utf-8")
-        except Exception:
-            pass
+            except Exception:
+                pass
 
-    return changed
+        return changed
+
+
+def set_google_account_enabled(target_email_or_id: str, enabled: bool) -> bool:
+    """Persists account enabled/disabled state to commonAuthPool and config."""
+    with _google_store_lock:
+        config_dir = Path(os.path.expanduser("~/.config/opencode"))
+        gen_dirs = ordered_generation_dirs(config_dir)
+        changed = False
+
+        if gen_dirs:
+            gen_dir = gen_dirs[0]
+            cfg_file = gen_dir / "config.json"
+            state_file = gen_dir / "state.json"
+            if cfg_file.exists():
+                try:
+                    cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+                    target_id = None
+
+                    if state_file.exists():
+                        try:
+                            state = json.loads(state_file.read_text(encoding="utf-8"))
+                            for aid, st in state.get("accounts", {}).items():
+                                meta = st.get("commonAuthProviderState", {}).get("metadata", {})
+                                if aid == target_email_or_id or meta.get("email") == target_email_or_id:
+                                    target_id = aid
+                                    break
+                        except Exception:
+                            pass
+
+                    if not target_id:
+                        for acc in cfg.get("accounts", []):
+                            if acc.get("id") == target_email_or_id or acc.get("email") == target_email_or_id:
+                                target_id = acc.get("id")
+                                break
+
+                    if target_id:
+                        rows = cfg.get("commonAuthPool", {}).get("rows", {})
+                        current_cand = True
+                        for acc in cfg.get("accounts", []):
+                            if acc.get("id") == target_id:
+                                current_cand = acc.get("candidate", True)
+                                acc["enabled"] = enabled
+                                break
+
+                        if target_id in rows:
+                            rows[target_id]["enabled"] = enabled
+                            rows[target_id]["usable"] = enabled and current_cand
+
+                        _atomic_write_json(cfg_file, cfg)
+                        changed = True
+
+                        if state_file.exists():
+                            try:
+                                state = json.loads(state_file.read_text(encoding="utf-8"))
+                                if target_id in state.get("accounts", {}):
+                                    meta = state["accounts"][target_id].setdefault("commonAuthProviderState", {}).setdefault("metadata", {})
+                                    meta["enabled"] = enabled
+                                    _atomic_write_json(state_file, state)
+                            except Exception:
+                                pass
+                except Exception as e:
+                    print(f"Error updating enabled in generation config: {e}")
+
+        legacy_file = config_dir / "antigravity-accounts.json"
+        if legacy_file.exists():
+            try:
+                legacy_data = json.loads(legacy_file.read_text(encoding="utf-8"))
+                legacy_changed = False
+                for acc in legacy_data.get("accounts", []):
+                    if acc.get("id") == target_email_or_id or acc.get("email") == target_email_or_id:
+                        acc["enabled"] = enabled
+                        legacy_changed = True
+                if legacy_changed:
+                    _atomic_write_json(legacy_file, legacy_data)
+                    changed = True
+            except Exception:
+                pass
+
+        return changed
 
 def export_google_accounts() -> list[dict]:
     config_dir = Path(os.path.expanduser("~/.config/opencode"))
@@ -562,8 +562,9 @@ def delete_google_account(target_email_or_id: str) -> bool:
                     if "commonAuthPool" in cfg and "rows" in cfg["commonAuthPool"]:
                         cfg["commonAuthPool"]["rows"].pop(target_id, None)
 
-                    routing = cfg.get("antigravityRouting", {})
-                    active_row_id = routing.get("activeRow", {}).get("id")
+                    routing = cfg.get("antigravityRouting") or {}
+                    active_row = routing.get("activeRow")
+                    active_row_id = active_row.get("id") if isinstance(active_row, dict) else None
                     remaining = cfg.get("accounts", [])
                     if active_row_id == target_id:
                         if remaining:
@@ -578,18 +579,29 @@ def delete_google_account(target_email_or_id: str) -> bool:
                         else:
                             routing["activeIndex"] = 0
                             routing["activeRow"] = None
+                            routing["activeIndexByFamily"] = {"claude": 0, "gemini": 0}
+                            routing["activeRowByFamily"] = {"claude": None, "gemini": None}
                     else:
                         for i, a in enumerate(remaining):
                             if a.get("id") == active_row_id:
                                 routing["activeIndex"] = i
                                 routing["activeIndexByFamily"] = {"claude": i, "gemini": i}
                                 break
+                        row_by_family = routing.get("activeRowByFamily")
+                        if isinstance(row_by_family, dict):
+                            for fam in ("claude", "gemini"):
+                                fam_row = row_by_family.get(fam)
+                                if isinstance(fam_row, dict) and fam_row.get("id") == target_id:
+                                    if remaining:
+                                        row_by_family[fam] = {"id": remaining[0]["id"], "credentialEpoch": 1}
+                                    else:
+                                        row_by_family[fam] = None
                     cfg["antigravityRouting"] = routing
-                    cfg_file.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+                    _atomic_write_json(cfg_file, cfg)
 
                     if "accounts" in state:
                         state["accounts"].pop(target_id, None)
-                    state_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+                    _atomic_write_json(state_file, state)
                     deleted = True
             except Exception as e:
                 print(f"Error deleting account: {e}")
@@ -608,7 +620,7 @@ def delete_google_account(target_email_or_id: str) -> bool:
                 cur_idx = legacy_data.get("activeIndex", 0)
                 if cur_idx >= len(new_accounts):
                     legacy_data["activeIndex"] = max(0, len(new_accounts) - 1)
-                legacy_file.write_text(json.dumps(legacy_data, indent=2, ensure_ascii=False), encoding="utf-8")
+                _atomic_write_json(legacy_file, legacy_data)
                 deleted = True
         except Exception:
             pass
@@ -813,13 +825,18 @@ def get_active_generation_dir(config_dir: Path) -> Path | None:
         try:
             ptr = json.loads(pointer_file.read_text(encoding="utf-8"))
             dirname = ptr.get("directoryBasename")
-            if dirname:
-                p = config_dir / dirname
-                if p.is_dir():
+            if isinstance(dirname, str) and dirname:
+                p = (config_dir / dirname).resolve()
+                if p.parent == config_dir.resolve() and p.is_dir():
                     return p
         except Exception:
             pass
-    gen_dirs = sorted(config_dir.glob("*.generation"), key=lambda p: p.stat().st_mtime, reverse=True)
+    def _safe_mtime(p: Path) -> float:
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+    gen_dirs = sorted(config_dir.glob("*.generation"), key=_safe_mtime, reverse=True)
     return gen_dirs[0] if gen_dirs else None
 
 

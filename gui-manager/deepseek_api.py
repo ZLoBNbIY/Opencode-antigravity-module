@@ -12,6 +12,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import closing
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -113,7 +114,7 @@ def _key_from_opencode_db() -> str:
     if not db.exists():
         return ""
     try:
-        with sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=2) as conn:
+        with closing(sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=2)) as conn:
             row = conn.execute(
                 "SELECT value FROM credential WHERE integration_id = 'deepseek' "
                 "ORDER BY time_updated DESC LIMIT 1"
@@ -129,13 +130,21 @@ def _key_from_opencode_db() -> str:
 
 
 def _key_from_opencode_config() -> str:
-    path = hub_paths.OPENCODE_CONFIG_FILE
+    try:
+        import jsonc_config
+        path = jsonc_config.config_path(hub_paths.OPENCODE_CONFIG_DIR)
+    except Exception:
+        path = hub_paths.OPENCODE_CONFIG_FILE
     if not path.exists():
         return ""
     try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return ""
+        import jsonc_config
+        data = jsonc_config.parse_config(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            return ""
     for section in ("provider", "providers"):
         providers = data.get(section)
         if not isinstance(providers, dict):
@@ -179,7 +188,8 @@ def api_origin(base_url: Optional[str] = None) -> str:
     parsed = urllib.parse.urlparse(raw)
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
         raise ValueError("Укажите корректный HTTPS URL DeepSeek API без логина и пароля")
-    return f"https://{parsed.hostname}{':' + str(parsed.port) if parsed.port else ''}"
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    return f"https://{host}{':' + str(parsed.port) if parsed.port else ''}"
 
 
 def get_http_opener(timeout: int = 12):

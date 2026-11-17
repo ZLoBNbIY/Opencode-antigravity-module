@@ -37,15 +37,21 @@ _last_attempt = 0.0
 def _parse(text: str) -> tuple[set[str], set[str]]:
     domains, exact = set(), set()
     for raw in text.splitlines():
-        line = raw.split("#", 1)[0].strip().lower().rstrip(".")
-        if not line or line.startswith(("include:", "!")):
+        line = raw.split("#", 1)[0].strip().lower()
+        if not line or line.startswith(("include:", "!", "regexp:", "keyword:")):
+            continue
+        # Strip v2fly @attribute tags (e.g. "domain.com @cn" or "domain.com:@cn")
+        line = line.split()[0].split("@", 1)[0].rstrip(".:")
+        if not line:
             continue
         if line.startswith("full:"):
-            line = line[5:]
-            exact.add(line)
+            line = line[5:].strip(".")
+            if line:
+                exact.add(line)
         elif line.startswith(("domain:", "domain=")):
-            line = line.split(":", 1)[-1] if line.startswith("domain:") else line.split("=", 1)[-1]
-            domains.add(line)
+            line = (line.split(":", 1)[-1] if line.startswith("domain:") else line.split("=", 1)[-1]).strip(".")
+            if line:
+                domains.add(line)
         else:
             domains.add(line)
     return domains, exact
@@ -78,30 +84,42 @@ def _refresh() -> None:
         domains, exact = set(), set()
         rule_sources: dict[tuple[str, str], set[str]] = {}
         loaded_sources = 0
+        last_src_error = None
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         for url in SOURCES:
-            request = urllib.request.Request(url, headers={"User-Agent": "AntigravityHub-Gemini-Rules"})
-            with urllib.request.urlopen(request, timeout=15) as response:
-                text = response.read().decode("utf-8-sig")
-            parsed_domains, parsed_exact = _parse(text)
-            domains.update(parsed_domains)
-            exact.update(parsed_exact)
-            for domain in parsed_domains:
-                rule_sources.setdefault((domain, "suffix"), set()).add(url)
-            for domain in parsed_exact:
-                rule_sources.setdefault((domain, "exact"), set()).add(url)
-            loaded_sources += 1
+            try:
+                request = urllib.request.Request(url, headers={"User-Agent": "AntigravityHub-Gemini-Rules"})
+                with opener.open(request, timeout=15) as response:
+                    text = response.read().decode("utf-8-sig")
+                parsed_domains, parsed_exact = _parse(text)
+                domains.update(parsed_domains)
+                exact.update(parsed_exact)
+                for domain in parsed_domains:
+                    rule_sources.setdefault((domain, "suffix"), set()).add(url)
+                for domain in parsed_exact:
+                    rule_sources.setdefault((domain, "exact"), set()).add(url)
+                loaded_sources += 1
+            except Exception as src_err:
+                last_src_error = type(src_err).__name__
         if not domains and not exact:
+            with _lock:
+                _last_error = last_src_error or "EmptyRules"
             return
         updated = time.time()
         CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         rules = [{"domain": domain, "match": match, "sources": sorted(sources)}
                  for (domain, match), sources in sorted(rule_sources.items())]
-        CACHE_PATH.write_text(json.dumps({"domains": sorted(domains), "exact": sorted(exact),
-                                          "rules": rules, "updated": updated,
-                                          "sources": loaded_sources}), encoding="utf-8")
+        payload = json.dumps({"domains": sorted(domains), "exact": sorted(exact),
+                              "rules": rules, "updated": updated,
+                              "sources": loaded_sources})
+        try:
+            import secure_storage
+            secure_storage.atomic_write(CACHE_PATH, payload)
+        except Exception:
+            CACHE_PATH.write_text(payload, encoding="utf-8")
         with _lock:
             _domains, _exact, _rule_sources, _last_refresh = domains, exact, rule_sources, updated
-            _source_count, _last_error = loaded_sources, None
+            _source_count, _last_error = loaded_sources, last_src_error
     except Exception as error:
         # Keep the last known-good cache if any upstream is unavailable.
         with _lock:
