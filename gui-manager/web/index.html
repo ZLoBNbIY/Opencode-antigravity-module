@@ -127,9 +127,8 @@
           <div class="glass-card network-panel">
             <div class="panel-heading"><h2>VLESS-туннель</h2><span class="badge-pill badge-pool" id="vless-status">Проверка…</span></div>
             <p class="help-text">Локальный туннель Xray / sing-box. Выберите VLESS в маршруте нужного провайдера.</p>
+            <p class="help-text" id="vless-active-summary" role="status" style="margin-top:4px;">Активный конфиг: не выбран</p>
 
-            <label class="field-label" for="vless-url">Строка подключения</label><input id="vless-url" type="password" autocomplete="off" placeholder="vless://uuid@server:port?...">
-            <label class="field-label" for="vless-core-path">Свой путь к ядру (необязательно)</label><input id="vless-core-path" placeholder="C:\path\sing-box.exe">
             <div class="core-list" id="vless-core-list"></div><p class="help-text" id="vless-core-status">Выбранное ядро: проверка…</p>
             <label class="switch-label"><input class="switch-input" type="checkbox" id="vless-kill-switch">Kill Switch для Claude при обрыве VLESS</label>
             <div class="button-row"><button class="btn-primary" id="btn-vless-start" onclick="vlessAction('start')">▶ Запустить</button><button class="btn-secondary" id="btn-vless-stop" onclick="vlessAction('stop')">■ Остановить</button><button class="btn-secondary" onclick="vlessAction('test')">Проверить IP</button></div>

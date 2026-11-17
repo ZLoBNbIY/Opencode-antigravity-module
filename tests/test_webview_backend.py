@@ -346,6 +346,22 @@ class WebviewBackendTests(unittest.TestCase):
             mocked.assert_called_once_with("google", timeout=20)
             self.assertTrue(result["ok"])
 
+    def test_set_vless_core_selects_installed_core(self):
+        api = self.backend.HubApi()
+        core_path = Path("/tmp/xray.exe")
+        self.vless.find_core_executable.return_value = core_path
+        result = api.set_vless_core("xray")
+        self.assertTrue(result["ok"])
+        self.assertEqual(api.load_config()["vless_core_path"], str(core_path))
+        self.assertIn("xray", result["path"].lower())
+
+    def test_set_vless_core_rejects_missing_or_unknown(self):
+        api = self.backend.HubApi()
+        self.vless.find_core_executable.return_value = None
+        self.assertFalse(api.set_vless_core("sing-box")["ok"])
+        with self.assertRaises(ValueError):
+            api.set_vless_core("curl")
+
     def test_vless_pool_add_activate_and_delete(self):
         api = self.backend.HubApi()
         first = "vless://aaa@1.1.1.1:443?security=reality#DE"

@@ -228,7 +228,7 @@ function renderNetworkTab() {
     const row = document.createElement('div');
     row.className = 'core-row';
     row.innerHTML = `<span class="connection-indicator ${core.installed ? 'ok' : 'idle'}" aria-label="${core.installed ? 'Установлено' : 'Не установлено'}"></span><span class="core-name">${html(kind === 'xray' ? 'Xray' : kind)}</span><span>${core.installed ? 'Установлено' : 'Не установлено'}${core.selected ? ' · выбрано' : ''}</span>${core.installed && !core.selected ? '<button class="btn-secondary">Выбрать</button>' : ''}${core.path ? `<span class="core-path">${html(core.path)}</span>` : ''}`;
-    row.querySelector('button')?.addEventListener('click', () => { document.getElementById('vless-core-path').value = core.path; networkDirty = true; showToast('Ядро выбрано. Сохраните настройки сети.'); });
+    row.querySelector('button')?.addEventListener('click', () => selectVlessCore(kind));
     coreList.appendChild(row);
     const button = document.getElementById(`btn-download-${kind}`);
     button.disabled = !!core.installed;
@@ -246,6 +246,21 @@ function renderNetworkTab() {
   renderProxyPool();
   if (!networkFormInitialized) fillNetworkForm();
   const cfg = appState.config || {};
+  // Show which pool config is active and which country/IP it currently exits from.
+  const activePool = Array.isArray(cfg.vless_pool) ? cfg.vless_pool : [];
+  const activeEntry = activePool.find(entry => entry.url === String(cfg.vless_url || '').trim());
+  const summary = document.getElementById('vless-active-summary');
+  if (summary) {
+    if (activeEntry) {
+      const geoParts = [];
+      if (activeEntry.country) geoParts.push(`${countryFlag(activeEntry.country)} ${activeEntry.country}`);
+      if (activeEntry.ip) geoParts.push(activeEntry.ip);
+      const geo = geoParts.length ? ` · ${geoParts.join(' · ')}` : '';
+      summary.textContent = `Активный конфиг: ${activeEntry.label || 'без названия'}${geo}`;
+    } else {
+      summary.textContent = 'Активный конфиг: не выбран';
+    }
+  }
   const mode = cfg.dns_mode || 'system';
   const resolver = mode === 'standard' ? (cfg.custom_dns || ['143.20.64.55','31.58.216.201']).join(', ')
     : mode === 'dot' ? cfg.dot_host : mode === 'doh' ? cfg.doh_url : 'DNS операционной системы';
@@ -256,8 +271,7 @@ function renderNetworkTab() {
 
 function fillNetworkForm() {
   const cfg = appState.config || {};
-  const values = {'vless-url':cfg.vless_url || '', 'vless-core-path':cfg.vless_core_path || '',
-    'dns-mode':cfg.dns_mode || 'system', 'dns-primary':(cfg.custom_dns || ['143.20.64.55'])[0] || '',
+  const values = {'dns-mode':cfg.dns_mode || 'system', 'dns-primary':(cfg.custom_dns || ['143.20.64.55'])[0] || '',
     'dns-secondary':(cfg.custom_dns || ['143.20.64.55','31.58.216.201'])[1] || '',
     'dns-dot':cfg.dot_host || 'dns.bezmezhau.com', 'dns-doh':cfg.doh_url || 'https://dns.bezmezhau.com/dns-query',
     'network-proxy': ''};
@@ -742,7 +756,6 @@ async function saveNetworkSettings() {
     const pool = (appState.config?.proxy_pool || []).filter(Boolean);
     const primaryProxy = value('network-proxy') || pool[0] || '';
     const result = await window.pywebview.api.save_network_settings({
-      vless_url:value('vless-url'), vless_core_path:value('vless-core-path') || null,
       vless_kill_switch:document.getElementById('vless-kill-switch').checked,
       dns_mode:value('dns-mode'), custom_dns:[value('dns-primary'),value('dns-secondary')].filter(Boolean),
       dot_host:value('dns-dot'), doh_url:value('dns-doh'),
@@ -874,6 +887,15 @@ async function testAllVlessConfigs() {
     if (res.pool) { appState.config.vless_pool = res.pool; renderVlessPool(); }
   } catch (e) { vlessPoolStatus(String(e)); }
   finally { if (btn) btn.disabled = false; }
+}
+
+async function selectVlessCore(kind) {
+  if (!window.pywebview?.api?.set_vless_core) return;
+  try {
+    const res = await window.pywebview.api.set_vless_core(kind);
+    showToast(res.message || (res.ok ? 'Ядро выбрано' : 'Не удалось выбрать ядро'));
+    if (res.ok) await refreshState();
+  } catch (e) { showToast(String(e)); }
 }
 
 async function vlessAction(action) {

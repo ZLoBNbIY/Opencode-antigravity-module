@@ -540,6 +540,22 @@ class HubApi:
                 raise OSError("Не удалось сохранить состояние туннеля")
             return {"ok": ok, "message": message}
 
+    def set_vless_core(self, core_type: str) -> dict:
+        """Select an installed core without exposing a free-form path field."""
+        if core_type not in ("sing-box", "xray"):
+            raise ValueError("Неизвестное ядро")
+        path = vless_service.find_core_executable(core_type=core_type)
+        if not path:
+            return {"ok": False, "message": f"{core_type} не установлен"}
+        with self._config_lock:
+            cfg = self.load_config()
+            cfg["vless_core_path"] = str(path)
+            if not self.save_config(cfg):
+                return {"ok": False, "message": "Не удалось сохранить настройки"}
+            self._sync_routes(cfg)
+        return {"ok": True, "message": f"Выбрано ядро: {getattr(path, 'name', path)}",
+                "path": str(path)}
+
     def test_vless(self) -> dict:
         return vless_service.test_connection()
 
