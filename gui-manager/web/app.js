@@ -44,6 +44,7 @@ function switchTab(tabId) {
     el.style.display = (el.id === `view-${tabId}`) ? 'block' : 'none';
   });
   if (changed) document.getElementById('main-scroll').scrollTop = 0;
+  if (tabId === 'settings') void refreshPluginFixStatus();
 }
 
 function showDiagnostics(tab) {
@@ -1952,6 +1953,7 @@ async function restartOpenCode() {
     showToast(`Ошибка перезапуска OpenCode: ${e}`);
   } finally {
     setTimeout(refreshState, 1500);
+    void refreshPluginFixStatus();
   }
 }
 
@@ -1974,6 +1976,58 @@ async function fixSessionTitle() {
   showToast("Проверка подписи сессий opencode/big-pickle...");
   const res = await window.pywebview.api.fix_session_title();
   showToast(res || "Настройка проверена");
+}
+
+async function fixOpenCodePlugin() {
+  if (!window.pywebview?.api?.fix_opencode_plugin) return;
+  const btn = document.getElementById('btn-fix-plugin');
+  const statusEl = document.getElementById('plugin-fix-status');
+  const originalHtml = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span>⏳</span> Применение...';
+  }
+  if (statusEl) statusEl.textContent = 'Применение патча к плагину OpenCode…';
+  try {
+    const res = await window.pywebview.api.fix_opencode_plugin();
+    const message = res?.message || 'Патч применён';
+    if (statusEl) statusEl.textContent = message;
+    showToast(message);
+    await refreshPluginFixStatus();
+    if (res?.ok && res?.changed?.length) {
+      if (confirm(`${message}\n\nПерезапустить OpenCode сейчас, чтобы изменения вступили в силу?`)) {
+        await restartOpenCode();
+      }
+    }
+  } catch (e) {
+    if (statusEl) statusEl.textContent = String(e);
+    showToast(`Ошибка патча плагина: ${e}`);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = originalHtml;
+    }
+  }
+}
+
+async function refreshPluginFixStatus() {
+  if (!window.pywebview?.api?.get_opencode_plugin_status) return;
+  const badge = document.getElementById('plugin-fix-badge');
+  const statusEl = document.getElementById('plugin-fix-status');
+  try {
+    const res = await window.pywebview.api.get_opencode_plugin_status();
+    if (!badge) return;
+    const state = res?.state || 'error';
+    const label = state === 'patched' ? 'Фикс активен'
+      : state === 'pending' ? 'Требуется фикс'
+      : 'Плагин не найден';
+    const badgeClass = state === 'patched' ? 'badge-available'
+      : state === 'pending' ? 'badge-checking'
+      : 'badge-error';
+    badge.className = `badge-pill ${badgeClass}`;
+    badge.innerHTML = `<span class="dot"></span> ${label}`;
+    if (statusEl) statusEl.textContent = res?.message || '';
+  } catch {}
 }
 
 async function openFolder(type) {
@@ -2258,6 +2312,7 @@ window.addEventListener('pywebviewready', () => {
   document.getElementById('network-settings').addEventListener('input', () => { networkDirty = true; renderDnsStatus(); });
   document.getElementById('network-proxy').addEventListener('input', () => { networkDirty = true; });
   refreshState();
+  void refreshPluginFixStatus();
   // Auto refresh loop every 10 seconds
   setInterval(refreshState, 10000);
 });

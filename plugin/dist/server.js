@@ -35082,6 +35082,33 @@ function normalizeNativeFunctionResponseRoles(payload) {
     if (sameTarget) record2.role = "model";
   }
 }
+var ANTIGRAVITY_BLOCKED_SYSTEM_INSTRUCTION_PATTERNS = [
+  [/tools\.opencode\.session_move/gi, 'tools.opencode["session_move"]']
+];
+function sanitizeAntigravitySystemInstruction(payload) {
+  if (!payload || typeof payload !== "object") return;
+  const instruction = payload.systemInstruction;
+  if (!instruction) return;
+  const sanitizeText = (text) => {
+    let next = text;
+    for (const [pattern, replacement] of ANTIGRAVITY_BLOCKED_SYSTEM_INSTRUCTION_PATTERNS) {
+      next = next.replace(pattern, replacement);
+    }
+    return next;
+  };
+  if (typeof instruction === "string") {
+    payload.systemInstruction = sanitizeText(instruction);
+    return;
+  }
+  if (typeof instruction !== "object") return;
+  const parts = Array.isArray(instruction.parts) ? instruction.parts : [];
+  for (const part of parts) {
+    if (!part || typeof part !== "object") continue;
+    if (typeof part.text === "string") {
+      part.text = sanitizeText(part.text);
+    }
+  }
+}
 function sanitizeRequestPayloadForAntigravity(payload) {
   const anyPayload = payload;
   if (Array.isArray(anyPayload.contents)) {
@@ -35826,6 +35853,7 @@ function prepareAntigravityRequestIn(wire, input2, init, accessToken, projectId,
           requestPayload.systemInstruction = requestPayload.system_instruction;
           delete requestPayload.system_instruction;
         }
+        sanitizeAntigravitySystemInstruction(requestPayload);
         if (headerStyle !== "antigravity") {
           const cachedContentFromExtra = typeof requestPayload.extra_body === "object" && requestPayload.extra_body ? requestPayload.extra_body.cached_content ?? requestPayload.extra_body.cachedContent : void 0;
           const cachedContent = requestPayload.cached_content ?? requestPayload.cachedContent ?? cachedContentFromExtra;

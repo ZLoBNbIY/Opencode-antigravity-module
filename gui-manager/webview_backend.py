@@ -1240,6 +1240,41 @@ class HubApi:
         except Exception as e:
             return str(e)
 
+    def fix_opencode_plugin(self) -> dict:
+        """Re-apply module patches after an OpenCode or plugin update."""
+        import cloudcode_route_patch
+        try:
+            result = cloudcode_route_patch.patch_prompt_sanitizer()
+        except Exception as exc:
+            return {
+                "ok": False,
+                "changed": [],
+                "already": [],
+                "missing": [],
+                "message": f"Ошибка патча плагина: {exc}",
+            }
+        try:
+            route_patched = bool(cloudcode_route_patch.patch_auth_plugin_transport())
+        except Exception:
+            route_patched = False
+        result["route_patched"] = route_patched
+        if result.get("ok"):
+            result["message"] += " Маршрут Hub проверен." if route_patched else " Маршрут Hub не изменён."
+        return result
+
+    def get_opencode_plugin_status(self) -> dict:
+        import cloudcode_route_patch
+        try:
+            return cloudcode_route_patch.get_prompt_sanitizer_status()
+        except Exception as exc:
+            return {
+                "state": "error",
+                "found": 0,
+                "patched": 0,
+                "pending": 0,
+                "message": f"Ошибка проверки плагина: {exc}",
+            }
+
     def open_folder(self, folder_type: str) -> bool:
         target = LOG_DIR if folder_type == "logs" else CONFIG_DIR
         if target.exists() and sys.platform == "win32":

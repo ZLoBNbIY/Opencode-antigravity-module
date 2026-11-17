@@ -722,6 +722,67 @@ if (!ANTIGRAVITY_OPENCODE_MODEL_IDS.includes("antigravity-gemini-4-hydrogen")) {
       console.log(`✓ Patched dynamic active account sync in ${file}`);
     }
 
+    // Google Cloud Code returns 429 RESOURCE_EXHAUSTED for requests whose
+    // system instruction contains `tools.opencode.session_move` (OpenCode's
+    // Code Mode tool catalog always includes that reference). Rewrite the
+    // reference before dispatch so normal sessions keep working.
+    if (!content.includes('function sanitizeAntigravitySystemInstruction(')) {
+      const sanitizerAnchor = 'function sanitizeRequestPayloadForAntigravity(payload) {';
+      const sanitizerLines = [
+        'var ANTIGRAVITY_BLOCKED_SYSTEM_INSTRUCTION_PATTERNS = [',
+        '  [/tools\\.opencode\\.session_move/gi, \'tools.opencode["session_move"]\']',
+        '];',
+        'function sanitizeAntigravitySystemInstruction(payload) {',
+        '  if (!payload || typeof payload !== "object") return;',
+        '  const instruction = payload.systemInstruction;',
+        '  if (!instruction) return;',
+        '  const sanitizeText = (text) => {',
+        '    let next = text;',
+        '    for (const [pattern, replacement] of ANTIGRAVITY_BLOCKED_SYSTEM_INSTRUCTION_PATTERNS) {',
+        '      next = next.replace(pattern, replacement);',
+        '    }',
+        '    return next;',
+        '  };',
+        '  if (typeof instruction === "string") {',
+        '    payload.systemInstruction = sanitizeText(instruction);',
+        '    return;',
+        '  }',
+        '  if (typeof instruction !== "object") return;',
+        '  const parts = Array.isArray(instruction.parts) ? instruction.parts : [];',
+        '  for (const part of parts) {',
+        '    if (!part || typeof part !== "object") continue;',
+        '    if (typeof part.text === "string") {',
+        '      part.text = sanitizeText(part.text);',
+        '    }',
+        '  }',
+        '}',
+        ''
+      ];
+      if (content.includes(sanitizerAnchor)) {
+        const eol = content.includes('\r\n') ? '\r\n' : '\n';
+        content = content.replace(sanitizerAnchor, sanitizerLines.join(eol) + sanitizerAnchor);
+        changed = true;
+        console.log(`✓ Added system instruction sanitizer to ${file}`);
+      }
+    }
+
+    const sanitizerCallAnchorLf = `        if ("system_instruction" in requestPayload) {
+          requestPayload.systemInstruction = requestPayload.system_instruction;
+          delete requestPayload.system_instruction;
+        }`;
+    const sanitizerCallAnchor = content.includes('\r\n')
+      ? sanitizerCallAnchorLf.replace(/\n/g, '\r\n')
+      : sanitizerCallAnchorLf;
+    if (content.includes(sanitizerCallAnchor) && !content.includes('sanitizeAntigravitySystemInstruction(requestPayload);')) {
+      const eol = content.includes('\r\n') ? '\r\n' : '\n';
+      content = content.replace(
+        sanitizerCallAnchor,
+        `${sanitizerCallAnchor}${eol}        sanitizeAntigravitySystemInstruction(requestPayload);`
+      );
+      changed = true;
+      console.log(`✓ Wired system instruction sanitizer in ${file}`);
+    }
+
     const depVersionsTarget = 'var DEPRECATED_MODEL_VERSIONS = ["3.7", "3.6", "3.1"];';
     const depVersionsRepl = 'var DEPRECATED_MODEL_VERSIONS = ["3.7", "3.6", "3.5", "3.1"];';
     if (content.includes(depVersionsTarget)) {

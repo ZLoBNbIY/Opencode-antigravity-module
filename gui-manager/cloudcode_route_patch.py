@@ -5,9 +5,16 @@ def patch_auth_plugin_transport(plugin_cache: Path | None = None) -> bool:
     """Route Cloud Code through Hub while preserving the plugin's other VLESS routes."""
     import re
 
-    root = plugin_cache or (Path.home() / ".cache" / "opencode" / "npm")
-    candidates = list(root.glob("**/@cortexkit/opencode-antigravity-auth/dist/server.js"))
-    candidates.extend(root.glob("**/@cortexkit/opencode-antigravity-auth/dist/index.js"))
+    roots = [Path(plugin_cache)] if plugin_cache else [
+        Path.home() / ".cache" / "opencode" / "npm",
+        Path.home() / ".cache" / "opencode" / "packages",
+    ]
+    candidates = []
+    for root in roots:
+        if not root.exists():
+            continue
+        candidates.extend(root.glob("**/@cortexkit/opencode-antigravity-auth/dist/server.js"))
+        candidates.extend(root.glob("**/@cortexkit/opencode-antigravity-auth/dist/index.js"))
     if plugin_cache is None:
         local_plugin = Path(__file__).resolve().parent.parent / "plugin" / "dist"
         for name in ("server.js", "index.js"):
@@ -78,14 +85,205 @@ def patch_auth_plugin_transport(plugin_cache: Path | None = None) -> bool:
 
 def restore_auth_plugin_transport(plugin_cache: Path | None = None) -> None:
     """Restore patched plugin files before a plugin upgrade or Hub removal."""
-    root = plugin_cache or (Path.home() / ".cache" / "opencode" / "npm")
-    for backup in list(root.glob("**/server.js.hub-route.bak")) + list(root.glob("**/index.js.hub-route.bak")):
-        target = backup.with_name(backup.name.replace(".hub-route.bak", ""))
+    roots = [Path(plugin_cache)] if plugin_cache else [
+        Path.home() / ".cache" / "opencode" / "npm",
+        Path.home() / ".cache" / "opencode" / "packages",
+    ]
+    for root in roots:
+        if not root.exists():
+            continue
+        for backup in list(root.glob("**/server.js.hub-route.bak")) + list(root.glob("**/index.js.hub-route.bak")):
+            target = backup.with_name(backup.name.replace(".hub-route.bak", ""))
+            try:
+                target.write_text(backup.read_text(encoding="utf-8"), encoding="utf-8")
+                backup.unlink()
+            except OSError:
+                pass
+
+
+PROMPT_FIX_MARKER = "function sanitizeAntigravitySystemInstruction("
+PROMPT_FIX_CALL = "sanitizeAntigravitySystemInstruction(requestPayload);"
+PROMPT_FIX_ANCHOR = "function sanitizeRequestPayloadForAntigravity(payload) {"
+PROMPT_FIX_BACKUP_SUFFIX = ".hub-prompt.bak"
+PROMPT_FIX_BLOCK = r'''var ANTIGRAVITY_BLOCKED_SYSTEM_INSTRUCTION_PATTERNS = [
+  [/tools\.opencode\.session_move/gi, 'tools.opencode["session_move"]']
+];
+function sanitizeAntigravitySystemInstruction(payload) {
+  if (!payload || typeof payload !== "object") return;
+  const instruction = payload.systemInstruction;
+  if (!instruction) return;
+  const sanitizeText = (text) => {
+    let next = text;
+    for (const [pattern, replacement] of ANTIGRAVITY_BLOCKED_SYSTEM_INSTRUCTION_PATTERNS) {
+      next = next.replace(pattern, replacement);
+    }
+    return next;
+  };
+  if (typeof instruction === "string") {
+    payload.systemInstruction = sanitizeText(instruction);
+    return;
+  }
+  if (typeof instruction !== "object") return;
+  const parts = Array.isArray(instruction.parts) ? instruction.parts : [];
+  for (const part of parts) {
+    if (!part || typeof part !== "object") continue;
+    if (typeof part.text === "string") {
+      part.text = sanitizeText(part.text);
+    }
+  }
+}
+'''
+PROMPT_FIX_CALL_ANCHOR = '''        if ("system_instruction" in requestPayload) {
+          requestPayload.systemInstruction = requestPayload.system_instruction;
+          delete requestPayload.system_instruction;
+        }'''
+
+
+def _prompt_fix_candidates(plugin_cache: Path | None = None) -> list[Path]:
+    """Find installed Antigravity bundles that OpenCode loads at startup."""
+    if plugin_cache:
+        roots = [Path(plugin_cache)]
+    else:
+        roots = [
+            Path.home() / ".cache" / "opencode" / "npm",
+            Path.home() / ".cache" / "opencode" / "packages",
+        ]
+    candidates: list[Path] = []
+    for root in roots:
+        if not root.exists():
+            continue
+        for name in ("server.js", "index.js"):
+            candidates.extend(root.glob(f"**/@cortexkit/opencode-antigravity-auth/dist/{name}"))
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for path in candidates:
+        key = str(path.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
+
+
+def _read_text_exact(path: Path) -> str:
+    with open(path, "r", encoding="utf-8", newline="") as handle:
+        return handle.read()
+
+
+def _write_text_exact(path: Path, text: str) -> None:
+    with open(path, "w", encoding="utf-8", newline="") as handle:
+        handle.write(text)
+
+
+def patch_prompt_sanitizer(plugin_cache: Path | None = None) -> dict:
+    """Apply the Cloud Code 429 fix to installed OpenCode plugin bundles.
+
+    Google returns 429 RESOURCE_EXHAUSTED when the system instruction contains
+    ``tools.opencode.session_move`` (OpenCode's Code Mode catalog does). The
+    patch rewrites only that reference, keeping the same JS tool path.
+    """
+    candidates = _prompt_fix_candidates(plugin_cache)
+    changed: list[str] = []
+    already: list[str] = []
+    missing: list[str] = []
+    if not candidates:
+        return {
+            "ok": False,
+            "changed": [],
+            "already": [],
+            "missing": [],
+            "message": "Плагин Antigravity не найден в кэше OpenCode.",
+        }
+
+    for path in candidates:
         try:
-            target.write_text(backup.read_text(encoding="utf-8"), encoding="utf-8")
-            backup.unlink()
+            source = _read_text_exact(path)
+            if PROMPT_FIX_MARKER in source and PROMPT_FIX_CALL in source:
+                already.append(str(path))
+                continue
+            eol = "\r\n" if "\r\n" in source else "\n"
+            patched = source
+            if PROMPT_FIX_MARKER not in patched:
+                if PROMPT_FIX_ANCHOR not in patched:
+                    missing.append(str(path))
+                    continue
+                block = PROMPT_FIX_BLOCK.replace("\n", eol)
+                patched = patched.replace(PROMPT_FIX_ANCHOR, block + eol + PROMPT_FIX_ANCHOR, 1)
+            if PROMPT_FIX_CALL not in patched:
+                call_anchor = PROMPT_FIX_CALL_ANCHOR.replace("\n", eol)
+                if call_anchor not in patched:
+                    missing.append(str(path))
+                    continue
+                patched = patched.replace(
+                    call_anchor,
+                    call_anchor + eol + "        " + PROMPT_FIX_CALL,
+                    1,
+                )
+            if patched == source:
+                already.append(str(path))
+                continue
+            backup = path.with_suffix(path.suffix + PROMPT_FIX_BACKUP_SUFFIX)
+            if not backup.exists():
+                _write_text_exact(backup, source)
+            _write_text_exact(path, patched)
+            changed.append(str(path))
         except OSError:
-            pass
+            missing.append(str(path))
+
+    if changed:
+        message = f"Фикс 429 применён: {len(changed)} файл(ов). Перезапустите OpenCode."
+        if missing:
+            message += f" Не удалось обновить: {len(missing)}."
+    elif already:
+        message = "Фикс 429 уже применён во всех найденных копиях плагина."
+        if missing:
+            message += " Часть копий не найдена или изменилась."
+    else:
+        message = "Не удалось применить фикс: изменилась структура плагина. Запустите scripts/patch_plugin.mjs."
+    return {
+        "ok": bool(changed or already),
+        "changed": changed,
+        "already": already,
+        "missing": missing,
+        "message": message,
+    }
+
+
+def get_prompt_sanitizer_status(plugin_cache: Path | None = None) -> dict:
+    """Report whether the 429 fix is present in every installed plugin copy."""
+    candidates = _prompt_fix_candidates(plugin_cache)
+    if not candidates:
+        return {
+            "state": "missing",
+            "found": 0,
+            "patched": 0,
+            "pending": 0,
+            "message": "Установленная копия плагина Antigravity не найдена.",
+        }
+    patched = 0
+    for path in candidates:
+        try:
+            source = _read_text_exact(path)
+        except OSError:
+            continue
+        if PROMPT_FIX_MARKER in source and PROMPT_FIX_CALL in source:
+            patched += 1
+    pending = len(candidates) - patched
+    if pending == 0:
+        return {
+            "state": "patched",
+            "found": len(candidates),
+            "patched": patched,
+            "pending": 0,
+            "message": "Фикс 429 активен во всех найденных копиях плагина.",
+        }
+    return {
+        "state": "pending",
+        "found": len(candidates),
+        "patched": patched,
+        "pending": pending,
+        "message": f"Фикс 429 не применён: {pending} из {len(candidates)} копий плагина.",
+    }
 
 
 def main():

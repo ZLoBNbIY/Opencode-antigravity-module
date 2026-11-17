@@ -400,6 +400,29 @@ class WebviewBackendTests(unittest.TestCase):
         self.assertEqual(entry["country"], "DE")
         self.assertIsNotNone(entry["checked_at"])
 
+    def test_fix_opencode_plugin_applies_prompt_and_route_patches(self):
+        patcher = SimpleNamespace(
+            patch_prompt_sanitizer=Mock(return_value={
+                "ok": True, "changed": ["server.js"], "already": [], "missing": [],
+                "message": "Фикс применён."}),
+            patch_auth_plugin_transport=Mock(return_value=True),
+        )
+        with patch.dict("sys.modules", {"cloudcode_route_patch": patcher}):
+            result = self.backend.HubApi().fix_opencode_plugin()
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["route_patched"])
+        self.assertIn("Маршрут Hub проверен", result["message"])
+        patcher.patch_prompt_sanitizer.assert_called_once()
+        patcher.patch_auth_plugin_transport.assert_called_once()
+
+    def test_get_opencode_plugin_status_delegates_to_patcher(self):
+        patcher = SimpleNamespace(get_prompt_sanitizer_status=Mock(return_value={
+            "state": "patched", "found": 2, "patched": 2, "pending": 0, "message": "ok"}))
+        with patch.dict("sys.modules", {"cloudcode_route_patch": patcher}):
+            status = self.backend.HubApi().get_opencode_plugin_status()
+        self.assertEqual(status["state"], "patched")
+        patcher.get_prompt_sanitizer_status.assert_called_once()
+
     @unittest.skipUnless(importlib.util.find_spec("webview"), "pywebview required")
     def test_bridge_finishes_without_inspecting_native_window(self):
         from webview.util import inject_pywebview
