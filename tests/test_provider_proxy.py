@@ -72,6 +72,28 @@ class ProviderRouteProxyTests(unittest.TestCase):
         self.assertEqual(select_upstream("api.openai.com", hub, self.opencode),
                          "http://127.0.0.1:10879")
 
+    def test_google_follows_hub_route_setting_for_every_mode(self):
+        """Google must never be pinned to VLESS: the Hub's per-provider route wins."""
+        hosts = ("daily-cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis.com",
+                 "generativelanguage.googleapis.com")
+        base = {"vless_http_port": 10879, "vless_enabled": True,
+                "vless_url": "vless://example", "dns_mode": "standard",
+                "custom_dns": ["192.0.2.1"], "proxy": "http://proxy.example:3128"}
+        expectations = {
+            "vless": "http://127.0.0.1:10879",
+            "dns": "dns://hub",
+            "proxy": "http://proxy.example:3128",
+            "direct": None,
+            "default": "http://127.0.0.1:10879",  # AutoRouter's current selection
+            "auto": "http://127.0.0.1:10879",
+        }
+        for mode, expected in expectations.items():
+            hub = {**base, "provider_routes": {"google": mode}}
+            for host in hosts:
+                self.assertEqual(select_upstream(host, hub, self.opencode), expected,
+                                 f"google route {mode} for {host}")
+        self.auto_refresh.assert_called()
+
     def test_direct_override_bypasses_global_vless(self):
         hub = {"provider_routes": {"google": "direct"}, "vless_enabled": True,
                "vless_url": "vless://example", "vless_http_port": 10879}
