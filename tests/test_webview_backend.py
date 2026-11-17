@@ -284,6 +284,13 @@ class WebviewBackendTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             api.set_provider_route('google', 'google-smart')
 
+    def test_auto_route_alias_is_normalized_to_default(self):
+        api = self.backend.HubApi()
+        api.set_provider_route('google', 'auto')
+        self.assertEqual(api.load_config()['provider_routes']['google'], 'default')
+        api.set_provider_route('google', 'default')
+        self.assertEqual(api.load_config()['provider_routes']['google'], 'default')
+
     def test_reordering_proxy_pool_sets_top_item_as_primary(self):
         api = self.backend.HubApi()
         api.save_config({'proxy_pool': ['http://one.example:8000', 'http://two.example:8000'],
