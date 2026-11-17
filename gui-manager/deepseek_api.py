@@ -14,9 +14,11 @@ import urllib.parse
 import urllib.request
 from contextlib import closing
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import hub_paths
+import jsonc_config
+import openai_manager
 from secure_storage import atomic_write, protect_secret, unprotect_secret
 
 CONFIG_FILE = hub_paths.ACCOUNTS_DIR / "deepseek-api.json"
@@ -27,10 +29,23 @@ _ENV_KEYS = ("DEEPSEEK_API_KEY", "DEEPSEEK_KEY")
 _PLACEHOLDERS = {"hub-web-placeholder", "sk-...", "your-api-key", "your_api_key", "changeme", "none", "null"}
 _auto_import_pending = False
 
+# OpenCode provider descriptor written for the DeepSeek Platform API.
+PROVIDER_ID = "deepseek-account"
+PROVIDER_NAME = "DeepSeek API"
+_OPENCODE_INTEGRATIONS = ("deepseek", "deepseek-account")
+MODEL_LIMITS = {
+    "deepseek-chat": {"context": 65536, "output": 8192},
+    "deepseek-reasoner": {"context": 65536, "output": 8192},
+}
+FALLBACK_MODELS: List[Dict[str, Any]] = [
+    {"id": "deepseek-chat", "name": "DeepSeek Chat", "context": 65536, "output": 8192},
+    {"id": "deepseek-reasoner", "name": "DeepSeek Reasoner", "context": 65536, "output": 8192},
+]
+
 
 def _default_config() -> Dict[str, Any]:
     return {"base_url": DEFAULT_BASE_URL, "connected": False, "cached_balance": {},
-            "auto_import_disabled": False}
+            "auto_import_disabled": False, "models": [], "selected_models": []}
 
 
 def load_config() -> Dict[str, Any]:
@@ -46,6 +61,10 @@ def load_config() -> Dict[str, Any]:
         cfg["base_url"] = DEFAULT_BASE_URL
     if not isinstance(cfg.get("cached_balance"), dict):
         cfg["cached_balance"] = {}
+    if not isinstance(cfg.get("models"), list):
+        cfg["models"] = []
+    if not isinstance(cfg.get("selected_models"), list):
+        cfg["selected_models"] = []
     return cfg
 
 
@@ -115,9 +134,11 @@ def _key_from_opencode_db() -> str:
         return ""
     try:
         with closing(sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=2)) as conn:
+            marks = ",".join("?" * len(_OPENCODE_INTEGRATIONS))
             row = conn.execute(
-                "SELECT value FROM credential WHERE integration_id = 'deepseek' "
-                "ORDER BY time_updated DESC LIMIT 1"
+                f"SELECT value FROM credential WHERE integration_id IN ({marks}) "
+                "ORDER BY time_updated DESC LIMIT 1",
+                _OPENCODE_INTEGRATIONS,
             ).fetchone()
         if not row:
             return ""
@@ -362,4 +383,243 @@ def provider_state() -> Dict[str, Any]:
         "keyLabel": mask_key(key),
         "baseUrl": cfg.get("base_url") or DEFAULT_BASE_URL,
         "balance": balance,
+        "models": cfg.get("models") or FALLBACK_MODELS,
+        "selectedModels": selected_models(),
+        "providerId": find_provider_id(),
     }
+
+
+# ---------------------------------------------------------------------------
+# OpenCode provider registration (so DeepSeek appears as a real provider)
+# ---------------------------------------------------------------------------
+def _opencode_config_path() -> Path:
+    return jsonc_config.config_path(hub_paths.OPENCODE_CONFIG_DIR)
+
+
+def _read_opencode_config() -> tuple[Path, str, dict]:
+    path = _opencode_config_path()
+    original = path.read_text(encoding="utf-8-sig") if path.exists() else "{}\n"
+    return path, original, jsonc_config.parse_config(original)
+
+
+def _provider_base_host(provider: Any) -> str:
+    if not isinstance(provider, dict):
+        return ""
+    for holder in (provider.get("options"), provider.get("settings"), provider):
+        if isinstance(holder, dict):
+            raw = holder.get("baseURL") or holder.get("baseUrl")
+            if isinstance(raw, str) and raw.strip():
+                try:
+                    return (urllib.parse.urlparse(raw.strip()).hostname or "").lower()
+                except ValueError:
+                    return ""
+    return ""
+
+
+def find_provider_id(config: Optional[dict] = None) -> str:
+    """Reuse an existing provider that already points at api.deepseek.com."""
+    try:
+        data = config if isinstance(config, dict) else _read_opencode_config()[2]
+    except Exception:
+        return PROVIDER_ID
+    providers = data.get("provider")
+    if isinstance(providers, dict):
+        for name, provider in providers.items():
+            host = _provider_base_host(provider)
+            if host and (host == "api.deepseek.com" or host.endswith(".deepseek.com")):
+                return str(name)
+    return PROVIDER_ID
+
+
+def _normalize_model(item: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(item, str) and item.strip():
+        model_id, name = item.strip(), item.strip()
+    elif isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"].strip():
+        model_id = item["id"].strip()
+        name = str(item.get("name") or model_id)
+    else:
+        return None
+    limits = MODEL_LIMITS.get(model_id, {"context": 65536, "output": 8192})
+    context = item.get("context") if isinstance(item, dict) else None
+    output = item.get("output") if isinstance(item, dict) else None
+    return {
+        "id": model_id,
+        "name": name,
+        "context": context if isinstance(context, int) and context > 0 else limits["context"],
+        "output": output if isinstance(output, int) and output > 0 else limits["output"],
+    }
+
+
+def fetch_models(api_key: Optional[str] = None, base_url: Optional[str] = None,
+                 timeout: int = 15) -> List[Dict[str, Any]]:
+    """Read the real model catalog from GET /models on the Platform API."""
+    key = clean_key(api_key) or load_api_key()
+    if not key:
+        raise ValueError("Сначала сохраните API-ключ DeepSeek")
+    try:
+        endpoint = f"{api_origin(base_url)}/models"
+    except ValueError as exc:
+        raise ValueError(str(exc)) from None
+    request = urllib.request.Request(endpoint, headers={
+        "Authorization": f"Bearer {key}",
+        "Accept": "application/json",
+        "User-Agent": USER_AGENT,
+    }, method="GET")
+    try:
+        opener = get_http_opener()
+        with opener.open(request, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            raise ValueError("DeepSeek отклонил API-ключ (401). Проверьте ключ.") from None
+        if exc.code == 402:
+            raise ValueError("DeepSeek: баланс ключа исчерпан (402)") from None
+        if exc.code == 429:
+            raise ValueError("DeepSeek вернул 429 — слишком частые запросы") from None
+        raise ValueError(f"DeepSeek вернул HTTP {exc.code} при загрузке моделей") from None
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise ValueError("Не удалось подключиться к DeepSeek. Проверьте интернет и маршрут.") from None
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise ValueError("DeepSeek вернул некорректный каталог моделей") from None
+
+    items = payload.get("data") if isinstance(payload, dict) else payload
+    models: List[Dict[str, Any]] = []
+    seen = set()
+    for item in items if isinstance(items, list) else []:
+        model = _normalize_model(item)
+        if model and model["id"] not in seen:
+            seen.add(model["id"])
+            models.append(model)
+    if not models:
+        models = [dict(model) for model in FALLBACK_MODELS]
+    models.sort(key=lambda model: model["id"].lower())
+    return models
+
+
+def selected_models(config: Optional[dict] = None) -> List[str]:
+    """Selected model IDs currently registered in opencode.json(c)."""
+    try:
+        data = config if isinstance(config, dict) else _read_opencode_config()[2]
+    except Exception:
+        return []
+    provider = (data.get("provider") or {}).get(find_provider_id(data), {})
+    models = provider.get("models") if isinstance(provider, dict) else None
+    return list(models) if isinstance(models, dict) else []
+
+
+def configure_opencode_models(model_ids: Optional[List[str]] = None,
+                              api_key: Optional[str] = None,
+                              base_url: Optional[str] = None) -> List[str]:
+    """Register the DeepSeek provider with the selected models in OpenCode."""
+    key = clean_key(api_key) or load_api_key()
+    if not key:
+        raise ValueError("Сначала сохраните API-ключ DeepSeek")
+    origin = api_origin(base_url)
+    catalog = [model for model in (load_config().get("models") or FALLBACK_MODELS)
+               if isinstance(model, dict) and model.get("id")]
+    if not catalog:
+        catalog = [dict(model) for model in FALLBACK_MODELS]
+    available = {model["id"]: model for model in catalog}
+    wanted = [str(mid) for mid in (model_ids or []) if str(mid) in available]
+    if not wanted:
+        wanted = list(available.keys())
+
+    path, original, data = _read_opencode_config()
+    provider_id = find_provider_id(data)
+    providers = data.get("provider")
+    if providers is not None and not isinstance(providers, dict):
+        raise ValueError("Поле provider в конфигурации OpenCode должно быть объектом.")
+    existing = (providers or {}).get(provider_id)
+    existing_models = existing.get("models") if isinstance(existing, dict) else None
+
+    merged: Dict[str, Any] = dict(existing_models) if isinstance(existing_models, dict) else {}
+    for model_id in wanted:
+        meta = available[model_id]
+        merged[model_id] = {
+            "name": meta.get("name") or model_id,
+            "limit": {"context": meta["context"], "output": meta["output"]},
+        }
+
+    if isinstance(existing, dict):
+        # Keep the user's own provider settings; only refresh the model list.
+        updated = jsonc_config.set_property(original, ("provider", provider_id, "models"), merged)
+    else:
+        updated = jsonc_config.set_property(original, ("provider", provider_id), {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": PROVIDER_NAME,
+            "options": {"baseURL": origin},
+            "models": merged,
+        })
+    if "$schema" not in data:
+        updated = jsonc_config.set_property(updated, ("$schema",), "https://opencode.ai/config.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(path, updated)
+
+    cfg = load_config()
+    cfg["models"] = catalog
+    cfg["selected_models"] = wanted
+    cfg["provider_id"] = provider_id
+    cfg["base_url"] = origin
+    save_config(cfg)
+    return wanted
+
+
+def sync_opencode_credential(api_key: Optional[str] = None, provider_id: Optional[str] = None) -> None:
+    """Import the key through OpenCode CLI so its credential store has it."""
+    key = clean_key(api_key) or load_api_key()
+    if not key:
+        raise ValueError("Сначала сохраните API-ключ DeepSeek")
+    cli = openai_manager.find_opencode_cli()
+    if not cli:
+        raise ValueError("Не найден OpenCode CLI. Запустите OpenCode и повторите подключение.")
+    target = provider_id or find_provider_id()
+    credential = [{
+        "id": f"cred_{target}_hub",
+        "integrationID": target,
+        "label": f"{PROVIDER_NAME} (Antigravity Hub)",
+        "active": True,
+        "value": {"type": "key", "key": key},
+    }]
+    try:
+        import subprocess
+        result = subprocess.run(
+            [cli, "auth", "import"],
+            input=json.dumps(credential), capture_output=True, text=True,
+            encoding="utf-8", timeout=15,
+        )
+        if result.returncode != 0:
+            # Never surface CLI output: it may include the credential.
+            raise ValueError("OpenCode не принял API-ключ. Перезапустите OpenCode и повторите.")
+    except subprocess.TimeoutExpired:
+        raise ValueError("OpenCode CLI не ответил вовремя при сохранении ключа.") from None
+    except OSError:
+        raise ValueError("Не удалось запустить OpenCode CLI для сохранения ключа.") from None
+
+
+def disconnect_opencode() -> bool:
+    """Remove the DeepSeek models from OpenCode and drop stored credentials."""
+    removed = False
+    try:
+        path, original, data = _read_opencode_config()
+        providers = data.get("provider")
+        if isinstance(providers, dict):
+            updated = original
+            for provider_id in {find_provider_id(data), PROVIDER_ID, "deepseek"}:
+                provider = providers.get(provider_id)
+                if isinstance(provider, dict) and isinstance(provider.get("models"), dict):
+                    updated = jsonc_config.set_property(updated, ("provider", provider_id, "models"), {})
+                    removed = True
+            if updated != original:
+                atomic_write(path, updated)
+    except Exception as exc:
+        print(f"[DeepSeek API] Failed to update opencode.json: {exc}")
+
+    cli = openai_manager.find_opencode_cli()
+    if cli:
+        import subprocess
+        for provider_id in _OPENCODE_INTEGRATIONS:
+            try:
+                subprocess.run([cli, "auth", "logout", provider_id], capture_output=True, timeout=15)
+            except Exception:
+                pass
+    return removed

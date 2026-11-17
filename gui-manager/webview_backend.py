@@ -1002,31 +1002,98 @@ class HubApi:
         return True
 
     def configure_deepseek_api(self, key: str = "", base_url: str = "") -> dict:
-        """Saves an encrypted DeepSeek Platform API key and reads its balance."""
+        """Saves an encrypted DeepSeek Platform API key, reads balance, and
+        registers the DeepSeek provider with its real model catalog in OpenCode."""
         with self._provider_lock:
             base_url = str(base_url or "").strip() or deepseek_api.DEFAULT_BASE_URL
-            deepseek_api.api_origin(base_url)
+            origin = deepseek_api.api_origin(base_url)
             final_key = str(key or "").strip() or deepseek_api.load_api_key()
             if not final_key:
                 raise ValueError("Укажите API-ключ DeepSeek (sk-...)")
             deepseek_api.save_api_key(final_key)
             cfg = deepseek_api.load_config()
-            cfg["base_url"] = base_url
+            cfg["base_url"] = origin
             cfg["connected"] = True
             deepseek_api.save_config(cfg)
-            balance = deepseek_api.fetch_balance(final_key, base_url)
+
+            notes = []
+            try:
+                models = deepseek_api.fetch_models(final_key, origin)
+            except Exception as exc:
+                models = [dict(m) for m in deepseek_api.FALLBACK_MODELS]
+                notes.append(f"каталог моделей не загружен ({exc})")
+            cfg = deepseek_api.load_config()
+            cfg["models"] = models
+            deepseek_api.save_config(cfg)
+
+            selected = []
+            try:
+                selected = deepseek_api.configure_opencode_models(
+                    [m["id"] for m in models], final_key, origin)
+            except Exception as exc:
+                notes.append(f"не удалось добавить провайдера в OpenCode ({exc})")
+            try:
+                deepseek_api.sync_opencode_credential(final_key)
+            except Exception as exc:
+                notes.append(f"ключ не импортирован в OpenCode CLI ({exc})")
+
+            balance = deepseek_api.fetch_balance(final_key, origin)
+            if balance.get("status") not in ("ok", "stale"):
+                notes.append(balance.get("error") or "не удалось получить баланс")
+
+            message = "Ключ DeepSeek сохранён"
+            if selected:
+                message += f", провайдер DeepSeek добавлен в OpenCode (моделей: {len(selected)})"
+            if notes:
+                message += ". Внимание: " + "; ".join(notes)
             return {
                 "ok": balance.get("status") in ("ok", "stale"),
-                "message": (balance.get("error") or "Ключ DeepSeek сохранён, баланс получен")
-                if balance.get("status") == "ok" else (balance.get("error") or "Ключ сохранён, но получить баланс не удалось"),
+                "message": message,
                 "balance": balance,
+                "models": models,
+                "selectedModels": selected,
             }
+
+    def apply_deepseek_models(self, model_ids: list) -> dict:
+        """Register only the selected DeepSeek models in OpenCode."""
+        with self._provider_lock:
+            key = deepseek_api.load_api_key()
+            if not key:
+                raise ValueError("Сначала сохраните API-ключ DeepSeek")
+            if not isinstance(model_ids, list) or not model_ids:
+                raise ValueError("Выберите хотя бы одну модель DeepSeek")
+            cfg = deepseek_api.load_config()
+            selected = deepseek_api.configure_opencode_models(
+                [str(mid) for mid in model_ids], key, cfg.get("base_url"))
+            try:
+                deepseek_api.sync_opencode_credential(key)
+            except Exception:
+                pass
+            self._sync_routes(self.load_config())
+            return {"ok": True, "selectedModels": selected,
+                    "message": f"Моделей DeepSeek в OpenCode: {len(selected)}"}
+
+    def load_deepseek_models(self, key: str = "") -> list:
+        """Refresh the DeepSeek model catalog from the Platform API."""
+        with self._provider_lock:
+            final_key = str(key or "").strip() or deepseek_api.load_api_key()
+            if not final_key:
+                raise ValueError("Укажите API-ключ DeepSeek (sk-...)")
+            cfg = deepseek_api.load_config()
+            models = deepseek_api.fetch_models(final_key, cfg.get("base_url"))
+            cfg["models"] = models
+            deepseek_api.save_config(cfg)
+            return models
 
     def refresh_deepseek_balance(self) -> dict:
         return deepseek_api.refresh_balance_silent()
 
     def disconnect_deepseek_api(self) -> bool:
         with self._provider_lock:
+            try:
+                deepseek_api.disconnect_opencode()
+            except Exception:
+                pass
             return deepseek_api.clear_api_key()
 
     def load_openrouter_models(self, key: str = "") -> list:
@@ -1684,7 +1751,21 @@ class HubApi:
                 if p_ds.scheme == "https" and p_ds.hostname and not p_ds.username and not p_ds.password:
                     ds_cfg["base_url"] = raw_ds_url.rstrip("/")
                 ds_cfg["connected"] = bool(ds_data.get("connected", True))
+                try:
+                    models = deepseek_api.fetch_models(ds_key, ds_cfg["base_url"])
+                    ds_cfg["models"] = models
+                except Exception:
+                    models = []
                 deepseek_api.save_config(ds_cfg)
+                if models:
+                    try:
+                        deepseek_api.configure_opencode_models([m["id"] for m in models], ds_key, ds_cfg["base_url"])
+                    except Exception:
+                        pass
+                try:
+                    deepseek_api.sync_opencode_credential(ds_key)
+                except Exception:
+                    pass
 
             # 7. Hub Config (settings, routes, proxies, DNS) — whitelist safe keys only
             backup_cfg = data.get("config")

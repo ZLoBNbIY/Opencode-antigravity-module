@@ -48,9 +48,18 @@ class WebviewBackendTests(unittest.TestCase):
             save_api_key=Mock(),
             load_config=Mock(return_value={"base_url": "https://api.deepseek.com", "connected": False}),
             save_config=Mock(),
+            api_origin=Mock(return_value="https://api.deepseek.com"),
+            fetch_models=Mock(return_value=[{"id": "deepseek-chat", "name": "DeepSeek Chat", "context": 65536, "output": 8192}]),
+            configure_opencode_models=Mock(return_value=["deepseek-chat"]),
+            sync_opencode_credential=Mock(),
+            disconnect_opencode=Mock(return_value=True),
+            clear_api_key=Mock(return_value=True),
+            selected_models=Mock(return_value=[]),
+            FALLBACK_MODELS=[{"id": "deepseek-chat", "name": "DeepSeek Chat", "context": 65536, "output": 8192}],
             provider_state=Mock(return_value={
                 "hasKey": False, "connected": False, "keyLabel": None,
                 "baseUrl": "https://api.deepseek.com", "balance": {"status": "no_key"},
+                "models": [], "selectedModels": [],
             }),
             DEFAULT_BASE_URL="https://api.deepseek.com",
         )
@@ -664,6 +673,25 @@ class WebviewBackendTests(unittest.TestCase):
             api._tray_holder.remove.assert_called_once()
             api._window_holder.destroy.assert_called_once()
             exit_mock.assert_called_once_with(0)
+
+
+    def test_configure_deepseek_api_registers_provider_in_opencode(self):
+        self.deepseek.load_api_key.return_value = "sk-test-key-1234567890"
+        self.deepseek.fetch_models.return_value = [
+            {"id": "deepseek-chat", "name": "DeepSeek Chat", "context": 65536, "output": 8192},
+            {"id": "deepseek-reasoner", "name": "DeepSeek Reasoner", "context": 65536, "output": 8192},
+        ]
+        self.deepseek.fetch_balance = Mock(return_value={"status": "ok", "total_balance": 5.0})
+        api = self.backend.HubApi()
+        res = api.configure_deepseek_api("sk-test-key-1234567890", "https://api.deepseek.com")
+        self.assertTrue(res["ok"])
+        self.assertIn("DeepSeek добавлен в OpenCode", res["message"])
+        self.deepseek.configure_opencode_models.assert_called_once()
+        self.deepseek.sync_opencode_credential.assert_called_once()
+        self.assertEqual(res["selectedModels"], ["deepseek-chat"])
+
+        api.disconnect_deepseek_api()
+        self.deepseek.disconnect_opencode.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -170,6 +170,64 @@ class DeepSeekApiTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 deepseek_api.api_origin(bad)
 
+    def test_fetch_models_reads_real_catalog(self):
+        opener = self._fake_opener({"object": "list", "data": [
+            {"id": "deepseek-chat", "object": "model"},
+            {"id": "deepseek-reasoner", "object": "model"},
+            {"bad": True},
+        ]})
+        with patch.object(deepseek_api, "get_http_opener", return_value=opener):
+            models = deepseek_api.fetch_models("sk-test-key-1234567890")
+        self.assertEqual([m["id"] for m in models], ["deepseek-chat", "deepseek-reasoner"])
+        self.assertEqual(models[0]["context"], 65536)
+        request = opener.open.call_args[0][0]
+        self.assertEqual(request.full_url, "https://api.deepseek.com/models")
+        self.assertEqual(request.get_header("Authorization"), "Bearer sk-test-key-1234567890")
+
+    def test_configure_opencode_models_registers_provider_and_preserves_user_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg_path = root / "opencode.json"
+            cfg_path.write_text(json.dumps({
+                "provider": {
+                    "deepseek": {
+                        "npm": "@ai-sdk/openai-compatible",
+                        "name": "My DeepSeek",
+                        "options": {"baseURL": "https://api.deepseek.com"},
+                        "models": {"deepseek-chat": {"name": "Keep me"}},
+                    }
+                }
+            }), encoding="utf-8")
+            deepseek_api.save_api_key("sk-test-key-1234567890")
+            with patch.object(deepseek_api, "_opencode_config_path", return_value=cfg_path):
+                # Adopt the user's existing provider id instead of duplicating it.
+                self.assertEqual(deepseek_api.find_provider_id(), "deepseek")
+                saved = deepseek_api.configure_opencode_models(
+                    ["deepseek-chat", "deepseek-reasoner"], "sk-test-key-1234567890")
+                self.assertEqual(saved, ["deepseek-chat", "deepseek-reasoner"])
+                data = json.loads(cfg_path.read_text(encoding="utf-8"))
+                self.assertEqual(data["provider"]["deepseek"]["name"], "My DeepSeek")
+                self.assertEqual(
+                    sorted(data["provider"]["deepseek"]["models"]),
+                    ["deepseek-chat", "deepseek-reasoner"])
+                self.assertEqual(deepseek_api.selected_models(), ["deepseek-chat", "deepseek-reasoner"])
+
+    def test_configure_opencode_models_creates_provider_when_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "opencode.jsonc"
+            cfg_path.write_text('{\n  // keep\n  "model": "x"\n}\n', encoding="utf-8")
+            deepseek_api.save_api_key("sk-test-key-1234567890")
+            with patch.object(deepseek_api, "_opencode_config_path", return_value=cfg_path):
+                saved = deepseek_api.configure_opencode_models(["deepseek-chat"], "sk-test-key-1234567890")
+                self.assertEqual(saved, ["deepseek-chat"])
+                text = cfg_path.read_text(encoding="utf-8")
+                self.assertIn("// keep", text)
+                data = deepseek_api.jsonc_config.parse_config(text)
+                provider = data["provider"]["deepseek-account"]
+                self.assertEqual(provider["npm"], "@ai-sdk/openai-compatible")
+                self.assertEqual(provider["options"]["baseURL"], "https://api.deepseek.com")
+                self.assertIn("deepseek-chat", provider["models"])
+
 
 if __name__ == "__main__":
     unittest.main()

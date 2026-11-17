@@ -1598,6 +1598,7 @@ function renderClaudeTab() {
 
 let xpikiFormInitialized = false;
 let deepseekFormInitialized = false;
+let deepseekModelsInitialized = false;
 let deepseekUsageDays = 14;
 let openrouterModels = [];
 function renderXpikiTab() {
@@ -1702,6 +1703,7 @@ function renderDeepSeekTab() {
     if (urlInput) urlInput.value = cfg.baseUrl || 'https://api.deepseek.com';
     deepseekFormInitialized = true;
   }
+  renderDeepSeekModels(cfg);
 
   const balance = cfg.balance || {};
   const valid = ['ok','stale'].includes(balance.status);
@@ -1840,13 +1842,64 @@ function renderDeepSeekUsage(usage) {
 async function configureDeepSeekApi() {
   const result = document.getElementById('deepseek-result');
   if (!window.pywebview?.api) return;
-  result.textContent = 'Сохранение ключа и запрос баланса…';
+  result.textContent = 'Сохранение ключа, баланс и добавление провайдера в OpenCode…';
   try {
     const key = document.getElementById('deepseek-key').value.trim();
     const baseUrl = document.getElementById('deepseek-base-url').value.trim();
     const response = await window.pywebview.api.configure_deepseek_api(key, baseUrl);
     result.textContent = response.message;
     document.getElementById('deepseek-key').value = '';
+    deepseekModelsInitialized = false;
+    await refreshState();
+  } catch (e) { result.textContent = String(e); }
+}
+function renderDeepSeekModels(cfg) {
+  const picker = document.getElementById('deepseek-models');
+  if (!picker || deepseekModelsInitialized) return;
+  const models = Array.isArray(cfg?.models) ? cfg.models : [];
+  const selected = Array.isArray(cfg?.selectedModels) ? cfg.selectedModels : [];
+  picker.innerHTML = '';
+  if (!models.length) {
+    picker.innerHTML = '<div class="help-text" style="grid-column:1/-1;">Каталог моделей ещё не загружен — сохраните ключ или нажмите «Загрузить каталог».</div>';
+  }
+  for (const model of models) {
+    const label = document.createElement('label');
+    label.className = 'model-choice';
+    const input = document.createElement('input');
+    input.type = 'checkbox'; input.value = model.id;
+    input.checked = selected.length ? selected.includes(model.id) : true;
+    label.append(input, document.createTextNode(`${model.name || model.id} · ${model.id}`));
+    picker.appendChild(label);
+  }
+  const btn = document.getElementById('btn-apply-deepseek');
+  if (btn) btn.disabled = !models.length;
+  deepseekModelsInitialized = true;
+}
+async function loadDeepSeekModels() {
+  const result = document.getElementById('deepseek-result');
+  if (!window.pywebview?.api) return;
+  result.textContent = 'Загрузка каталога моделей DeepSeek…';
+  try {
+    const models = await window.pywebview.api.load_deepseek_models('');
+    if (appState.providers?.deepseek) {
+      appState.providers.deepseek.models = models;
+      appState.providers.deepseek.selectedModels = appState.providers.deepseek.selectedModels || [];
+    }
+    deepseekModelsInitialized = false;
+    renderDeepSeekModels(appState.providers?.deepseek);
+    result.textContent = `Каталог обновлён: ${models.length} модел(ей).`;
+    await refreshState();
+  } catch (e) { result.textContent = String(e); }
+}
+async function applyDeepSeekModels() {
+  const result = document.getElementById('deepseek-result');
+  if (!window.pywebview?.api) return;
+  const ids = [...document.querySelectorAll('#deepseek-models input:checked')].map(input => input.value);
+  if (!ids.length) { result.textContent = 'Выберите хотя бы одну модель DeepSeek'; return; }
+  result.textContent = 'Добавление моделей DeepSeek в OpenCode…';
+  try {
+    const response = await window.pywebview.api.apply_deepseek_models(ids);
+    result.textContent = response.message;
     await refreshState();
   } catch (e) { result.textContent = String(e); }
 }
@@ -1868,6 +1921,7 @@ async function disconnectDeepSeekApi() {
     await window.pywebview.api.disconnect_deepseek_api();
     document.getElementById('deepseek-key').value = '';
     deepseekFormInitialized = false;
+    deepseekModelsInitialized = false;
     await refreshState();
     document.getElementById('deepseek-result').textContent = 'API-ключ DeepSeek удалён';
   } catch (e) { showToast(String(e)); }
@@ -2488,6 +2542,7 @@ async function importBackup() {
       networkFormInitialized = false;
       xpikiFormInitialized = false;
       deepseekFormInitialized = false;
+      deepseekModelsInitialized = false;
       const tlList = document.getElementById('tokenlavka-models-list');
       if (tlList) delete tlList.dataset.ready;
       await refreshState();

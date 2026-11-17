@@ -372,7 +372,13 @@
               <label class="field-label">Base URL API<input id="deepseek-base-url" value="https://api.deepseek.com"></label>
               <div class="button-row"><button class="btn-primary" onclick="configureDeepSeekApi()">Сохранить ключ</button><button class="btn-secondary" onclick="refreshDeepSeekBalance()">Обновить баланс</button><button class="btn-secondary" onclick="disconnectDeepSeekApi()">Отключить</button></div>
               <p class="help-text" role="status" id="deepseek-result"></p>
-              <p class="help-text">Ключ хранится в защищённом хранилище Hub (DPAPI на Windows) и используется только для запроса <code>GET /user/balance</code>. При первом запуске хаб может автоматически подхватить ключ из переменной <code>DEEPSEEK_API_KEY</code> или из конфигурации OpenCode. У DeepSeek предоплаченный баланс, а не 5-часовые окна: показываются общий остаток, бонусы и пополненные средства.</p>
+              <div class="models-picker" style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:10px;">
+                <span class="help-text" style="margin:0;">Модели DeepSeek для OpenCode</span>
+                <button class="btn-secondary" onclick="loadDeepSeekModels()">Загрузить каталог</button>
+              </div>
+              <div id="deepseek-models" class="model-picker"></div>
+              <div class="button-row"><button class="btn-primary" id="btn-apply-deepseek" onclick="applyDeepSeekModels()">Добавить выбранные в OpenCode</button></div>
+              <p class="help-text">Ключ хранится в защищённом хранилище Hub (DPAPI на Windows) и используется для <code>GET /user/balance</code> и <code>GET /models</code>. Провайдер <code>deepseek</code> с выбранными моделями добавляется в OpenCode автоматически. У DeepSeek предоплаченный баланс, а не 5-часовые окна: показываются общий остаток, бонусы и пополненные средства.</p>
             </div>
           </div>
           <aside class="provider-route-sidebar" aria-label="Маршрут DeepSeek">
