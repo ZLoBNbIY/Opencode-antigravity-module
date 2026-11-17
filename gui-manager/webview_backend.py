@@ -77,6 +77,50 @@ PROVIDER_SETTING_IDS = {"antigravity": "google", "openai": "openai", "claude": "
                         "deepseek": "deepseek-account", "tokenlavka": "tokenlavka"}
 
 
+def _vless_label(url: str) -> str:
+    """Short human-readable label: fragment tag + server endpoint."""
+    try:
+        info = VlessParser.parse_url(url)
+        tag = info.get("tag") or ""
+        endpoint = f"{info.get('server')}:{info.get('port')}"
+        return f"{tag} · {endpoint}" if tag and tag != endpoint else endpoint
+    except Exception:
+        return url[:60]
+
+
+def _normalize_vless_pool(value) -> list[dict]:
+    """Accept both plain strings (legacy) and full entries; drop invalid URLs."""
+    entries = []
+    seen = set()
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, str):
+                url = item.strip()
+                entry = {}
+            elif isinstance(item, dict):
+                url = str(item.get("url") or "").strip()
+                entry = {k: v for k, v in item.items() if k != "url"}
+            else:
+                continue
+            if not url or url in seen:
+                continue
+            try:
+                VlessParser.parse_url(url)
+            except Exception:
+                continue
+            seen.add(url)
+            entry["url"] = url
+            entry.setdefault("label", _vless_label(url))
+            entry.setdefault("status", "untested")
+            entry.setdefault("ip", None)
+            entry.setdefault("country", None)
+            entry.setdefault("latency_ms", None)
+            entry.setdefault("checked_at", None)
+            entry.setdefault("error", None)
+            entries.append(entry)
+    return entries
+
+
 class HubApi:
     """Exposed to window.pywebview.api in JavaScript."""
 
@@ -429,6 +473,15 @@ class HubApi:
                 raise ValueError("HTTP и SOCKS порты должны различаться")
             if cfg.get("vless_url"):
                 VlessParser.parse_url(cfg["vless_url"])
+            # Keep the active connection string and the pool in sync: a manually
+            # pasted vless:// URL becomes the first pool entry automatically.
+            pool = _normalize_vless_pool(cfg.get("vless_pool"))
+            active = str(cfg.get("vless_url") or "").strip()
+            if active and active not in [entry["url"] for entry in pool]:
+                pool.append({"url": active, "label": _vless_label(active), "status": "untested",
+                             "ip": None, "country": None, "latency_ms": None,
+                             "checked_at": None, "error": None})
+            cfg["vless_pool"] = pool
             proxy = str(cfg.get("proxy") or "").strip()
             if proxy:
                 parsed = urlparse(proxy)
@@ -492,6 +545,172 @@ class HubApi:
 
     def test_vless(self) -> dict:
         return vless_service.test_connection()
+
+    # --- VLESS connection pool ------------------------------------------------
+    def _vless_probe(self, url: str, cfg: dict) -> dict:
+        """Start the tunnel on one config, measure its exit IP, then stop it."""
+        ok, message = vless_service.start_tunnel(url, custom_core_path=cfg.get("vless_core_path"))
+        if not ok:
+            return {"ok": False, "message": message, "ip": None, "country": None,
+                    "latency_ms": None, "checked_at": int(time.time())}
+        try:
+            return vless_service.test_connection(timeout=10)
+        finally:
+            vless_service.stop_tunnel()
+
+    def _cache_vless_result(self, cfg: dict, url: str, result: dict) -> list:
+        pool = _normalize_vless_pool(cfg.get("vless_pool"))
+        for entry in pool:
+            if entry["url"] == url:
+                entry.update({
+                    "status": "ok" if result.get("ok") else "error",
+                    "ip": result.get("ip"),
+                    "country": result.get("country"),
+                    "latency_ms": result.get("latency_ms"),
+                    "error": None if result.get("ok") else result.get("message"),
+                    "checked_at": int(time.time()),
+                })
+                break
+        cfg["vless_pool"] = pool
+        self.save_config(cfg)
+        self._sync_routes(cfg)
+        return pool
+
+    def get_vless_pool(self) -> dict:
+        cfg = self.load_config()
+        pool = _normalize_vless_pool(cfg.get("vless_pool"))
+        active = str(cfg.get("vless_url") or "").strip()
+        active_entry = next((e for e in pool if e["url"] == active), None)
+        return {"pool": pool, "active": active,
+                "activeEntry": active_entry,
+                "tunnelRunning": vless_service.is_running()}
+
+    def add_vless_config(self, url: str) -> dict:
+        url = str(url or "").strip()
+        try:
+            info = VlessParser.parse_url(url)
+        except Exception as exc:
+            return {"ok": False, "message": f"Некорректная VLESS-ссылка: {exc}"}
+        with self._config_lock:
+            cfg = self.load_config()
+            pool = _normalize_vless_pool(cfg.get("vless_pool"))
+            if any(entry["url"] == url for entry in pool):
+                return {"ok": False, "message": "Этот конфиг уже есть в пуле"}
+            pool.append({"url": url, "label": _vless_label(url), "status": "untested",
+                         "ip": None, "country": None, "latency_ms": None,
+                         "checked_at": None, "error": None})
+            cfg["vless_pool"] = pool
+            if not str(cfg.get("vless_url") or "").strip():
+                cfg["vless_url"] = url
+            if not self.save_config(cfg):
+                return {"ok": False, "message": "Не удалось сохранить конфиг"}
+            self._sync_routes(cfg)
+            return {"ok": True, "message": f"Добавлено: {info.get('tag') or info.get('server')}",
+                    "pool": pool, "active": cfg.get("vless_url")}
+
+    def delete_vless_config(self, url: str) -> dict:
+        url = str(url or "").strip()
+        with self._config_lock:
+            cfg = self.load_config()
+            pool = _normalize_vless_pool(cfg.get("vless_pool"))
+            remaining = [e for e in pool if e["url"] != url]
+            if len(remaining) == len(pool):
+                return {"ok": False, "message": "Конфиг не найден в пуле"}
+            active = str(cfg.get("vless_url") or "").strip()
+            was_running = vless_service.is_running()
+            if active == url:
+                cfg["vless_url"] = remaining[0]["url"] if remaining else ""
+                with self._core_lock:
+                    if was_running:
+                        vless_service.stop_tunnel()
+                        if cfg["vless_url"]:
+                            vless_service.start_tunnel(cfg["vless_url"],
+                                                       custom_core_path=cfg.get("vless_core_path"))
+            cfg["vless_pool"] = remaining
+            if not self.save_config(cfg):
+                return {"ok": False, "message": "Не удалось сохранить пул"}
+            self._sync_routes(cfg)
+            return {"ok": True, "message": "Конфиг удалён из пула", "pool": remaining,
+                    "active": cfg.get("vless_url")}
+
+    def activate_vless_config(self, url: str) -> dict:
+        url = str(url or "").strip()
+        with self._config_lock:
+            cfg = self.load_config()
+            pool = _normalize_vless_pool(cfg.get("vless_pool"))
+            if not any(entry["url"] == url for entry in pool):
+                return {"ok": False, "message": "Конфиг не найден в пуле"}
+            previous = str(cfg.get("vless_url") or "").strip()
+            was_running = vless_service.is_running()
+            cfg["vless_url"] = url
+            if not self.save_config(cfg):
+                return {"ok": False, "message": "Не удалось сохранить активный конфиг"}
+            self._sync_routes(cfg)
+            result = None
+            with self._core_lock:
+                if was_running and previous != url:
+                    vless_service.stop_tunnel()
+                    ok, message = vless_service.start_tunnel(url, custom_core_path=cfg.get("vless_core_path"))
+                    result = (vless_service.test_connection(timeout=10) if ok else
+                              {"ok": False, "message": message, "ip": None, "country": None, "latency_ms": None})
+                elif was_running:
+                    result = vless_service.test_connection(timeout=10)
+                elif not was_running:
+                    # Probe once so the IP/country is visible immediately in the pool.
+                    result = self._vless_probe(url, cfg)
+            if result and result.get("ip"):
+                pool = self._cache_vless_result(cfg, url, result)
+            else:
+                pool = cfg.get("vless_pool", pool)
+            return {"ok": True, "message": result.get("message") if result else "Конфиг активирован",
+                    "pool": pool, "active": url, "result": result}
+
+    def test_vless_config(self, url: str) -> dict:
+        url = str(url or "").strip()
+        with self._config_lock:
+            cfg = self.load_config()
+            pool = _normalize_vless_pool(cfg.get("vless_pool"))
+            if not any(entry["url"] == url for entry in pool):
+                return {"ok": False, "message": "Конфиг не найден в пуле"}
+            active = str(cfg.get("vless_url") or "").strip()
+            was_running = vless_service.is_running()
+            with self._core_lock:
+                if was_running:
+                    vless_service.stop_tunnel()
+                try:
+                    result = self._vless_probe(url, cfg)
+                finally:
+                    # Always bring the previously active config back online.
+                    if was_running and active and active != url:
+                        vless_service.start_tunnel(active, custom_core_path=cfg.get("vless_core_path"))
+            pool = self._cache_vless_result(cfg, url, result)
+            return {"ok": bool(result.get("ok")), "message": result.get("message", "Ошибка проверки"),
+                    "ip": result.get("ip"), "country": result.get("country"),
+                    "latency_ms": result.get("latency_ms"), "pool": pool}
+
+    def test_all_vless_configs(self) -> dict:
+        cfg = self.load_config()
+        pool = _normalize_vless_pool(cfg.get("vless_pool"))
+        active = str(cfg.get("vless_url") or "").strip()
+        was_running = vless_service.is_running()
+        results = []
+        with self._config_lock, self._core_lock:
+            if was_running:
+                vless_service.stop_tunnel()
+            try:
+                for entry in pool:
+                    result = self._vless_probe(entry["url"], cfg)
+                    self._cache_vless_result(cfg, entry["url"], result)
+                    results.append({"url": entry["url"], "label": entry["label"],
+                                    "ok": bool(result.get("ok")), "ip": result.get("ip"),
+                                    "country": result.get("country"),
+                                    "latency_ms": result.get("latency_ms")})
+            finally:
+                if was_running and active:
+                    vless_service.start_tunnel(active, custom_core_path=cfg.get("vless_core_path"))
+        ok_count = sum(1 for r in results if r["ok"])
+        return {"ok": ok_count > 0, "message": f"Проверено {len(results)} конфигов, доступно {ok_count}",
+                "results": results, "pool": cfg.get("vless_pool", pool)}
 
     def download_vless_core(self, core_type: str = "sing-box") -> dict:
         if core_type not in ("sing-box", "xray"):

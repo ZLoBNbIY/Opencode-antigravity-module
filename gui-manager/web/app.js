@@ -213,6 +213,7 @@ function renderNetworkTab() {
     renderAutoComparison(key, provider);
   }
   document.getElementById('hub-auto-route').textContent = 'Auto проверяет HTTPS без API-ключей, выбирает маршрут с наибольшей доступностью и наименьшей задержкой. Прямое подключение в сравнении не участвует.';
+  renderVlessPool();
   renderGeminiRulesStatus(appState.geminiRules || {});
   const net = appState.network || {};
   const badge = document.getElementById('vless-status');
@@ -758,6 +759,120 @@ async function saveNetworkSettings() {
     showToast(`Не удалось сохранить сеть: ${e}`);
     return false;
   } finally { button.disabled = false; }
+}
+
+// --- VLESS config pool ---
+function countryFlag(code) {
+  if (!code || String(code).length !== 2) return '';
+  return String.fromCodePoint(...[...String(code).toUpperCase()].map(c => 127397 + c.charCodeAt(0)));
+}
+function renderVlessPool() {
+  const container = document.getElementById('vless-pool-container');
+  if (!container) return;
+  const cfg = appState.config || {};
+  const pool = Array.isArray(cfg.vless_pool) ? cfg.vless_pool : [];
+  const active = String(cfg.vless_url || '').trim();
+  const badge = document.getElementById('vless-pool-count');
+  if (badge) badge.textContent = `${pool.length} конфиг${pool.length === 1 ? '' : 'ов'}`;
+  container.innerHTML = '';
+  if (!pool.length) {
+    container.innerHTML = '<div style="color:var(--text-muted); font-size:11px; padding:6px 0;">Пул пуст. Вставьте vless:// ссылку выше и нажмите «＋ Добавить».</div>';
+    return;
+  }
+  pool.forEach((entry, idx) => {
+    const url = String(entry.url || '');
+    const isActive = url === active;
+    const statusOk = entry.status === 'ok';
+    const statusBadge = statusOk ? 'badge-available' : entry.status === 'error' ? 'badge-error' : 'badge-pool';
+    const statusText = statusOk
+      ? `● ${html(entry.ip || 'OK')}${entry.country ? ` · ${countryFlag(entry.country)} ${html(entry.country)}` : ''}${entry.latency_ms != null ? ` · ${entry.latency_ms} мс` : ''}`
+      : entry.status === 'error' ? '● Ошибка' : '● Не проверен';
+    const row = document.createElement('div');
+    row.style = 'display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 10px; background:rgba(255,255,255,0.03); border:1px solid var(--glass-border); border-radius:8px; font-size:11px;';
+    row.innerHTML = `
+      <div style="display:flex; align-items:center; gap:6px; flex:1; min-width:0;">
+        <span class="badge-pill ${isActive ? 'badge-available' : 'badge-pool'}" style="font-size:10px; padding:2px 6px; white-space:nowrap;">${isActive ? 'Активен' : `№${idx + 1}`}</span>
+        <span class="badge-pill ${statusBadge}" style="font-size:10px; padding:2px 6px; white-space:nowrap;">${statusText}</span>
+        <span style="color:#fff; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${html(url)}">${html(entry.label || url)}</span>
+      </div>
+      <div style="display:flex; gap:6px;">
+        <button class="btn-secondary" style="padding:4px 8px; font-size:11px;" data-action="activate" title="Сделать активным" ${isActive ? 'disabled' : ''}>✔</button>
+        <button class="btn-secondary" style="padding:4px 8px; font-size:10px;" data-action="test" title="Проверить IP и страну">🩺</button>
+        <button class="btn-secondary" style="padding:4px 8px; font-size:10px; color:var(--accent-red);" data-action="delete" title="Удалить из пула">🗑</button>
+      </div>
+    `;
+    row.querySelector('[data-action="activate"]')?.addEventListener('click', () => activateVlessItem(idx));
+    row.querySelector('[data-action="test"]')?.addEventListener('click', () => testVlessItem(idx));
+    row.querySelector('[data-action="delete"]')?.addEventListener('click', () => removeVlessItem(idx));
+    container.appendChild(row);
+  });
+}
+function vlessPoolStatus(text) {
+  const el = document.getElementById('vless-pool-status');
+  if (el) el.textContent = text;
+}
+async function addVlessConfig() {
+  const input = document.getElementById('vless-pool-input');
+  const url = String(input?.value || '').trim();
+  if (!url.startsWith('vless://')) { vlessPoolStatus('Ссылка должна начинаться с vless://'); return; }
+  if (!window.pywebview?.api?.add_vless_config) return;
+  vlessPoolStatus('Добавление конфига…');
+  try {
+    const res = await window.pywebview.api.add_vless_config(url);
+    vlessPoolStatus(res.message || '');
+    if (res.ok) {
+      if (input) input.value = '';
+      await refreshState();
+      // Probe the new config right away so its exit IP/country is visible.
+      const idx = (res.pool || []).findIndex(entry => entry.url === url);
+      if (idx >= 0) await testVlessItem(idx);
+    }
+  } catch (e) { vlessPoolStatus(String(e)); }
+}
+async function removeVlessItem(idx) {
+  const pool = Array.isArray(appState.config?.vless_pool) ? appState.config.vless_pool : [];
+  const url = pool[idx]?.url;
+  if (!url || !window.pywebview?.api?.delete_vless_config) return;
+  vlessPoolStatus('Удаление конфига…');
+  try {
+    const res = await window.pywebview.api.delete_vless_config(url);
+    vlessPoolStatus(res.message || '');
+    if (res.ok) await refreshState();
+  } catch (e) { vlessPoolStatus(String(e)); }
+}
+async function activateVlessItem(idx) {
+  const pool = Array.isArray(appState.config?.vless_pool) ? appState.config.vless_pool : [];
+  const url = pool[idx]?.url;
+  if (!url || !window.pywebview?.api?.activate_vless_config) return;
+  vlessPoolStatus('Переключение на выбранный конфиг…');
+  try {
+    const res = await window.pywebview.api.activate_vless_config(url);
+    vlessPoolStatus(res.message || '');
+    if (res.ok) await refreshState();
+  } catch (e) { vlessPoolStatus(String(e)); }
+}
+async function testVlessItem(idx) {
+  const pool = Array.isArray(appState.config?.vless_pool) ? appState.config.vless_pool : [];
+  const url = pool[idx]?.url;
+  if (!url || !window.pywebview?.api?.test_vless_config) return;
+  vlessPoolStatus('Проверка выходного IP и страны…');
+  try {
+    const res = await window.pywebview.api.test_vless_config(url);
+    vlessPoolStatus(res.message || '');
+    if (res.pool) { appState.config.vless_pool = res.pool; renderVlessPool(); }
+  } catch (e) { vlessPoolStatus(String(e)); }
+}
+async function testAllVlessConfigs() {
+  if (!window.pywebview?.api?.test_all_vless_configs) return;
+  const btn = document.getElementById('btn-vless-test-all');
+  if (btn) btn.disabled = true;
+  vlessPoolStatus('Проверка всех конфигов… это может занять до минуты');
+  try {
+    const res = await window.pywebview.api.test_all_vless_configs();
+    vlessPoolStatus(res.message || '');
+    if (res.pool) { appState.config.vless_pool = res.pool; renderVlessPool(); }
+  } catch (e) { vlessPoolStatus(String(e)); }
+  finally { if (btn) btn.disabled = false; }
 }
 
 async function vlessAction(action) {

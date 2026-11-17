@@ -17,7 +17,12 @@ class WebviewBackendTests(unittest.TestCase):
         manager.get_active_google_account_index = Mock(return_value=0)
         manager.get_active_google_health_account = Mock(return_value=None)
         self.manager = manager
-        self.vless = SimpleNamespace(find_core_executable=Mock(return_value=None), is_running=Mock(return_value=False))
+        self.vless = SimpleNamespace(find_core_executable=Mock(return_value=None), is_running=Mock(return_value=False),
+                                     start_tunnel=Mock(return_value=(True, "ok")),
+                                     stop_tunnel=Mock(return_value=(True, "stopped")),
+                                     test_connection=Mock(return_value={
+                                         "ok": True, "message": "Туннель активен! IP: 1.2.3.4 (DE)",
+                                         "ip": "1.2.3.4", "country": "DE", "latency_ms": 120}))
         self.openai = SimpleNamespace(load_openai_accounts=Mock(return_value=[]))
         self.router = SimpleNamespace(PORT=10880, start=Mock(return_value=True), _dns_lock=threading.Lock(),
                                       select_upstream=Mock(return_value=None), _connect_upstream=Mock())
@@ -46,7 +51,10 @@ class WebviewBackendTests(unittest.TestCase):
             "openai_manager": self.openai,
             "claude_manager": SimpleNamespace(claude_service=self.claude),
             "vless_manager": SimpleNamespace(get_http_port=Mock(return_value=20809), get_socks_port=Mock(return_value=20808),
-                                             vless_service=self.vless, VlessParser=SimpleNamespace(parse_url=Mock())),
+                                             vless_service=self.vless, VlessParser=SimpleNamespace(parse_url=Mock(
+                                                 side_effect=lambda url: (_ for _ in ()).throw(ValueError("bad url"))
+                                                 if not str(url).strip().startswith("vless://") else
+                                                 {"tag": str(url).split("#")[-1], "server": "1.1.1.1", "port": 443}))),
             "provider_proxy": self.router,
             "auto_router": SimpleNamespace(router=self.auto),
             "dns_tester": ModuleType("dns_tester"),
@@ -337,6 +345,44 @@ class WebviewBackendTests(unittest.TestCase):
             result = api.run_provider_deep_probe("google")
             mocked.assert_called_once_with("google", timeout=20)
             self.assertTrue(result["ok"])
+
+    def test_vless_pool_add_activate_and_delete(self):
+        api = self.backend.HubApi()
+        first = "vless://aaa@1.1.1.1:443?security=reality#DE"
+        second = "vless://bbb@2.2.2.2:443?security=tls#US"
+        self.assertTrue(api.add_vless_config(first)["ok"])
+        self.assertTrue(api.add_vless_config(second)["ok"])
+        state = api.get_vless_pool()
+        self.assertEqual(len(state["pool"]), 2)
+        self.assertEqual(state["active"], first)
+        # First config becomes active automatically when it is the only one.
+        activated = api.activate_vless_config(second)
+        self.assertTrue(activated["ok"])
+        self.assertEqual(api.load_config()["vless_url"], second)
+        self.assertEqual(api.get_vless_pool()["activeEntry"]["url"], second)
+        # Tunnel is stopped in this fixture, so activation probes the new config.
+        self.vless.start_tunnel.assert_called()
+        removed = api.delete_vless_config(second)
+        self.assertTrue(removed["ok"])
+        self.assertEqual(api.load_config()["vless_url"], first)
+        self.assertEqual(len(api.get_vless_pool()["pool"]), 1)
+
+    def test_vless_pool_normalizes_legacy_strings_and_caches_probe(self):
+        api = self.backend.HubApi()
+        url = "vless://aaa@1.1.1.1:443?security=reality#DE"
+        api.save_config({"vless_pool": [url, url, "not-a-vless-url"]})
+        pool = api.get_vless_pool()["pool"]
+        self.assertEqual(len(pool), 1)
+        self.assertEqual(pool[0]["url"], url)
+        self.assertEqual(pool[0]["status"], "untested")
+        checked = api.test_vless_config(url)
+        self.assertTrue(checked["ok"])
+        self.assertEqual(checked["ip"], "1.2.3.4")
+        entry = api.get_vless_pool()["pool"][0]
+        self.assertEqual(entry["status"], "ok")
+        self.assertEqual(entry["ip"], "1.2.3.4")
+        self.assertEqual(entry["country"], "DE")
+        self.assertIsNotNone(entry["checked_at"])
 
     @unittest.skipUnless(importlib.util.find_spec("webview"), "pywebview required")
     def test_bridge_finishes_without_inspecting_native_window(self):
