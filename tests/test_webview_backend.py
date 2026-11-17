@@ -37,12 +37,23 @@ class WebviewBackendTests(unittest.TestCase):
                 'hasKey': False, 'connected': False, 'selectedModels': [], 'models': [],
                 'keyLabel': None, 'baseUrl': 'https://tokenlavka.com/v1', 'balance': {}}),
             fetch_balance=Mock(return_value={}), refresh_balance_silent=Mock(return_value={}),
-            cached_balance=Mock(return_value={}), load_config=Mock(return_value={}),
+            cached_balance=Mock(return_value={}), load_config=Mock(return_value={}), save_config=Mock(),
             test_connection=Mock(return_value=(True, 'ok')), save_api_key=Mock(),
             sync_opencode_credential=Mock(), configure_models=Mock(return_value=['gpt-6-luna']),
             selected_models=Mock(return_value=[]), disconnect=Mock(),
             DEFAULT_MODEL='gpt-6-luna', TOKENLAVKA_MODELS={'gpt-6-luna': {}})
         self.claude = SimpleNamespace(load_accounts=Mock(return_value=[{"email": "test@example.com"}]))
+        self.deepseek = SimpleNamespace(
+            load_api_key=Mock(return_value=""),
+            save_api_key=Mock(),
+            load_config=Mock(return_value={"base_url": "https://api.deepseek.com", "connected": False}),
+            save_config=Mock(),
+            provider_state=Mock(return_value={
+                "hasKey": False, "connected": False, "keyLabel": None,
+                "baseUrl": "https://api.deepseek.com", "balance": {"status": "no_key"},
+            }),
+            DEFAULT_BASE_URL="https://api.deepseek.com",
+        )
         modules = {
             "antigravity_manager": manager,
             "proxy_config": SimpleNamespace(sync_provider_routes=Mock()),
@@ -61,6 +72,7 @@ class WebviewBackendTests(unittest.TestCase):
             "xpiki_manager": self.xpiki,
             "openrouter_manager": self.openrouter,
             "tokenlavka_manager": self.tokenlavka,
+            "deepseek_api": self.deepseek,
         }
         path = Path(__file__).resolve().parent.parent / "gui-manager" / "webview_backend.py"
         spec = importlib.util.spec_from_file_location("hub_backend_test", path)
@@ -531,6 +543,69 @@ class WebviewBackendTests(unittest.TestCase):
         self.assertEqual(saved["vless_core_path"], "C:/safe/xray.exe")
         self.assertEqual(saved["doh_url"], "")
         self.assertEqual(saved["proxy"], "")
+
+    def test_full_backup_export_import_roundtrip_all_providers_and_missing_cli(self):
+        self.manager.export_google_accounts.return_value = [{"email": "g@example.com", "refreshToken": "g-ref"}]
+        self.manager.import_google_accounts = Mock(return_value=1)
+        self.openai.load_openai_accounts.return_value = [{"id": "oa-1", "email": "o@example.com", "refresh": "o-ref"}]
+        self.openai.import_openai_accounts = Mock(return_value=1)
+        self.claude.load_accounts.return_value = [{"email": "c@example.com", "session_key": "sk-ant-1"}]
+        self.claude.save_accounts = Mock()
+        self.claude.configure_opencode_provider = Mock()
+        self.xpiki.load_xpiki_config.return_value = {
+            "api_key": "sk-xpiki", "base_url": "https://api.xpiki.com/v1",
+            "enabled_models": ["claude-test"], "connected": True,
+        }
+        self.xpiki.save_xpiki_config = Mock()
+        self.xpiki.configure_opencode = Mock()
+        self.openrouter.load_api_key.return_value = "sk-or-1"
+        self.openrouter.save_api_key = Mock()
+        self.openrouter.sync_opencode_credential.side_effect = ValueError("CLI missing")
+        self.tokenlavka.load_api_key.return_value = "sk-tl-1"
+        self.tokenlavka.selected_models.return_value = ["gpt-6-luna"]
+        self.tokenlavka.cached_balance.return_value = {"balance": 100}
+        self.tokenlavka.sync_opencode_credential.side_effect = ValueError("CLI missing")
+        self.deepseek.load_api_key.return_value = "sk-ds-1"
+        self.deepseek.load_config.return_value = {"base_url": "https://api.deepseek.com", "connected": True}
+
+        self.backend.OPENCODE_CONFIG_FILE.write_text(json.dumps({
+            "provider": {"openrouter-free": {"models": {"free/m1": {"name": "M1"}}}}
+        }), encoding="utf-8")
+
+        api = self.backend.HubApi()
+        api.save_config({
+            "dns_mode": "doh",
+            "doh_url": "https://dns.example/dns-query",
+            "vless_url": "vless://aaa@1.1.1.1:443#DE",
+            "providers_visibility": {"openai": False},
+        })
+
+        backup_no_ext = Path(self.temp.name) / "full_backup"
+        exp = api.export_backup(str(backup_no_ext), password="pw")
+        self.assertTrue(exp["ok"])
+        self.assertTrue(exp["path"].endswith(".agb"))
+        self.assertEqual(exp["counts"], {"google": 1, "openai": 1, "claude": 1})
+
+        # First import without password asks for password
+        prompt_res = api.import_backup(exp["path"])
+        self.assertFalse(prompt_res["ok"])
+        self.assertTrue(prompt_res["requires_password"])
+
+        # Reset local state before importing
+        self.claude.load_accounts.return_value = []
+        self.backend.ANTIGRAVITY_CONFIG_FILE.unlink(missing_ok=True)
+        self.backend.HUB_CONFIG_FILE.unlink(missing_ok=True)
+
+        imp = api.import_backup(exp["path"], password="pw")
+        self.assertTrue(imp["ok"], imp.get("message"))
+        self.assertEqual(imp["counts"], {"google": 1, "openai": 1, "claude": 1})
+        self.claude.configure_opencode_provider.assert_called_once()
+        self.openrouter.configure_models.assert_called_once_with([{"id": "free/m1", "name": "free/m1"}])
+        self.tokenlavka.configure_models.assert_called_once_with(["gpt-6-luna"], "sk-tl-1")
+        self.deepseek.save_api_key.assert_called_once_with("sk-ds-1")
+        self.deepseek.save_config.assert_called_once()
+        oc_after = json.loads(self.backend.OPENCODE_CONFIG_FILE.read_text(encoding="utf-8"))
+        self.assertIn("openai", oc_after.get("disabled_providers", []))
 
 
 if __name__ == "__main__":

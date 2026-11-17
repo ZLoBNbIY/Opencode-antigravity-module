@@ -1381,6 +1381,8 @@ class HubApi:
             target = Path(target_path)
             if target.exists() and target.is_dir():
                 return {"ok": False, "message": "Указанный путь является каталогом"}
+            if not target.suffix:
+                target = target.with_suffix(".agb" if (isinstance(password, str) and password) else ".json")
             if target.suffix.lower() not in (".json", ".agb"):
                 return {"ok": False, "message": "Допустимы только файлы резервных копий .json или .agb"}
 
@@ -1391,14 +1393,23 @@ class HubApi:
             openrouter_key = openrouter_manager.load_api_key()
             tokenlavka_key = tokenlavka_manager.load_api_key()
             tokenlavka_models = tokenlavka_manager.selected_models()
+            deepseek_key = deepseek_api.load_api_key()
+            deepseek_cfg = deepseek_api.load_config()
 
             selected_or_models = []
             try:
-                if OPENCODE_CONFIG_FILE.exists():
-                    oc = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8-sig"))
+                import jsonc_config
+                oc_path = jsonc_config.config_path(CONFIG_DIR)
+                if oc_path.exists():
+                    oc = jsonc_config.parse_config(oc_path.read_text(encoding="utf-8-sig"))
                     selected_or_models = list(oc.get("provider", {}).get("openrouter-free", {}).get("models", {}))
             except Exception:
-                pass
+                try:
+                    if OPENCODE_CONFIG_FILE.exists():
+                        oc = json.loads(OPENCODE_CONFIG_FILE.read_text(encoding="utf-8-sig"))
+                        selected_or_models = list(oc.get("provider", {}).get("openrouter-free", {}).get("models", {}))
+                except Exception:
+                    pass
 
             backup_data = {
                 "schemaVersion": 2,
@@ -1421,6 +1432,11 @@ class HubApi:
                     "api_key": tokenlavka_key or "",
                     "selected_models": tokenlavka_models,
                     "cached_balance": tokenlavka_manager.cached_balance(),
+                },
+                "deepseek": {
+                    "api_key": deepseek_key or "",
+                    "base_url": deepseek_cfg.get("base_url") or deepseek_api.DEFAULT_BASE_URL,
+                    "connected": bool(deepseek_cfg.get("connected", False)),
                 },
                 "config": self.load_config(),
             }
@@ -1520,6 +1536,11 @@ class HubApi:
                         existing_emails.add(ca_email)
                         imported_c += 1
                 claude_service.save_accounts(existing)
+                if imported_c and hasattr(claude_service, "configure_opencode_provider"):
+                    try:
+                        claude_service.configure_opencode_provider()
+                    except Exception:
+                        pass
 
             # 4. Xpiki
             xpiki_data = data.get("xpiki")
@@ -1550,7 +1571,10 @@ class HubApi:
             if isinstance(or_data, dict) and isinstance(or_data.get("api_key"), str) and or_data["api_key"].strip():
                 or_key = or_data["api_key"].strip()
                 openrouter_manager.save_api_key(or_key)
-                openrouter_manager.sync_opencode_credential(or_key)
+                try:
+                    openrouter_manager.sync_opencode_credential(or_key)
+                except Exception:
+                    pass
                 if isinstance(or_data.get("selected_models"), list):
                     models = [{"id": str(mid), "name": str(mid)} for mid in or_data["selected_models"] if isinstance(mid, str)]
                     if models:
@@ -1561,18 +1585,33 @@ class HubApi:
             if isinstance(tl_data, dict) and isinstance(tl_data.get("api_key"), str) and tl_data["api_key"].strip():
                 tl_key = tl_data["api_key"].strip()
                 tokenlavka_manager.save_api_key(tl_key)
-                tokenlavka_manager.sync_opencode_credential(tl_key)
+                try:
+                    tokenlavka_manager.sync_opencode_credential(tl_key)
+                except Exception:
+                    pass
                 if isinstance(tl_data.get("selected_models"), list):
-                    tokenlavka_manager.configure_models(
-                        [mid for mid in tl_data["selected_models"]
-                         if isinstance(mid, str) and mid in tokenlavka_manager.TOKENLAVKA_MODELS],
-                        tl_key,
-                    )
+                    valid_tl = [mid for mid in tl_data["selected_models"]
+                                if isinstance(mid, str) and mid in tokenlavka_manager.TOKENLAVKA_MODELS]
+                    if valid_tl:
+                        tokenlavka_manager.configure_models(valid_tl, tl_key)
                 cached = tl_data.get("cached_balance")
                 if isinstance(cached, dict):
                     cfg = tokenlavka_manager.load_config()
                     cfg["cached_balance"] = cached
                     tokenlavka_manager.save_config(cfg)
+
+            # 6b. DeepSeek API
+            ds_data = data.get("deepseek")
+            if isinstance(ds_data, dict) and isinstance(ds_data.get("api_key"), str) and ds_data["api_key"].strip():
+                ds_key = ds_data["api_key"].strip()
+                deepseek_api.save_api_key(ds_key)
+                ds_cfg = deepseek_api.load_config()
+                raw_ds_url = str(ds_data.get("base_url") or deepseek_api.DEFAULT_BASE_URL).strip()
+                p_ds = urlparse(raw_ds_url)
+                if p_ds.scheme == "https" and p_ds.hostname and not p_ds.username and not p_ds.password:
+                    ds_cfg["base_url"] = raw_ds_url.rstrip("/")
+                ds_cfg["connected"] = bool(ds_data.get("connected", True))
+                deepseek_api.save_config(ds_cfg)
 
             # 7. Hub Config (settings, routes, proxies, DNS) — whitelist safe keys only
             backup_cfg = data.get("config")
@@ -1614,6 +1653,14 @@ class HubApi:
                     current_cfg["vless_pool"] = _normalize_vless_pool(current_cfg.get("vless_pool"))
                 self.save_config(current_cfg)
                 self._sync_routes(current_cfg)
+                vis = current_cfg.get("providers_visibility")
+                if isinstance(vis, dict):
+                    clean_vis = {k: v for k, v in vis.items() if k in PROVIDER_SETTING_IDS and isinstance(v, bool)}
+                    if clean_vis:
+                        try:
+                            self.save_general_settings({"providers_visibility": clean_vis})
+                        except Exception:
+                            pass
 
             summary = []
             if imported_g: summary.append(f"Google: {imported_g}")

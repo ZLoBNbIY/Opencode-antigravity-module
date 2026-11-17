@@ -386,7 +386,11 @@ def import_openai_accounts(imported_list: list[dict]) -> int:
         # Determine which account should be active
         active_acc = next((a for a in accounts if a.get("is_active")), accounts[0])
         for a in accounts:
-            a["is_active"] = (a.get("id") == active_acc.get("id") or a.get("accountId") == active_acc.get("accountId"))
+            a["is_active"] = (
+                a is active_acc
+                or (bool(active_acc.get("id")) and a.get("id") == active_acc.get("id"))
+                or (bool(active_acc.get("accountId")) and a.get("accountId") == active_acc.get("accountId"))
+            )
 
         # Proactively refresh tokens for accounts where token is missing, expired, or near expiry
         now_ms = int(time.time() * 1000)
