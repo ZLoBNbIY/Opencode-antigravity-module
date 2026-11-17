@@ -159,6 +159,22 @@ class DeepSeekApiTests(unittest.TestCase):
             self.assertEqual(deepseek_api.load_api_key(), "sk-db-key-1234567890")
         self.assertTrue(deepseek_api._auto_import_pending)
 
+    def test_auto_import_accepts_legacy_api_credential_variant(self):
+        conn = MagicMock()
+        conn.execute.return_value.fetchone.return_value = (
+            json.dumps({"type": "api", "key": "sk-legacy-key-1234567890"}),
+        )
+        with patch.object(deepseek_api.sqlite3, "connect", return_value=conn), \
+             patch.object(Path, "exists", return_value=True):
+            self.assertEqual(deepseek_api._key_from_opencode_db(), "sk-legacy-key-1234567890")
+
+    def test_saving_key_re_enables_adoption_after_disconnect(self):
+        deepseek_api.clear_api_key()
+        self.assertTrue(deepseek_api.load_config()["auto_import_disabled"])
+        deepseek_api.save_api_key("sk-new-key-1234567890")
+        self.assertFalse(deepseek_api.load_config()["auto_import_disabled"])
+        self.assertEqual(deepseek_api.load_api_key(), "sk-new-key-1234567890")
+
     def test_auto_import_from_environment(self):
         with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "sk-env-key-1234567890"}, clear=True):
             self.assertEqual(deepseek_api.load_api_key(), "sk-env-key-1234567890")

@@ -102,6 +102,8 @@ def save_api_key(key: Any) -> bool:
     atomic_write(SECRET_FILE, json.dumps(protect_secret("deepseek-api-key", {"apiKey": key})))
     cfg = load_config()
     cfg["connected"] = True
+    # An explicit key always re-enables adoption from OpenCode/env on next start.
+    cfg["auto_import_disabled"] = False
     save_config(cfg)
     return True
 
@@ -143,9 +145,10 @@ def _key_from_opencode_db() -> str:
         if not row:
             return ""
         value = json.loads(row[0])
-        if not isinstance(value, dict) or value.get("type") not in ("key", None):
+        if not isinstance(value, dict) or value.get("type") not in ("key", "api", None):
             return ""
-        return clean_key(value.get("key") or value.get("apiKey"))
+        candidate = clean_key(value.get("key") or value.get("apiKey") or value.get("api_key"))
+        return candidate if is_valid_key(candidate) else ""
     except Exception:
         return ""
 
@@ -189,9 +192,11 @@ def load_api_key() -> str:
     if SECRET_FILE.exists():
         try:
             record = json.loads(SECRET_FILE.read_text(encoding="utf-8"))
-            return clean_key(unprotect_secret(record, "deepseek-api-key").get("apiKey"))
+            stored = clean_key(unprotect_secret(record, "deepseek-api-key").get("apiKey"))
+            if is_valid_key(stored):
+                return stored
         except Exception:
-            return ""
+            pass
     if load_config().get("auto_import_disabled"):
         return ""
     imported = _key_from_environment() or _key_from_opencode_db() or _key_from_opencode_config()
