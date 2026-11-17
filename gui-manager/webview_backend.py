@@ -883,7 +883,9 @@ class HubApi:
             pass
         deepseek_state = deepseek_api.provider_state()
         try:
-            deepseek_state["usage"] = opencode_usage.deepseek_usage()
+            balance = deepseek_state.get("balance") or {}
+            currency = balance.get("currency") if balance.get("status") in ("ok", "stale") else None
+            deepseek_state["usage"] = opencode_usage.deepseek_usage(currency=currency or "CNY")
         except Exception as exc:
             deepseek_state["usage"] = {"status": "error", "error": str(exc)[:160], "days": [],
                                        "totals": {"cost": 0.0, "tokens_total": 0, "messages": 0}}

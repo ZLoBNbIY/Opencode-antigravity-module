@@ -228,21 +228,22 @@ test('DeepSeek tab charts real OpenCode money and token usage', () => {
   fixture.providers.deepseek = {
     connected:true, hasKey:true, keyLabel:'sk-••••9abc', baseUrl:'https://api.deepseek.com',
     balance:{status:'ok',is_available:true,currency:'CNY',total_balance:110.5,granted_balance:10,topped_up_balance:100.5,checked_at:1794309000},
-    usage:{status:'ok',source:'OpenCode',currency:'USD',window_days:30,checked_at:1794309000,
+    usage:{status:'ok',source:'OpenCode',currency:'CNY',pricing:'DeepSeek official tariff',window_days:30,checked_at:1794309000,
       days:[
-        {date:'2026-11-16',cost:0.02,tokens_total:2212941,tokens_input:58950,tokens_output:8942,tokens_reasoning:5497,tokens_cache_read:2119552,messages:52},
-        {date:'2026-11-17',cost:0.55,tokens_total:98275326,tokens_input:759296,tokens_output:104612,tokens_reasoning:140602,tokens_cache_read:96050816,messages:396},
+        {date:'2026-11-16',cost:0.159097,cost_usd:0.023865,tokens_total:2192941,tokens_input:58950,tokens_output:8942,tokens_reasoning:5497,tokens_cache_read:2119552,messages:52,unpriced_messages:0},
+        {date:'2026-11-17',cost:3.750892,cost_usd:0.574445,tokens_total:100567460,tokens_input:768423,tokens_output:114892,tokens_reasoning:152753,tokens_cache_read:99531392,messages:421,unpriced_messages:0},
       ],
-      totals:{cost:0.57304,tokens_total:100488267,messages:448}},
+      totals:{cost:3.909989,cost_usd:0.59831,tokens_total:102760401,messages:473,unpriced_messages:0}},
   };
   const {elements, context} = frontend(fixture);
   const card = elements.get('deepseek-usage').innerHTML;
   assert.match(card, /Расход токенов и денег/);
   assert.match(card, /usage-bar-money/);
   assert.match(card, /usage-bar-tokens/);
-  assert.match(card, /\$0,57/);
+  assert.match(card, /3,91 CNY/);
   assert.match(card, /млн/);
-  assert.match(card, /По данным OpenCode/);
+  assert.match(card, /официальному тарифу DeepSeek в CNY/);
+  assert.doesNotMatch(card, /\$0,57/);
   assert.match(card, /14 дн\./);
 
   vm.runInContext('setDeepseekUsagePeriod(7)', context);

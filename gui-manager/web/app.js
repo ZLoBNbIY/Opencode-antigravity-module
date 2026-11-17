@@ -1729,10 +1729,10 @@ function renderDeepSeekTab() {
   renderDeepSeekUsage(cfg.usage);
 }
 
-function usageMoney(value) {
+function usageMoney(value, currency) {
   const number = Number(value);
   if (!Number.isFinite(number)) return '—';
-  return '$' + number.toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 4});
+  return `${number.toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 4})} ${currency || ''}`.trim();
 }
 function usageTokens(value) {
   const number = Number(value);
@@ -1767,10 +1767,12 @@ function renderDeepSeekUsage(usage) {
     box.innerHTML = `<h2>Расход токенов и денег</h2><p class="help-text">Нет данных о расходе DeepSeek в базе OpenCode.</p>`;
     return;
   }
+  const currency = html(usage.currency || 'CNY');
   const sum = key => days.reduce((total, day) => total + (Number(day[key]) || 0), 0);
   const totalCost = sum('cost');
   const totalTokens = sum('tokens_total');
   const totalMessages = sum('messages');
+  const unpriced = sum('unpriced_messages');
   const maxCost = Math.max(0, ...days.map(day => Number(day.cost) || 0));
   const maxTokens = Math.max(0, ...days.map(day => Number(day.tokens_total) || 0));
   const percent = (value, max) => max > 0 ? Math.max((Number(value) || 0) > 0 ? 3 : 0, Math.min(100, (Number(value) || 0) / max * 100)) : 0;
@@ -1784,7 +1786,7 @@ function renderDeepSeekUsage(usage) {
     const tokenPercent = percent(day.tokens_total, maxTokens);
     const tip = [
       dateLabel(day.date),
-      `расход ${usageMoney(day.cost)}`,
+      `расход ${usageMoney(day.cost, usage.currency)}${day.cost_usd ? ` (${usageMoney(day.cost_usd, 'USD')} по учёту OpenCode)` : ''}`,
       `токены ${usageTokens(day.tokens_total)}`,
       `вход ${usageTokens(day.tokens_input)} · кэш ${usageTokens(day.tokens_cache_read)}`,
       `выход ${usageTokens(day.tokens_output)} · reasoning ${usageTokens(day.tokens_reasoning)}`,
@@ -1804,16 +1806,17 @@ function renderDeepSeekUsage(usage) {
       ${periodButtons(period)}
     </div>
     <div class="usage-summary">
-      <div><span>Деньги</span><strong>${usageMoney(totalCost)}</strong></div>
+      <div><span>Деньги</span><strong>${usageMoney(totalCost, usage.currency)}</strong></div>
       <div><span>Токены</span><strong>${usageTokens(totalTokens)}</strong></div>
       <div><span>Запросов</span><strong>${totalMessages.toLocaleString('ru-RU')}</strong></div>
     </div>
     <div class="usage-chart">${columns}</div>
     <div class="usage-legend">
-      <span><i class="usage-dot usage-dot-money"></i>Деньги, $ (макс. ${usageMoney(maxCost)})</span>
+      <span><i class="usage-dot usage-dot-money"></i>Деньги, ${currency} (макс. ${usageMoney(maxCost, usage.currency)})</span>
       <span><i class="usage-dot usage-dot-tokens"></i>Токены (макс. ${usageTokens(maxTokens)})</span>
-      <span class="usage-source">По данным ${html(usage.source || 'OpenCode')} · баланс выше в валюте DeepSeek</span>
+      <span class="usage-source">По официальному тарифу DeepSeek в ${currency} · токены из базы ${html(usage.source || 'OpenCode')} · пиковые часы ×2</span>
     </div>
+    ${unpriced > 0 ? `<p class="help-text usage-warning">Без тарифа DeepSeek: ${unpriced.toLocaleString('ru-RU')} сообщений — их стоимость в деньги не включена.</p>` : ''}
   `;
 }
 
