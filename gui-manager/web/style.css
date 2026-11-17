@@ -168,6 +168,42 @@ body {
 .sidebar-footer {
   padding-top: 10px;
   border-top: 1px solid rgba(255, 255, 255, 0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sidebar-restart-btn {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  color: var(--text-secondary);
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-family: var(--font);
+  font-size: 10.5px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.sidebar-restart-btn:hover:not(:disabled) {
+  background: rgba(217, 154, 67, 0.12);
+  border-color: rgba(217, 154, 67, 0.38);
+  color: var(--accent-amber-light);
+}
+
+.sidebar-restart-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.sidebar-restart-btn.is-restarting .sidebar-restart-icon {
+  animation: spin 0.9s linear infinite;
 }
 
 .status-badge {

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Antigravity Hub</title>
-  <link rel="stylesheet" href="style.css?v=20261117b">
+  <link rel="stylesheet" href="style.css?v=20261117d">
 </head>
 <body>
 
@@ -93,6 +93,10 @@
     </div>
 
     <div class="sidebar-footer">
+      <button class="sidebar-restart-btn" id="btn-restart-opencode" type="button" onclick="restartOpenCode()">
+        <svg class="sidebar-restart-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>
+        <span>Перезапустить OpenCode</span>
+      </button>
       <div class="status-badge" id="sidebar-opencode-status">
         <span class="dot"></span>
         <span>OpenCode: Окно открыто</span>
@@ -702,7 +706,6 @@
         <div class="glass-card" style="margin-bottom: 16px;">
           <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 12px;">Управление OpenCode</div>
           <div style="display: flex; gap: 10px;">
-            <button class="btn-primary" onclick="restartOpenCode()">🔄 Перезапустить OpenCode</button>
             <button class="btn-secondary" onclick="stopOpenCode()" style="color: var(--accent-red);">⏹ Остановить</button>
             <button class="btn-secondary" onclick="startOpenCode()">▶ Запустить</button>
           </div>
@@ -824,6 +827,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20261117b"></script>
+<script src="app.js?v=20261117d"></script>
 </body>
 </html>

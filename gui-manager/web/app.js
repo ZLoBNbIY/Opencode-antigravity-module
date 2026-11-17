@@ -1944,6 +1944,14 @@ async function saveSettings() {
 // --- OpenCode system actions ---
 async function restartOpenCode() {
   if (!window.pywebview?.api) return;
+  const btn = document.getElementById('btn-restart-opencode');
+  const label = btn ? btn.querySelector('span') : null;
+  const originalText = label ? label.textContent : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.classList.toggle('is-restarting', true);
+    if (label) label.textContent = 'Перезапуск…';
+  }
   showToast("Перезапуск окна и фонового сервера OpenCode...");
   try {
     const ok = await window.pywebview.api.restart_opencode();
@@ -1952,6 +1960,11 @@ async function restartOpenCode() {
   } catch (e) {
     showToast(`Ошибка перезапуска OpenCode: ${e}`);
   } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.classList.toggle('is-restarting', false);
+      if (label) label.textContent = originalText;
+    }
     setTimeout(refreshState, 1500);
     void refreshPluginFixStatus();
   }

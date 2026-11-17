@@ -351,3 +351,18 @@ test('Google login refreshes accounts only after successful completion', async (
   assert.equal(refreshed, 1);
   assert.match(elements.get('toasts').children.at(-1).textContent, /добавлен/);
 });
+
+test('OpenCode restart button is placed in sidebar above status indicator and removed from settings', () => {
+  const footerMatch = markup.match(/<div class="sidebar-footer">([\s\S]*?)<\/div>\s*<\/aside>/);
+  assert.ok(footerMatch, 'sidebar-footer should exist');
+  const footerHtml = footerMatch[1];
+  const restartIdx = footerHtml.indexOf('id="btn-restart-opencode"');
+  const statusIdx = footerHtml.indexOf('id="sidebar-opencode-status"');
+  assert.ok(restartIdx !== -1, 'restart button should be in sidebar-footer');
+  assert.ok(statusIdx !== -1, 'status indicator should be in sidebar-footer');
+  assert.ok(restartIdx < statusIdx, 'restart button should appear above status indicator');
+
+  const settingsMatch = markup.match(/<section id="view-settings"[\s\S]*?<\/section>/);
+  assert.ok(settingsMatch, 'view-settings should exist');
+  assert.doesNotMatch(settingsMatch[0], /onclick="restartOpenCode\(\)"/);
+});
