@@ -123,13 +123,11 @@ def sync_provider_routes(config: dict, hub_config: dict, http_port: int,
                 original = target.get("hubBaseURL") or target.get("baseURL")
                 if original and original != REVERSE_BASE_URLS[provider_name]:
                     target["hubBaseURL"] = original
-                if mode == "direct":
-                    if target.get("hubBaseURL"):
-                        target["baseURL"] = target["hubBaseURL"]
-                    target.pop("proxy", None)
-                else:
-                    target["baseURL"] = REVERSE_BASE_URLS[provider_name]
-                    target.pop("proxy", None)
+                # Keep the local endpoint for every mode: "direct" only chooses
+                # a direct upstream inside the dispatcher. Sending Bun straight
+                # to the real https URL brings back ECONNRESET.
+                target["baseURL"] = REVERSE_BASE_URLS[provider_name]
+                target.pop("proxy", None)
             elif mode == "direct":
                 target.pop("proxy", None)
             else:

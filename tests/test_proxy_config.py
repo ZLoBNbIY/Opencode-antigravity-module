@@ -118,14 +118,16 @@ class ProxyConfigTests(unittest.TestCase):
         self.assertEqual(opts["hubBaseURL"], "https://tokenlavka.com/v1")
         self.assertNotIn("proxy", opts)
 
-    def test_tokenlavka_direct_restores_real_base_url(self):
-        config = {"provider": {"tokenlavka": {"options": {
-            "baseURL": "https://tokenlavka.com/v1"}}}}
-        hub = {"provider_routes": {"tokenlavka": "direct"}}
-        sync_provider_routes(config, hub, 10879, hub["provider_routes"])
-        opts = config["provider"]["tokenlavka"]["options"]
-        self.assertEqual(opts["baseURL"], "https://tokenlavka.com/v1")
-        self.assertNotIn("proxy", opts)
+    def test_tokenlavka_keeps_reverse_endpoint_for_every_route(self):
+        from proxy_config import REVERSE_BASE_URLS
+        for mode in ("direct", "vless", "dns", "proxy", "auto", "default"):
+            config = {"provider": {"tokenlavka": {"options": {
+                "baseURL": "https://tokenlavka.com/v1"}}}}
+            hub = {"provider_routes": {"tokenlavka": mode}}
+            sync_provider_routes(config, hub, 10879, hub["provider_routes"])
+            opts = config["provider"]["tokenlavka"]["options"]
+            self.assertEqual(opts["baseURL"], REVERSE_BASE_URLS["tokenlavka"], mode)
+            self.assertNotIn("proxy", opts)
 
 
 if __name__ == "__main__":
