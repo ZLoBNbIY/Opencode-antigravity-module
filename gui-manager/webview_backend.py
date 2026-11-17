@@ -668,9 +668,12 @@ class HubApi:
                               {"ok": False, "message": message, "ip": None, "country": None, "latency_ms": None})
                 elif was_running:
                     result = vless_service.test_connection(timeout=10)
-                elif not was_running:
-                    # Probe once so the IP/country is visible immediately in the pool.
-                    result = self._vless_probe(url, cfg)
+                else:
+                    # There is no Start button in the UI: activating a config
+                    # starts the tunnel and leaves it running.
+                    ok, message = vless_service.start_tunnel(url, custom_core_path=cfg.get("vless_core_path"))
+                    result = (vless_service.test_connection(timeout=10) if ok else
+                              {"ok": False, "message": message, "ip": None, "country": None, "latency_ms": None})
             if result and result.get("ip"):
                 pool = self._cache_vless_result(cfg, url, result)
             else:

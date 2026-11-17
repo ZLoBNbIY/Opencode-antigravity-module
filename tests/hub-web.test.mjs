@@ -55,8 +55,10 @@ test('all account tabs render with active identity and real zero ChatGPT quota',
   const chat = elements.get('openai-accounts-container').children[0].innerHTML;
   assert.match(chat, /0% осталось/);
   assert.match(chat, /42% осталось/);
-  assert.equal(elements.get('btn-download-sing-box').disabled, true);
-  assert.equal(elements.get('btn-download-xray').disabled, false);
+  const coreButtons = elements.get('vless-core-row').children;
+  assert.equal(coreButtons.length, 2);
+  assert.match(coreButtons[0].className, /active/);
+  assert.doesNotMatch(coreButtons[1].className, /active/);
 });
 
 test('failed domains show error indicators and no invented milliseconds', () => {

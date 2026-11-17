@@ -215,24 +215,25 @@ function renderNetworkTab() {
   }
   document.getElementById('hub-auto-route').textContent = 'Auto проверяет HTTPS без API-ключей, выбирает маршрут с наибольшей доступностью и наименьшей задержкой. Прямое подключение в сравнении не участвует.';
   renderVlessPool();
-  renderGeminiRulesStatus(appState.geminiRules || {});
   const net = appState.network || {};
   const badge = document.getElementById('vless-status');
   badge.textContent = net.vlessRunning ? '● Туннель запущен' : '● Остановлен';
   badge.className = `badge-pill ${net.vlessRunning ? 'badge-available' : 'badge-pool'}`;
-  document.getElementById('vless-core-status').textContent = net.vlessCore ? `Выбранное ядро: ${net.vlessCore}` : 'Для запуска нужно установить ядро или указать путь к нему';
-  const coreList = document.getElementById('vless-core-list');
-  coreList.innerHTML = '';
-  for (const kind of ['sing-box', 'xray']) {
-    const core = net.cores?.[kind] || {};
-    const row = document.createElement('div');
-    row.className = 'core-row';
-    row.innerHTML = `<span class="connection-indicator ${core.installed ? 'ok' : 'idle'}" aria-label="${core.installed ? 'Установлено' : 'Не установлено'}"></span><span class="core-name">${html(kind === 'xray' ? 'Xray' : kind)}</span><span>${core.installed ? 'Установлено' : 'Не установлено'}${core.selected ? ' · выбрано' : ''}</span>${core.installed && !core.selected ? '<button class="btn-secondary">Выбрать</button>' : ''}${core.path ? `<span class="core-path">${html(core.path)}</span>` : ''}`;
-    row.querySelector('button')?.addEventListener('click', () => selectVlessCore(kind));
-    coreList.appendChild(row);
-    const button = document.getElementById(`btn-download-${kind}`);
-    button.disabled = !!core.installed;
-    button.textContent = core.installed ? `${kind === 'xray' ? 'Xray' : kind} установлен` : `Скачать ${kind === 'xray' ? 'Xray' : kind}`;
+  const coreRow = document.getElementById('vless-core-row');
+  if (coreRow) {
+    coreRow.innerHTML = '';
+    for (const kind of ['sing-box', 'xray']) {
+      const core = net.cores?.[kind] || {};
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `seg-btn ${core.selected ? 'active' : ''}`;
+      btn.dataset.core = kind;
+      btn.textContent = kind === 'xray' ? 'Xray' : 'Sing-box';
+      btn.title = core.selected ? 'Активное ядро'
+        : core.installed ? 'Выбрать это ядро' : 'Ядро не установлено — нажмите, чтобы скачать';
+      btn.onclick = () => selectVlessCore(kind, !!core.installed);
+      coreRow.appendChild(btn);
+    }
   }
   const proxyPool = appState.config?.proxy_pool || (appState.config?.proxy ? [appState.config.proxy] : []);
   const proxyConfigured = proxyPool.length > 0;
@@ -241,8 +242,6 @@ function renderNetworkTab() {
   document.getElementById('http-proxy-status').textContent = proxyConfigured
     ? `В пуле: ${proxyPool.length} узлов. Основной отмечен в списке. Failover ${appState.config?.proxy_failover === false ? 'выключен' : 'включён'}.`
     : 'Прокси не настроены';
-  document.getElementById('btn-vless-start').disabled = !!net.vlessRunning;
-  document.getElementById('btn-vless-stop').disabled = !net.vlessRunning;
   renderProxyPool();
   if (!networkFormInitialized) fillNetworkForm();
   const cfg = appState.config || {};
@@ -510,84 +509,6 @@ async function moveProxyItem(fromIndex, toIndex) {
   await saveNetworkSettings();
 }
 
-function renderGeminiRulesStatus(rules) {
-  const status = document.getElementById('gemini-rules-status');
-  const button = document.getElementById('btn-gemini-rules-refresh');
-  if (!status || !button) return;
-  const updated = rules.updated_at ? new Date(rules.updated_at).toLocaleString() : 'ещё не обновлялся';
-  const count = Number(rules.domain_count || 0);
-  if (rules.state === 'updating') {
-    status.textContent = `Обновление… · в кэше ${count} доменов · последняя успешная загрузка: ${updated}`;
-  } else if (rules.state === 'updated') {
-    status.textContent = `Обновлено ${updated} · ${count} доменов · источники доступны ${rules.sources_loaded}/${rules.sources_total}`;
-  } else if (rules.state === 'error') {
-    status.textContent = `Ошибка обновления (${rules.last_error || 'неизвестно'}). В кэше ${count} доменов; последнее успешное обновление: ${updated}.`;
-  } else {
-    status.textContent = 'Список ещё не загружен. Hub попробует получить правила из источников.';
-  }
-  button.disabled = rules.state === 'updating';
-  button.textContent = rules.state === 'updating' ? 'Обновление…' : 'Обновить';
-}
-
-async function toggleGeminiRules() {
-  const viewer = document.getElementById('gemini-rules-viewer');
-  viewer.hidden = !viewer.hidden;
-  document.getElementById('btn-gemini-rules-toggle').textContent = viewer.hidden ? 'Показать список' : 'Свернуть список';
-  if (!viewer.hidden) await loadGeminiRules();
-}
-
-async function loadGeminiRules() {
-  const query = document.getElementById('gemini-rules-search').value.trim();
-  const list = document.getElementById('gemini-rules-list');
-  const count = document.getElementById('gemini-rules-count');
-  list.textContent = 'Загружаем правила…';
-  try {
-    const rules = await window.pywebview.api.get_gemini_rules(query);
-    list.replaceChildren();
-    count.textContent = `Показано правил: ${rules.length}`;
-    for (const rule of rules) {
-      const row = document.createElement('div');
-      row.style.cssText = 'padding:7px 4px;border-bottom:1px solid var(--glass-border)';
-      const domain = document.createElement('div');
-      domain.style.fontWeight = '700';
-      domain.textContent = rule.domain;
-      const kind = document.createElement('span');
-      kind.textContent = rule.match === 'exact' ? 'Точное совпадение' : 'Домен и поддомены';
-      const sources = document.createElement('span');
-      sources.style.opacity = '.7';
-      sources.textContent = ` · ${rule.sources.map(source => {
-        try { return new URL(source).hostname + new URL(source).pathname; }
-        catch { return source; }
-      }).join(', ')}`;
-      const detail = document.createElement('div');
-      detail.append(kind, sources);
-      row.append(domain, detail);
-      list.appendChild(row);
-    }
-    if (!rules.length) list.textContent = 'Правила не найдены. Список может быть ещё не загружен.';
-  } catch (error) {
-    list.textContent = `Не удалось прочитать правила: ${error}`;
-  }
-}
-
-async function refreshGeminiRules() {
-  const button = document.getElementById('btn-gemini-rules-refresh');
-  button.disabled = true;
-  try {
-    await window.pywebview.api.refresh_gemini_rules();
-    await refreshState();
-    const poll = async attempts => {
-      if (attempts <= 0 || appState.geminiRules?.state !== 'updating') return;
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      await refreshState();
-      poll(attempts - 1);
-    };
-    poll(20);
-  } catch (error) {
-    showToast(`Не удалось обновить правила Gemini: ${error}`);
-    button.disabled = false;
-  }
-}
 function renderDnsPresetOptions(selected = 'custom') {
   const select = document.getElementById('dns-preset');
   const presets = dnsPresets();
@@ -810,7 +731,7 @@ function renderVlessPool() {
         <span style="color:#fff; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${html(url)}">${html(entry.label || url)}</span>
       </div>
       <div style="display:flex; gap:6px;">
-        <button class="btn-secondary" style="padding:4px 8px; font-size:11px;" data-action="activate" title="Сделать активным" ${isActive ? 'disabled' : ''}>✔</button>
+        <button class="btn-secondary" style="padding:4px 8px; font-size:11px;" data-action="activate" title="${isActive ? 'Перезапустить и проверить' : 'Сделать активным и запустить'}">✔</button>
         <button class="btn-secondary" style="padding:4px 8px; font-size:10px;" data-action="test" title="Проверить IP и страну">🩺</button>
         <button class="btn-secondary" style="padding:4px 8px; font-size:10px; color:var(--accent-red);" data-action="delete" title="Удалить из пула">🗑</button>
       </div>
@@ -889,34 +810,24 @@ async function testAllVlessConfigs() {
   finally { if (btn) btn.disabled = false; }
 }
 
-async function selectVlessCore(kind) {
-  if (!window.pywebview?.api?.set_vless_core) return;
+async function selectVlessCore(kind, installed = true) {
+  if (!window.pywebview?.api) return;
+  const output = document.getElementById('vless-result');
   try {
+    if (!installed && window.pywebview.api.download_vless_core) {
+      if (output) output.textContent = `Скачивание ${kind}…`;
+      const download = await window.pywebview.api.download_vless_core(kind);
+      if (output) output.textContent = download.message || '';
+      if (!download.ok) { showToast(download.message || 'Не удалось скачать ядро'); return; }
+    }
     const res = await window.pywebview.api.set_vless_core(kind);
+    if (output) output.textContent = res.message || '';
     showToast(res.message || (res.ok ? 'Ядро выбрано' : 'Не удалось выбрать ядро'));
     if (res.ok) await refreshState();
-  } catch (e) { showToast(String(e)); }
-}
-
-async function vlessAction(action) {
-  const output = document.getElementById('vless-result');
-  output.textContent = 'Выполняется…';
-  try {
-    if (action === 'start' && !(await saveNetworkSettings())) { output.textContent = 'Сначала исправьте настройки сети'; return; }
-    const result = await window.pywebview.api[`${action}_vless`]();
-    output.textContent = result.message || (result.ok ? `IP: ${result.ip || '—'} · ${result.country || ''} · ${result.latency_ms ?? '—'} мс` : 'Ошибка подключения');
-    await refreshState();
-  } catch (e) { output.textContent = String(e); }
-}
-
-async function downloadCore(type) {
-  const output = document.getElementById('vless-result');
-  output.textContent = `Скачивание ${type}…`;
-  try {
-    const result = await window.pywebview.api.download_vless_core(type);
-    output.textContent = result.message;
-    await refreshState();
-  } catch (e) { output.textContent = String(e); }
+  } catch (e) {
+    if (output) output.textContent = String(e);
+    showToast(String(e));
+  }
 }
 
 function validDnsTarget(target) {
@@ -2346,7 +2257,6 @@ window.addEventListener('pywebviewready', () => {
   console.log("PyWebView bridge ready");
   document.getElementById('network-settings').addEventListener('input', () => { networkDirty = true; renderDnsStatus(); });
   document.getElementById('network-proxy').addEventListener('input', () => { networkDirty = true; });
-  document.getElementById('gemini-rules-search').addEventListener('input', loadGeminiRules);
   refreshState();
   // Auto refresh loop every 10 seconds
   setInterval(refreshState, 10000);

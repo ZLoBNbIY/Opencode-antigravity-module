@@ -126,13 +126,10 @@
         <div class="network-settings-grid" id="network-settings">
           <div class="glass-card network-panel">
             <div class="panel-heading"><h2>VLESS-туннель</h2><span class="badge-pill badge-pool" id="vless-status">Проверка…</span></div>
-            <p class="help-text">Локальный туннель Xray / sing-box. Выберите VLESS в маршруте нужного провайдера.</p>
             <p class="help-text" id="vless-active-summary" role="status" style="margin-top:4px;">Активный конфиг: не выбран</p>
 
-            <div class="core-list" id="vless-core-list"></div><p class="help-text" id="vless-core-status">Выбранное ядро: проверка…</p>
-            <label class="switch-label"><input class="switch-input" type="checkbox" id="vless-kill-switch">Kill Switch для Claude при обрыве VLESS</label>
-            <div class="button-row"><button class="btn-primary" id="btn-vless-start" onclick="vlessAction('start')">▶ Запустить</button><button class="btn-secondary" id="btn-vless-stop" onclick="vlessAction('stop')">■ Остановить</button><button class="btn-secondary" onclick="vlessAction('test')">Проверить IP</button></div>
-            <div class="button-row"><button class="btn-secondary" id="btn-download-sing-box" onclick="downloadCore('sing-box')">Скачать sing-box</button><button class="btn-secondary" id="btn-download-xray" onclick="downloadCore('xray')">Скачать Xray</button></div>
+            <div class="segmented-group vless-core-row" id="vless-core-row" role="radiogroup" aria-label="Ядро VLESS"></div>
+            <label class="switch-label" style="margin-top: 12px;"><input class="switch-input" type="checkbox" id="vless-kill-switch">Kill Switch для Claude при обрыве VLESS</label>
             <p class="help-text" id="vless-result" role="status"></p>
 
             <div class="vless-pool-section" style="margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--glass-border);">
@@ -187,16 +184,6 @@
             <span>Автоматическая ротация и переключение на следующий прокси при отказе (Failover)</span>
           </label>
           <p class="help-text" id="http-proxy-status" style="margin-top: 6px;"></p>
-        </div>
-        <div class="glass-card network-panel">
-          <div class="panel-heading"><h2>Правила Gemini</h2><div class="button-row"><button class="btn-secondary" id="btn-gemini-rules-toggle" onclick="toggleGeminiRules()">Показать список</button><button class="btn-secondary" id="btn-gemini-rules-refresh" onclick="refreshGeminiRules()">Обновить</button></div></div>
-          <p class="help-text" id="gemini-rules-status" role="status">Проверяем источники…</p>
-          <p class="help-text">Список доменов Gemini и Google AI. Hub сверяет адрес подключения с правилами и применяет выбранный маршрут Google; это не проверка доступности аккаунта или модели.</p>
-          <div id="gemini-rules-viewer" hidden>
-            <input id="gemini-rules-search" type="search" placeholder="Фильтр по домену или источнику…" autocomplete="off">
-            <p class="help-text" id="gemini-rules-count"></p>
-            <div id="gemini-rules-list" style="max-height:320px; overflow:auto; font:12px Consolas,monospace"></div>
-          </div>
         </div>
         <div class="network-save-row"><button class="btn-primary" id="btn-network-save" onclick="saveNetworkSettings()">Сохранить настройки сети</button><span class="help-text" id="network-save-result" role="status"></span></div>
         <div class="glass-card route-explanation"><h2>Выбор маршрута</h2><p class="help-text">Маршрут каждого провайдера настраивается справа от аккаунтов и лимитов в его вкладке.</p><p class="help-text"><strong>Авто → …</strong> — сравнивает настроенные маршруты, выбирает самый доступный и быстрый для этого провайдера и переключается при ошибке подключения. Ручной выбор закрепляет один маршрут.</p><p class="help-text" id="hub-auto-route"></p><p class="help-text">Auto перепроверяет маршруты раз в минуту; при отказе выбранного пробует другой доступный. Активная генерация не переотправляется. Индикаторы доменов показывают TCP-соединение, а не доступность конкретной модели.</p></div>
