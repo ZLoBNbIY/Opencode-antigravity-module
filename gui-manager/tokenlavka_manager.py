@@ -8,8 +8,10 @@ OpenCode guide: ``@ai-sdk/openai-compatible`` + ``https://tokenlavka.com/v1``.
 import json
 from pathlib import Path
 import subprocess
+import time
 import urllib.error
 import urllib.request
+from typing import Any, Dict, Optional
 
 import secure_storage
 import jsonc_config
@@ -19,13 +21,16 @@ import openai_manager
 PROVIDER_ID = "tokenlavka"
 BASE_URL = "https://tokenlavka.com/v1"
 MODELS_URL = f"{BASE_URL}/models"
+PORTAL_URL = "https://tokenlavka.com/api/portal"
 SECRET_PURPOSE = "tokenlavka-api-key"
 DEFAULT_MODEL = "gpt-6-luna"
 try:
     import hub_paths
     SECRET_FILE = hub_paths.TOKENLAVKA_SECRET_FILE
+    BALANCE_CONFIG_FILE = hub_paths.TOKENLAVKA_CONFIG_FILE
 except Exception:
     SECRET_FILE = Path.home() / ".local" / "share" / "antigravity-hub" / "tokenlavka.json"
+    BALANCE_CONFIG_FILE = Path.home() / ".local" / "share" / "antigravity-hub" / "tokenlavka-state.json"
 CONFIG_DIR = Path.home() / ".config" / "opencode"
 
 # Exact IDs from https://tokenlavka.com/help ("Доступные модели").
@@ -87,6 +92,153 @@ def load_api_key():
         return secure_storage.unprotect_secret(record, SECRET_PURPOSE)["apiKey"]
     except Exception:
         return ""
+
+
+# ---------------------------------------------------------------------------
+# Balance (TokenLavka portal API)
+# ---------------------------------------------------------------------------
+
+def _default_config() -> Dict[str, Any]:
+    return {"connected": False, "cached_balance": {}}
+
+
+def load_config() -> Dict[str, Any]:
+    cfg = _default_config()
+    if not BALANCE_CONFIG_FILE.exists():
+        return cfg
+    try:
+        stored = json.loads(BALANCE_CONFIG_FILE.read_text(encoding="utf-8"))
+        if isinstance(stored, dict):
+            cfg.update(stored)
+        if not isinstance(cfg.get("cached_balance"), dict):
+            cfg["cached_balance"] = {}
+    except Exception:
+        pass
+    return cfg
+
+
+def save_config(cfg: Dict[str, Any]) -> None:
+    BALANCE_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    secure_storage.atomic_write(BALANCE_CONFIG_FILE, json.dumps(cfg, indent=2, ensure_ascii=False))
+
+
+def empty_balance(status: str = "no_key") -> Dict[str, Any]:
+    return {
+        "status": status,
+        "currency": " ед.",
+        "issued": None,
+        "spent": None,
+        "balance": None,
+        "reserved": None,
+        "remaining_percent": None,
+        "used_percent": None,
+        "checked_at": None,
+        "error": None,
+    }
+
+
+def parse_balance_payload(payload: Any) -> Dict[str, Any]:
+    """Convert POST /api/portal JSON into a stable Hub quota object."""
+    if not isinstance(payload, dict):
+        raise ValueError("Некорректный ответ TokenLavka")
+    key = payload.get("key")
+    if not isinstance(key, dict):
+        raise ValueError("TokenLavka не вернула данные о ключе")
+
+    def amount(value: Any) -> Optional[float]:
+        try:
+            return round(float(value), 2)
+        except (TypeError, ValueError):
+            return None
+
+    issued = amount(key.get("total_added"))
+    balance = amount(key.get("balance"))
+    spent = amount(key.get("spent"))
+    if spent is None and issued is not None and balance is not None:
+        spent = round(max(0.0, issued - balance), 2)
+    remaining_pct = None
+    used_pct = None
+    if issued and issued > 0 and balance is not None:
+        remaining_pct = round(max(0.0, min(100.0, balance * 100 / issued)), 1)
+        used_pct = round(100.0 - remaining_pct, 1)
+    return {
+        "status": "ok",
+        "currency": " ед.",
+        "issued": issued,
+        "spent": spent,
+        "balance": balance,
+        "reserved": amount(key.get("reserved")),
+        "remaining_percent": remaining_pct,
+        "used_percent": used_pct,
+        "checked_at": int(time.time()),
+        "error": None,
+    }
+
+
+def fetch_balance(api_key: Optional[str] = None, timeout: int = 15) -> Dict[str, Any]:
+    """Fetch the key balance from the portal; keep last known values as stale on failure."""
+    key = (api_key or load_api_key() or "").strip()
+    if not key:
+        result = empty_balance("no_key")
+        result["error"] = "Сначала сохраните API-ключ TokenLavka"
+        return result
+
+    request = urllib.request.Request(
+        PORTAL_URL,
+        data=json.dumps({"key": key}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "User-Agent": "Antigravity-Hub",
+                 "Accept": "application/json"},
+        method="POST",
+    )
+    error = None
+    try:
+        with _opener().open(request, timeout=timeout) as response:
+            result = parse_balance_payload(json.loads(response.read().decode("utf-8")))
+        cfg = load_config()
+        cfg["cached_balance"] = result
+        cfg["connected"] = True
+        save_config(cfg)
+        return result
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            error = "TokenLavka не распознала ключ (401). Проверьте, что он скопирован целиком."
+        elif exc.code == 402:
+            error = "TokenLavka: баланс ключа исчерпан (402)"
+        elif exc.code == 404:
+            error = "TokenLavka: ключ не найден (404)"
+        elif exc.code == 429:
+            error = "TokenLavka вернула 429 — слишком часто обращаемся к балансу"
+        else:
+            error = f"TokenLavka вернула HTTP {exc.code} при запросе баланса"
+    except Exception as exc:
+        error = f"Ошибка сети TokenLavka: {str(exc)[:120]}"
+
+    cfg = load_config()
+    cached = cfg.get("cached_balance")
+    if isinstance(cached, dict) and cached.get("status") in ("ok", "stale"):
+        stale = dict(cached)
+        stale["status"] = "stale"
+        stale["error"] = error
+        return stale
+    result = empty_balance("error")
+    result["error"] = error
+    cfg["cached_balance"] = result
+    save_config(cfg)
+    return result
+
+
+def cached_balance() -> Dict[str, Any]:
+    cached = load_config().get("cached_balance")
+    if isinstance(cached, dict) and cached:
+        return cached
+    return empty_balance("no_key" if not load_api_key() else "error")
+
+
+def refresh_balance_silent() -> Dict[str, Any]:
+    """Background refresh entry point; safe to call without a configured key."""
+    if not load_api_key():
+        return cached_balance()
+    return fetch_balance()
 
 
 def test_connection(api_key, timeout=20):
@@ -223,4 +375,5 @@ def provider_state():
                     "context": meta["context"], "output": meta["output"]}
                    for mid, meta in TOKENLAVKA_MODELS.items()],
         "baseUrl": BASE_URL,
+        "balance": cached_balance(),
     }

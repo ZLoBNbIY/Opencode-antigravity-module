@@ -663,6 +663,10 @@ class HubApi:
             xpiki_manager.refresh_xpiki_quota_silent()
         except Exception:
             pass
+        try:
+            tokenlavka_manager.refresh_balance_silent()
+        except Exception:
+            pass
         def bg_google():
             try:
                 node_exe = antigravity_manager.get_node_executable()
@@ -807,8 +811,12 @@ class HubApi:
             tokenlavka_manager.sync_opencode_credential(final_key)
             chosen = model_ids or tokenlavka_manager.selected_models() or [tokenlavka_manager.DEFAULT_MODEL]
             selected = tokenlavka_manager.configure_models(chosen, final_key)
+            tokenlavka_manager.fetch_balance(final_key)
             self._sync_routes(self.load_config())
             return {"ok": True, "message": f"TokenLavka подключена. Моделей в OpenCode: {len(selected)}"}
+
+    def refresh_tokenlavka_balance(self) -> dict:
+        return tokenlavka_manager.refresh_balance_silent()
 
     def disconnect_tokenlavka(self) -> bool:
         with self._provider_lock:
@@ -1147,6 +1155,7 @@ class HubApi:
                 "tokenlavka": {
                     "api_key": tokenlavka_key or "",
                     "selected_models": tokenlavka_models,
+                    "cached_balance": tokenlavka_manager.cached_balance(),
                 },
                 "config": self.load_config(),
             }
@@ -1264,6 +1273,11 @@ class HubApi:
                          if mid in tokenlavka_manager.TOKENLAVKA_MODELS],
                         tl_key,
                     )
+                cached = tl_data.get("cached_balance")
+                if isinstance(cached, dict):
+                    cfg = tokenlavka_manager.load_config()
+                    cfg["cached_balance"] = cached
+                    tokenlavka_manager.save_config(cfg)
 
             # 7. Hub Config (settings, routes, proxies, DNS)
             backup_cfg = data.get("config")
@@ -1483,6 +1497,10 @@ def run_webview_app():
             api.refresh_openai_quotas()
             try:
                 api.refresh_deepseek_balance()
+            except Exception:
+                pass
+            try:
+                api.refresh_tokenlavka_balance()
             except Exception:
                 pass
             time.sleep(300)

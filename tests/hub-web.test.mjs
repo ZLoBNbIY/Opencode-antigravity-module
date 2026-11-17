@@ -41,7 +41,8 @@ const state = {
   claudeAccounts:[], diagnostics:{openai:{rows:[{domain:'chatgpt.com',status:'error',latency_ms:null,error:'TimeoutError'}]}},
   providers:{xpiki:{models:[{id:'claude-test',name:'Claude Test'}],enabledModels:['claude-test'],quota:{},baseUrl:'https://api.xpiki.com/v1'},openrouter:{hasKey:true},
     deepseek:{connected:false,hasKey:false,keyLabel:null,baseUrl:'https://api.deepseek.com',balance:{status:'no_key'}},
-    tokenlavka:{hasKey:false,connected:false,selectedModels:[],models:[{id:'gpt-6-luna',name:'GPT-6 Luna',context:512000,output:65536}],baseUrl:'https://tokenlavka.com/v1'}},
+    tokenlavka:{hasKey:false,connected:false,selectedModels:[],models:[{id:'gpt-6-luna',name:'GPT-6 Luna',context:512000,output:65536}],baseUrl:'https://tokenlavka.com/v1',
+      balance:{status:'ok',issued:1000,spent:600,balance:400,reserved:0,remaining_percent:40,used_percent:60,checked_at:1794309000,error:null}}},
 };
 
 test('all account tabs render with active identity and real zero ChatGPT quota', () => {
@@ -73,6 +74,8 @@ test('failed domains show error indicators and no invented milliseconds', () => 
   assert.equal(elements.get('seg-group-deepseek').children.length, 5);
   assert.equal(elements.get('seg-group-tokenlavka').children.length, 5);
   assert.equal(elements.get('tokenlavka-models-list').children.length, 1);
+  assert.match(elements.get('tokenlavka-balance').innerHTML, /40%/);
+  assert.match(elements.get('tokenlavka-balance').innerHTML, /progress-fill-emerald/);
 });
 
 test('polling preserves edited DNS inputs and unknown quota stays unknown', () => {

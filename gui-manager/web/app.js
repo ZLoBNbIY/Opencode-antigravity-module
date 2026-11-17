@@ -1277,7 +1277,21 @@ function renderDashboard() {
       if (low) alerts.push({priority:1,tab,text:`DeepSeek: баланс почти исчерпан (${amount(q.total_balance)} ${html(q.currency || '')})`});
     }
     if (tab === 'openrouter') limits = `<div class="dashboard-token-balance"><span>Моделей в OpenCode</span><strong>${cfg.selectedModels?.length || 0}</strong><small>Выбор каталога во вкладке OpenRouter</small></div>`;
-    if (tab === 'tokenlavka') limits = `<div class="dashboard-token-balance"><span>Моделей в OpenCode</span><strong>${cfg.selectedModels?.length || 0}</strong><small>Выбор моделей во вкладке TokenLavka</small></div>`;
+    if (tab === 'tokenlavka') {
+      const b = cfg.balance || {};
+      const valid = ['ok','stale'].includes(b.status);
+      const pct = Number.isFinite(Number(b.remaining_percent)) ? Number(b.remaining_percent) : null;
+      const amt = v => v != null && Number.isFinite(Number(v)) ? Number(v).toLocaleString('ru-RU',{maximumFractionDigits:2}) : '—';
+      const tone = !valid || pct == null ? 'muted' : pct <= 10 ? 'error' : pct <= 25 ? 'warning' : 'ok';
+      const fill = pct == null ? 0 : Math.max(0, Math.min(100, pct));
+      limits = `<div class="dashboard-token-balance">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;"><span>Баланс TokenLavka</span><strong class="dashboard-tone-${tone}" style="font-size:11px;">${!valid ? 'Нет данных' : pct == null ? '—' : pct+'%'}</strong></div>
+        <strong>${valid ? `${amt(b.balance)} ед.` : 'Нет данных'}</strong>
+        <div class="dashboard-quota-track" style="margin:5px 0 6px 0;"><span class="dashboard-fill-${tone === 'warning' ? 'warning' : tone === 'error' ? 'error' : 'ok'}" style="width:${fill}%;"></span></div>
+        <small>Выдано ${amt(b.issued)} · использовано ${amt(b.spent)}${b.status === 'stale' ? ' · сохранённые данные' : ''}</small>
+      </div>`;
+      if (valid && pct != null && pct <= 10) alerts.push({priority:1,tab,text:`TokenLavka: осталось ${pct}% баланса`});
+    }
     if (tab === 'claude') limits = `<div class="dashboard-token-balance"><span>Тариф</span><strong>${html(access.active?.plan || '—')}</strong><small>Данные о лимитах сессии не получены</small></div>`;
     const activeQuota = access.active?.quota || {};
     const quotaNote = tab === 'openai' && activeQuota.last_checked ? `Лимиты: ${dashboardTime(activeQuota.last_checked*1000)}${activeQuota.status === 'stale' ? ' · сохранённые данные' : ''}` : 'Лимиты показаны по последним полученным данным';
@@ -1847,6 +1861,30 @@ async function disconnectOpenRouter() {
 function renderTokenLavkaState() {
   const cfg = appState.providers?.tokenlavka;
   if (!cfg) return;
+  const balanceBox = document.getElementById('tokenlavka-balance');
+  if (balanceBox) {
+    const b = cfg.balance || {};
+    const valid = ['ok','stale'].includes(b.status);
+    const num = v => v != null && Number.isFinite(Number(v))
+      ? Number(v).toLocaleString('ru-RU', {maximumFractionDigits: 2}) : '—';
+    const pct = Number.isFinite(Number(b.remaining_percent)) ? Number(b.remaining_percent) : null;
+    const tone = !valid ? 'muted' : pct == null ? 'muted' : pct <= 10 ? 'error' : pct <= 25 ? 'warning' : 'ok';
+    const fill = pct == null ? 0 : Math.max(0, Math.min(100, pct));
+    balanceBox.innerHTML = `
+      <div class="progress-head" style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
+        <strong style="font-size:22px;color:var(--text-primary);">${valid ? num(b.balance) : '—'} <span class="muted small">ед. осталось</span></strong>
+        <strong class="dashboard-tone-${tone}" style="font-size:13px;">${!valid ? 'Нет данных' : pct == null ? '—' : pct + '% доступно'}</strong>
+      </div>
+      <div class="progress-track"><div class="progress-fill-${tone === 'warning' ? 'amber' : tone === 'error' ? 'amber' : 'emerald'}" style="width:${fill}%;"></div></div>
+      <div class="kv-rows" style="margin-top:12px;">
+        <div class="kv"><span class="muted">Выдано</span><b>${valid ? num(b.issued) : '—'}</b></div>
+        <div class="kv"><span class="muted">Использовано</span><b>${valid ? num(b.spent) : '—'}</b></div>
+        <div class="kv"><span class="muted">Зарезервировано</span><b>${valid && b.reserved ? num(b.reserved) : '—'}</b></div>
+      </div>
+      ${b.checked_at ? `<p class="help-text" style="margin-top:10px;">Обновлено ${new Date(b.checked_at*1000).toLocaleString('ru-RU')}${b.status === 'stale' ? ' · сохранённые данные' : ''}</p>` : ''}
+      ${b.error ? `<p class="help-text" style="color:var(--accent-red);">${html(b.error)}</p>` : ''}
+    `;
+  }
   const keyInput = document.getElementById('tokenlavka-key-input');
   if (keyInput) keyInput.placeholder = cfg.hasKey ? 'Ключ сохранён · оставьте пустым для замены' : 'sk-…';
   const list = document.getElementById('tokenlavka-models-list');
@@ -1886,6 +1924,16 @@ async function applyTokenLavkaModels() {
       await refreshState();
     }
   } catch (e) { output.textContent = String(e); }
+}
+async function refreshTokenLavkaBalance() {
+  const btn = document.getElementById('btn-refresh-tokenlavka-balance');
+  if (btn) btn.disabled = true;
+  try {
+    const balance = await window.pywebview.api.refresh_tokenlavka_balance();
+    if (appState.providers?.tokenlavka) appState.providers.tokenlavka.balance = balance;
+    renderTokenLavkaState();
+  } catch (e) { showToast(String(e)); }
+  finally { if (btn) btn.disabled = false; }
 }
 async function disconnectTokenLavka() {
   if (!confirm('Удалить сохранённый ключ TokenLavka из Hub и OpenCode?')) return;

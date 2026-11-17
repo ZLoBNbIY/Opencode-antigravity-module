@@ -30,7 +30,9 @@ class WebviewBackendTests(unittest.TestCase):
         self.tokenlavka = SimpleNamespace(
             load_api_key=Mock(return_value=''), provider_state=Mock(return_value={
                 'hasKey': False, 'connected': False, 'selectedModels': [], 'models': [],
-                'keyLabel': None, 'baseUrl': 'https://tokenlavka.com/v1'}),
+                'keyLabel': None, 'baseUrl': 'https://tokenlavka.com/v1', 'balance': {}}),
+            fetch_balance=Mock(return_value={}), refresh_balance_silent=Mock(return_value={}),
+            cached_balance=Mock(return_value={}), load_config=Mock(return_value={}),
             test_connection=Mock(return_value=(True, 'ok')), save_api_key=Mock(),
             sync_opencode_credential=Mock(), configure_models=Mock(return_value=['gpt-6-luna']),
             selected_models=Mock(return_value=[]), disconnect=Mock(),
