@@ -282,11 +282,20 @@ def _connect_upstream(proxy_url: str | None, target_host: str, target_port: int,
 
 def _relay(left: socket.socket, right: socket.socket) -> None:
     sockets = [left, right]
+    # A hung tunnel must not occupy a listener slot forever: retries from
+    # OpenCode can otherwise fill the backlog and cause ECONNREFUSED.
+    idle_limit = 300
+    last_activity = time.monotonic()
     try:
         while sockets:
-            readable, _, exceptional = select.select(sockets, [], sockets)
+            readable, _, exceptional = select.select(sockets, [], sockets, 5)
             if exceptional:
                 return
+            if not readable:
+                if time.monotonic() - last_activity >= idle_limit:
+                    return
+                continue
+            last_activity = time.monotonic()
             for src in readable:
                 dst = right if src is left else left
                 chunk = src.recv(65536)
@@ -308,6 +317,11 @@ def _relay(left: socket.socket, right: socket.socket) -> None:
 
 
 class _Handler(BaseHTTPRequestHandler):
+    # rfile must be unbuffered: some clients (Bun/OpenCode) send the first TLS
+    # bytes together with CONNECT. A buffered readline() would swallow them and
+    # the tunnel would hang until "Timed out waiting for response headers".
+    rbufsize = 0
+
     def log_message(self, *_args):
         pass
 
@@ -368,6 +382,8 @@ class _Handler(BaseHTTPRequestHandler):
 class _ThreadingServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    # Default backlog is only 5; parallel model retries exhaust it.
+    request_queue_size = 128
 
 
 def start() -> bool:

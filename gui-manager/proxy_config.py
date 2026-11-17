@@ -103,10 +103,18 @@ def sync_provider_routes(config: dict, hub_config: dict, http_port: int,
                 target.pop("proxy", None)
                 continue
 
-            mode = routes.get(provider_name, "direct")
-            if mode not in PROVIDER_ROUTE_MODES or mode == "default":
-                mode = "direct"
-            # OpenCode receives one loopback proxy; the router chooses the
-            # actual upstream from provider_routes for each request host.
-            target["proxy"] = ROUTE_PROXY
+            mode = routes.get(provider_name)
+            if mode not in PROVIDER_ROUTE_MODES:
+                # Unmapped/unknown providers are Auto in the dispatcher
+                # (select_upstream defaults to "default"), so they still need it.
+                mode = "default"
+            # OpenCode has no per-provider proxy setting: every routed provider
+            # receives the same loopback dispatcher, which picks the actual
+            # upstream from provider_routes per request host. Only an explicit
+            # "direct" must NOT receive it, otherwise its traffic still leaves
+            # through the dispatcher (and fails when the Hub is restarting).
+            if mode == "direct":
+                target.pop("proxy", None)
+            else:
+                target["proxy"] = ROUTE_PROXY
     return config

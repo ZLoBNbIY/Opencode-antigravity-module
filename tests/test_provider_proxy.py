@@ -138,6 +138,18 @@ class ProviderRouteProxyTests(unittest.TestCase):
     def test_route_description_never_exposes_credentials(self, select):
         self.assertEqual(describe_route("cloudcode-pa.googleapis.com"), "http://proxy.example:3128")
 
+    @patch("provider_proxy.select_upstream")
+    def test_route_description_survives_pending_auto_probe(self, select):
+        from auto_router import AutoRouteUnavailable
+        select.side_effect = AutoRouteUnavailable("Auto: маршрут ещё не выбран")
+        self.assertEqual(describe_route("cloudcode-pa.googleapis.com", {}),
+                         "Auto: маршрут ещё не выбран")
+
+    def test_dispatcher_accepts_parallel_retries_without_losing_tunnel_bytes(self):
+        import provider_proxy
+        self.assertGreaterEqual(provider_proxy._ThreadingServer.request_queue_size, 64)
+        self.assertEqual(provider_proxy._Handler.rbufsize, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

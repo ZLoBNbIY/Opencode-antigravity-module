@@ -9,7 +9,16 @@ GATE_HOSTS = ("daily-cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis.com"
 def describe_route(host, hub_config=None):
     import provider_proxy
 
-    upstream = provider_proxy.select_upstream(host, hub_config=hub_config)
+    try:
+        upstream = provider_proxy.select_upstream(host, hub_config=hub_config)
+    except Exception as error:
+        # Auto has not finished probing yet (or no route passed). This is a
+        # normal transient state, not a broken route: show it instead of
+        # raising and breaking the whole diagnostics dialog.
+        from auto_router import AutoRouteUnavailable
+        if isinstance(error, AutoRouteUnavailable):
+            return str(error)
+        raise
     if upstream is None:
         return "Системный маршрут / DNS (может использовать VPN или Unlocker)"
     if upstream == "dns://hub":

@@ -82,7 +82,8 @@ class ProxyConfigTests(unittest.TestCase):
         })
         opts = config["provider"]
         self.assertEqual(opts["google"]["options"]["proxy"], ROUTE_PROXY)
-        self.assertEqual(opts["openrouter"]["options"]["proxy"], ROUTE_PROXY)
+        # A direct provider must be free of the loopback dispatcher.
+        self.assertNotIn("proxy", opts["openrouter"]["options"])
         self.assertEqual(opts["xpiki"]["options"]["proxy"], ROUTE_PROXY)
         self.assertEqual(opts["custom"]["options"]["proxy"], ROUTE_PROXY)
         self.assertNotIn("proxy", opts["hub"]["options"])
@@ -97,8 +98,14 @@ class ProxyConfigTests(unittest.TestCase):
         sync_provider_routes(config, hub, 10879, {"google": "direct"})
         providers = config["provider"]
         self.assertEqual(providers["openai"]["options"]["proxy"], ROUTE_PROXY)
-        self.assertEqual(providers["google"]["options"]["proxy"], ROUTE_PROXY)
+        self.assertNotIn("proxy", providers["google"]["options"])
         self.assertEqual(providers["openrouter"]["options"]["proxy"], ROUTE_PROXY)
+
+    def test_auto_and_legacy_default_both_use_the_dispatcher(self):
+        for mode in ("auto", "default"):
+            config = {"provider": {"google": {"options": {}}}}
+            sync_provider_routes(config, {}, 10879, {"google": mode})
+            self.assertEqual(config["provider"]["google"]["options"]["proxy"], ROUTE_PROXY)
 
 
 if __name__ == "__main__":

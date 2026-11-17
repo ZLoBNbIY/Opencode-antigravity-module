@@ -31,6 +31,25 @@ class VlessManagerTests(unittest.TestCase):
                 self.assertFalse(ok)
                 self.assertGreater(opener.call_count, 0)
 
+    def test_connection_returns_country_code_from_cloudflare_trace_first(self):
+        manager = vless_manager.VlessManager()
+        trace = ("fl=123abc\nip=203.0.113.7\nts=1794309000.000\n"
+                 "loc=DE\nhttp=http\n")
+        response = mock.MagicMock()
+        response.read.return_value = trace.encode()
+        response.__enter__ = mock.Mock(return_value=response)
+        response.__exit__ = mock.Mock(return_value=False)
+        with mock.patch.object(manager, 'check_port_listening', return_value=True), \
+             mock.patch("vless_manager.urllib.request.build_opener") as build:
+            opener = build.return_value
+            opener.open.return_value = response
+            result = manager.test_connection(http_port=10879)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["ip"], "203.0.113.7")
+        self.assertEqual(result["country"], "DE")
+        requested_urls = [call.args[0].full_url for call in opener.open.call_args_list]
+        self.assertIn("https://cloudflare.com/cdn-cgi/trace", requested_urls)
+
     def test_resolve_sing_box_download_url_redirect(self):
         fake_resp = mock.MagicMock()
         fake_resp.geturl.return_value = "https://github.com/SagerNet/sing-box/releases/tag/v1.14.4"

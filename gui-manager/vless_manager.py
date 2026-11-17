@@ -787,10 +787,37 @@ class VlessManager:
         opener = urllib.request.build_opener(proxy_handler)
 
         start = time.time()
-        # Test trace or geo
+
+        def lookup_country(ip_address):
+            """Resolve a 2-letter country code when the IP service did not provide one."""
+            if not ip_address:
+                return ""
+            for template in ("https://ipwho.is/{ip}?fields=country_code",
+                             "https://ipapi.co/{ip}/country_code/"):
+                try:
+                    geo_req = urllib.request.Request(
+                        template.format(ip=ip_address),
+                        headers={"User-Agent": "AntigravityHub/1.0"},
+                    )
+                    with opener.open(geo_req, timeout=min(timeout, 6)) as geo_resp:
+                        payload = geo_resp.read().decode("utf-8", errors="ignore").strip()
+                    try:
+                        parsed = json.loads(payload)
+                        code = parsed.get("country_code") or parsed.get("country")
+                    except Exception:
+                        code = payload
+                    code = str(code or "").strip().upper()
+                    if len(code) == 2 and code.isalpha():
+                        return code
+                except Exception:
+                    continue
+            return ""
+
+        # Cloudflare trace first: it returns BOTH the exit IP and its country
+        # code (loc=...). ipify only returns the IP, so it is a fallback.
         endpoints = [
-            ("https://api.ipify.org?format=json", "ipify"),
             ("https://cloudflare.com/cdn-cgi/trace", "cf"),
+            ("https://api.ipify.org?format=json", "ipify"),
         ]
 
         for url, service_type in endpoints:
@@ -817,6 +844,8 @@ class VlessManager:
                                 ip = line.split("=", 1)[1]
                             elif line.startswith("loc="):
                                 country = line.split("=", 1)[1]
+                    if not country:
+                        country = lookup_country(ip)
 
                     result = {
                         "ok": True,

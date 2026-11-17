@@ -200,14 +200,15 @@ function renderNetworkTab() {
   const routes = appState.routes || {};
   for (const provider of ['google', 'claude', 'openai', 'xpiki', 'deepseek', 'openrouter', 'tokenlavka']) {
     const key = provider === 'claude' ? 'claude-pro' : provider === 'openrouter' ? 'openrouter-free' : provider === 'deepseek' ? 'deepseek-account' : provider;
-    const options = ['default', 'dns', 'vless', 'direct', 'proxy'];
-    // "default" and "auto" are two spellings of the same AutoRouter mode; the
-    // single Auto button must stay highlighted regardless of which one is stored.
-    const isAuto = ['default', 'auto'].includes(routes[key]);
-    updateSegmentedGroup(`seg-group-${provider}`, isAuto ? 'default' : (routes[key] || 'default'),
+    const options = ['auto', 'dns', 'vless', 'direct', 'proxy'];
+    // "default" is the legacy storage value for Auto. Show and save it as
+    // "auto" so the control, the tooltip and the config file agree.
+    const isAuto = ['default', 'auto'].includes(routes[key] || 'default');
+    const mode = isAuto ? 'auto' : routes[key];
+    updateSegmentedGroup(`seg-group-${provider}`, mode,
       options.map(val => ({val, label:routeLabel(val, key)})));
-    document.getElementById(`card-route-${provider}`).textContent = routeDescription(routes[key] || 'default', key);
-    const autoBtn = document.getElementById(`seg-group-${provider}`)?.querySelector?.('[data-val="default"]');
+    document.getElementById(`card-route-${provider}`).textContent = routeDescription(mode, key);
+    const autoBtn = document.getElementById(`seg-group-${provider}`)?.querySelector?.('[data-val="auto"]');
     if (autoBtn) autoBtn.title = 'Авто: сравнить VLESS, DNS и HTTP-прокси по HTTPS и выбрать лучший. ' +
       (isAuto && autoRouteState(key).selected ? `Сейчас выбран: ${routeNames[autoRouteState(key).selected]}.` : '');
     renderAutoComparison(key, provider);
@@ -964,7 +965,7 @@ function updateSegmentedGroup(groupId, currentVal, options) {
     btn.className = `seg-btn ${opt.val === currentVal ? "active" : ""}`;
     btn.dataset.val = opt.val;
     btn.textContent = opt.label;
-    if (opt.val === 'default') btn.title = 'Сравнить настроенные VLESS, DNS и HTTP-прокси. Выбрать доступный маршрут с наименьшей задержкой. При отказе соединения — переключиться на другой проверенный маршрут.';
+    if (opt.val === 'auto') btn.title = 'Сравнить настроенные VLESS, DNS и HTTP-прокси. Выбрать доступный маршрут с наименьшей задержкой. При отказе соединения — переключиться на другой проверенный маршрут.';
     btn.onclick = () => {
       const provider = groupId.replace("seg-group-", "");
       setProviderRoute(provider, opt.val);
