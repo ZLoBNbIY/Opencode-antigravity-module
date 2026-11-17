@@ -150,6 +150,21 @@ class ProviderRouteProxyTests(unittest.TestCase):
         self.assertGreaterEqual(provider_proxy._ThreadingServer.request_queue_size, 64)
         self.assertEqual(provider_proxy._Handler.rbufsize, 0)
 
+    @patch("provider_proxy._read_json", return_value={"provider": {"tokenlavka": {
+        "options": {"hubBaseURL": "https://tokenlavka.example/v1"}}}})
+    def test_reverse_target_reads_saved_provider_endpoint(self, read):
+        import provider_proxy
+        handler = provider_proxy._Handler.__new__(provider_proxy._Handler)
+        self.assertEqual(handler._reverse_target("tokenlavka"),
+                         "https://tokenlavka.example/v1")
+
+    def test_reverse_endpoint_is_used_for_model_requests(self):
+        import provider_proxy
+        self.assertEqual(provider_proxy.PROVIDER_ENDPOINTS["tokenlavka"],
+                         "https://tokenlavka.com/v1")
+        self.assertEqual(provider_proxy._Handler.do_POST,
+                         provider_proxy._Handler._dispatch)
+
 
 if __name__ == "__main__":
     unittest.main()

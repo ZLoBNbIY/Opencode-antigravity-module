@@ -107,6 +107,26 @@ class ProxyConfigTests(unittest.TestCase):
             sync_provider_routes(config, {}, 10879, {"google": mode})
             self.assertEqual(config["provider"]["google"]["options"]["proxy"], ROUTE_PROXY)
 
+    def test_tokenlavka_uses_plain_http_reverse_endpoint(self):
+        from proxy_config import REVERSE_BASE_URLS
+        config = {"provider": {"tokenlavka": {"options": {
+            "baseURL": "https://tokenlavka.com/v1"}}}}
+        hub = {"provider_routes": {"tokenlavka": "default"}}
+        sync_provider_routes(config, hub, 10879, hub["provider_routes"])
+        opts = config["provider"]["tokenlavka"]["options"]
+        self.assertEqual(opts["baseURL"], REVERSE_BASE_URLS["tokenlavka"])
+        self.assertEqual(opts["hubBaseURL"], "https://tokenlavka.com/v1")
+        self.assertNotIn("proxy", opts)
+
+    def test_tokenlavka_direct_restores_real_base_url(self):
+        config = {"provider": {"tokenlavka": {"options": {
+            "baseURL": "https://tokenlavka.com/v1"}}}}
+        hub = {"provider_routes": {"tokenlavka": "direct"}}
+        sync_provider_routes(config, hub, 10879, hub["provider_routes"])
+        opts = config["provider"]["tokenlavka"]["options"]
+        self.assertEqual(opts["baseURL"], "https://tokenlavka.com/v1")
+        self.assertNotIn("proxy", opts)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -16,12 +16,17 @@ TokenLavka — OpenAI-совместимый шлюз, который даёт �
     "tokenlavka": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "TokenLavka",
-      "options": { "baseURL": "https://tokenlavka.com/v1" },
+      "options": {
+        "baseURL": "http://127.0.0.1:10880/r/tokenlavka/v1",
+        "hubBaseURL": "https://tokenlavka.com/v1"
+      },
       "models": { "gpt-6-luna": { "name": "GPT-6 Luna", "limit": { "context": 512000, "output": 65536 } } }
     }
   }
 }
 ```
+
+   `baseURL` указывает на обычный HTTP-эндпоинт маршрутизатора Хаба — так OpenCode не использует локальный CONNECT-прокси (Bun часто сбрасывает такие соединения). Реальный адрес шлюза хранится в `hubBaseURL`, и маршрутизатор сам выбирает транспорт из `provider_routes.tokenlavka`. При маршруте `direct` `baseURL` снова становится `https://tokenlavka.com/v1`.
 
 4. Ключ импортируется в хранилище учётных данных OpenCode командой `opencode auth import` с `integrationID = tokenlavka`, поэтому его не нужно дублировать в `options.apiKey`.
 5. Модели вызываются как `tokenlavka/<id>`, например `tokenlavka/gpt-6-luna`.

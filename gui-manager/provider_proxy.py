@@ -46,6 +46,10 @@ LOCAL_ROUTES = {
     "deepseek-account": ("api.deepseek.com", "platform.deepseek.com"),
     "tokenlavka": ("tokenlavka.com",),
 }
+# Plain-HTTP reverse endpoints: baseURL on the OpenCode side is rewritten to
+# http://127.0.0.1:10880/r/<provider>/... so no CONNECT proxy is involved.
+REVERSE_PREFIX = "/r/"
+PROVIDER_ENDPOINTS = {"tokenlavka": "https://tokenlavka.com/v1"}
 _server = None
 _thread = None
 _dns_lock = threading.Lock()
@@ -333,7 +337,63 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        self._plain_http()
+        self._dispatch()
+
+    def _dispatch(self):
+        if urlparse(self.path).path.startswith(REVERSE_PREFIX):
+            self._reverse_proxy()
+        else:
+            self._plain_http()
+
+    def _reverse_target(self, provider):
+        oc = _read_json(CONFIG_DIR / "opencode.json")
+        for section in ("provider", "providers"):
+            entry = oc.get(section, {}).get(provider, {})
+            if not isinstance(entry, dict):
+                continue
+            opts = entry.get("options") or entry.get("settings") or {}
+            if isinstance(opts, dict) and opts.get("hubBaseURL"):
+                return opts["hubBaseURL"]
+        return PROVIDER_ENDPOINTS.get(provider)
+
+    def _reverse_proxy(self):
+        """Forward a plain-HTTP request to a provider through the Hub route."""
+        parsed = urlparse(self.path)
+        provider, _, tail = parsed.path[len(REVERSE_PREFIX):].partition("/")
+        base = self._reverse_target(provider)
+        if not base:
+            self.send_error(404, "Unknown reverse provider")
+            return
+        target = urlparse(base)
+        host = target.hostname
+        port = target.port or (443 if target.scheme == "https" else 80)
+        base_path = target.path.rstrip("/")
+        # The local baseURL already repeats the upstream prefix (/v1), so drop
+        # it from the incoming path before appending the real endpoint path.
+        prefix = base_path.lstrip("/")
+        if prefix and (tail == prefix or tail.startswith(prefix + "/")):
+            tail = tail[len(prefix):].lstrip("/")
+        path = f"{base_path}/{tail}" if tail else (base_path or "/")
+        if parsed.query:
+            path += "?" + parsed.query
+        try:
+            upstream, _ = connect_routed(host, port)
+            if target.scheme == "https":
+                import ssl
+                upstream = ssl.create_default_context().wrap_socket(upstream, server_hostname=host)
+            request = f"{self.command} {path} HTTP/1.1\r\n"
+            for key, value in self.headers.items():
+                if key.lower() in ("host", "connection", "proxy-authorization", "proxy-connection"):
+                    continue
+                request += f"{key}: {value}\r\n"
+            request += f"Host: {host}\r\nConnection: close\r\n\r\n"
+            upstream.sendall(request.encode("latin-1"))
+            _relay(self.connection, upstream)
+        except Exception:
+            try:
+                self.send_error(502, "Unable to establish routed connection")
+            except OSError:
+                pass
 
     def do_CONNECT(self):
         host, _, port = self.path.rpartition(":")
@@ -373,10 +433,10 @@ class _Handler(BaseHTTPRequestHandler):
             except OSError:
                 pass
 
-    do_POST = _plain_http
-    do_PUT = _plain_http
-    do_DELETE = _plain_http
-    do_PATCH = _plain_http
+    do_POST = _dispatch
+    do_PUT = _dispatch
+    do_DELETE = _dispatch
+    do_PATCH = _dispatch
 
 
 class _ThreadingServer(ThreadingHTTPServer):

@@ -5,6 +5,10 @@ from urllib.parse import urlparse
 DNS_PROXY = "http://127.0.0.1:51180"
 VLESS_PROXY = "http://127.0.0.1:20809"
 ROUTE_PROXY = "http://127.0.0.1:10880"
+# Plain-HTTP reverse endpoints. OpenCode 2.x (Bun) cannot reliably speak to a
+# local CONNECT proxy, so providers with a reverse endpoint get a rewritten
+# baseURL instead of options.proxy.
+REVERSE_BASE_URLS = {"tokenlavka": "http://127.0.0.1:10880/r/tokenlavka/v1"}
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
@@ -99,7 +103,9 @@ def sync_provider_routes(config: dict, hub_config: dict, http_port: int,
             target = options if isinstance(options, dict) else settings if isinstance(settings, dict) else None
             if target is None:
                 target = provider.setdefault("options", {})
-            if _is_local_endpoint(target):
+            # A hub-managed reverse endpoint is local on purpose; it still
+            # needs the route logic below (hubBaseURL holds the real target).
+            if _is_local_endpoint(target) and not target.get("hubBaseURL"):
                 target.pop("proxy", None)
                 continue
 
@@ -113,7 +119,18 @@ def sync_provider_routes(config: dict, hub_config: dict, http_port: int,
             # upstream from provider_routes per request host. Only an explicit
             # "direct" must NOT receive it, otherwise its traffic still leaves
             # through the dispatcher (and fails when the Hub is restarting).
-            if mode == "direct":
+            if provider_name in REVERSE_BASE_URLS:
+                original = target.get("hubBaseURL") or target.get("baseURL")
+                if original and original != REVERSE_BASE_URLS[provider_name]:
+                    target["hubBaseURL"] = original
+                if mode == "direct":
+                    if target.get("hubBaseURL"):
+                        target["baseURL"] = target["hubBaseURL"]
+                    target.pop("proxy", None)
+                else:
+                    target["baseURL"] = REVERSE_BASE_URLS[provider_name]
+                    target.pop("proxy", None)
+            elif mode == "direct":
                 target.pop("proxy", None)
             else:
                 target["proxy"] = ROUTE_PROXY
