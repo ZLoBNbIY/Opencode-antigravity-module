@@ -1970,20 +1970,6 @@ async function restartOpenCode() {
   }
 }
 
-async function stopOpenCode() {
-  if (!window.pywebview?.api) return;
-  showToast("Остановка OpenCode...");
-  await window.pywebview.api.stop_opencode();
-  setTimeout(refreshState, 1500);
-}
-
-async function startOpenCode() {
-  if (!window.pywebview?.api) return;
-  showToast("Запуск OpenCode...");
-  await window.pywebview.api.start_opencode();
-  setTimeout(refreshState, 1500);
-}
-
 async function fixSessionTitle() {
   if (!window.pywebview?.api) return;
   showToast("Проверка подписи сессий opencode/big-pickle...");

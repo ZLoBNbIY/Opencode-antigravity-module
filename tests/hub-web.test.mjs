@@ -365,4 +365,6 @@ test('OpenCode restart button is placed in sidebar above status indicator and re
   const settingsMatch = markup.match(/<section id="view-settings"[\s\S]*?<\/section>/);
   assert.ok(settingsMatch, 'view-settings should exist');
   assert.doesNotMatch(settingsMatch[0], /onclick="restartOpenCode\(\)"/);
+  assert.doesNotMatch(settingsMatch[0], /onclick="stopOpenCode\(\)"/);
+  assert.doesNotMatch(settingsMatch[0], /onclick="startOpenCode\(\)"/);
 });
