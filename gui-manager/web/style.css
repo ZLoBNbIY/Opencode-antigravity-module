@@ -173,8 +173,11 @@ body {
   gap: 6px;
 }
 
-.sidebar-restart-btn {
-  width: 100%;
+/* Unified button style: sidebar restart and every tab action button */
+.sidebar-restart-btn,
+.opencode-action-btn,
+.btn-primary,
+.btn-secondary {
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid rgba(255, 255, 255, 0.10);
   color: var(--text-secondary);
@@ -183,27 +186,51 @@ body {
   font-family: var(--font);
   font-size: 10.5px;
   font-weight: 600;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   cursor: pointer;
-  white-space: nowrap;
+  white-space: normal;
   transition: all 0.15s ease;
 }
 
-.sidebar-restart-btn:hover:not(:disabled) {
+.sidebar-restart-btn {
+  width: 100%;
+  white-space: nowrap;
+}
+
+.sidebar-restart-btn:hover:not(:disabled),
+.opencode-action-btn:hover:not(:disabled),
+.btn-primary:hover:not(:disabled),
+.btn-secondary:hover:not(:disabled) {
   background: rgba(217, 154, 67, 0.12);
   border-color: rgba(217, 154, 67, 0.38);
   color: var(--accent-amber-light);
 }
 
-.sidebar-restart-btn:active:not(:disabled) {
+.sidebar-restart-btn:active:not(:disabled),
+.opencode-action-btn:active:not(:disabled),
+.btn-primary:active:not(:disabled),
+.btn-secondary:active:not(:disabled) {
   transform: translateY(1px);
 }
 
 .sidebar-restart-btn.is-restarting .sidebar-restart-icon {
   animation: spin 0.9s linear infinite;
+}
+
+/* Disclaimer about required OpenCode patches */
+.patch-disclaimer {
+  border-color: rgba(217, 154, 67, 0.38);
+  background: rgba(217, 154, 67, 0.07);
+}
+
+.patch-disclaimer-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent-amber-light);
+  margin-bottom: 4px;
 }
 
 .status-badge {
@@ -499,47 +526,6 @@ body {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 18px;
-}
-
-.btn-primary {
-  background: linear-gradient(135deg, #d99a43, #a96e2c);
-  color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 12px;
-  font-family: var(--font);
-  font-size: 13px;
-  font-weight: 600;
-  padding: 10px 18px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  box-shadow: 0 4px 18px var(--accent-amber-glow);
-  transition: all 0.2s ease;
-}
-
-.btn-primary:hover {
-  background: linear-gradient(135deg, #e8a952, #b87b35);
-  box-shadow: 0 6px 24px var(--accent-amber-glow);
-  transform: translateY(-1px);
-}
-
-.btn-secondary {
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--text-primary);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 10px;
-  font-family: var(--font);
-  font-size: 12px;
-  font-weight: 600;
-  padding: 8px 14px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.btn-secondary:hover {
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
 }
 
 /* Table */
@@ -905,13 +891,12 @@ button:disabled { opacity:.5; cursor:wait; }
 .provider-route-description { margin-top:14px; min-height:38px; }
 .provider-check-row { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; }
 .provider-check-row .help-text { margin:0; font-size:11px; }
-.provider-check-row .btn-secondary { padding:7px 11px; font-size:11px; }
 
 .auto-comparison { margin:8px 0 16px; font-size:11px; color:var(--text-secondary); }
 .auto-comparison summary { cursor:pointer; margin-bottom:10px; }
 .auto-route-row { display:flex; gap:8px; flex-wrap:wrap; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--glass-border); }
 .auto-route-row strong { color:var(--accent-amber-light); }
-.auto-comparison .btn-secondary { margin-top:10px; padding:7px 10px; font-size:11px; }
+.auto-comparison .btn-secondary { margin-top:10px; }
 
 .settings-section-heading { margin:28px 0 8px; font-size:20px; }
 #view-diagnostics .provider-diagnostics { scroll-margin-top:20px; }
@@ -956,7 +941,6 @@ button:disabled { opacity:.5; cursor:wait; }
 .dashboard-section-title { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
 .dashboard-section-title h2 { font-size:14px; font-weight:700; }
 .dashboard-section-title .help-text { margin-bottom:0; font-size:10.5px; }
-.dashboard-section-title .btn-secondary { font-size:10px; padding:4px 10px; border-radius:7px; }
 .dashboard-provider-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:10px; margin-bottom:12px; }
 .dashboard-provider { padding:12px 14px; display:flex; flex-direction:column; min-width:0; border-radius:12px; }
 .dashboard-provider-heading { display:flex; align-items:center; gap:8px; flex-wrap:wrap; min-height:28px; }

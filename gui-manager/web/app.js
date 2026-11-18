@@ -48,6 +48,7 @@ function switchTab(tabId) {
     void refreshPluginFixStatus();
     void refreshAntigravityPatchStatus();
   }
+  if (tabId === 'google') void refreshGooglePatchDisclaimer();
 }
 
 function showDiagnostics(tab) {
@@ -386,10 +387,10 @@ function renderProxyPool() {
         <span style="font-family:Consolas, monospace; color:#fff; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${html(proxyUrl)}</span>
       </div>
       <div style="display:flex; gap:6px;">
-        <button class="btn-secondary" style="padding:4px 8px; font-size:11px;" data-action="up" title="Повысить приоритет" ${idx === 0 ? 'disabled' : ''}>↑</button>
-        <button class="btn-secondary" style="padding:4px 8px; font-size:11px;" data-action="down" title="Понизить приоритет" ${idx === pool.length - 1 ? 'disabled' : ''}>↓</button>
-        <button class="btn-secondary" style="padding:4px 8px; font-size:10px;" data-action="test">🩺</button>
-        <button class="btn-secondary" style="padding:4px 8px; font-size:10px; color:var(--accent-red);" data-action="delete">🗑</button>
+        <button class="btn-secondary" data-action="up" title="Повысить приоритет" ${idx === 0 ? 'disabled' : ''}>↑</button>
+        <button class="btn-secondary" data-action="down" title="Понизить приоритет" ${idx === pool.length - 1 ? 'disabled' : ''}>↓</button>
+        <button class="btn-secondary" data-action="test">🩺</button>
+        <button class="btn-secondary" style="color:var(--accent-red);" data-action="delete">🗑</button>
       </div>
     `;
     row.querySelector('[data-action="test"]')?.addEventListener('click', () => testProxyItem(proxyUrl));
@@ -747,9 +748,9 @@ function renderVlessPool() {
         <span style="color:#fff; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${html(url)}">${html(entry.label || url)}</span>
       </div>
       <div style="display:flex; gap:6px;">
-        <button class="btn-secondary" style="padding:4px 8px; font-size:11px;" data-action="activate" title="${isActive ? 'Перезапустить и проверить' : 'Сделать активным и запустить'}">✔</button>
-        <button class="btn-secondary" style="padding:4px 8px; font-size:10px;" data-action="test" title="Проверить IP и страну">🩺</button>
-        <button class="btn-secondary" style="padding:4px 8px; font-size:10px; color:var(--accent-red);" data-action="delete" title="Удалить из пула">🗑</button>
+        <button class="btn-secondary" data-action="activate" title="${isActive ? 'Перезапустить и проверить' : 'Сделать активным и запустить'}">✔</button>
+        <button class="btn-secondary" data-action="test" title="Проверить IP и страну">🩺</button>
+        <button class="btn-secondary" style="color:var(--accent-red);" data-action="delete" title="Удалить из пула">🗑</button>
       </div>
     `;
     row.querySelector('[data-action="activate"]')?.addEventListener('click', () => activateVlessItem(idx));
@@ -1387,9 +1388,9 @@ function renderGoogleTab() {
 
       <div class="acc-footer">
         <div class="acc-actions">
-          ${!isAct && isEnabled ? `<button class="btn-primary" style="padding:6px 14px; font-size:11px;" data-action="activate">⭐ Сделать активным</button>` : ''}
-          <button class="btn-secondary" style="padding:6px 12px; font-size:11px;" data-action="test">🩺 Проверить</button>
-          <button class="btn-secondary" style="padding:6px 10px; font-size:11px; color:var(--accent-red);" data-action="delete">🗑</button>
+          ${!isAct && isEnabled ? `<button class="btn-primary" data-action="activate">⭐ Сделать активным</button>` : ''}
+          <button class="btn-secondary" data-action="test">🩺 Проверить</button>
+          <button class="btn-secondary" style="color:var(--accent-red);" data-action="delete">🗑</button>
         </div>
         <div class="acc-switches" style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
           <label class="switch-label">
@@ -1525,9 +1526,9 @@ function renderOpenAiTab() {
       <div class="help-text">Проверено: ${html(checked)}${quota.status === 'stale' ? ' · сохранённые данные, обновление не удалось' : quota.status === 'error' ? ' · запрос лимитов не удался' : ''}${quota.limit_reached ? ' · Лимит исчерпан' : ''}</div>
       <div class="acc-footer">
         <div class="acc-actions">
-          ${!isAct && isEnabled ? `<button class="btn-primary" style="padding:6px 14px; font-size:11px;" data-action="activate">⭐ Сделать активным</button>` : ''}
-          <button class="btn-secondary" style="padding:6px 12px; font-size:11px;" data-action="test">⚡ Проверить</button>
-          <button class="btn-secondary" style="padding:6px 10px; font-size:11px; color:var(--accent-red);" data-action="delete">🗑</button>
+          ${!isAct && isEnabled ? `<button class="btn-primary" data-action="activate">⭐ Сделать активным</button>` : ''}
+          <button class="btn-secondary" data-action="test">⚡ Проверить</button>
+          <button class="btn-secondary" style="color:var(--accent-red);" data-action="delete">🗑</button>
         </div>
         <div class="acc-switches" style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
           <label class="switch-label">
@@ -2151,6 +2152,7 @@ async function restartOpenCode() {
     setTimeout(refreshState, 1500);
     void refreshPluginFixStatus();
     void refreshAntigravityPatchStatus();
+    void refreshGooglePatchDisclaimer();
   }
 }
 
@@ -2202,6 +2204,7 @@ async function fixOpenCodePlugin() {
     if (statusEl) statusEl.textContent = message;
     showToast(message);
     await refreshPluginFixStatus();
+    void refreshGooglePatchDisclaimer();
     if (res?.ok && res?.changed?.length) {
       if (confirm(`${message}\n\nПерезапустить OpenCode сейчас, чтобы изменения вступили в силу?`)) {
         await restartOpenCode();
@@ -2234,6 +2237,7 @@ async function applyAntigravityPatch() {
     if (statusEl) statusEl.textContent = message;
     showToast(message);
     await refreshAntigravityPatchStatus();
+    void refreshGooglePatchDisclaimer();
     if (res?.ok && res?.changed?.length) {
       if (confirm(`${message}\n\nПерезапустить OpenCode сейчас, чтобы изменения вступили в силу?`)) {
         await restartOpenCode();
@@ -2288,6 +2292,28 @@ async function refreshPluginFixStatus() {
     badge.innerHTML = `<span class="dot"></span> ${label}`;
     if (statusEl) statusEl.textContent = res?.message || '';
   } catch {}
+}
+
+// OpenCode updates itself, so patch state is re-checked on every Google account action.
+async function checkOpenCodePatchesApplied() {
+  const api = window.pywebview?.api;
+  if (!api?.get_opencode_plugin_status || !api?.get_antigravity_patch_status) return null;
+  try {
+    const [pluginStatus, patchStatus] = await Promise.all([
+      api.get_opencode_plugin_status(),
+      api.get_antigravity_patch_status()
+    ]);
+    return pluginStatus?.state === "patched" && patchStatus?.state === "patched";
+  } catch {
+    return false;
+  }
+}
+
+async function refreshGooglePatchDisclaimer() {
+  const applied = await checkOpenCodePatchesApplied();
+  const el = document.getElementById('google-patch-disclaimer');
+  if (el) el.style.display = applied === false ? '' : 'none';
+  return applied;
 }
 
 async function openFolder(type) {
@@ -2379,15 +2405,24 @@ async function loginAccount(provider, method, label) {
     const result = await window.pywebview.api[method]();
     showToast((result.status === 'error' ? 'Ошибка входа: ' : '') + result.message);
     await refreshState();
+    return result;
   } catch (e) {
     showToast(`Ошибка входа: ${e}`);
+    return null;
   } finally {
     accountLogins.delete(provider);
   }
 }
 
 async function addGoogleAccount() {
-  await loginAccount('google', 'add_google_account', 'Google');
+  // Check immediately: an OpenCode self-update may have removed the patches.
+  void refreshGooglePatchDisclaimer();
+  const result = await loginAccount('google', 'add_google_account', 'Google');
+  if (!result || result.status === 'error') return;
+  const applied = await refreshGooglePatchDisclaimer();
+  if (applied === false) {
+    showToast('⚠️ Патчи OpenCode не активны — примените их в «Настройки → OpenCode и система»');
+  }
 }
 
 async function activateGoogleAccount(idx) {

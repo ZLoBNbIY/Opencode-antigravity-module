@@ -396,6 +396,34 @@ test('Google login refreshes accounts only after successful completion', async (
   assert.match(elements.get('toasts').children.at(-1).textContent, /добавлен/);
 });
 
+test('Google account patch disclaimer follows live OpenCode patch status', async () => {
+  const {elements, context} = frontend(state);
+  vm.runInContext('refreshState = async () => {};', context);
+  let pluginState = 'pending';
+  let patchState = 'patched';
+  context.window.pywebview = {api:{
+    get_opencode_plugin_status: async () => ({state:pluginState}),
+    get_antigravity_patch_status: async () => ({state:patchState}),
+    add_google_account: async () => ({status:'ok', message:'Google аккаунт добавлен в пул'}),
+  }};
+  const disclaimer = elements.get('google-patch-disclaimer');
+  const toasts = elements.get('toasts');
+
+  await vm.runInContext('refreshGooglePatchDisclaimer()', context);
+  assert.equal(disclaimer.style.display, '', 'disclaimer is shown when a patch is pending');
+  await vm.runInContext('addGoogleAccount()', context);
+  assert.match(toasts.children.at(-1).textContent, /Патчи OpenCode не активны/);
+
+  pluginState = 'patched';
+  patchState = 'patched';
+  toasts.children.length = 0;
+  await vm.runInContext('addGoogleAccount()', context);
+  assert.equal(disclaimer.style.display, 'none', 'disclaimer is hidden when patches are active');
+  assert.equal(toasts.children.length, 2, 'no extra disclaimer toast when patches work');
+  assert.match(toasts.children.at(-1).textContent, /добавлен/);
+  assert.doesNotMatch(toasts.children.map(t => t.textContent).join(' '), /Патчи OpenCode не активны/);
+});
+
 test('OpenCode restart button is placed in sidebar above status indicator and removed from settings', () => {
   const footerMatch = markup.match(/<div class="sidebar-footer">([\s\S]*?)<\/div>\s*<\/aside>/);
   assert.ok(footerMatch, 'sidebar-footer should exist');

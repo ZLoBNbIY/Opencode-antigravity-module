@@ -144,10 +144,10 @@
               <p class="help-text" style="margin-bottom:8px;">Добавьте несколько конфигов и переключайтесь вручную. Для каждого показан выходной IP и страна, полученные при реальном подключении.</p>
               <div style="display: flex; gap: 8px; margin-bottom: 8px;">
                 <input id="vless-pool-input" type="password" autocomplete="off" placeholder="vless://uuid@server:port?...#Название" style="flex:1; font-family: Consolas, monospace; font-size:11px; padding: 8px 10px; background: rgba(0,0,0,0.3); border: 1px solid var(--glass-border); border-radius: 8px; color:#fff;">
-                <button class="btn-primary" type="button" onclick="addVlessConfig()" style="white-space: nowrap; padding: 8px 12px; font-size: 11px;">＋ Добавить</button>
+                <button class="btn-primary" type="button" onclick="addVlessConfig()">＋ Добавить</button>
               </div>
               <div id="vless-pool-container" style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; max-height: 220px; overflow-y: auto;"></div>
-              <button class="btn-secondary" type="button" id="btn-vless-test-all" onclick="testAllVlessConfigs()" style="font-size: 11px;">🩺 Проверить все конфиги</button>
+              <button class="btn-secondary" type="button" id="btn-vless-test-all" onclick="testAllVlessConfigs()">🩺 Проверить все конфиги</button>
               <p class="help-text" id="vless-pool-status" role="status" style="margin-top:6px;"></p>
             </div>
           </div>
@@ -178,7 +178,7 @@
           <p class="help-text">Прокси проверяются в порядке списка: верхний — основной, ниже — резервные. Перемещайте узлы стрелками. При включённом Failover Hub переходит к следующему прокси, если предыдущий не подключился.</p>
           <div style="display: flex; gap: 8px; margin-bottom: 10px;">
             <input id="network-proxy" type="text" autocomplete="off" placeholder="http://host:port или http://user:pass@host:port" style="flex:1; font-family: Consolas, monospace; font-size:12px; padding: 9px 12px; background: rgba(0,0,0,0.3); border: 1px solid var(--glass-border); border-radius: 8px; color: #fff;">
-            <button class="btn-primary" type="button" onclick="addProxyToPool()" style="white-space: nowrap; padding: 8px 14px; font-size: 11px;">＋ Добавить</button>
+            <button class="btn-primary" type="button" onclick="addProxyToPool()">＋ Добавить</button>
           </div>
           <div id="proxy-pool-container" style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; max-height: 180px; overflow-y: auto;">
             <!-- Rendered dynamically -->
@@ -203,6 +203,19 @@
             <button class="btn-primary" onclick="addGoogleAccount()">
               <span>＋</span> Добавить аккаунт
             </button>
+          </div>
+        </div>
+
+        <div class="glass-card patch-disclaimer" id="google-patch-disclaimer" style="display: none; margin-bottom: 16px;">
+          <div style="display: flex; gap: 10px; align-items: flex-start;">
+            <span style="font-size: 18px; line-height: 1.2;">⚠️</span>
+            <div>
+              <div class="patch-disclaimer-title">Патчи OpenCode не применены</div>
+              <p class="help-text" id="google-patch-disclaimer-text" style="margin: 0 0 10px;">
+                Добавленный Google-аккаунт может не заработать: OpenCode может обновляться сам и сбрасывать патчи. Откройте «Настройки → OpenCode и система» и примените фикс плагина и патч Antigravity.
+              </p>
+              <button class="opencode-action-btn" onclick="switchTab('settings')">Перейти к патчам OpenCode</button>
+            </div>
           </div>
         </div>
 
@@ -709,7 +722,7 @@
           </div>
           <div style="margin-bottom: 12px;">
             <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
-              <button class="btn-primary" id="btn-fix-plugin" onclick="fixOpenCodePlugin()">🩹 Применить фикс плагина</button>
+              <button class="opencode-action-btn" id="btn-fix-plugin" onclick="fixOpenCodePlugin()">🩹 Применить фикс плагина</button>
               <span class="badge-pill badge-pool" id="plugin-fix-badge" role="status">
                 <span class="dot"></span> Проверка…
               </span>
@@ -718,7 +731,7 @@
           </div>
           <div style="margin-bottom: 12px;">
             <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
-              <button class="btn-primary" id="btn-antigravity-patch" onclick="applyAntigravityPatch()">🧬 Применить патч Antigravity</button>
+              <button class="opencode-action-btn" id="btn-antigravity-patch" onclick="applyAntigravityPatch()">🧬 Применить патч Antigravity</button>
               <span class="badge-pill badge-pool" id="antigravity-patch-badge" role="status">
                 <span class="dot"></span> Проверка…
               </span>
@@ -727,7 +740,7 @@
           </div>
           <div>
             <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
-              <button class="btn-secondary" onclick="fixSessionTitle()">🩺 Проверить и исправить подпись сессий</button>
+              <button class="opencode-action-btn" onclick="fixSessionTitle()">🩺 Проверить и исправить подпись сессий</button>
               <span class="badge-pill badge-available" id="session-title-badge">
                 <span class="dot"></span> Активна: opencode/big-pickle
               </span>
