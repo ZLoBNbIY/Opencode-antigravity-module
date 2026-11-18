@@ -2069,11 +2069,34 @@ async function disconnectTokenLavka() {
 }
 
 // --- Settings Tab ---
+const ACCENT_THEMES = ["amber", "azure", "violet", "rose", "crimson", "cyan", "indigo", "mango", "magenta", "gray"];
+function applyAccentTheme(theme) {
+  if (!ACCENT_THEMES.includes(theme)) theme = "amber";
+  if (document.body) document.body.dataset.accent = theme;
+  document.querySelectorAll('.theme-swatch').forEach(el => {
+    const active = el.dataset.theme === theme;
+    el.classList.toggle('active', active);
+    el.setAttribute('aria-pressed', String(active));
+  });
+}
+
+async function selectAccentTheme(theme) {
+  applyAccentTheme(theme);
+  if (appState.config) appState.config.accent_theme = theme;
+  if (!window.pywebview?.api?.save_general_settings) return;
+  try {
+    await window.pywebview.api.save_general_settings({ accent_theme: theme });
+  } catch (e) {
+    showToast(`Ошибка сохранения темы: ${e}`);
+  }
+}
+
 let settingsDirty = false;
 function markSettingsDirty() { settingsDirty = true; }
 function renderSettingsTab() {
-  if (settingsDirty) return;
   const cfg = appState.config || {};
+  applyAccentTheme(cfg.accent_theme);
+  if (settingsDirty) return;
   const strat = cfg.account_selection_strategy || "hybrid";
   selectStrategy(strat, false);
 

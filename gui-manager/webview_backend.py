@@ -1316,6 +1316,11 @@ class HubApi:
                     if not isinstance(settings[key], bool):
                         raise ValueError(f"Неверное значение настройки {key}")
                     cfg[key] = settings[key]
+            accent = settings.get("accent_theme")
+            if accent is not None:
+                if accent not in ("amber", "azure", "violet", "rose", "crimson", "cyan", "indigo", "mango", "magenta", "gray"):
+                    raise ValueError("Неизвестная цветовая тема")
+                cfg["accent_theme"] = accent
             oc = None
             oc_path = _opencode_config_path()
             if "providers_visibility" in settings:
@@ -1811,7 +1816,7 @@ class HubApi:
                 allowed_backup_keys = {
                     "account_selection_strategy", "soft_quota_threshold_percent",
                     "switch_on_first_rate_limit", "max_account_switches",
-                    "quota_style_fallback", "close_to_tray", "providers_visibility",
+                    "quota_style_fallback", "close_to_tray", "accent_theme", "providers_visibility",
                     "provider_routes", "vless_kill_switch", "vless_enabled",
                     "dns_mode", "custom_dns", "dot_host", "doh_url", "dns_presets",
                     "proxy", "proxy_pool", "proxy_failover", "vless_url", "vless_pool",

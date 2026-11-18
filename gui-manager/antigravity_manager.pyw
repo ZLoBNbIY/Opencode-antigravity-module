@@ -190,6 +190,7 @@ DEFAULT_CONFIG = {
     "quota_style_fallback": True,
     "debug": False,
     "theme_mode": "dark",
+    "accent_theme": "amber",
     "vless_enabled": False,
     "vless_url": "",
     "vless_core_path": None,

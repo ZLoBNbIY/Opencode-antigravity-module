@@ -424,6 +424,27 @@ test('Google account patch disclaimer follows live OpenCode patch status', async
   assert.doesNotMatch(toasts.children.map(t => t.textContent).join(' '), /Патчи OpenCode не активны/);
 });
 
+test('accent theme selection applies swatches and persists the choice', async () => {
+  const {context} = frontend(state);
+  let saved = null;
+  context.window.pywebview = {api:{save_general_settings: async settings => { saved = settings; return true; }}};
+  const swatches = ['amber', 'azure', 'violet', 'rose', 'crimson', 'cyan', 'indigo', 'mango', 'magenta', 'gray'].map(theme => {
+    const el = context.document.createElement('button');
+    el.dataset.theme = theme;
+    return el;
+  });
+  context.document.querySelectorAll = selector => selector === '.theme-swatch' ? swatches : [];
+
+  await vm.runInContext("selectAccentTheme('azure')", context);
+  assert.equal(saved.accent_theme, 'azure');
+  assert.equal(vm.runInContext('appState.config.accent_theme', context), 'azure');
+  const azure = swatches.find(el => el.dataset.theme === 'azure');
+  assert.equal(azure.classes.has('active'), true);
+  assert.equal(azure.attributes['aria-pressed'], 'true');
+  assert.equal(swatches[0].classes.has('active'), false);
+  assert.equal(swatches.length, 10, 'green theme removed, nine alternatives available');
+});
+
 test('OpenCode restart button is placed in sidebar above status indicator and removed from settings', () => {
   const footerMatch = markup.match(/<div class="sidebar-footer">([\s\S]*?)<\/div>\s*<\/aside>/);
   assert.ok(footerMatch, 'sidebar-footer should exist');
