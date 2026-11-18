@@ -2076,8 +2076,6 @@ function renderSettingsTab() {
   const strat = cfg.account_selection_strategy || "hybrid";
   selectStrategy(strat, false);
 
-  const swRate = document.getElementById("switch-rate-limit");
-  if (swRate) swRate.checked = cfg.switch_on_first_rate_limit !== false;
   const swTray = document.getElementById("switch-close-to-tray");
   if (swTray) swTray.checked = cfg.close_to_tray !== false;
   for (const item of Object.values(providerSettings)) document.getElementById(`provider-enabled-${item.key}`).checked = cfg.providers_visibility?.[item.key] !== false;
@@ -2109,12 +2107,10 @@ function selectStrategy(strat, save = true) {
 
 async function saveSettings() {
   if (!window.pywebview?.api) return;
-  const swRate = document.getElementById("switch-rate-limit");
   try {
     const visibility = Object.fromEntries(Object.values(providerSettings).map(item=>[item.key, document.getElementById(`provider-enabled-${item.key}`).checked]));
     const swTray = document.getElementById("switch-close-to-tray");
     const ok = await window.pywebview.api.save_general_settings({
-      switch_on_first_rate_limit: swRate ? swRate.checked : true,
       close_to_tray: swTray ? swTray.checked : true,
       providers_visibility: visibility
     });
@@ -2179,24 +2175,6 @@ async function restartHub() {
     }
     showToast(`Ошибка перезапуска Hub: ${e?.message || e}`);
   }
-}
-
-async function stopOpenCode() {
-  if (!window.pywebview?.api) return;
-  showToast("Остановка OpenCode...");
-  try {
-    await window.pywebview.api.stop_opencode();
-    setTimeout(refreshState, 1500);
-  } catch (e) { showToast(`Ошибка остановки OpenCode: ${e?.message || e}`); }
-}
-
-async function startOpenCode() {
-  if (!window.pywebview?.api) return;
-  showToast("Запуск OpenCode...");
-  try {
-    await window.pywebview.api.start_opencode();
-    setTimeout(refreshState, 1500);
-  } catch (e) { showToast(`Ошибка запуска OpenCode: ${e?.message || e}`); }
 }
 
 async function fixSessionTitle() {

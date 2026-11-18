@@ -634,7 +634,7 @@
         <div class="page-header">
           <div class="header-left">
             <h1>⚙️ Настройки и система</h1>
-            <p>Провайдеры, стратегия ротации, обновления и управление OpenCode</p>
+            <p>Провайдеры, стратегия ротации, обновления и патчи OpenCode</p>
           </div>
           <div class="header-right">
             <button class="btn-primary" onclick="saveSettings()">
@@ -664,14 +664,6 @@
           <div id="strat-desc" style="font-size: 12px; color: var(--accent-amber-light);">
             ⭐ Рекомендуется: сохраняет контекст сессии на одном аккаунте, но плавно ротирует при исчерпании лимитов.
           </div>
-        </div>
-
-        <div class="glass-card" style="margin-bottom: 16px;">
-          <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 8px;">Переключение при Rate Limit (429)</div>
-          <label class="switch-label">
-            <input type="checkbox" class="switch-input" id="switch-rate-limit" onchange="markSettingsDirty()" checked>
-            <span>Мгновенно переключаться на следующий свободный аккаунт при получении ошибки 429</span>
-          </label>
         </div>
 
         <div class="glass-card" style="margin-bottom: 16px;">
@@ -709,53 +701,37 @@
             </button>
           </div>
         </div>
-        <h2 class="settings-section-heading">OpenCode и система</h2><p class="help-text">Управление приложением, подписи сессий и доступ к конфигурации и логам</p>
+        <h2 class="settings-section-heading">OpenCode и система</h2><p class="help-text">Патчи и исправления OpenCode, подписи сессий и доступ к конфигурации и логам</p>
         <div class="glass-card" style="margin-bottom: 16px;">
-          <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 12px;">Управление OpenCode</div>
-          <div style="display: flex; gap: 10px;">
-            <button class="btn-secondary" onclick="stopOpenCode()" style="color: var(--accent-red);">⏹ Остановить</button>
-            <button class="btn-secondary" onclick="startOpenCode()">▶ Запустить</button>
-          </div>
-        </div>
-
-        <div class="glass-card" style="margin-bottom: 16px;">
-          <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 6px;">Исправление плагина OpenCode</div>
+          <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 6px;">Патчи OpenCode и подпись сессий</div>
           <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
-            Восстанавливает проверенный бандл плагина: фикс 429 Code Mode, патч совместимости Antigravity (UA, sessionId, labels, checkpoint), маршруты Gemini 4 и маршрутизацию Hub после обновления OpenCode или плагина Antigravity.
+            Восстанавливает проверенный бандл плагина (фикс 429 Code Mode, маршруты Gemini 4 и маршрутизация Hub), приводит тело и заголовки запросов к формату оригинального Antigravity (User-Agent, sessionId, labels, requestId, checkpoint, thinking, инструменты) и закрепляет именование новых сессий за бесплатной моделью Big Pickle (opencode/big-pickle). Применяется к установленному плагину без отката версии.
           </div>
-          <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
-            <button class="btn-primary" id="btn-fix-plugin" onclick="fixOpenCodePlugin()">🩹 Применить фикс плагина</button>
-            <span class="badge-pill badge-pool" id="plugin-fix-badge" role="status">
-              <span class="dot"></span> Проверка…
-            </span>
+          <div style="margin-bottom: 12px;">
+            <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
+              <button class="btn-primary" id="btn-fix-plugin" onclick="fixOpenCodePlugin()">🩹 Применить фикс плагина</button>
+              <span class="badge-pill badge-pool" id="plugin-fix-badge" role="status">
+                <span class="dot"></span> Проверка…
+              </span>
+            </div>
+            <p class="help-text" id="plugin-fix-status" role="status" style="margin-top: 6px;"></p>
           </div>
-          <p class="help-text" id="plugin-fix-status" role="status" style="margin-top: 8px;"></p>
-        </div>
-
-        <div class="glass-card" style="margin-bottom: 16px;">
-          <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 6px;">Патч совместимости Antigravity</div>
-          <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
-            Приводит тело и заголовки запросов OpenCode к формату оригинального Antigravity: User-Agent, sessionId, labels, requestId, checkpoint, thinking и инструменты. Применяется к установленному плагину без отката версии.
+          <div style="margin-bottom: 12px;">
+            <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
+              <button class="btn-primary" id="btn-antigravity-patch" onclick="applyAntigravityPatch()">🧬 Применить патч Antigravity</button>
+              <span class="badge-pill badge-pool" id="antigravity-patch-badge" role="status">
+                <span class="dot"></span> Проверка…
+              </span>
+            </div>
+            <p class="help-text" id="antigravity-patch-status" role="status" style="margin-top: 6px;"></p>
           </div>
-          <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
-            <button class="btn-primary" id="btn-antigravity-patch" onclick="applyAntigravityPatch()">🧬 Применить патч Antigravity</button>
-            <span class="badge-pill badge-pool" id="antigravity-patch-badge" role="status">
-              <span class="dot"></span> Проверка…
-            </span>
-          </div>
-          <p class="help-text" id="antigravity-patch-status" role="status" style="margin-top: 8px;"></p>
-        </div>
-
-        <div class="glass-card" style="margin-bottom: 16px;">
-          <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 6px;">Подпись сессий OpenCode</div>
-          <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
-            Именование новых сессий закреплено за бесплатной встроенной моделью Big Pickle (opencode/big-pickle).
-          </div>
-          <div style="display: flex; align-items: center; gap: 16px;">
-            <span class="badge-pill badge-available" id="session-title-badge">
-              <span class="dot"></span> Активна: opencode/big-pickle
-            </span>
-            <button class="btn-secondary" onclick="fixSessionTitle()">🩺 Проверить и исправить</button>
+          <div>
+            <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
+              <button class="btn-secondary" onclick="fixSessionTitle()">🩺 Проверить и исправить подпись сессий</button>
+              <span class="badge-pill badge-available" id="session-title-badge">
+                <span class="dot"></span> Активна: opencode/big-pickle
+              </span>
+            </div>
           </div>
         </div>
 

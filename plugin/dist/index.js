@@ -45111,7 +45111,7 @@ function createRequestExecutor(deps) {
                 break;
               }
             }
-            const shouldRetryEndpoint = response.status === 403 || response.status === 404 || response.status >= 500;
+            const shouldRetryEndpoint = response.status === 403 || response.status >= 500; /* no retry on 404 */
             if (shouldRetryEndpoint && i < ANTIGRAVITY_ENDPOINT_FALLBACKS.length - 1) {
               await debug2.logResponseBody(
                 debugContext,
