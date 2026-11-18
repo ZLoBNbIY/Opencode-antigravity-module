@@ -87,6 +87,28 @@ const WIN32_FSYNC_POLYFILL = `if (process.platform === "win32") {
 }
 `;
 
+function readPluginVersion(pluginDir) {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(pluginDir, 'package.json'), 'utf8'));
+    return String(pkg.version || '')
+      .split('.')
+      .slice(0, 3)
+      .map((part) => Number.parseInt(part, 10) || 0);
+  } catch {
+    return null;
+  }
+}
+
+function isVersionGreater(left, right) {
+  if (!left || !right) return false;
+  for (let index = 0; index < 3; index += 1) {
+    const a = left[index] || 0;
+    const b = right[index] || 0;
+    if (a !== b) return a > b;
+  }
+  return false;
+}
+
 function patchBrowserLaunch(content, fileName) {
   const OLD_BROWSER_START = 'async function openBrowserDefault(url) {';
   const NEXT_FUNC = 'function createDefaultCliDependencies() {';
@@ -220,16 +242,26 @@ for (const basePath of targetPaths) {
 
   // If local plugin dist exists and we're patching an external cache directory,
   // sync the verified dist files (which include store generation login and routing fixes).
+  // Never downgrade a newer installed bundle: the upstream 3.0.20 package may
+  // contain fixes that the local 3.0.0 snapshot does not.
   if (basePath !== localPluginPath && fs.existsSync(localPluginPath)) {
-    for (const distFile of ['cli.js', 'server.js', 'index.js']) {
-      const srcFile = path.join(localPluginPath, 'dist', distFile);
-      const destFile = path.join(basePath, 'dist', distFile);
-      if (fs.existsSync(srcFile) && fs.existsSync(destFile)) {
-        try {
-          fs.copyFileSync(srcFile, destFile);
-          console.log(`✓ Synchronized ${distFile} from local verified bundle`);
-        } catch (copyErr) {
-          console.warn(`! Failed to copy ${distFile}: ${copyErr.message}`);
+    const localVersion = readPluginVersion(localPluginPath);
+    const targetVersion = readPluginVersion(basePath);
+    if (isVersionGreater(targetVersion, localVersion)) {
+      console.log(
+        `• Skipping local bundle sync: installed ${targetVersion?.join('.')} is newer than local ${localVersion?.join('.')}`
+      );
+    } else {
+      for (const distFile of ['cli.js', 'server.js', 'index.js']) {
+        const srcFile = path.join(localPluginPath, 'dist', distFile);
+        const destFile = path.join(basePath, 'dist', distFile);
+        if (fs.existsSync(srcFile) && fs.existsSync(destFile)) {
+          try {
+            fs.copyFileSync(srcFile, destFile);
+            console.log(`✓ Synchronized ${distFile} from local verified bundle`);
+          } catch (copyErr) {
+            console.warn(`! Failed to copy ${distFile}: ${copyErr.message}`);
+          }
         }
       }
     }
@@ -730,7 +762,9 @@ if (!ANTIGRAVITY_OPENCODE_MODEL_IDS.includes("antigravity-gemini-4-hydrogen")) {
       const sanitizerAnchor = 'function sanitizeRequestPayloadForAntigravity(payload) {';
       const sanitizerLines = [
         'var ANTIGRAVITY_BLOCKED_SYSTEM_INSTRUCTION_PATTERNS = [',
-        '  [/tools\\.opencode\\.session_move/gi, \'tools.opencode["session_move"]\']',
+        '  [/tools\\.opencode\\.([A-Za-z0-9_]+)/gi, \'tools["agent"]["$1"]\'],',
+        '  [/\\bOpenCode\\b/g, \'the coding agent\'],',
+        '  [/\\bopencode\\b/g, \'coding agent\']',
         '];',
         'function sanitizeAntigravitySystemInstruction(payload) {',
         '  if (!payload || typeof payload !== "object") return;',
@@ -811,7 +845,43 @@ if (!ANTIGRAVITY_OPENCODE_MODEL_IDS.includes("antigravity-gemini-4-hydrogen")) {
   }
 }
 
-// 3. Check and run offline migration if needed
+// 3. Apply the shared Python identity patch. It owns the Antigravity-compatible
+// body/headers/metadata transforms so this JS fallback does not need a second
+// copy of the same rules.
+try {
+  const { execFileSync } = await import('node:child_process');
+  const identityScript = path.resolve(scriptDir, '..', 'gui-manager', 'cloudcode_route_patch.py');
+  if (fs.existsSync(identityScript)) {
+    const candidates = [
+      process.env.ANTIGRAVITY_PYTHON,
+      process.platform === 'win32' ? 'python' : 'python3',
+      process.platform === 'win32' ? 'py' : 'python',
+    ].filter(Boolean);
+    let applied = false;
+    let lastError = null;
+    for (const candidate of candidates) {
+      try {
+        const args = candidate === 'py'
+          ? ['-3', identityScript, 'identity']
+          : [identityScript, 'identity'];
+        execFileSync(candidate, args, { stdio: 'inherit' });
+        applied = true;
+        break;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    if (!applied) {
+      console.warn(
+        `! Failed to apply identity patch via cloudcode_route_patch.py: ${lastError?.message ?? 'no Python interpreter found'}`
+      );
+    }
+  }
+} catch (err) {
+  console.warn(`! Failed to apply identity patch via cloudcode_route_patch.py: ${err.message}`);
+}
+
+// 4. Check and run offline migration if needed
 async function checkAndRunMigration() {
   const configDir = path.join(homeDir, '.config', 'opencode');
   const legacyFile = path.join(configDir, 'antigravity-accounts.json');

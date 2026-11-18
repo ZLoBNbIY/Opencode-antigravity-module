@@ -511,6 +511,9 @@ if (-not $SkipPatch -and $NodePath) {
     Write-Step "Применение патчей совместимости (Gemini 3.8 / SSE / TTY)..."
     $PatchScript = Join-Path $ScriptDir "scripts\patch_plugin.mjs"
     if (Test-Path -LiteralPath $PatchScript) {
+        if ($PythonPath) {
+            $env:ANTIGRAVITY_PYTHON = $PythonPath
+        }
         $res = & "$NodePath" "$PatchScript"
         if ($LASTEXITCODE -eq 0) {
             Write-Success "Патчи стриминга и совместимости успешно применены!"

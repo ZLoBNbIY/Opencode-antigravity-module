@@ -428,6 +428,9 @@ class WebviewBackendTests(unittest.TestCase):
             patch_prompt_sanitizer=Mock(return_value={
                 "ok": True, "changed": ["server.js"], "already": [], "missing": [],
                 "message": "Фикс применён."}),
+            patch_antigravity_identity=Mock(return_value={
+                "ok": True, "changed": ["server.js"], "already": [], "missing": [],
+                "message": "Патч Antigravity применён."}),
             patch_auth_plugin_transport=Mock(return_value=True),
         )
         with patch.dict("sys.modules", {"cloudcode_route_patch": patcher}):
@@ -435,9 +438,11 @@ class WebviewBackendTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertTrue(result["route_patched"])
         self.assertEqual(result["synced"], ["server.js"])
+        self.assertEqual(result["identity"]["ok"], True)
         self.assertIn("Маршрут Hub проверен", result["message"])
         patcher.sync_local_plugin_bundles.assert_called_once()
         patcher.patch_prompt_sanitizer.assert_called_once()
+        patcher.patch_antigravity_identity.assert_called_once()
         patcher.patch_auth_plugin_transport.assert_called_once()
 
     def test_get_opencode_plugin_status_delegates_to_patcher(self):
@@ -447,6 +452,29 @@ class WebviewBackendTests(unittest.TestCase):
             status = self.backend.HubApi().get_opencode_plugin_status()
         self.assertEqual(status["state"], "patched")
         patcher.get_prompt_sanitizer_status.assert_called_once()
+
+    def test_apply_antigravity_patch_delegates_to_patcher(self):
+        patcher = SimpleNamespace(
+            patch_antigravity_identity=Mock(return_value={
+                "ok": True, "changed": ["server.js"], "already": [], "missing": [],
+                "message": "Патч Antigravity применён."}),
+            get_identity_fix_status=Mock(return_value={
+                "state": "patched", "found": 2, "patched": 2, "pending": 0, "message": "ok"}),
+        )
+        with patch.dict("sys.modules", {"cloudcode_route_patch": patcher}):
+            result = self.backend.HubApi().apply_antigravity_patch()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"]["state"], "patched")
+        patcher.patch_antigravity_identity.assert_called_once()
+        patcher.get_identity_fix_status.assert_called_once()
+
+    def test_get_antigravity_patch_status_delegates_to_patcher(self):
+        patcher = SimpleNamespace(get_identity_fix_status=Mock(return_value={
+            "state": "patched", "found": 2, "patched": 2, "pending": 0, "message": "ok"}))
+        with patch.dict("sys.modules", {"cloudcode_route_patch": patcher}):
+            status = self.backend.HubApi().get_antigravity_patch_status()
+        self.assertEqual(status["state"], "patched")
+        patcher.get_identity_fix_status.assert_called_once()
 
     @unittest.skipUnless(importlib.util.find_spec("webview"), "pywebview required")
     def test_bridge_finishes_without_inspecting_native_window(self):

@@ -1,3 +1,4 @@
+import json
 import sys
 import tempfile
 import unittest
@@ -5,6 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gui-manager"))
 from cloudcode_route_patch import (
+    get_identity_fix_status,
     get_prompt_sanitizer_status,
     patch_prompt_sanitizer,
     sync_local_plugin_bundles,
@@ -51,7 +53,8 @@ class PromptSanitizerPatchTests(unittest.TestCase):
                 text = path.read_text(encoding="utf-8")
                 self.assertIn("function sanitizeAntigravitySystemInstruction(", text)
                 self.assertIn("sanitizeAntigravitySystemInstruction(requestPayload);", text)
-                self.assertIn('tools.opencode["session_move"]', text)
+                self.assertIn('tools["agent"]["$1"]', text)
+                self.assertIn("Code Mode", text)
                 self.assertTrue(path.with_suffix(".js.hub-prompt.bak").exists())
 
             second = patch_prompt_sanitizer(root)
@@ -138,6 +141,35 @@ class PromptSanitizerPatchTests(unittest.TestCase):
             second = sync_local_plugin_bundles(root)
             self.assertFalse(second["ok"])
             self.assertEqual(second["copied"], [])
+
+    def test_local_verified_bundle_contains_identity_fix(self):
+        status = get_identity_fix_status()
+        self.assertEqual(status["state"], "patched")
+        self.assertGreaterEqual(status["patched"], 1)
+
+    def test_sync_local_bundle_does_not_downgrade_newer_installed_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "node_modules" / "@cortexkit" / "opencode-antigravity-auth"
+            dist = target / "dist"
+            dist.mkdir(parents=True)
+            for name in ("cli.js", "server.js", "index.js"):
+                (dist / name).write_text("newer stock bundle\n", encoding="utf-8")
+            (target / "package.json").write_text(
+                json.dumps({"name": "@cortexkit/opencode-antigravity-auth", "version": "3.0.20"}),
+                encoding="utf-8",
+            )
+
+            result = sync_local_plugin_bundles(root)
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["copied"], [])
+            self.assertEqual(len(result["skipped"]), 1)
+            self.assertIn("не перезаписан", result["message"])
+            self.assertEqual(
+                (dist / "server.js").read_text(encoding="utf-8"),
+                "newer stock bundle\n",
+            )
 
 
 if __name__ == "__main__":

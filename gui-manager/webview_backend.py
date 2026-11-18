@@ -1422,6 +1422,13 @@ class HubApi:
                 "missing": [],
                 "message": f"Ошибка патча плагина: {exc}",
             }
+        try:
+            identity = cloudcode_route_patch.patch_antigravity_identity()
+        except Exception as exc:
+            identity = {"ok": False, "message": f"Ошибка патча идентичности: {exc}"}
+        result["identity"] = identity
+        if identity.get("changed"):
+            result["message"] += " " + identity["message"]
         result["synced"] = synced.get("copied", [])
         if result.get("synced"):
             result["message"] = (
@@ -1448,6 +1455,37 @@ class HubApi:
                 "patched": 0,
                 "pending": 0,
                 "message": f"Ошибка проверки плагина: {exc}",
+            }
+
+    def apply_antigravity_patch(self) -> dict:
+        """Apply the Antigravity-compatible request body/header patch."""
+        import cloudcode_route_patch
+        try:
+            result = cloudcode_route_patch.patch_antigravity_identity()
+            result["status"] = cloudcode_route_patch.get_identity_fix_status()
+            return result
+        except Exception as exc:
+            return {
+                "ok": False,
+                "changed": [],
+                "already": [],
+                "missing": [],
+                "message": f"Ошибка патча Antigravity: {exc}",
+                "status": {"state": "error", "message": str(exc)},
+            }
+
+    def get_antigravity_patch_status(self) -> dict:
+        """Report whether the Antigravity identity patch is active."""
+        import cloudcode_route_patch
+        try:
+            return cloudcode_route_patch.get_identity_fix_status()
+        except Exception as exc:
+            return {
+                "state": "error",
+                "found": 0,
+                "patched": 0,
+                "pending": 0,
+                "message": f"Ошибка проверки патча Antigravity: {exc}",
             }
 
     def open_folder(self, folder_type: str) -> bool:

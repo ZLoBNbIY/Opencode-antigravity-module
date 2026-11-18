@@ -721,7 +721,7 @@
         <div class="glass-card" style="margin-bottom: 16px;">
           <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 6px;">Исправление плагина OpenCode</div>
           <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
-            Восстанавливает проверенный бандл плагина: фикс 429 Code Mode, маршруты Gemini 4 и маршрутизацию Hub после обновления OpenCode или плагина Antigravity.
+            Восстанавливает проверенный бандл плагина: фикс 429 Code Mode, патч совместимости Antigravity (UA, sessionId, labels, checkpoint), маршруты Gemini 4 и маршрутизацию Hub после обновления OpenCode или плагина Antigravity.
           </div>
           <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
             <button class="btn-primary" id="btn-fix-plugin" onclick="fixOpenCodePlugin()">🩹 Применить фикс плагина</button>
@@ -730,6 +730,20 @@
             </span>
           </div>
           <p class="help-text" id="plugin-fix-status" role="status" style="margin-top: 8px;"></p>
+        </div>
+
+        <div class="glass-card" style="margin-bottom: 16px;">
+          <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 6px;">Патч совместимости Antigravity</div>
+          <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
+            Приводит тело и заголовки запросов OpenCode к формату оригинального Antigravity: User-Agent, sessionId, labels, requestId, checkpoint, thinking и инструменты. Применяется к установленному плагину без отката версии.
+          </div>
+          <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
+            <button class="btn-primary" id="btn-antigravity-patch" onclick="applyAntigravityPatch()">🧬 Применить патч Antigravity</button>
+            <span class="badge-pill badge-pool" id="antigravity-patch-badge" role="status">
+              <span class="dot"></span> Проверка…
+            </span>
+          </div>
+          <p class="help-text" id="antigravity-patch-status" role="status" style="margin-top: 8px;"></p>
         </div>
 
         <div class="glass-card" style="margin-bottom: 16px;">

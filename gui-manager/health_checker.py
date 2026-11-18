@@ -5,6 +5,9 @@ Performs non-destructive, lightweight ping tests to verify credentials and model
 
 import time
 import json
+import os
+import uuid
+import datetime
 import urllib.request
 import urllib.error
 import ssl
@@ -493,21 +496,65 @@ def _test_antigravity_model_once(account: dict, model_id: str, timeout=30, proxy
             "display_name": display_name,
         }
 
+    cascade_id = str(uuid.uuid4())
+    trajectory_id = str(uuid.uuid4())
+    timestamp_ms = int(time.time() * 1000)
+    local_time = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+    thinking_level = "HIGH"
+    lowered = internal_name.lower()
+    if "low" in lowered:
+        thinking_level = "LOW"
+    elif "medium" in lowered:
+        thinking_level = "MEDIUM"
     body = {
-        "project": account.get("projectId") or "rising-fact-p41fc",
+        "project": account.get("projectId") or "aicode-consumers",
+        "requestId": f"agent/{cascade_id}/{timestamp_ms}/{trajectory_id}/1",
+        "request": {
+            "contents": [{
+                "role": "user",
+                "parts": [{
+                    "text": (
+                        f"<USER_REQUEST>\n{prompt}\n</USER_REQUEST>\n"
+                        f"<ADDITIONAL_METADATA>\nThe current local time is: {local_time}.\n"
+                        "</ADDITIONAL_METADATA>"
+                    )
+                }],
+            }],
+            "systemInstruction": {
+                "role": "user",
+                "parts": [{"text": "You are Antigravity, a powerful agentic AI assistant designed by the Google Deepmind team."}],
+            },
+            "labels": {
+                "cascade_id": cascade_id,
+                "last_step_index": "0",
+                **({"model_enum": "MODEL_PLACEHOLDER_M318"} if internal_name.startswith("gemini-3.8-flash") else {}),
+                "request_id": f"{trajectory_id}-0",
+                "root_cascade_id": cascade_id,
+                "trajectory_id": trajectory_id,
+                "used_claude": "false",
+                "used_claude_conservative": "false",
+                "used_non_gemini_model": "false",
+            },
+            "generationConfig": {
+                "maxOutputTokens": 65536,
+                "thinkingConfig": {
+                    "includeThoughts": True,
+                    "thinkingLevel": thinking_level,
+                },
+            },
+            "sessionId": "-3750763034362895579",
+        },
         "model": internal_name,
         "userAgent": "antigravity",
         "requestType": "agent",
-        "request": {
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {"maxOutputTokens": 2048}
-        }
     }
 
+    app_version = os.environ.get("ANTIGRAVITY_APP_VERSION", "2.33.0")
+    app_change_list = os.environ.get("ANTIGRAVITY_APP_CHANGE_LIST", "1023160026")
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
-        "User-Agent": "antigravity/cli/1.1.24 (aidev_client; os_type=windows; arch=amd64; cl=974782877; auth_method=consumer)",
+        "User-Agent": f"antigravity/hub/{app_version} (aidev_client; os_type=windows; arch=amd64; cl={app_change_list})",
     }
 
     # An explicitly direct probe must not inherit HTTP_PROXY from the Hub process.

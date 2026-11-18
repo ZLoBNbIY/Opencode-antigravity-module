@@ -168,6 +168,62 @@ chmod +x install.sh
 ./install.sh
 ```
 
+### Перенос совместимости на другой ПК
+
+Все патчи тела/заголовков Antigravity лежат в репозитории и применяются
+отдельным скриптом. На другом ПК достаточно:
+
+1. Скопировать/склонировать репозиторий **вместе с изменениями**
+   (`plugin/dist`, `gui-manager/cloudcode_route_patch.py`,
+   `scripts/patch_plugin.mjs`). Если используется установка через
+   `install.ps1` с GitHub, изменения должны быть запушены в ветку `V2`.
+2. Закрыть OpenCode.
+3. Запустить:
+
+   ```powershell
+   .\apply_antigravity_compat.bat
+   ```
+
+   или:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\scripts\apply_antigravity_compat.ps1
+   ```
+
+   На Linux/macOS:
+
+   ```bash
+   sh scripts/apply_antigravity_compat.sh
+   ```
+
+Скрипт:
+- находит Python и Node.js (можно задать `ANTIGRAVITY_PYTHON` и
+  `ANTIGRAVITY_NODE`);
+- применяет патчи `scripts/patch_plugin.mjs`;
+- применяет Hub-маршрут и identity-патч
+  `gui-manager/cloudcode_route_patch.py`;
+- **не откатывает** установленный плагин, если он новее локального
+  (например, `3.0.20` вместо `3.0.0`), а патчит его на месте.
+
+4. Перезапустить OpenCode.
+5. Проверить, что в Hub карточка «Исправление плагина OpenCode» показывает
+   активный фикс, либо запустить:
+
+   ```powershell
+   python gui-manager/cloudcode_route_patch.py status
+   ```
+
+Если на другом ПК другая версия Antigravity, задайте перед запуском
+OpenCode:
+
+```powershell
+$env:ANTIGRAVITY_APP_VERSION="2.33.0"
+$env:ANTIGRAVITY_APP_CHANGE_LIST="1023160026"
+```
+
+Эти значения попадают в User-Agent. Если их не задать, используются
+`2.33.0` и `1023160026`.
+
 ---
 
 ## 🚀 Быстрый старт

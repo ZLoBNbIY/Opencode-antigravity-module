@@ -44,7 +44,10 @@ function switchTab(tabId) {
     el.style.display = (el.id === `view-${tabId}`) ? 'block' : 'none';
   });
   if (changed) document.getElementById('main-scroll').scrollTop = 0;
-  if (tabId === 'settings') void refreshPluginFixStatus();
+  if (tabId === 'settings') {
+    void refreshPluginFixStatus();
+    void refreshAntigravityPatchStatus();
+  }
 }
 
 function showDiagnostics(tab) {
@@ -2151,6 +2154,7 @@ async function restartOpenCode() {
     }
     setTimeout(refreshState, 1500);
     void refreshPluginFixStatus();
+    void refreshAntigravityPatchStatus();
   }
 }
 
@@ -2234,6 +2238,58 @@ async function fixOpenCodePlugin() {
       btn.innerHTML = originalHtml;
     }
   }
+}
+
+async function applyAntigravityPatch() {
+  if (!window.pywebview?.api?.apply_antigravity_patch) return;
+  const btn = document.getElementById('btn-antigravity-patch');
+  const statusEl = document.getElementById('antigravity-patch-status');
+  const originalHtml = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span>⏳</span> Применение...';
+  }
+  if (statusEl) statusEl.textContent = 'Применение патча совместимости Antigravity…';
+  try {
+    const res = await window.pywebview.api.apply_antigravity_patch();
+    const message = res?.message || 'Патч Antigravity применён';
+    if (statusEl) statusEl.textContent = message;
+    showToast(message);
+    await refreshAntigravityPatchStatus();
+    if (res?.ok && res?.changed?.length) {
+      if (confirm(`${message}\n\nПерезапустить OpenCode сейчас, чтобы изменения вступили в силу?`)) {
+        await restartOpenCode();
+      }
+    }
+  } catch (e) {
+    if (statusEl) statusEl.textContent = String(e);
+    showToast(`Ошибка патча Antigravity: ${e}`);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = originalHtml;
+    }
+  }
+}
+
+async function refreshAntigravityPatchStatus() {
+  if (!window.pywebview?.api?.get_antigravity_patch_status) return;
+  const badge = document.getElementById('antigravity-patch-badge');
+  const statusEl = document.getElementById('antigravity-patch-status');
+  try {
+    const res = await window.pywebview.api.get_antigravity_patch_status();
+    if (!badge) return;
+    const state = res?.state || 'error';
+    const label = state === 'patched' ? 'Патч активен'
+      : state === 'pending' ? 'Требуется патч'
+      : 'Плагин не найден';
+    const badgeClass = state === 'patched' ? 'badge-available'
+      : state === 'pending' ? 'badge-checking'
+      : 'badge-error';
+    badge.className = `badge-pill ${badgeClass}`;
+    badge.innerHTML = `<span class="dot"></span> ${label}`;
+    if (statusEl) statusEl.textContent = res?.message || '';
+  } catch {}
 }
 
 async function refreshPluginFixStatus() {
@@ -2568,6 +2624,7 @@ window.addEventListener('pywebviewready', () => {
   document.getElementById('network-proxy').addEventListener('input', () => { networkDirty = true; });
   refreshState();
   void refreshPluginFixStatus();
+  void refreshAntigravityPatchStatus();
   // Auto refresh loop every 10 seconds
   setInterval(refreshState, 10000);
 });
