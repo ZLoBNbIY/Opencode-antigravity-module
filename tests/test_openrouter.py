@@ -1,7 +1,9 @@
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -61,6 +63,27 @@ class OpenRouterModelTests(unittest.TestCase):
                 openrouter_manager.save_api_key("sk-or-test-secret")
                 self.assertNotIn("sk-or-test-secret", path.read_text(encoding="utf-8"))
                 self.assertEqual(openrouter_manager.load_api_key(), "sk-or-test-secret")
+
+    def test_newer_opencode_key_is_adopted_from_opencode(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "openrouter.json"
+            with patch.object(openrouter_manager, "SECRET_FILE", path):
+                openrouter_manager.save_api_key("sk-or-hub-key-0001")
+                past = time.time() - 3600
+                os.utime(path, (past, past))
+                with patch.object(openrouter_manager, "_opencode_candidate",
+                                  return_value=("sk-or-new-key-0002", int(time.time() * 1000))):
+                    self.assertEqual(openrouter_manager.load_api_key(), "sk-or-new-key-0002")
+                self.assertEqual(openrouter_manager._stored_key()[0], "sk-or-new-key-0002")
+
+    def test_older_opencode_key_does_not_override_the_hub_key(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "openrouter.json"
+            with patch.object(openrouter_manager, "SECRET_FILE", path):
+                openrouter_manager.save_api_key("sk-or-hub-key-0001")
+                with patch.object(openrouter_manager, "_opencode_candidate",
+                                  return_value=("sk-or-old-key-0002", 1)):
+                    self.assertEqual(openrouter_manager.load_api_key(), "sk-or-hub-key-0001")
 
     @patch("openrouter_manager.subprocess.run")
     @patch("openrouter_manager.openai_manager.find_opencode_cli", return_value="opencode-cli")

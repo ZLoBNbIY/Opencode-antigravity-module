@@ -31,6 +31,8 @@ TokenLavka — OpenAI-совместимый шлюз, который даёт �
 4. Ключ импортируется в хранилище учётных данных OpenCode командой `opencode auth import` с `integrationID = tokenlavka`, поэтому его не нужно дублировать в `options.apiKey`.
 5. Модели вызываются как `tokenlavka/<id>`, например `tokenlavka/gpt-6-luna`.
 
+Синхронизация ключа двусторонняя: ключ, введённый в Hub, попадает в OpenCode при сохранении, а ключ, добавленный в OpenCode (`credential` в `opencode.db` или `options.apiKey` в `opencode.json(c)`), Hub подхватывает сам. Если копии различаются, применяется та, что изменена позже.
+
 ## Хранение ключа
 
 - Зашифрованный ключ: `%APPDATA%\AntigravityHub\secure\tokenlavka.json`.

@@ -1,7 +1,9 @@
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 import urllib.error
 from unittest.mock import Mock, patch
@@ -41,6 +43,27 @@ class TokenLavkaManagerTests(unittest.TestCase):
                 tokenlavka_manager.save_api_key("sk-tokenlavka-secret")
                 self.assertNotIn("sk-tokenlavka-secret", path.read_text(encoding="utf-8"))
                 self.assertEqual(tokenlavka_manager.load_api_key(), "sk-tokenlavka-secret")
+
+    def test_newer_opencode_key_is_adopted_from_opencode(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "tokenlavka.json"
+            with patch.object(tokenlavka_manager, "SECRET_FILE", path):
+                tokenlavka_manager.save_api_key("sk-hub-key-0001")
+                past = time.time() - 3600
+                os.utime(path, (past, past))
+                with patch.object(tokenlavka_manager, "_opencode_candidate",
+                                  return_value=("sk-new-key-0002", int(time.time() * 1000))):
+                    self.assertEqual(tokenlavka_manager.load_api_key(), "sk-new-key-0002")
+                self.assertEqual(tokenlavka_manager._stored_key()[0], "sk-new-key-0002")
+
+    def test_older_opencode_key_does_not_override_the_hub_key(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "tokenlavka.json"
+            with patch.object(tokenlavka_manager, "SECRET_FILE", path):
+                tokenlavka_manager.save_api_key("sk-hub-key-0001")
+                with patch.object(tokenlavka_manager, "_opencode_candidate",
+                                  return_value=("sk-old-key-0002", 1)):
+                    self.assertEqual(tokenlavka_manager.load_api_key(), "sk-hub-key-0001")
 
     def test_parse_balance_payload_computes_remaining_percent(self):
         result = tokenlavka_manager.parse_balance_payload({

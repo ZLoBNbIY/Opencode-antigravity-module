@@ -1,6 +1,9 @@
 import io
 import json
+import os
+import sqlite3
 import tempfile
+import time
 import unittest
 import urllib.error
 from pathlib import Path
@@ -9,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gui-manager"))
 import deepseek_api
+import opencode_credentials
 
 
 BALANCE_PAYLOAD = {
@@ -34,6 +38,8 @@ class DeepSeekApiTests(unittest.TestCase):
         self.patches = [
             patch.object(deepseek_api, "CONFIG_FILE", self.config_file),
             patch.object(deepseek_api, "SECRET_FILE", self.secret_file),
+            # Keep tests away from the developer's real OpenCode database.
+            patch.object(opencode_credentials, "database_path", return_value=None),
         ]
         for item in self.patches:
             item.start()
@@ -145,28 +151,42 @@ class DeepSeekApiTests(unittest.TestCase):
         self.assertFalse(deepseek_api.provider_state()["hasKey"])
 
     def test_auto_import_from_opencode_credential_db(self):
-        conn = MagicMock()
-        conn.execute.return_value.fetchone.return_value = (
-            json.dumps({"type": "key", "key": "sk-db-key-1234567890"}),
-        )
-        conn.__enter__.return_value = conn
-        with patch.object(deepseek_api.sqlite3, "connect", return_value=conn):
-            self.assertEqual(deepseek_api._key_from_opencode_db(), "sk-db-key-1234567890")
-
-        with patch.object(deepseek_api, "_key_from_environment", return_value=""), \
-             patch.object(deepseek_api, "_key_from_opencode_config", return_value=""), \
-             patch.object(deepseek_api, "_key_from_opencode_db", return_value="sk-db-key-1234567890"):
+        with patch.object(deepseek_api, "_opencode_candidate",
+                          return_value=("sk-db-key-1234567890", int(time.time() * 1000))):
             self.assertEqual(deepseek_api.load_api_key(), "sk-db-key-1234567890")
         self.assertTrue(deepseek_api._auto_import_pending)
 
     def test_auto_import_accepts_legacy_api_credential_variant(self):
-        conn = MagicMock()
-        conn.execute.return_value.fetchone.return_value = (
-            json.dumps({"type": "api", "key": "sk-legacy-key-1234567890"}),
-        )
-        with patch.object(deepseek_api.sqlite3, "connect", return_value=conn), \
-             patch.object(Path, "exists", return_value=True):
-            self.assertEqual(deepseek_api._key_from_opencode_db(), "sk-legacy-key-1234567890")
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "opencode.db"
+            conn = sqlite3.connect(db)
+            conn.execute("CREATE TABLE credential (id text PRIMARY KEY, integration_id text, "
+                         "value text, time_updated integer)")
+            conn.execute("INSERT INTO credential VALUES (?, ?, ?, ?)",
+                         ("cred_1", "deepseek", json.dumps({"type": "api", "key": "sk-legacy-key-1234567890"}), 7))
+            conn.commit()
+            conn.close()
+            with patch.object(opencode_credentials, "database_path", return_value=db):
+                opencode_credentials.invalidate()
+                self.assertEqual(deepseek_api._key_from_opencode_db(), "sk-legacy-key-1234567890")
+
+    def test_newer_opencode_key_replaces_the_stored_one(self):
+        deepseek_api.save_api_key("sk-hub-key-1234567890")
+        past = time.time() - 3600
+        os.utime(self.secret_file, (past, past))
+        with patch.object(deepseek_api, "_opencode_candidate",
+                          return_value=("sk-new-key-1234567890", int(time.time() * 1000))):
+            self.assertEqual(deepseek_api.load_api_key(), "sk-new-key-1234567890")
+        self.assertTrue(deepseek_api._auto_import_pending)
+        self.assertEqual(deepseek_api._stored_key()[0], "sk-new-key-1234567890")
+
+    def test_older_opencode_key_does_not_replace_the_stored_one(self):
+        deepseek_api.save_api_key("sk-hub-key-1234567890")
+        with patch.object(deepseek_api, "_opencode_candidate",
+                          return_value=("sk-old-key-1234567890", 1)):
+            self.assertEqual(deepseek_api.load_api_key(), "sk-hub-key-1234567890")
+        self.assertFalse(deepseek_api._auto_import_pending)
+        self.assertEqual(deepseek_api._stored_key()[0], "sk-hub-key-1234567890")
 
     def test_saving_key_re_enables_adoption_after_disconnect(self):
         deepseek_api.clear_api_key()
@@ -243,6 +263,37 @@ class DeepSeekApiTests(unittest.TestCase):
                 self.assertEqual(provider["npm"], "@ai-sdk/openai-compatible")
                 self.assertEqual(provider["options"]["baseURL"], "https://api.deepseek.com")
                 self.assertIn("deepseek-chat", provider["models"])
+
+    def test_find_provider_id_reuses_the_opencode_login(self):
+        with patch.object(opencode_credentials, "has_credential", return_value=True):
+            self.assertEqual(deepseek_api.find_provider_id({}), "deepseek")
+
+    def test_configure_opencode_models_keeps_the_builtin_provider_descriptor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "opencode.json"
+            cfg_path.write_text(json.dumps({"provider": {}}), encoding="utf-8")
+            deepseek_api.save_api_key("sk-test-key-1234567890")
+            with patch.object(deepseek_api, "_opencode_config_path", return_value=cfg_path), \
+                 patch.object(opencode_credentials, "has_credential", return_value=True):
+                saved = deepseek_api.configure_opencode_models(["deepseek-chat"], "sk-test-key-1234567890")
+                self.assertEqual(saved, ["deepseek-chat"])
+                data = json.loads(cfg_path.read_text(encoding="utf-8"))
+                provider = data["provider"]["deepseek"]
+                # Only the model list is attached; OpenCode keeps its own npm/baseURL.
+                self.assertNotIn("npm", provider)
+                self.assertNotIn("options", provider)
+                self.assertIn("deepseek-chat", provider["models"])
+
+    def test_sync_updates_the_existing_opencode_credential_row(self):
+        with patch.object(deepseek_api, "find_provider_id", return_value="deepseek"), \
+             patch.object(opencode_credentials, "credential_id", return_value="cred_existing"), \
+             patch.object(deepseek_api.openai_manager, "find_opencode_cli", return_value="cli"), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0)) as run:
+            deepseek_api.sync_opencode_credential("sk-test-key-1234567890")
+        imported = json.loads(run.call_args.kwargs["input"])[0]
+        self.assertEqual(imported["id"], "cred_existing")
+        self.assertEqual(imported["integrationID"], "deepseek")
+        self.assertEqual(imported["value"], {"type": "key", "key": "sk-test-key-1234567890"})
 
 
 if __name__ == "__main__":

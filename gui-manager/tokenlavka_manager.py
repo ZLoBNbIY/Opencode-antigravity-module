@@ -15,10 +15,12 @@ from typing import Any, Dict, Optional
 
 import secure_storage
 import jsonc_config
+import opencode_credentials
 import openai_manager
 
 
 PROVIDER_ID = "tokenlavka"
+OPENCODE_INTEGRATIONS = ("tokenlavka",)
 BASE_URL = "https://tokenlavka.com/v1"
 MODELS_URL = f"{BASE_URL}/models"
 PORTAL_URL = "https://tokenlavka.com/api/portal"
@@ -84,14 +86,50 @@ def save_api_key(api_key):
     secure_storage.atomic_write(SECRET_FILE, json.dumps(record))
 
 
-def load_api_key():
+def _stored_key():
+    """Key stored by the Hub plus when it was written (ms)."""
     if not SECRET_FILE.exists():
-        return ""
+        return "", 0
     try:
+        updated = int(SECRET_FILE.stat().st_mtime_ns // 1_000_000)
         record = json.loads(SECRET_FILE.read_text(encoding="utf-8"))
-        return secure_storage.unprotect_secret(record, SECRET_PURPOSE)["apiKey"]
+        key = str(secure_storage.unprotect_secret(record, SECRET_PURPOSE).get("apiKey") or "").strip()
     except Exception:
-        return ""
+        return "", 0
+    return (key, updated) if key else ("", 0)
+
+
+def _opencode_candidate():
+    """Newest TokenLavka key OpenCode already has, with its timestamp."""
+    try:
+        config_path = jsonc_config.config_path(CONFIG_DIR)
+    except Exception:
+        config_path = CONFIG_DIR / "opencode.json"
+    try:
+        return opencode_credentials.read_key(
+            OPENCODE_INTEGRATIONS, config_path=config_path, name_hint="tokenlavka")
+    except Exception:
+        return "", 0
+
+
+def load_api_key():
+    """Adopt the newest key: whichever side (Hub or OpenCode) changed last wins."""
+    key, updated = _stored_key()
+    candidate, candidate_at = _opencode_candidate()
+    if candidate and candidate != key and candidate_at > updated:
+        try:
+            save_api_key(candidate)
+        except Exception:
+            return key
+        return candidate
+    if key:
+        return key
+    if candidate:
+        try:
+            save_api_key(candidate)
+        except Exception:
+            return ""
+    return candidate
 
 
 # ---------------------------------------------------------------------------
@@ -273,8 +311,13 @@ def sync_opencode_credential(api_key):
     cli = openai_manager.find_opencode_cli()
     if not cli:
         raise ValueError("Не найден OpenCode CLI. Запустите/установите OpenCode и повторите подключение.")
+    existing_id = ""
+    try:
+        existing_id = opencode_credentials.credential_id(PROVIDER_ID)
+    except Exception:
+        pass
     credential = [{
-        "id": "cred_tokenlavka_hub",
+        "id": existing_id or "cred_tokenlavka_hub",
         "integrationID": PROVIDER_ID,
         "label": "TokenLavka (Antigravity Hub)",
         "active": True,
@@ -288,6 +331,7 @@ def sync_opencode_credential(api_key):
         if result.returncode != 0:
             # Never expose CLI output: it may include credential data.
             raise ValueError("OpenCode не принял API-ключ. Перезапустите OpenCode и попробуйте снова.")
+        opencode_credentials.invalidate()
     except subprocess.TimeoutExpired:
         raise ValueError("OpenCode CLI не ответил вовремя при сохранении ключа.") from None
     except OSError:

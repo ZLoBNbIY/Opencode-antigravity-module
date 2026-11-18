@@ -7,17 +7,16 @@ balance rather than the 5h/weekly window quotas used by Google or ChatGPT.
 
 import json
 import os
-import sqlite3
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from contextlib import closing
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import hub_paths
 import jsonc_config
+import opencode_credentials
 import openai_manager
 from secure_storage import atomic_write, protect_secret, unprotect_secret
 
@@ -129,84 +128,81 @@ def _key_from_environment() -> str:
     return ""
 
 
-def _key_from_opencode_db() -> str:
-    """OpenCode stores API-key credentials in its SQLite credential table."""
-    db = Path(os.path.expanduser("~/.local/share/opencode/opencode.db"))
-    if not db.exists():
-        return ""
+def _config_path_safe() -> Optional[Path]:
     try:
-        with closing(sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=2)) as conn:
-            marks = ",".join("?" * len(_OPENCODE_INTEGRATIONS))
-            row = conn.execute(
-                f"SELECT value FROM credential WHERE integration_id IN ({marks}) "
-                "ORDER BY time_updated DESC LIMIT 1",
-                _OPENCODE_INTEGRATIONS,
-            ).fetchone()
-        if not row:
-            return ""
-        value = json.loads(row[0])
-        if not isinstance(value, dict) or value.get("type") not in ("key", "api", None):
-            return ""
-        candidate = clean_key(value.get("key") or value.get("apiKey") or value.get("api_key"))
-        return candidate if is_valid_key(candidate) else ""
+        return _opencode_config_path()
+    except Exception:
+        return None
+
+
+def _stored_key() -> tuple[str, int]:
+    """Key held by the Hub plus the moment it was written (ms)."""
+    if not SECRET_FILE.exists():
+        return "", 0
+    try:
+        updated = int(SECRET_FILE.stat().st_mtime_ns // 1_000_000)
+        record = json.loads(SECRET_FILE.read_text(encoding="utf-8"))
+        stored = clean_key(unprotect_secret(record, "deepseek-api-key").get("apiKey"))
+    except Exception:
+        return "", 0
+    return (stored, updated) if is_valid_key(stored) else ("", 0)
+
+
+def _opencode_candidate() -> tuple[str, int]:
+    """Newest DeepSeek key OpenCode already has, with its timestamp."""
+    try:
+        return opencode_credentials.read_key(
+            _OPENCODE_INTEGRATIONS, config_path=_config_path_safe(), name_hint="deepseek")
+    except Exception:
+        return "", 0
+
+
+def _key_from_opencode_db() -> str:
+    try:
+        return opencode_credentials.read_key(_OPENCODE_INTEGRATIONS)[0]
     except Exception:
         return ""
 
 
 def _key_from_opencode_config() -> str:
     try:
-        import jsonc_config
-        path = jsonc_config.config_path(hub_paths.OPENCODE_CONFIG_DIR)
+        return opencode_credentials.read_config_key(_config_path_safe(), "deepseek")[0]
     except Exception:
-        path = hub_paths.OPENCODE_CONFIG_FILE
-    if not path.exists():
         return ""
-    try:
-        import jsonc_config
-        data = jsonc_config.parse_config(path.read_text(encoding="utf-8-sig"))
-    except Exception:
-        try:
-            data = json.loads(path.read_text(encoding="utf-8-sig"))
-        except (OSError, ValueError):
-            return ""
-    for section in ("provider", "providers"):
-        providers = data.get(section)
-        if not isinstance(providers, dict):
-            continue
-        for name, provider in providers.items():
-            if "deepseek" not in str(name).lower() or not isinstance(provider, dict):
-                continue
-            for holder in (provider, provider.get("options"), provider.get("settings")):
-                if not isinstance(holder, dict):
-                    continue
-                for field in ("apiKey", "api_key", "apikey", "token"):
-                    value = clean_key(holder.get(field))
-                    if is_valid_key(value):
-                        return value
-    return ""
 
 
 def load_api_key() -> str:
-    """Return the stored key; on first run adopt it from env or OpenCode config."""
+    """Return the stored key, adopting a newer one from OpenCode when present.
+
+    Both directions share one rule: the newest copy wins.  A key typed in the
+    Hub is pushed to OpenCode when saved, so the copies normally match; when
+    they differ, the newer side replaced the key and must be adopted.
+    """
     global _auto_import_pending
-    if SECRET_FILE.exists():
-        try:
-            record = json.loads(SECRET_FILE.read_text(encoding="utf-8"))
-            stored = clean_key(unprotect_secret(record, "deepseek-api-key").get("apiKey"))
-            if is_valid_key(stored):
-                return stored
-        except Exception:
-            pass
-    if load_config().get("auto_import_disabled"):
+    stored, stored_ms = _stored_key()
+    disabled = bool(load_config().get("auto_import_disabled"))
+    if stored:
+        if not disabled:
+            candidate, candidate_ms = _opencode_candidate()
+            if is_valid_key(candidate) and candidate != stored and candidate_ms > stored_ms:
+                try:
+                    save_api_key(candidate)
+                    _auto_import_pending = True
+                    return candidate
+                except Exception:
+                    pass
+        return stored
+    if disabled:
         return ""
-    imported = _key_from_environment() or _key_from_opencode_db() or _key_from_opencode_config()
-    if imported:
+    imported = _key_from_environment() or _opencode_candidate()[0]
+    if imported and is_valid_key(imported):
         try:
             save_api_key(imported)
             _auto_import_pending = True
         except Exception:
             pass
-    return imported
+        return imported
+    return ""
 
 
 def api_origin(base_url: Optional[str] = None) -> str:
@@ -422,18 +418,37 @@ def _provider_base_host(provider: Any) -> str:
 
 
 def find_provider_id(config: Optional[dict] = None) -> str:
-    """Reuse an existing provider that already points at api.deepseek.com."""
+    """Reuse the DeepSeek provider OpenCode already uses, if any."""
     try:
         data = config if isinstance(config, dict) else _read_opencode_config()[2]
     except Exception:
-        return PROVIDER_ID
-    providers = data.get("provider")
+        data = None
+    providers = (data or {}).get("provider")
+    if isinstance(providers, dict) and isinstance(providers.get("deepseek"), dict):
+        return "deepseek"
+    # A key added through OpenCode's own "Sign in" lives on the built-in
+    # DeepSeek provider; writing our models there avoids a duplicate provider.
+    try:
+        if opencode_credentials.has_credential("deepseek"):
+            return "deepseek"
+    except Exception:
+        pass
     if isinstance(providers, dict):
         for name, provider in providers.items():
             host = _provider_base_host(provider)
             if host and (host == "api.deepseek.com" or host.endswith(".deepseek.com")):
                 return str(name)
     return PROVIDER_ID
+
+
+def _uses_builtin_provider(provider_id: str) -> bool:
+    """True when OpenCode already defines this provider itself (no config entry)."""
+    if provider_id != "deepseek":
+        return False
+    try:
+        return opencode_credentials.has_credential(provider_id)
+    except Exception:
+        return False
 
 
 def _normalize_model(item: Any) -> Optional[Dict[str, Any]]:
@@ -548,6 +563,10 @@ def configure_opencode_models(model_ids: Optional[List[str]] = None,
     if isinstance(existing, dict):
         # Keep the user's own provider settings; only refresh the model list.
         updated = jsonc_config.set_property(original, ("provider", provider_id, "models"), merged)
+    elif _uses_builtin_provider(provider_id):
+        # OpenCode already knows this provider; only attach the model list so
+        # its built-in descriptor (npm package, base URL) stays untouched.
+        updated = jsonc_config.set_property(original, ("provider", provider_id, "models"), merged)
     else:
         updated = jsonc_config.set_property(original, ("provider", provider_id), {
             "npm": "@ai-sdk/openai-compatible",
@@ -578,8 +597,15 @@ def sync_opencode_credential(api_key: Optional[str] = None, provider_id: Optiona
     if not cli:
         raise ValueError("Не найден OpenCode CLI. Запустите OpenCode и повторите подключение.")
     target = provider_id or find_provider_id()
+    existing_id = ""
+    try:
+        existing_id = opencode_credentials.credential_id(target)
+    except Exception:
+        pass
     credential = [{
-        "id": f"cred_{target}_hub",
+        # Reuse the stored credential row so the import updates it in place
+        # instead of leaving two keys for the same integration.
+        "id": existing_id or f"cred_{target}_hub",
         "integrationID": target,
         "label": f"{PROVIDER_NAME} (Antigravity Hub)",
         "active": True,
@@ -595,6 +621,7 @@ def sync_opencode_credential(api_key: Optional[str] = None, provider_id: Optiona
         if result.returncode != 0:
             # Never surface CLI output: it may include the credential.
             raise ValueError("OpenCode не принял API-ключ. Перезапустите OpenCode и повторите.")
+        opencode_credentials.invalidate()
     except subprocess.TimeoutExpired:
         raise ValueError("OpenCode CLI не ответил вовремя при сохранении ключа.") from None
     except OSError:
@@ -627,4 +654,5 @@ def disconnect_opencode() -> bool:
                 subprocess.run([cli, "auth", "logout", provider_id], capture_output=True, timeout=15)
             except Exception:
                 pass
+        opencode_credentials.invalidate()
     return removed
