@@ -142,7 +142,7 @@ class POINT(ctypes.Structure):
 
 
 class WindowsTrayIcon:
-    def __init__(self, title="Antigravity Hub", icon_path=None, on_show=None, on_refresh=None, on_exit=None):
+    def __init__(self, title="AI HUB", icon_path=None, on_show=None, on_refresh=None, on_exit=None):
         self.title = title
         self.icon_path = icon_path
         self.on_show = on_show
@@ -243,7 +243,7 @@ class WindowsTrayIcon:
 
     def _show_context_menu(self, hwnd):
         hmenu = ctypes.windll.user32.CreatePopupMenu()
-        ctypes.windll.user32.AppendMenuW(hmenu, MF_STRING, IDM_SHOW, "⚡  Открыть Antigravity Hub")
+        ctypes.windll.user32.AppendMenuW(hmenu, MF_STRING, IDM_SHOW, "⚡  Открыть AI HUB")
         ctypes.windll.user32.AppendMenuW(hmenu, MF_STRING, IDM_REFRESH, "🔄  Обновить квоты")
         ctypes.windll.user32.AppendMenuW(hmenu, MF_SEPARATOR, 0, None)
         ctypes.windll.user32.AppendMenuW(hmenu, MF_STRING, IDM_EXIT, "✕  Выход")

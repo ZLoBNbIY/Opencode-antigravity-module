@@ -1,4 +1,4 @@
-// Antigravity Hub - Frosted Glass Web Frontend Controller
+// AI HUB - Frosted Glass Web Frontend Controller
 let appState = {
   accounts: [],
   activeIndex: 0,
@@ -87,6 +87,7 @@ function showToast(msg) {
 // ============================================================================
 let stateRefreshing = false;
 let stateRefreshQueued = false;
+let lastOpenAiNotice = null;
 let networkFormInitialized = false;
 let networkDirty = false;
 let nvidiaAutoLoadAttempted = false;
@@ -107,6 +108,10 @@ async function refreshState() {
     if (!data) return;
     appState = data;
     lastStateUpdatedAt = Date.now();
+    if (data.openaiNotice && data.openaiNotice !== lastOpenAiNotice) {
+      lastOpenAiNotice = data.openaiNotice;
+      showToast(data.openaiNotice);
+    }
     const statusLeft = document.getElementById('status-left');
     if (statusLeft) statusLeft.textContent = 'Готов к работе';
     renderAll();
@@ -1459,7 +1464,7 @@ function renderOpenAiTab() {
   const refreshButton = document.getElementById('btn-openai-refresh');
   refreshButton.disabled = !!appState.openaiRefreshing;
   refreshButton.textContent = appState.openaiRefreshing ? 'Обновление…' : 'Обновить лимиты';
-  document.getElementById('openai-refresh-status').textContent = appState.openaiError || (appState.openaiRefreshing ? 'Запрашиваем лимиты ChatGPT в фоне…' : 'Лимиты обновляются каждые 5 минут.');
+  document.getElementById('openai-refresh-status').textContent = appState.openaiError || appState.openaiNotice || (appState.openaiRefreshing ? 'Запрашиваем лимиты ChatGPT в фоне…' : 'Лимиты обновляются каждые 5 минут.');
 
   if (accs.length === 0) {
     container.innerHTML = `
@@ -1478,7 +1483,7 @@ function renderOpenAiTab() {
   const refresh = document.getElementById('btn-openai-refresh');
   refresh.disabled = !!appState.openaiRefreshing;
   refresh.textContent = appState.openaiRefreshing ? 'Обновление…' : 'Обновить лимиты';
-  document.getElementById('openai-refresh-status').textContent = appState.openaiError || (appState.openaiRefreshing ? 'Запрашиваем лимиты ChatGPT в фоне…' : 'Лимиты обновляются автоматически каждые 5 минут.');
+  document.getElementById('openai-refresh-status').textContent = appState.openaiError || appState.openaiNotice || (appState.openaiRefreshing ? 'Запрашиваем лимиты ChatGPT в фоне…' : 'Лимиты обновляются автоматически каждые 5 минут.');
   container.innerHTML = '';
   accs.forEach(acc => {
     const isAct = acc.is_active === true;
@@ -2395,7 +2400,7 @@ async function restartHub() {
     btn.disabled = true;
     btn.textContent = 'Перезапуск…';
   }
-  showToast('Перезапуск Antigravity Hub...');
+  showToast('Перезапуск AI HUB...');
   try {
     const res = await window.pywebview.api.restart_hub();
     if (!res?.ok) {
@@ -2623,7 +2628,7 @@ async function uninstallHubCompletely() {
     showToast('Удаление отменено');
     return;
   }
-  showToast('Удаление Antigravity Hub из системы...');
+  showToast('Удаление AI HUB из системы...');
   try {
     const res = await window.pywebview.api.uninstall_hub_completely(answer);
     alert(res?.message || 'Не удалось завершить очистку.');
@@ -2784,7 +2789,7 @@ async function checkUpdates() {
         showToast("Установка обновления с GitHub...");
         const updateRes = await window.pywebview.api.apply_update(res.remote_commit);
         if (updateRes && updateRes.ok) {
-          alert(updateRes.message || "Проверьте изменения перед перезапуском Antigravity Hub.");
+          alert(updateRes.message || "Проверьте изменения перед перезапуском AI HUB.");
         } else {
           alert(`Не удалось установить обновление:\n${updateRes?.message || 'Ошибка git'}`);
         }

@@ -84,7 +84,7 @@ jobs:
       - name: Exercise install and uninstall on the build runner
         shell: pwsh
         run: |
-          $target = Join-Path $env:RUNNER_TEMP 'Installed Antigravity Hub'
+          $target = Join-Path $env:RUNNER_TEMP 'Installed AI HUB'
           $p = Start-Process './artifacts/windows/AntigravityHub-Setup-x64.exe' -Wait -PassThru -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOICONS', '/TASKS=""', ('/DIR="' + $target + '"'))
           if ($p.ExitCode -ne 0) { throw "Setup failed: $($p.ExitCode)" }
           $exe = Join-Path $target 'AntigravityHub.exe'
@@ -139,7 +139,7 @@ jobs:
           fi
           if [[ -z "$draft" ]]; then
             gh release create "$TAG" --repo "$owner_repo" --verify-tag --draft \
-              --title "Antigravity Hub $TAG" --generate-notes \
+              --title "AI HUB $TAG" --generate-notes \
               --notes "Windows x64 installer and SHA-256 checksum. The installer is unsigned."
           fi
           gh release upload "$TAG" AntigravityHub-Setup-x64.exe AntigravityHub-Setup-x64.exe.sha256 \

@@ -63,7 +63,7 @@ if not defined PY_EXE (
     echo   [ОШИБКА] Python 3 не обнаружен на вашем компьютере!
     echo ================================================================
     echo.
-    echo   Для работы Antigravity Hub требуется установленный Python 3 ^(3.10+^).
+    echo   Для работы AI HUB требуется установленный Python 3 ^(3.10+^).
     echo.
     echo   Рекомендации по установке:
     echo     1. Скачайте официальный установщик Python:
@@ -106,7 +106,7 @@ if !ERRORLEVEL! neq 0 (
     exit /b 1
 )
 
-:: Запуск Antigravity Hub
+:: Запуск AI HUB
 if defined PYW_EXE (
     start "" "!PYW_EXE!" "%~dp0antigravity_manager.pyw"
 ) else (

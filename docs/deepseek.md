@@ -1,4 +1,4 @@
-# DeepSeek в Antigravity Hub
+# DeepSeek в AI HUB
 
 ## Platform API: отслеживание баланса
 

@@ -1,5 +1,5 @@
 """
-OpenAI / ChatGPT Account and Quota Manager for Antigravity Hub
+OpenAI / ChatGPT Account and Quota Manager for AI HUB
 """
 
 import os
@@ -662,6 +662,37 @@ def _parse_usage_payload(payload: dict, account: dict) -> dict:
     return quota_data
 
 
+def _openai_quota_exhausted(quota: dict) -> bool:
+    """Return whether a ChatGPT quota payload forbids further requests."""
+    if not isinstance(quota, dict):
+        return False
+
+    primary = quota.get("primary") if isinstance(quota.get("primary"), dict) else {}
+    secondary = quota.get("secondary") if isinstance(quota.get("secondary"), dict) else {}
+
+    def exhausted(window: dict) -> bool:
+        remaining = window.get("remaining_percent")
+        used = window.get("used_percent")
+        try:
+            if remaining is not None and float(remaining) <= 0:
+                return True
+        except (TypeError, ValueError):
+            pass
+        try:
+            if used is not None and float(used) >= 100:
+                return True
+        except (TypeError, ValueError):
+            pass
+        return False
+
+    return (
+        quota.get("limit_reached") is True
+        or quota.get("allowed") is False
+        or exhausted(primary)
+        or exhausted(secondary)
+    )
+
+
 def check_and_auto_rotate_openai(accounts: list[dict]) -> tuple[bool, str]:
     """
     Checks if active OpenAI account has exhausted its quota (5h or weekly), and if so,
@@ -676,28 +707,31 @@ def check_and_auto_rotate_openai(accounts: list[dict]) -> tuple[bool, str]:
         return False, ""
 
     quota = active_acc.get("quota") or {}
-    primary = quota.get("primary") or {}
-    secondary = quota.get("secondary") or {}
-    limit_reached = (
-        quota.get("limit_reached", False)
-        or primary.get("remaining_percent", 100) <= 0
-        or primary.get("used_percent", 0) >= 100
-        or secondary.get("remaining_percent", 100) <= 0
-        or secondary.get("used_percent", 0) >= 100
-    )
-
-    if not limit_reached:
+    if not _openai_quota_exhausted(quota):
         return False, ""
 
-    # Find candidates with remaining quota in both windows
-    candidates = [
-        a for a in accounts
-        if (a.get("accountId") != active_acc.get("accountId") and a.get("id") != active_acc.get("id"))
-        and a.get("enabled", True) is not False
-        and a.get("candidate", True) is not False
-        and (a.get("quota") or {}).get("primary", {}).get("remaining_percent", 100) > 0
-        and (a.get("quota") or {}).get("secondary", {}).get("remaining_percent", 100) > 0
-    ]
+    # Find enabled candidates with remaining quota in both windows. A candidate
+    # explicitly marked as limited is skipped even if a stale percentage is > 0.
+    candidates = []
+    for account in accounts:
+        if account is active_acc:
+            continue
+        if account.get("accountId") == active_acc.get("accountId") or account.get("id") == active_acc.get("id"):
+            continue
+        if account.get("enabled", True) is False or account.get("candidate", True) is False:
+            continue
+        candidate_quota = account.get("quota") or {}
+        if _openai_quota_exhausted(candidate_quota):
+            continue
+        primary = candidate_quota.get("primary") if isinstance(candidate_quota.get("primary"), dict) else {}
+        secondary = candidate_quota.get("secondary") if isinstance(candidate_quota.get("secondary"), dict) else {}
+        try:
+            primary_remaining = float(primary.get("remaining_percent", 100))
+            secondary_remaining = float(secondary.get("remaining_percent", 100))
+        except (TypeError, ValueError):
+            continue
+        if primary_remaining > 0 and secondary_remaining > 0:
+            candidates.append(account)
 
     if not candidates:
         return False, "Все аккаунты OpenAI исчерпали доступную квоту."
@@ -719,10 +753,11 @@ def refresh_all_openai_accounts() -> tuple[list[dict], str | None]:
             acc["last_used"] = int(time.time())
         except Exception as e:
             print(f"[OpenAI Manager] Failed refreshing quota for {acc.get('email')}: {e}")
-    save_openai_accounts(accounts)
+    if not save_openai_accounts(accounts):
+        raise OSError("Не удалось сохранить лимиты ChatGPT")
 
-    rotated, msg = check_and_auto_rotate_openai(accounts)
-    return accounts, (msg if rotated else None)
+    _rotated, msg = check_and_auto_rotate_openai(accounts)
+    return accounts, (msg or None)
 
 
 # --- OAuth Server Handler for Browser Login ---
@@ -782,7 +817,7 @@ class _OAuthCallbackHandler(_BoundedHandler):
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Antigravity Hub — OpenAI Auth</title>
+  <title>AI HUB — OpenAI Auth</title>
   <style>
     body {{
       background-color: #121214;

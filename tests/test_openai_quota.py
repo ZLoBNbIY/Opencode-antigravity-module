@@ -92,6 +92,72 @@ class OpenAiQuotaTests(unittest.TestCase):
             self.assertFalse(standalone_acc['is_active'])
             self.assertFalse(disabled_acc['is_active'])
 
+    def test_auto_rotate_honors_allowed_false_with_remaining_percent(self):
+        active = {
+            'id': 'acc_1', 'accountId': 'acc_1', 'is_active': True,
+            'quota': {'allowed': False, 'limit_reached': False,
+                      'primary': {'remaining_percent': 5, 'used_percent': 95},
+                      'secondary': {'remaining_percent': 50, 'used_percent': 50}},
+        }
+        candidate = {
+            'id': 'acc_2', 'accountId': 'acc_2', 'is_active': False,
+            'enabled': True, 'candidate': True,
+            'quota': {'allowed': True, 'limit_reached': False,
+                      'primary': {'remaining_percent': 100, 'used_percent': 0},
+                      'secondary': {'remaining_percent': 100, 'used_percent': 0}},
+        }
+        with patch('openai_manager.set_active_openai_account', return_value=True):
+            rotated, _message = openai_manager.check_and_auto_rotate_openai([active, candidate])
+        self.assertTrue(rotated)
+        self.assertTrue(candidate['is_active'])
+
+    def test_auto_rotate_skips_candidate_marked_as_limited(self):
+        active = {
+            'id': 'acc_1', 'accountId': 'acc_1', 'is_active': True,
+            'quota': {'limit_reached': True,
+                      'primary': {'remaining_percent': 0, 'used_percent': 100},
+                      'secondary': {'remaining_percent': 50, 'used_percent': 50}},
+        }
+        limited = {
+            'id': 'acc_2', 'accountId': 'acc_2', 'is_active': False,
+            'enabled': True, 'candidate': True,
+            'quota': {'limit_reached': True, 'allowed': True,
+                      'primary': {'remaining_percent': 80, 'used_percent': 20},
+                      'secondary': {'remaining_percent': 80, 'used_percent': 20}},
+        }
+        eligible = {
+            'id': 'acc_3', 'accountId': 'acc_3', 'is_active': False,
+            'enabled': True, 'candidate': True,
+            'quota': {'limit_reached': False, 'allowed': True,
+                      'primary': {'remaining_percent': 100, 'used_percent': 0},
+                      'secondary': {'remaining_percent': 100, 'used_percent': 0}},
+        }
+        with patch('openai_manager.set_active_openai_account', return_value=True) as activate:
+            rotated, _message = openai_manager.check_and_auto_rotate_openai([active, limited, eligible])
+        self.assertTrue(rotated)
+        activate.assert_called_once_with('acc_3')
+        self.assertTrue(eligible['is_active'])
+
+    def test_refresh_all_saves_quotas_before_rotation_and_returns_notice(self):
+        accounts = [{'id': 'acc_1', 'accountId': 'acc_1', 'is_active': True}]
+        calls = []
+
+        def save(rows):
+            calls.append(('save', rows))
+            return True
+
+        def rotate(rows):
+            calls.append(('rotate', rows))
+            return True, 'switched'
+
+        with patch('openai_manager.load_openai_accounts', return_value=accounts), \
+             patch('openai_manager.fetch_openai_usage', return_value={'status': 'ok'}), \
+             patch('openai_manager.save_openai_accounts', side_effect=save), \
+             patch('openai_manager.check_and_auto_rotate_openai', side_effect=rotate):
+            loaded, message = openai_manager.refresh_all_openai_accounts()
+        self.assertEqual(message, 'switched')
+        self.assertEqual([name for name, _rows in calls], ['save', 'rotate'])
+
     @patch('openai_manager._get_http_opener')
     def test_openai_model_generation_success(self, mock_opener):
         import health_checker

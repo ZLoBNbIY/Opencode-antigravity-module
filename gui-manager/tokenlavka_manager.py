@@ -1,4 +1,4 @@
-"""TokenLavka OpenAI-compatible API-key provider for Antigravity Hub.
+"""TokenLavka OpenAI-compatible API-key provider for AI HUB.
 
 The key is an ``sk-`` token issued by tokenlavka.com.  It is stored encrypted
 in the Hub's secure directory and mirrored into OpenCode's credential store.
@@ -319,7 +319,7 @@ def sync_opencode_credential(api_key):
     credential = [{
         "id": existing_id or "cred_tokenlavka_hub",
         "integrationID": PROVIDER_ID,
-        "label": "TokenLavka (Antigravity Hub)",
+        "label": "TokenLavka (AI HUB)",
         "active": True,
         "value": {"type": "key", "key": api_key},
     }]

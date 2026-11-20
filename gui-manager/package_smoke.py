@@ -18,8 +18,8 @@ def check_bundle(bundle, report):
         with sync_playwright() as playwright:
             with playwright.chromium.launch(channel="chromium") as browser:
                 page = browser.new_page()
-                page.set_content("<title>Antigravity Hub</title>")
-                if page.title() != "Antigravity Hub":
+                page.set_content("<title>AI HUB</title>")
+                if page.title() != "AI HUB":
                     raise RuntimeError("Bundled Chromium is not responsive")
         node = bundle / "playwright" / "driver" / "node.exe"
         result = subprocess.run([str(node), str(bundle / "plugin" / "dist" / "cli.js"), "--help"],

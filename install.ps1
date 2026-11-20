@@ -174,7 +174,7 @@ try {
         Write-Host 'GUI dependency installation completed.'
     }
 
-    $uninstallDir = Join-Path $env:LOCALAPPDATA 'Programs\Antigravity Hub'
+    $uninstallDir = Join-Path $env:LOCALAPPDATA 'Programs\AI HUB'
     [void][IO.Directory]::CreateDirectory($uninstallDir)
     $installedUninstaller = Join-Path $uninstallDir 'uninstall.ps1'
     Copy-Item -LiteralPath $uninstallScript -Destination $installedUninstaller -Force
@@ -182,26 +182,26 @@ try {
     New-Item -Path $uninstallKey -Force | Out-Null
     $windowsPowerShell = (Get-Command powershell.exe -CommandType Application).Source
     $uninstallCommand = '"' + $windowsPowerShell + '" -NoProfile -ExecutionPolicy Bypass -File "' + $installedUninstaller + '"'
-    New-ItemProperty -Path $uninstallKey -Name DisplayName -Value 'Antigravity Hub' -PropertyType String -Force | Out-Null
+    New-ItemProperty -Path $uninstallKey -Name DisplayName -Value 'AI HUB' -PropertyType String -Force | Out-Null
     New-ItemProperty -Path $uninstallKey -Name DisplayVersion -Value '2.0' -PropertyType String -Force | Out-Null
-    New-ItemProperty -Path $uninstallKey -Name Publisher -Value 'Antigravity Hub' -PropertyType String -Force | Out-Null
+    New-ItemProperty -Path $uninstallKey -Name Publisher -Value 'AI HUB' -PropertyType String -Force | Out-Null
     New-ItemProperty -Path $uninstallKey -Name UninstallString -Value $uninstallCommand -PropertyType String -Force | Out-Null
     New-ItemProperty -Path $uninstallKey -Name NoModify -Value 1 -PropertyType DWord -Force | Out-Null
     New-ItemProperty -Path $uninstallKey -Name NoRepair -Value 1 -PropertyType DWord -Force | Out-Null
-    Write-Host 'Registered Antigravity Hub in Windows Installed Apps.'
+    Write-Host 'Registered AI HUB in Windows Installed Apps.'
 
     if (-not $NoShortcut) {
         $desktopPath = [Environment]::GetFolderPath('Desktop')
         if (-not $desktopPath) { throw 'Could not locate the Desktop to create the shortcut.' }
         $shell = New-Object -ComObject WScript.Shell
-        $shortcut = $shell.CreateShortcut((Join-Path $desktopPath 'Antigravity Hub.lnk'))
+        $shortcut = $shell.CreateShortcut((Join-Path $desktopPath 'AI HUB.lnk'))
         $shortcut.TargetPath = $launcherBat
         $shortcut.WorkingDirectory = $scriptDir
-        $shortcut.Description = 'Antigravity Hub'
+        $shortcut.Description = 'AI HUB'
         $iconPath = Join-Path $scriptDir 'gui-manager\icon.ico'
         if (Test-Path -LiteralPath $iconPath -PathType Leaf) { $shortcut.IconLocation = "$iconPath,0" }
         $shortcut.Save()
-        Write-Host 'Created the Antigravity Hub desktop shortcut.'
+        Write-Host 'Created the AI HUB desktop shortcut.'
     }
 
     Write-Host 'Installer steps completed. Existing configs, if any, were not updated or validated.'

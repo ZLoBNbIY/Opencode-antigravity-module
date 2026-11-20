@@ -1,4 +1,4 @@
-"""DeepSeek Platform API (sk- keys) balance tracking for Antigravity Hub.
+"""DeepSeek Platform API (sk- keys) balance tracking for AI HUB.
 
 This module is intentionally separate from the legacy DeepSeek Web integration.
 The paid Platform API exposes ``GET /user/balance`` which returns a prepaid
@@ -607,7 +607,7 @@ def sync_opencode_credential(api_key: Optional[str] = None, provider_id: Optiona
         # instead of leaving two keys for the same integration.
         "id": existing_id or f"cred_{target}_hub",
         "integrationID": target,
-        "label": f"{PROVIDER_NAME} (Antigravity Hub)",
+        "label": f"{PROVIDER_NAME} (AI HUB)",
         "active": True,
         "value": {"type": "key", "key": key},
     }]

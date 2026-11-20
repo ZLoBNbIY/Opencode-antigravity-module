@@ -4,13 +4,13 @@
 
 [Setup]
 AppId={{D8A77D35-0449-4719-AC3D-D2B42CE9DFBD}
-AppName=Antigravity Hub
+AppName=AI HUB
 AppVersion={#AppVersion}
-AppPublisher=Antigravity Hub
+AppPublisher=AI HUB
 AppPublisherURL=https://github.com/ZLoBNbIY/Opencode-antigravity-module
 AppUpdatesURL=https://github.com/ZLoBNbIY/Opencode-antigravity-module/releases
 DefaultDirName={localappdata}\Programs\AntigravityHub
-DefaultGroupName=Antigravity Hub
+DefaultGroupName=AI HUB
 UninstallDisplayIcon={app}\AntigravityHub.exe
 OutputDir={#OutputRoot}
 OutputBaseFilename=AntigravityHub-Setup-x64
@@ -46,11 +46,11 @@ Source: "..\..\config-templates\opencode.json"; DestDir: "{code:OpenCodeConfigDi
 Source: "..\..\config-templates\antigravity.json"; DestDir: "{code:OpenCodeConfigDir}"; Flags: onlyifdoesntexist uninsneveruninstall; Tasks: opencode
 
 [Icons]
-Name: "{group}\Antigravity Hub"; Filename: "{app}\AntigravityHub.exe"; WorkingDir: "{app}"
-Name: "{autodesktop}\Antigravity Hub"; Filename: "{app}\AntigravityHub.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{group}\AI HUB"; Filename: "{app}\AntigravityHub.exe"; WorkingDir: "{app}"
+Name: "{autodesktop}\AI HUB"; Filename: "{app}\AntigravityHub.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\AntigravityHub.exe"; WorkingDir: "{app}"; Description: "{cm:LaunchProgram,Antigravity Hub}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\AntigravityHub.exe"; WorkingDir: "{app}"; Description: "{cm:LaunchProgram,AI HUB}"; Flags: nowait postinstall skipifsilent
 
 [Code]
 const

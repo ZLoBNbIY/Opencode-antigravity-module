@@ -1,4 +1,4 @@
-"""OpenRouter free-model integration for Antigravity Hub."""
+"""OpenRouter free-model integration for AI HUB."""
 import json
 from pathlib import Path
 import subprocess
@@ -158,7 +158,7 @@ def sync_opencode_credential(api_key):
     credential = [{
         "id": existing_id or "cred_openrouter_hub",
         "integrationID": PROVIDER_ID,
-        "label": "OpenRouter (Antigravity Hub)",
+        "label": "OpenRouter (AI HUB)",
         "active": True,
         # OpenCode 2.x uses the "key" credential variant (not legacy "api").
         "value": {"type": "key", "key": api_key},

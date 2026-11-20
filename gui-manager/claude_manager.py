@@ -1,5 +1,5 @@
 """
-Anthropic Claude Pro / Team Account and Subscription Bridge for Antigravity Hub.
+Anthropic Claude Pro / Team Account and Subscription Bridge for AI HUB.
 Enables using Claude Pro / Team accounts in OpenCode without pay-per-token API keys.
 """
 
@@ -464,7 +464,7 @@ class ClaudeAccountManager:
                 bridge_service.ensure_running()
                 provider_cfg = {
                     "npm": "@ai-sdk/openai-compatible",
-                    "name": "Claude Pro (Antigravity Hub)",
+                    "name": "Claude Pro (AI HUB)",
                     "options": {
                         "baseURL": f"http://127.0.0.1:{DEFAULT_BRIDGE_PORT}/v1",
                         "apiKey": bridge_service.bridge_token,
@@ -859,7 +859,7 @@ class ClaudeSubscriptionBridge:
 
                         acc = claude_service.get_active_account()
                         if not acc:
-                            self.send_error(401, "No active Claude Pro account configured in Antigravity Hub")
+                            self.send_error(401, "No active Claude Pro account configured in AI HUB")
                             return
 
                         # Forward to claude.ai API

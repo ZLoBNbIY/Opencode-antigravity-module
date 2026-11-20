@@ -1,4 +1,4 @@
-# TokenLavka в Antigravity Hub
+# TokenLavka в AI HUB
 
 TokenLavka — OpenAI-совместимый шлюз, который даёт доступ к моделям Claude, GPT, Gemini, Grok, DeepSeek, Kimi, Qwen и GLM через один API-ключ `sk-…`.
 

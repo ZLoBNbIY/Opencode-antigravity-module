@@ -170,6 +170,29 @@ class WebviewBackendTests(unittest.TestCase):
         self.assertEqual(api.add_openai_account(), {'status':'error', 'message':'network unavailable'})
         self.assertEqual(api.add_openai_account(), {'status':'ok', 'message':'saved'})
 
+    def test_openai_quota_refresh_uses_rotation_path_and_exposes_notice(self):
+        self.openai.refresh_all_openai_accounts = Mock(
+            return_value=([{'id': 'openai-1', 'is_active': True}], 'switched to backup')
+        )
+
+        class ImmediateThread:
+            def __init__(self, target=None, **_kwargs):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        api = self.backend.HubApi()
+        with patch.object(self.backend.threading, 'Thread', ImmediateThread):
+            result = api.refresh_openai_quotas()
+
+        self.assertTrue(result['ok'])
+        self.assertFalse(api._quota_refreshing)
+        self.openai.refresh_all_openai_accounts.assert_called_once_with()
+        with patch.object(api, 'is_opencode_running', return_value=False):
+            state = api.get_state()
+        self.assertEqual(state['openaiNotice'], 'switched to backup')
+
     def test_windows_bom_configs_do_not_hide_saved_accounts(self):
         self.backend.OPENCODE_CONFIG_FILE.write_text('{"disabled_providers": ["openrouter-free"]}', encoding='utf-8-sig')
         self.backend.ANTIGRAVITY_CONFIG_FILE.write_text('{"provider_routes": {"google": "dns"}}', encoding='utf-8-sig')

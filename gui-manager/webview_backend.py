@@ -1,5 +1,5 @@
 """
-Antigravity Hub - Webview2 Frosted Glass Backend Bridge
+AI HUB - Webview2 Frosted Glass Backend Bridge
 Provides the Python API layer for the Web frontend (Variant 3 Glassmorphism UI).
 """
 
@@ -414,6 +414,7 @@ class HubApi:
         self._quota_lock = threading.Lock()
         self._quota_refreshing = False
         self._quota_error = None
+        self._quota_notice = None
         self._diagnostics = {}
         self._diagnostic_signatures = {}
         self._diagnostic_checked = {}
@@ -509,6 +510,7 @@ class HubApi:
                                 "is_active": index == claude_active} for index, a in enumerate(claude_accs)],
             "openaiRefreshing": self._quota_refreshing,
             "openaiError": self._quota_error,
+            "openaiNotice": self._quota_notice,
             "routes": routes,
             "config": _config_view(cfg),
             "opencodeRunning": self.is_opencode_running(),
@@ -1170,11 +1172,13 @@ class HubApi:
             self._quota_error = None
         def worker():
             try:
-                accounts = openai_manager.load_openai_accounts()
-                for account in accounts:
-                    account["quota"] = openai_manager.fetch_openai_usage(account)
-                if accounts and not openai_manager.save_openai_accounts(accounts):
-                    raise OSError("Не удалось сохранить лимиты ChatGPT")
+                # Use the manager's single refresh path so quota refresh and
+                # candidate rotation cannot drift apart again. The former Tk UI
+                # called this path; the WebView worker used to duplicate only
+                # quota fetching and silently omitted rotation.
+                _accounts, rotation_message = openai_manager.refresh_all_openai_accounts()
+                if rotation_message:
+                    self._quota_notice = rotation_message
             except Exception as exc:
                 self._quota_error = str(exc)
             finally:
@@ -2309,7 +2313,7 @@ class HubApi:
             os._exit(0)
 
         threading.Thread(target=_shutdown_and_exit, daemon=True, name="hub-restart-exit").start()
-        return {"ok": True, "message": "Перезапуск Antigravity Hub..."}
+        return {"ok": True, "message": "Перезапуск AI HUB..."}
 
 
 def run_webview_app():
@@ -2322,14 +2326,14 @@ def run_webview_app():
 
     api = HubApi()
 
-    # Ensure Windows taskbar groups windows under Antigravity Hub, not Python
+    # Ensure Windows taskbar groups windows under AI HUB, not Python
     try:
         antigravity_manager.set_windows_taskbar_identity()
     except Exception:
         pass
 
     window = webview.create_window(
-        title="Antigravity Hub - AI аккаунты и сеть для Windows",
+        title="AI HUB - AI аккаунты и сеть для Windows",
         url=str(html_file.resolve()),
         width=1420,
         height=890,
@@ -2376,7 +2380,7 @@ def run_webview_app():
 
     try:
         tray = win_tray.WindowsTrayIcon(
-            title="Antigravity Hub",
+            title="AI HUB",
             icon_path=icon_str,
             on_show=on_tray_show,
             on_refresh=on_tray_refresh,
@@ -2407,7 +2411,7 @@ def run_webview_app():
                 if tray and not balloon_shown[0]:
                     balloon_shown[0] = True
                     tray.show_balloon(
-                        "Antigravity Hub свёрнут",
+                        "AI HUB свёрнут",
                         "Приложение работает в трее. Кликните левой кнопкой для открытия или правой для меню.",
                     )
             except Exception:
@@ -2435,7 +2439,7 @@ def run_webview_app():
                 return
             try:
                 import ctypes
-                hwnd = ctypes.windll.user32.FindWindowW(None, "Antigravity Hub - AI аккаунты и сеть для Windows")
+                hwnd = ctypes.windll.user32.FindWindowW(None, "AI HUB - AI аккаунты и сеть для Windows")
                 if hwnd:
                     # 1. Dark title bar matching the interface background (#090d12)
                     dwmapi = ctypes.windll.dwmapi

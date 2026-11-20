@@ -3,7 +3,7 @@ param([switch]$Yes)
 $ErrorActionPreference = 'Stop'
 $script:failed = $false
 
-Write-Host 'OpenCode Antigravity Hub - remove known Hub files and integration settings' -ForegroundColor Cyan
+Write-Host 'OpenCode AI HUB - remove known Hub files and integration settings' -ForegroundColor Cyan
 Write-Host 'Stop Hub and OpenCode first. Shared credentials, chats, browser profiles and custom stores will be preserved.'
 if (-not $Yes) {
     if ((Read-Host 'This cannot be undone. Continue? Type DELETE') -cne 'DELETE') {
@@ -142,14 +142,14 @@ if ($defaultHub) {
 
 # Remove only an installation registration stamped by our installer. Never
 # recurse into either the registry or Programs; foreign descendants are kept.
-$installedScript = Join-Path $profileRoot 'AppData\Local\Programs\Antigravity Hub\uninstall.ps1'
+$installedScript = Join-Path $profileRoot 'AppData\Local\Programs\AI HUB\uninstall.ps1'
 $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AntigravityHub'
 Try-Cleanup 'Hub uninstall registration' {
     if (Test-Path -LiteralPath $uninstallKey) {
         $registration = Get-ItemProperty -LiteralPath $uninstallKey
         $expected = '"' + (Get-Command powershell.exe).Source + '" -NoProfile -ExecutionPolicy Bypass -File "' + $installedScript + '"'
-        if ($registration.DisplayName -cne 'Antigravity Hub' -or
-            $registration.Publisher -cne 'Antigravity Hub' -or
+        if ($registration.DisplayName -cne 'AI HUB' -or
+            $registration.Publisher -cne 'AI HUB' -or
             $registration.UninstallString -ine $expected -or
             @(Get-ChildItem -LiteralPath $uninstallKey).Count) {
             throw 'Registration does not match the Hub installer; left untouched.'

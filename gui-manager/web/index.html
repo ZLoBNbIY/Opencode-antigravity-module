@@ -3,8 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Antigravity Hub</title>
-  <link rel="stylesheet" href="style.css?v=20261120-model-cards">
+  <title>AI HUB</title>
+  <link rel="icon" type="image/png" href="../icon.png">
+  <link rel="stylesheet" href="style.css?v=20261120-aihub-glass">
 </head>
 <body>
 
@@ -13,9 +14,9 @@
   <aside class="sidebar">
     <div>
       <div class="brand">
-        <div class="brand-icon">✨</div>
+        <img class="brand-icon" src="../icon.png" alt="" width="32" height="32">
         <div>
-          <div class="brand-title">Antigravity Hub</div>
+          <div class="brand-title">AI HUB</div>
           <div class="brand-subtitle">AI аккаунты и сеть для Windows</div>
         </div>
       </div>
@@ -119,7 +120,7 @@
       <section id="view-dashboard" class="view-tab active">
         <div class="page-header dashboard-header">
           <div class="header-left"><h1>◈ Dashboard</h1><p>Аккаунты, лимиты и подключения — в одном месте</p></div>
-          <div class="header-right"><span class="dashboard-updated" id="dashboard-updated">Обновление каждые 10 с</span><button class="btn-secondary" onclick="refreshState()">Обновить сводку</button><button class="btn-secondary" id="btn-restart-hub" onclick="restartHub()">🔄 Перезапустить Хаб</button><button class="btn-primary" id="dashboard-check" onclick="runAllDiagnostics()">Проверить домены</button></div>
+          <div class="header-right"><span class="dashboard-updated" id="dashboard-updated">Обновление каждые 10 с</span><button class="btn-secondary" onclick="refreshState()">Обновить сводку</button><button class="btn-secondary" id="btn-restart-hub" onclick="restartHub()">🔄 Перезапустить AI HUB</button><button class="btn-primary" id="dashboard-check" onclick="runAllDiagnostics()">Проверить домены</button></div>
         </div>
         <div class="dashboard-metrics" id="dashboard-metrics"></div>
         <div class="dashboard-section-title"><div><h2>Провайдеры и лимиты</h2><p class="help-text">Активный доступ, остаток квоты и фактический маршрут</p></div><button class="btn-secondary" onclick="switchTab('settings')">Управлять провайдерами →</button></div>
@@ -793,7 +794,7 @@
         <div class="glass-card" style="margin-bottom: 16px;">
           <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px;">
             <div>
-              <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 4px;">Обновление Antigravity Hub</div>
+              <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 4px;">Обновление AI HUB</div>
               <div style="font-size: 12px; color: var(--text-secondary);">Синхронизация и загрузка последних обновлений интерфейса и модулей с GitHub</div>
             </div>
             <button class="btn-primary" id="btn-check-updates" onclick="checkUpdates()">
@@ -932,6 +933,6 @@
       <button class="btn-secondary" type="button" onclick="this.closest('dialog').close()">Отмена</button>
     </form>
   </dialog>
-<script src="app.js?v=20261120-model-cards"></script>
+<script src="app.js?v=20261120-aihub-theme"></script>
 </body>
 </html>
