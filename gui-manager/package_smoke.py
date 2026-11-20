@@ -15,6 +15,8 @@ def check_bundle(bundle, report):
         for name in ("index.html", "app.js", "style.css"):
             if not (bundle / "web" / name).is_file():
                 raise FileNotFoundError(name)
+        if not (bundle / "icon.png").is_file() or not (bundle / "icon.ico").is_file():
+            raise FileNotFoundError("icon.png / icon.ico")
         with sync_playwright() as playwright:
             with playwright.chromium.launch(channel="chromium") as browser:
                 page = browser.new_page()
