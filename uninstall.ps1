@@ -159,6 +159,16 @@ Try-Cleanup 'Hub uninstall registration' {
     }
 }
 
+Try-Cleanup 'Hub autostart entry' {
+    $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+    if (Test-Path -LiteralPath $runKey) {
+        $entry = Get-ItemProperty -LiteralPath $runKey -Name 'AI HUB' -ErrorAction SilentlyContinue
+        if ($null -ne $entry -and $entry.'AI HUB' -match 'AI HUB|antigravity_manager\.pyw|AntigravityHub\.exe') {
+            Remove-ItemProperty -LiteralPath $runKey -Name 'AI HUB' -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 Write-Host 'Account-store pointers and all targets, shared provider settings and credentials, and unlisted files were preserved.'
 if ($script:failed) {
     Write-Warning 'Cleanup completed with errors or items requiring manual review.'

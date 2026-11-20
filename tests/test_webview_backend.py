@@ -542,6 +542,13 @@ class WebviewBackendTests(unittest.TestCase):
         self.assertFalse(saved["close_to_tray"])
         self.assertFalse(saved["switch_on_first_rate_limit"])
 
+    def test_save_general_settings_persists_autostart(self):
+        api = self.backend.HubApi()
+        with patch.object(self.backend, "_apply_autostart") as apply_autostart:
+            self.assertTrue(api.save_general_settings({"autostart_on_login": True}))
+        apply_autostart.assert_called_once_with(True)
+        self.assertTrue(api.load_config()["autostart_on_login"])
+
     def test_save_network_settings_persists_proxy_pool_failover_and_typed_proxy(self):
         api = self.backend.HubApi()
         api.save_network_settings({

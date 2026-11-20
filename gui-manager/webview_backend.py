@@ -37,6 +37,48 @@ def _app_version() -> str:
             pass
     return "v2.0.0"
 
+
+AUTOSTART_VALUE_NAME = "AI HUB"
+AUTOSTART_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+
+
+def _autostart_command() -> str:
+    """Command written to the per-user Run key (no admin rights required)."""
+    if getattr(sys, "frozen", False):
+        return f'"{Path(sys.executable).resolve()}"'
+    executable = Path(sys.executable).resolve()
+    pythonw = executable.with_name("pythonw.exe")
+    if not pythonw.exists():
+        pythonw = executable
+    script = CURRENT_DIR / "antigravity_manager.pyw"
+    return f'"{pythonw}" "{script}"'
+
+
+def _apply_autostart(enabled: bool) -> None:
+    """Enable/disable AI HUB autostart via HKCU Run. Safe no-op off Windows."""
+    if sys.platform != "win32":
+        return
+    try:
+        import winreg
+    except ImportError:
+        return
+    command = _autostart_command()
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_RUN_KEY, 0,
+                        winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE) as key:
+        if enabled:
+            try:
+                existing, _ = winreg.QueryValueEx(key, AUTOSTART_VALUE_NAME)
+            except FileNotFoundError:
+                existing = None
+            if existing != command:
+                winreg.SetValueEx(key, AUTOSTART_VALUE_NAME, 0, winreg.REG_SZ, command)
+        else:
+            try:
+                winreg.DeleteValue(key, AUTOSTART_VALUE_NAME)
+            except FileNotFoundError:
+                pass
+
+
 import antigravity_manager
 from proxy_config import sync_provider_routes
 import opencode_config
@@ -212,7 +254,7 @@ def _proxy_view(cfg: dict) -> dict:
 def _config_view(cfg: dict) -> dict:
     allowed = ("dns_mode", "custom_dns", "dot_host", "doh_url", "dns_presets", "proxy_failover",
                "vless_enabled", "vless_kill_switch", "account_selection_strategy",
-               "close_to_tray", "providers_visibility", "provider_routes")
+               "close_to_tray", "autostart_on_login", "providers_visibility", "provider_routes")
     return {**{key: cfg[key] for key in allowed if key in cfg}, **_proxy_view(cfg),
             "vless_url": _pool_id(cfg.get("vless_url") or ""),
             "vless_pool": _vless_pool_view(_normalize_vless_pool(cfg.get("vless_pool")))}
@@ -271,7 +313,7 @@ def _backup_config(data: dict) -> dict:
     types = {
         "account_selection_strategy": str, "soft_quota_threshold_percent": int,
         "switch_on_first_rate_limit": bool, "max_account_switches": int,
-        "quota_style_fallback": bool, "close_to_tray": bool,
+        "quota_style_fallback": bool, "close_to_tray": bool, "autostart_on_login": bool,
         "providers_visibility": dict, "provider_routes": dict, "vless_kill_switch": bool,
         "vless_enabled": bool, "dns_mode": str, "custom_dns": list, "dot_host": str,
         "doh_url": str, "dns_presets": list, "proxy": str, "proxy_pool": list,
@@ -1625,7 +1667,7 @@ class HubApi:
         with self._config_lock:
             cfg = self.load_config()
             previous = copy.deepcopy(cfg)
-            for key in ("switch_on_first_rate_limit", "close_to_tray"):
+            for key in ("switch_on_first_rate_limit", "close_to_tray", "autostart_on_login"):
                 if key in settings:
                     if not isinstance(settings[key], bool):
                         raise ValueError(f"Неверное значение настройки {key}")
@@ -1665,6 +1707,12 @@ class HubApi:
                     pending = oc_path.with_suffix(oc_path.suffix + ".hub.tmp")
                     pending.write_text(content, encoding="utf-8")
                     pending.replace(oc_path)
+                except Exception:
+                    self.save_config(previous)
+                    raise
+            if "autostart_on_login" in settings:
+                try:
+                    _apply_autostart(cfg["autostart_on_login"])
                 except Exception:
                     self.save_config(previous)
                     raise

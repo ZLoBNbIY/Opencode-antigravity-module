@@ -210,6 +210,7 @@ DEFAULT_CONFIG = {
         "nvidia": True,
     },
     "close_to_tray": True,
+    "autostart_on_login": False,
     "max_rate_limit_wait_seconds": 300,
 }
 

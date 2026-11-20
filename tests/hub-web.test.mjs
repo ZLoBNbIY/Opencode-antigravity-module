@@ -35,7 +35,7 @@ function frontend(state) {
 const state = {
   accounts: [{id:'google-active', index:3, email:'active@example.com', is_active:true, groups:[]},
     {id:'google-idle', index:1, email:'idle@example.com', is_active:false, groups:[]}],
-  activeIndex:2, config:{dns_mode:'standard',custom_dns:['1.1.1.1','1.0.0.1']},
+  activeIndex:2, config:{dns_mode:'standard',custom_dns:['1.1.1.1','1.0.0.1'],autostart_on_login:true},
   routes:{google:'dns'}, network:{cores:{'sing-box':{installed:true,selected:true,path:'sing-box.exe'},xray:{installed:false}},vlessCore:'sing-box.exe'},
   openaiAccounts:[{email:'chat@example.com',is_active:true,plan_type:'plus',quota:{status:'ok',primary:{remaining_percent:0},secondary:{remaining_percent:42}}}],
   claudeAccounts:[], diagnostics:{openai:{rows:[{domain:'chatgpt.com',status:'error',latency_ms:null,error:'TimeoutError'}]}},
@@ -192,6 +192,17 @@ test('disabled providers disappear from navigation and route cards', () => {
   elements.get('provider-enabled-openai').checked = true;
   vm.runInContext('markSettingsDirty(); renderAll()', context);
   assert.equal(elements.get('provider-enabled-openai').checked, true);
+});
+
+test('autostart toggle reflects config and is included in saved settings', async () => {
+  const {elements, context} = frontend(state);
+  assert.equal(elements.get('switch-autostart').checked, true);
+  let saved = null;
+  context.window.pywebview = {api:{save_general_settings: async settings => { saved = settings; return true; }}};
+  vm.runInContext('refreshState = async () => {}', context);
+  elements.get('switch-autostart').checked = false;
+  await vm.runInContext('saveSettings()', context);
+  assert.equal(saved.autostart_on_login, false);
 });
 
 test('automatic routes name the effective transport and manual DNS explains its server', () => {

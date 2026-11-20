@@ -897,7 +897,7 @@ button:disabled { opacity:.5; cursor:wait; }
 .model-choice input { width:auto !important; margin:0 !important; accent-color:var(--accent-amber); }
 
 /* NVIDIA NIM catalog: illustrated model cards */
-.nvidia-model-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:10px; max-height:430px; overflow-y:auto; margin:14px 0; padding:2px; scrollbar-width:thin; scrollbar-color:rgba(255,255,255,.18) transparent; }
+.nvidia-model-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:10px; margin:14px 0; padding:2px; scrollbar-width:thin; scrollbar-color:rgba(255,255,255,.18) transparent; }
 .nvidia-model-grid::-webkit-scrollbar { width:6px; }
 .nvidia-model-grid::-webkit-scrollbar-track { background:rgba(255,255,255,.03); border-radius:6px; }
 .nvidia-model-grid::-webkit-scrollbar-thumb { background:rgba(255,255,255,.16); border-radius:6px; }
@@ -918,7 +918,7 @@ button:disabled { opacity:.5; cursor:wait; }
 @media (max-width:720px) { .nvidia-model-grid { grid-template-columns:1fr; } }
 
 /* Reusable model cards: Xpiki / DeepSeek / OpenRouter / TokenLavka */
-.model-card-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:10px; max-height:430px; overflow-y:auto; margin:14px 0; padding:2px; scrollbar-width:thin; scrollbar-color:rgba(255,255,255,.18) transparent; }
+.model-card-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:10px; margin:14px 0; padding:2px; scrollbar-width:thin; scrollbar-color:rgba(255,255,255,.18) transparent; }
 .model-card-grid::-webkit-scrollbar { width:6px; }
 .model-card-grid::-webkit-scrollbar-track { background:rgba(255,255,255,.03); border-radius:6px; }
 .model-card-grid::-webkit-scrollbar-thumb { background:rgba(255,255,255,.16); border-radius:6px; }
@@ -1149,16 +1149,19 @@ body {
 
 /* The sidebar and Windows shortcut share the same Spiral artwork. */
 .brand {
-  border-bottom: 1px solid transparent;
-  border-image: linear-gradient(90deg, rgba(var(--brand-amber-rgb), .45), rgba(var(--brand-cyan-rgb), .35), transparent) 1;
+  border-bottom: 1px solid rgba(255, 255, 255, .06);
 }
 .brand-icon {
   position: relative; display: block; width: 32px; height: 32px;
   border-radius: var(--tile-radius);
   object-fit: contain;
-  background: none;
-  box-shadow: 0 0 12px rgba(var(--brand-cyan-rgb), .13);
   overflow: hidden; flex-shrink: 0;
+  filter: drop-shadow(0 0 4px rgba(var(--brand-cyan-rgb), .28));
+  animation: logo-breathe 4s ease-in-out infinite;
+}
+@keyframes logo-breathe {
+  0%, 100% { filter: drop-shadow(0 0 3px rgba(var(--brand-cyan-rgb), .22)); transform: scale(1); }
+  50% { filter: drop-shadow(0 0 7px rgba(var(--brand-cyan-rgb), .45)) drop-shadow(0 0 3px rgba(var(--brand-amber-rgb), .22)); transform: scale(1.05); }
 }
 .brand-subtitle::before {
   content: ''; display: inline-block; width: 4px; height: 4px; margin-right: 5px;
@@ -1444,17 +1447,18 @@ input:not([type=checkbox]):focus-visible, select:focus-visible {
   pointer-events: none;
 }
 .switch-input:checked {
-  background: rgba(255, 255, 255, .11);
-  border-color: rgba(255, 255, 255, .28);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .14), 0 2px 8px rgba(0, 0, 0, .4);
+  background: rgba(255, 255, 255, .16);
+  border-color: rgba(255, 255, 255, .45);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .22), inset 0 0 0 1px rgba(255, 255, 255, .06), 0 2px 8px rgba(0, 0, 0, .4);
 }
 .switch-input:checked::before {
   transform: translateX(12px);
-  background: #f5f9fb;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, .35), 0 2px 6px rgba(0, 0, 0, .5);
 }
 .switch-input:checked::after {
-  background: rgba(255, 255, 255, .34);
-  box-shadow: 21px 0 0 rgba(255, 255, 255, .34);
+  background: rgba(255, 255, 255, .55);
+  box-shadow: 21px 0 0 rgba(255, 255, 255, .55);
 }
 
 /* Compact plug for model cards */
@@ -1486,18 +1490,20 @@ input:not([type=checkbox]):focus-visible, select:focus-visible {
 }
 .nvidia-model-card .nvidia-card-switch:checked,
 .model-card .card-switch:checked {
-  background: rgba(255, 255, 255, .11);
-  border-color: rgba(255, 255, 255, .28);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .14), 0 2px 8px rgba(0, 0, 0, .4);
+  background: rgba(255, 255, 255, .16);
+  border-color: rgba(255, 255, 255, .45);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .22), inset 0 0 0 1px rgba(255, 255, 255, .06), 0 2px 8px rgba(0, 0, 0, .4);
 }
 .nvidia-model-card .nvidia-card-switch:checked::before,
 .model-card .card-switch:checked::before {
   transform: translateX(12px);
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, .35), 0 2px 6px rgba(0, 0, 0, .5);
 }
 .nvidia-model-card .nvidia-card-switch:checked::after,
 .model-card .card-switch:checked::after {
-  background: rgba(255, 255, 255, .34);
-  box-shadow: 19px 0 0 rgba(255, 255, 255, .34);
+  background: rgba(255, 255, 255, .55);
+  box-shadow: 19px 0 0 rgba(255, 255, 255, .55);
 }
 
 /* Neutral focus rings */

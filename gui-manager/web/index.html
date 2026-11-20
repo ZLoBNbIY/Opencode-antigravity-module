@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AI HUB</title>
-  <link rel="icon" type="image/png" href="../icon.png">
-  <link rel="stylesheet" href="style.css?v=20261120-single-theme">
+  <link rel="icon" type="image/png" href="../icon.png?v=20261120-autostart">
+  <link rel="stylesheet" href="style.css?v=20261120-autostart">
 </head>
 <body>
 
@@ -14,7 +14,7 @@
   <aside class="sidebar">
     <div>
       <div class="brand">
-        <img class="brand-icon" src="../icon.png" alt="" width="32" height="32">
+        <img class="brand-icon" src="../icon.png?v=20261120-autostart" alt="" width="32" height="32">
         <div>
           <div class="brand-title">AI HUB</div>
           <div class="brand-subtitle">AI аккаунты и сеть для Windows</div>
@@ -152,7 +152,7 @@
                 <input id="vless-pool-input" type="password" autocomplete="off" placeholder="vless://uuid@server:port?...#Название" style="flex:1; font-family: Consolas, monospace; font-size:11px; padding: 8px 10px; background: rgba(0,0,0,0.3); border: 1px solid var(--glass-border); border-radius: 8px; color:#fff;">
                 <button class="btn-primary" type="button" onclick="addVlessConfig()">＋ Добавить</button>
               </div>
-              <div id="vless-pool-container" style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; max-height: 220px; overflow-y: auto;"></div>
+              <div id="vless-pool-container" style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px;"></div>
               <button class="btn-secondary" type="button" id="btn-vless-test-all" onclick="testAllVlessConfigs()">🩺 Проверить все конфиги</button>
               <p class="help-text" id="vless-pool-status" role="status" style="margin-top:6px;"></p>
             </div>
@@ -186,7 +186,7 @@
             <input id="network-proxy" type="password" autocomplete="off" placeholder="http://host:port или http://user:pass@host:port" style="flex:1; font-family: Consolas, monospace; font-size:12px; padding: 9px 12px; background: rgba(0,0,0,0.3); border: 1px solid var(--glass-border); border-radius: 8px; color: #fff;">
             <button class="btn-primary" type="button" onclick="addProxyToPool()">＋ Добавить</button>
           </div>
-          <div id="proxy-pool-container" style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; max-height: 180px; overflow-y: auto;">
+          <div id="proxy-pool-container" style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px;">
             <!-- Rendered dynamically -->
           </div>
           <label class="switch-label" style="margin-top: 4px;">
@@ -759,6 +759,15 @@
         </div>
 
         <div class="glass-card" style="margin-bottom: 16px;">
+          <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 8px;">Запуск</div>
+          <label class="switch-label">
+            <input type="checkbox" class="switch-input" id="switch-autostart" onchange="markSettingsDirty()">
+            <span>Автоматически запускать при старте AI HUB (при входе в Windows)</span>
+          </label>
+          <p class="help-text" style="margin-top:8px;">Добавляет запись в HKCU → Run без прав администратора. Изменение вступит силу при следующем входе в Windows.</p>
+        </div>
+
+        <div class="glass-card" style="margin-bottom: 16px;">
           <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 4px;">Резервное копирование и перенос на другой ПК</div>
           <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
             Экспорт аккаунтов Google, ChatGPT и Claude, ключей Xpiki, OpenRouter, TokenLavka и DeepSeek, маршрутов и настроек сети. Новые копии шифруются паролем (.agb). Старые копии .json и .agb можно импортировать.
@@ -916,6 +925,6 @@
       <button class="btn-secondary" type="button" onclick="this.closest('dialog').close()">Отмена</button>
     </form>
   </dialog>
-<script src="app.js?v=20261120-single-theme"></script>
+<script src="app.js?v=20261120-autostart"></script>
 </body>
 </html>

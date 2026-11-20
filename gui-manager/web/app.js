@@ -2292,6 +2292,8 @@ function renderSettingsTab() {
 
   const swTray = document.getElementById("switch-close-to-tray");
   if (swTray) swTray.checked = cfg.close_to_tray !== false;
+  const swAuto = document.getElementById("switch-autostart");
+  if (swAuto) swAuto.checked = cfg.autostart_on_login === true;
   for (const item of Object.values(providerSettings)) document.getElementById(`provider-enabled-${item.key}`).checked = cfg.providers_visibility?.[item.key] !== false;
   refreshStorageStats();
 }
@@ -2324,8 +2326,10 @@ async function saveSettings() {
   try {
     const visibility = Object.fromEntries(Object.values(providerSettings).map(item=>[item.key, document.getElementById(`provider-enabled-${item.key}`).checked]));
     const swTray = document.getElementById("switch-close-to-tray");
+    const swAuto = document.getElementById("switch-autostart");
     const ok = await window.pywebview.api.save_general_settings({
       close_to_tray: swTray ? swTray.checked : true,
+      autostart_on_login: swAuto ? swAuto.checked : false,
       providers_visibility: visibility
     });
     if (!ok) throw new Error('Не удалось сохранить настройки');
