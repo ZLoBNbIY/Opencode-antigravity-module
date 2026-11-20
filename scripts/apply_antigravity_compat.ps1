@@ -90,10 +90,10 @@ Write-Host "Python: $($python.Exe)"
 if (-not $SkipNode) {
     $node = Find-Node
     $patchScript = Join-Path $ScriptDir 'patch_plugin.mjs'
-    Write-Host "`n[1/3] Node patches: $patchScript"
+    Write-Host "`n[1/3] Bundled plugin updater safety checks: $patchScript"
     & $node $patchScript
     if ($LASTEXITCODE -ne 0) {
-        Write-Warning "patch_plugin.mjs завершился с кодом $LASTEXITCODE, продолжаю Python-патчи."
+        throw "patch_plugin.mjs завершился с кодом $LASTEXITCODE; остальные изменения не применены."
     }
 } else {
     Write-Host "`n[1/3] Node patches skipped (-SkipNode)."

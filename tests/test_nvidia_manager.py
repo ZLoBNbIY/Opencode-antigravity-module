@@ -22,9 +22,9 @@ class NvidiaManagerTests(unittest.TestCase):
         self.enterContext(patch.multiple(nvidia_manager, CONFIG_DIR=self.config.parent, KEY_FILE=self.secret))
         self.model_id = "nvidia/nemotron-3-ultra-550b-a55b"
 
-    @patch("nvidia_manager.urllib.request.build_opener")
-    def test_catalog_and_manual_probe_use_different_endpoints(self, build_opener):
-        opener = build_opener.return_value
+    @patch("nvidia_manager._opener")
+    def test_catalog_and_manual_probe_use_different_endpoints(self, make_opener):
+        opener = make_opener.return_value
         opener.open.side_effect = [
             io.BytesIO(json.dumps({"data": [{"id": self.model_id}, {"id": self.model_id},
                                              {"id": "nvidia/embed-qa-4"}, {"id": 10}]}).encode()),
@@ -51,9 +51,9 @@ class NvidiaManagerTests(unittest.TestCase):
         self.assertEqual(proxies, [{"http": "http://127.0.0.1:10880",
                                     "https": "http://127.0.0.1:10880"}])
 
-    @patch("nvidia_manager.urllib.request.build_opener")
-    def test_does_not_leak_response_body_on_auth_failure(self, build_opener):
-        build_opener.return_value.open.side_effect = urllib.error.HTTPError(
+    @patch("nvidia_manager._opener")
+    def test_does_not_leak_response_body_on_auth_failure(self, make_opener):
+        make_opener.return_value.open.side_effect = urllib.error.HTTPError(
             nvidia_manager.BASE_URL, 401, "nvapi-test", {}, None)
         with self.assertRaisesRegex(ValueError, r"^Ключ отклонён \(401\)"):
             nvidia_manager.probe_model("nvapi-test", self.model_id)

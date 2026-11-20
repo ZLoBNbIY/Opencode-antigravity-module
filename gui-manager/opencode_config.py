@@ -8,6 +8,7 @@ and never reset or overwritten.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -101,7 +102,8 @@ def ensure_session_title_config(config_path: Optional[Path] = None) -> Tuple[boo
             return False, err
     else:
         # Load template if available
-        template_file = Path(__file__).resolve().parent.parent / "config-templates" / "opencode.json"
+        root = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
+        template_file = root / "config-templates" / "opencode.json"
         if template_file.exists():
             try:
                 data = json.loads(template_file.read_text(encoding="utf-8"))
@@ -111,7 +113,7 @@ def ensure_session_title_config(config_path: Optional[Path] = None) -> Tuple[boo
             data = {
                 "$schema": "https://opencode.ai/config.json",
                 "model": "google/antigravity-gemini-3.8-flash",
-                "plugin": ["@cortexkit/opencode-antigravity-auth@latest"],
+                "plugins": ["@cortexkit/opencode-antigravity-auth@3.0.0"],
                 "provider": {"google": {"options": {"apiKey": "antigravity"}}},
             }
 
@@ -141,8 +143,8 @@ def ensure_session_title_config(config_path: Optional[Path] = None) -> Tuple[boo
             else:
                 updated_raw = jsonc_config.set_property(updated_raw, ("agents",), {"title": {"model": TITLE_MODEL}})
             content = updated_raw
-        except Exception:
-            content = None
+        except Exception as exc:
+            return False, f"Конфигурация JSONC оставлена без изменений: {type(exc).__name__}"
 
     if content is None:
         data["small_model"] = TITLE_MODEL
@@ -161,11 +163,8 @@ def ensure_session_title_config(config_path: Optional[Path] = None) -> Tuple[boo
 
         content = json.dumps(data, indent=4, ensure_ascii=False)
     try:
-        try:
-            import secure_storage
-            secure_storage.atomic_write(path, content)
-        except Exception:
-            path.write_text(content, encoding="utf-8")
+        from secure_storage import atomic_write_bytes
+        atomic_write_bytes(path, content.encode("utf-8"), private_parent=False)
 
         msg = f"Успешно установлена бесплатная модель подписи сессий: {TITLE_MODEL}"
         print(f"[OpenCode Config] {msg}")

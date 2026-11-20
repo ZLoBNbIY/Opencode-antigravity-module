@@ -1,37 +1,31 @@
 """
 Auto-Updater & GitHub Synchronizer for Antigravity Hub
-Checks origin/V2 for fresh updates and applies them seamlessly.
+Checks upstream V2 and updates clean checkouts without running downloaded scripts.
 """
 
 import os
-import sys
 import json
+import re
 import subprocess
-import shutil
 import urllib.request
-import urllib.error
-import ssl
 from pathlib import Path
 
 REPO_OWNER = "ZLoBNbIY"
 REPO_NAME = "Opencode-antigravity-module"
 BRANCH = "V2"
 GITHUB_COMMITS_API = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/commits/{BRANCH}"
+UPSTREAM_URL = f"https://github.com/{REPO_OWNER}/{REPO_NAME}.git"
+UPSTREAM_REF = f"refs/heads/{BRANCH}"
+SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 def get_local_commit_sha(repo_dir: Path) -> str:
-    """Returns local HEAD SHA if git is available."""
+    """Return the local checkout's HEAD, or the archive version if provided."""
     try:
-        flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-        proc = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=str(repo_dir),
-            capture_output=True,
-            text=True,
-            creationflags=flags,
-            timeout=5,
-        )
-        if proc.returncode == 0 and proc.stdout.strip():
-            return proc.stdout.strip()
+        root = _git_output(repo_dir, "rev-parse", "--show-toplevel", timeout=5)
+        if root and Path(root).resolve() == repo_dir.resolve():
+            sha = _git_output(repo_dir, "rev-parse", "--verify", "HEAD", timeout=5)
+            if SHA_RE.fullmatch(sha):
+                return sha
     except Exception:
         pass
 
@@ -55,6 +49,7 @@ def _git_commit_contains(repo_dir: Path, ancestor_sha: str) -> bool:
             capture_output=True,
             creationflags=flags,
             timeout=5,
+            env=_direct_git_env(),
         )
         return result.returncode == 0
     except Exception:
@@ -108,8 +103,10 @@ def check_for_updates(repo_dir: Path, timeout=12) -> dict:
                 date_str = commit_info.get("author", {}).get("date", "")
                 author = commit_info.get("author", {}).get("name", "Author")
 
-                if not remote_sha:
+                if not isinstance(remote_sha, str) or not SHA_RE.fullmatch(remote_sha):
                     return {"has_update": False, "error": "Не удалось определить remote sha"}
+                if not SHA_RE.fullmatch(local_sha):
+                    return {"has_update": False, "error": "Не удалось определить локальную версию."}
 
                 has_update = _has_newer_remote_commit(repo_dir, local_sha, remote_sha)
 
@@ -117,6 +114,7 @@ def check_for_updates(repo_dir: Path, timeout=12) -> dict:
                     "has_update": has_update,
                     "local_sha": local_sha[:7] if local_sha else "unknown",
                     "remote_sha": remote_sha[:7],
+                    "remote_commit": remote_sha,
                     "message": msg,
                     "date": date_str,
                     "author": author,
@@ -128,24 +126,14 @@ def check_for_updates(repo_dir: Path, timeout=12) -> dict:
 
     # If GitHub REST API is throttled (403 rate limit), fall back to git ls-remote directly
     try:
-        flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-        direct_env = _direct_git_env()
-        proc = subprocess.run(
-            ["git", "ls-remote", "origin", f"refs/heads/{BRANCH}"],
-            cwd=str(repo_dir),
-            capture_output=True,
-            text=True,
-            creationflags=flags,
-            timeout=10,
-            env=direct_env,
-        )
-        if proc.returncode == 0 and proc.stdout.strip():
-            remote_sha = proc.stdout.strip().split()[0]
+        if SHA_RE.fullmatch(local_sha):
+            remote_sha = _upstream_sha(repo_dir)
             has_update = _has_newer_remote_commit(repo_dir, local_sha, remote_sha)
             return {
                 "has_update": has_update,
                 "local_sha": local_sha[:7] if local_sha else "unknown",
                 "remote_sha": remote_sha[:7],
+                "remote_commit": remote_sha,
                 "message": "Обновление ветки V2",
                 "date": "",
                 "author": "GitHub",
@@ -165,104 +153,123 @@ def check_for_updates(repo_dir: Path, timeout=12) -> dict:
     }
 
 def _direct_git_env() -> dict:
-    """Environment without proxy variables so git traffic always goes direct."""
-    env = os.environ.copy()
-    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY",
-                 "http_proxy", "https_proxy", "all_proxy", "ftp_proxy"):
-        env.pop(name, None)
+    """Do not inherit repository, Git configuration, or proxy overrides."""
+    env = {
+        key: value for key, value in os.environ.items()
+        if not key.upper().startswith("GIT_")
+        and key.upper() not in {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY"}
+    }
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_NO_LAZY_FETCH"] = "1"
     return env
 
 
-def apply_update_git(repo_dir: Path) -> tuple[bool, str]:
-    """Pull updates while preserving local edits, then re-apply bundled patches."""
-    flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-    direct_env = _direct_git_env()
+def _run_git(repo_dir: Path, *args, timeout=15):
+    return subprocess.run(
+        [
+            "git", "--no-replace-objects",
+            "-c", "core.hooksPath=/dev/null",
+            "-c", "core.fsmonitor=false",
+            "-c", "submodule.recurse=false",
+            "-c", "merge.autostash=false",
+            "-c", "http.sslVerify=true",
+            "-c", "http.proxy=",
+            "-c", f"http.{UPSTREAM_URL}.sslVerify=true",
+            "-c", f"http.{UPSTREAM_URL}.proxy=",
+            "-c", "http.followRedirects=false",
+            "-c", f"http.{UPSTREAM_URL}.followRedirects=false",
+            "-c", "credential.helper=",
+            "-c", "fetch.fsckObjects=true",
+            "-c", "protocol.allow=never",
+            "-c", "protocol.https.allow=always",
+            *args,
+        ],
+        cwd=str(repo_dir),
+        capture_output=True,
+        text=True,
+        errors="replace",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        timeout=timeout,
+        env=_direct_git_env(),
+    )
 
-    def git(*args, timeout=30):
-        return subprocess.run(
-            ["git", *args],
-            cwd=str(repo_dir),
-            capture_output=True,
-            text=True,
-            creationflags=flags,
-            timeout=timeout,
-            env=direct_env,
-        )
 
-    def restore_stash():
-        return git("stash", "pop", "--index", timeout=30)
+def _git_output(repo_dir: Path, *args, timeout=15) -> str:
+    result = _run_git(repo_dir, *args, timeout=timeout)
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(f"git {args[0]} (код {result.returncode}): {detail}")
+    return result.stdout.strip()
 
+
+def _upstream_sha(repo_dir: Path) -> str:
+    # Refuse URL rewrites rather than silently updating from a different server.
+    if _git_output(repo_dir, "ls-remote", "--get-url", UPSTREAM_URL) != UPSTREAM_URL:
+        raise RuntimeError("Настройка Git перенаправляет адрес обновления; обновление отменено.")
+    result = _git_output(repo_dir, "ls-remote", "--exit-code", UPSTREAM_URL, UPSTREAM_REF, timeout=20)
+    sha, separator, ref = result.partition("\t")
+    if not separator or ref != UPSTREAM_REF or not SHA_RE.fullmatch(sha):
+        raise RuntimeError("GitHub не вернул однозначный идентификатор ветки V2.")
+    return sha
+
+
+def _clean_v2_head(repo_dir: Path) -> str:
+    root = _git_output(repo_dir, "rev-parse", "--show-toplevel")
+    if not root or Path(root).resolve() != repo_dir.resolve():
+        raise RuntimeError("Каталог Hub не является корнем Git-репозитория.")
+    if _git_output(repo_dir, "symbolic-ref", "--quiet", "HEAD") != UPSTREAM_REF:
+        raise RuntimeError("Автообновление доступно только на локальной ветке V2.")
+    for operation in ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD",
+                      "rebase-merge", "rebase-apply", "sequencer", "BISECT_START"):
+        location = _git_output(repo_dir, "rev-parse", "--git-path", operation)
+        if not location or (repo_dir / location).exists():
+            raise RuntimeError("Завершите текущую операцию Git перед автообновлением.")
+    if _git_output(repo_dir, "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"):
+        raise RuntimeError("Есть локальные изменения или неотслеживаемые файлы. Автообновление отменено.")
+    sha = _git_output(repo_dir, "rev-parse", "--verify", "HEAD")
+    if not SHA_RE.fullmatch(sha):
+        raise RuntimeError("Не удалось определить локальный коммит.")
+    return sha
+
+
+def _is_ancestor(repo_dir: Path, ancestor: str, descendant: str) -> bool:
+    result = _run_git(repo_dir, "merge-base", "--is-ancestor", ancestor, descendant)
+    if result.returncode not in (0, 1):
+        raise RuntimeError(f"Не удалось проверить историю Git: {result.stderr.strip()}")
+    return result.returncode == 0
+
+
+def apply_update_git(repo_dir: Path, *, expected_commit: str | None = None) -> tuple[bool, str]:
+    """Fast-forward a clean V2 checkout to the exact GitHub-advertised commit."""
+    merge_started = False
     try:
-        status = git("status", "--porcelain", timeout=10)
-        if status.returncode != 0:
-            return False, f"Не удалось проверить локальные изменения: {status.stderr or status.stdout}"
+        before = _clean_v2_head(repo_dir)
+        target = _upstream_sha(repo_dir)
+        if expected_commit is not None and expected_commit != target:
+            return False, "Удалённый коммит изменился после проверки. Проверьте обновление ещё раз."
+        if before == target:
+            return True, "Ветка V2 уже содержит последнее обновление. Файлы не менялись."
 
-        stashed = bool(status.stdout.strip())
-        if stashed:
-            stash = git("stash", "push", "--include-untracked", "-m", "antigravity-hub-auto-update")
-            if stash.returncode != 0:
-                return False, f"Не удалось временно сохранить локальные изменения: {stash.stderr or stash.stdout}"
-            # Git may report success even when there was nothing to stash.
-            stashed = "No local changes to save" not in (stash.stdout + stash.stderr)
+        # Fetch just the advertised object, without changing tracking refs or
+        # relying on shared FETCH_HEAD. No tags or submodules are updated.
+        _git_output(repo_dir, "fetch", "--no-tags", "--no-recurse-submodules",
+                    "--no-write-fetch-head", "--no-auto-maintenance", "--refmap=", UPSTREAM_URL, target, timeout=60)
+        if _is_ancestor(repo_dir, target, before):
+            return True, "Локальная ветка V2 уже содержит этот коммит. Файлы не менялись."
+        if not _is_ancestor(repo_dir, before, target):
+            return False, "История локальной ветки V2 разошлась с GitHub. Требуется ручное обновление."
+        if _clean_v2_head(repo_dir) != before:
+            return False, "Локальный коммит изменился во время загрузки. Повторите обновление."
 
-        proc = git("pull", "--rebase", "origin", BRANCH, timeout=60)
-        if proc.returncode != 0:
-            detail = proc.stderr or proc.stdout
-            git("rebase", "--abort", timeout=10)
-            if stashed:
-                restored = restore_stash()
-                if restored.returncode != 0:
-                    return False, (
-                        f"Не удалось загрузить обновление: {detail}\n"
-                        "Локальные изменения сохранены в git stash, но не восстановлены автоматически. "
-                        f"Восстановите их командой `git stash pop`.\n{restored.stderr or restored.stdout}"
-                    )
-            return False, f"Не удалось загрузить обновление: {detail}"
-
-        if stashed:
-            restored = restore_stash()
-            if restored.returncode != 0:
-                return False, (
-                    "Обновление загружено, но локальные изменения конфликтуют с новой версией. "
-                    "Они сохранены в git stash и не потеряны; разрешите конфликт или выполните `git stash pop`.\n"
-                    f"{restored.stderr or restored.stdout}"
-                )
-
-        # Re-run python fix desktop models
-        fix_py = repo_dir / "scripts" / "fix_desktop_models.py"
-        if fix_py.exists():
-            subprocess.run(
-                [sys.executable, str(fix_py)],
-                cwd=str(repo_dir),
-                capture_output=True,
-                creationflags=flags,
-                timeout=10,
-            )
-
-        # Re-apply generated compatibility patches after the repository update.
-        patch_script = repo_dir / "scripts" / "patch_plugin.mjs"
-        if patch_script.exists():
-            node = shutil.which("node")
-            if not node:
-                try:
-                    import antigravity_manager
-                    cand = antigravity_manager.get_node_executable()
-                    if cand and os.path.exists(cand):
-                        node = cand
-                except Exception:
-                    pass
-            if node:
-                patch = subprocess.run(
-                    [node, str(patch_script)],
-                    cwd=str(repo_dir),
-                    capture_output=True,
-                    text=True,
-                    creationflags=flags,
-                    timeout=60,
-                )
-                if patch.returncode != 0:
-                    return False, f"Обновление загружено, но не удалось применить патчи плагина: {patch.stderr or patch.stdout}"
-
-        return True, "Обновление успешно загружено и применено!"
+        merge_started = True
+        _git_output(repo_dir, "merge", "--ff-only", "--no-autostash", "--no-overwrite-ignore", target, timeout=60)
+        if _git_output(repo_dir, "rev-parse", "--verify", "HEAD") != target:
+            raise RuntimeError("Не удалось подтвердить обновлённый коммит.")
+        return True, (
+            f"Ветка V2 обновлена до {target[:7]}. Подпись коммита не проверялась; "
+            "проверьте изменения перед перезапуском. Скрипты установки и патчи не запускались."
+        )
     except Exception as e:
-        return False, f"Ошибка обновления: {str(e)}"
+        if merge_started:
+            return False, f"Не удалось подтвердить завершение обновления: {e}. Проверьте git status и HEAD; откат не выполнялся."
+        return False, f"Обновление остановлено до изменения рабочей копии: {e}"

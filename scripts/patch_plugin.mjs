@@ -1,925 +1,270 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
+import { createHash, randomUUID } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const homeDir = os.homedir();
-const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-const localPluginPath = path.resolve(scriptDir, '..', 'plugin');
+const scriptPath = fileURLToPath(import.meta.url);
+const bundledPath = path.resolve(path.dirname(scriptPath), '..', 'plugin');
+const packageName = '@cortexkit/opencode-antigravity-auth';
+const version = '3.0.0';
+const pinnedPackage = `${packageName}@${version}`;
 
-function findTargetPaths() {
-  const targets = [];
-  if (process.argv[2]) {
-    targets.push(path.resolve(process.argv[2]));
-    return targets;
-  }
-  if (fs.existsSync(localPluginPath)) {
-    targets.push(localPluginPath);
-  }
+// The checkout already ships its compatibility changes. Never copy those
+// bundles over an npm package or replay the old broad compatibility rewrites.
+// This recipe only hardens the updater in the known 3.0.0 layouts.
+const files = new Map([
+  ['dist/index.js', ['schema', 'hook', 'checker', 'config']],
+  ['dist/server.js', ['schema', 'hook', 'checker', 'config']],
+  ['dist/src/plugin/config/schema.js', ['schema']],
+  ['dist/src/hooks/auto-update-checker/index.js', ['hook']],
+  ['dist/src/hooks/auto-update-checker/checker.js', ['checker']],
+  ['dist/src/plugin/config/updater.js', ['config']],
+]);
 
-  // 1. Search .cache/opencode/npm
-  const npmCacheDir = path.join(homeDir, '.cache', 'opencode', 'npm');
-  if (fs.existsSync(npmCacheDir)) {
-    const searchDir = (dir, depth = 0) => {
-      if (depth > 8) return;
-      try {
-        const entries = fs.readdirSync(dir, { withFileTypes: true });
-        for (const entry of entries) {
-          const full = path.join(dir, entry.name);
-          if (entry.isDirectory()) {
-            if (fs.existsSync(path.join(full, 'dist', 'server.js')) || fs.existsSync(path.join(full, 'dist', 'cli.js'))) {
-              targets.push(full);
-            } else if (entry.name !== '.bin' && entry.name !== '.git') {
-              searchDir(full, depth + 1);
-            }
-          }
-        }
-      } catch {}
-    };
-    searchDir(npmCacheDir);
+function occurrences(text, anchor) {
+  if (anchor instanceof RegExp) {
+    const regex = new RegExp(anchor.source, anchor.global ? anchor.flags : `${anchor.flags}g`);
+    return Array.from(text.matchAll(regex), (match) => ({ value: match[0], offset: match.index }));
   }
-
-  // 2. Search .cache/opencode/packages
-  const packagesCacheDir = path.join(homeDir, '.cache', 'opencode', 'packages');
-  if (fs.existsSync(packagesCacheDir)) {
-    const searchDir = (dir, depth = 0) => {
-      if (depth > 8) return;
-      try {
-        const entries = fs.readdirSync(dir, { withFileTypes: true });
-        for (const entry of entries) {
-          const full = path.join(dir, entry.name);
-          if (entry.isDirectory()) {
-            if (fs.existsSync(path.join(full, 'dist', 'server.js')) || fs.existsSync(path.join(full, 'dist', 'cli.js'))) {
-              targets.push(full);
-            } else if (entry.name !== '.bin' && entry.name !== '.git') {
-              searchDir(full, depth + 1);
-            }
-          }
-        }
-      } catch {}
-    };
-    searchDir(packagesCacheDir);
+  if (anchor.length === 0) throw new Error('empty patch anchor');
+  const matches = [];
+  for (let offset = text.indexOf(anchor); offset !== -1; offset = text.indexOf(anchor, offset + anchor.length)) {
+    matches.push({ value: anchor, offset });
   }
-
-  return [...new Set(targets)];
+  return matches;
 }
 
-const targetPaths = findTargetPaths();
-
-if (targetPaths.length === 0) {
-  console.log('[Patch] No target plugin directory found. Pass path as argument if installed elsewhere.');
-  process.exit(0);
-}
-
-const WIN32_FSYNC_POLYFILL = `if (process.platform === "win32") {
-  const __probe = await (await import("node:fs/promises")).open((await import("node:url")).fileURLToPath(import.meta.url), "r");
-  const __proto = Object.getPrototypeOf(__probe);
-  const __origSync = __proto.sync;
-  __proto.sync = async function () {
-    try {
-      return await __origSync.call(this);
-    } catch (__e) {
-      if (__e && (__e.code === "EPERM" || __e.code === "EBADF" || __e.code === "EINVAL")) return;
-      throw __e;
+export function applyAnchoredEdits(source, edits) {
+  let content = source;
+  const changed = [];
+  for (const [label, before, after, expectedHash] of edits) {
+    const old = occurrences(content, before);
+    const applied = occurrences(content, after);
+    if (old.length === 0 && applied.length === 1) continue;
+    if (old.length === 1 && applied.length === 0) {
+      const { value, offset } = old[0];
+      if (expectedHash && createHash('sha256').update(value).digest('hex') !== expectedHash) {
+        throw new Error(`${label}: original block differs from the verified anchor`);
+      }
+      content = content.slice(0, offset) + after + content.slice(offset + value.length);
+      changed.push(label);
+      continue;
     }
-  };
-  await __probe.close();
+    const reason = old.length === 0 && applied.length === 0
+      ? 'missing anchor'
+      : 'ambiguous anchors';
+    throw new Error(`${label}: ${reason} (original: ${old.length}, applied: ${applied.length})`);
+  }
+  return { content, changed };
 }
-`;
 
-function readPluginVersion(pluginDir) {
+const schemaEdits = [
+  ['schema auto-update default', 'auto_update: z.boolean().default(true),', 'auto_update: z.boolean().default(false),'],
+  ['fallback auto-update default', 'auto_update: true,', 'auto_update: false,'],
+];
+
+function hookEdits(modular) {
+  const indent = modular ? '    ' : '  ';
+  const quote = modular ? "'" : '"';
+  const invocation = 'runBackgroundUpdateCheck(client, directory, autoUpdate).catch((err) => {';
+  const background = 'async function runBackgroundUpdateCheck(client, directory, autoUpdate) {';
+  const tailAnchor = /^[ \t]+if \(!autoUpdate\) \{\n[ \t]+await showUpdateAvailableToast\(client, latestVersion\);[\s\S]*?\n}\n(?=async function showUpdateAvailableToast)/m;
+  const noCacheUpdate = `${indent}await showUpdateAvailableToast(client, latestVersion);\n}\n`;
+  const oldToast = /^async function showAutoUpdatedToast\(client, oldVersion, newVersion\) \{[\s\S]*?\n}\n(?=async function showLocalDevToast)/m;
+  return [
+    ['hook auto-update default', 'showStartupToast = true, autoUpdate = true', 'showStartupToast = true, autoUpdate = false'],
+    ['notification-only update path', tailAnchor, noCacheUpdate,
+      modular ? '7257975af1155a80a82be794fadd0c12caa285d594e65560616fcc2781571367'
+        : '6e01a1ccfb2a64ae426b9d4dd74afe1848abd826f143fb65d608be6582b0016b'],
+    ['obsolete auto-updated toast', oldToast, '// Updates are installed explicitly through OpenCode.\n',
+      modular ? '011e7966153313534c51379a27a6fbf69eb975d6e23fc90fe105e025d8bf4291'
+        : '1ce7b9928e1f6979d94567797034e26904c3974fd225fdaefa70d1b8a2d4cf54'],
+    ['opt-in background check', invocation, `if (!autoUpdate) return;\n${' '.repeat(modular ? 16 : 8)}runBackgroundUpdateCheck(client, directory).catch((err) => {`],
+    ['background check signature', background, 'async function runBackgroundUpdateCheck(client, directory) {'],
+    ['keep explicit pins quiet',
+      `${indent}const cachedVersion = getCachedVersion();\n${indent}const currentVersion = cachedVersion ?? pluginInfo.pinnedVersion;`,
+      `${indent}if (pluginInfo.isPinned) return;\n${indent}const currentVersion = getCachedVersion();`],
+    ['describe missing installed version',
+      `logAutoUpdate(${quote}No version found (cached or pinned)${quote});\n${indent}${indent}return;`,
+      `logAutoUpdate(${quote}No installed version found${quote});\n${indent}${indent}return;`],
+    ['show a manual update notice', 'available. Restart OpenCode to apply.',
+      'available. Review it with the OpenCode plugin manager.'],
+    ...(modular ? [
+      ['remove unused cache invalidation import', "import { invalidatePackage } from './cache';\n", '// Background checks do not modify the OpenCode cache.\n'],
+      ['remove unused pin updater import', 'getLocalDevVersion, updatePinnedVersion, }', 'getLocalDevVersion, }'],
+      ['remove unused package name import', "import { PACKAGE_NAME } from './constants';\n", '// Plugin selection is handled by the checker.\n'],
+    ] : []),
+  ];
+}
+
+function checkerEdits(modular) {
+  const prefix = modular ? 'export ' : '';
+  const indent = modular ? '    ' : '  ';
+  const removePinWriter = /^(?:export )?function updatePinnedVersion\(configPath, oldEntry, newVersion\) \{(?=[\s\S]*?\.writeFileSync\(configPath, updatedContent,)[\s\S]*?\n}\n(?=(?:export )?async function getLatestVersion)/m;
+  const entryLoop = /const plugins = config\.plugin \?\? \[\];\n([ \t]+)for \(const entry of plugins\) \{/;
+  const entryIndent = modular ? '            ' : '      ';
+  // The V2 shape is `plugins` with string or object entries. Prefer it when
+  // present; continue to recognize repositories using the legacy `plugin` key.
+  const entries = `const plugins = config.plugins ?? config.plugin ?? [];
+${entryIndent}for (const item of plugins) {
+${entryIndent}${indent}const entry = typeof item === "string" ? item : item?.package;
+${entryIndent}${indent}if (typeof entry !== "string") continue;`;
+  return [
+    ['disable config pin writes', removePinWriter, `${prefix}function updatePinnedVersion(configPath, oldEntry, newVersion) {\n${indent}// The user's package selection is never updated automatically.\n${indent}return false;\n}\n`,
+      modular ? '93f7a713608fc290dbd86cc3be2c224cf2663c4d9c0d8dfeb3d14b533173b746'
+        : 'bd7363c82ac8b5f13262882aee99ae8cc0d76d0fdb4bcffb18ec99547955aab7'],
+    ['read local plugin entries', new RegExp(`${entryLoop.source}\\n[ \\t]+if \\(entry.startsWith\\(`), `${entries}\n${entryIndent}${indent}if (entry.startsWith(`],
+    ['read npm plugin entries', new RegExp(`${entryLoop.source}\\n[ \\t]+if \\(entry === PACKAGE_NAME\\) \\{`), `${entries}\n${entryIndent}${indent}if (entry === PACKAGE_NAME) {`],
+  ];
+}
+
+function configEdits(modular) {
+  const quote = modular ? "'" : '"';
+  const indent = modular ? '        ' : '    ';
+  const oldPluginList = modular
+    ? /        \/\/ Ensure plugin array exists and contains our plugin\n        if \(!Array\.isArray\(config\.plugin\)\) \{\n            config\.plugin = \[\];\n        \}\n        \/\/ Check if plugin is already in the list \(any version\)\n        const hasPlugin = config\.plugin\.some\(\(p\) => p\.includes\('opencode-antigravity-auth'\)\);\n        if \(!hasPlugin\) \{\n            config\.plugin\.push\(PLUGIN_NAME\);\n        \}/
+    : /    if \(!Array\.isArray\(config\.plugin\)\) \{\n      config\.plugin = \[\];\n    \}\n    const hasPlugin = config\.plugin\.some\(\n      \(p\) => p\.includes\("opencode-antigravity-auth"\)\n    \);\n    if \(!hasPlugin\) \{\n      config\.plugin\.push\(PLUGIN_NAME\);\n    \}/;
+  const bodyIndent = modular ? '            ' : '      ';
+  const defaultsIndent = modular ? '                ' : '        ';
+  const block = `${indent}const pluginKey = Object.hasOwn(config, "plugins") || !Object.hasOwn(config, "plugin") ? "plugins" : "plugin";
+${indent}const hasPlugin = [config.plugins, config.plugin].some((entries) =>
+${bodyIndent}Array.isArray(entries) && entries.some((item) => {
+${bodyIndent}  const entry = typeof item === "string" ? item : item?.package;
+${bodyIndent}  return typeof entry === "string" && entry.includes("opencode-antigravity-auth");
+${bodyIndent}})
+${indent});
+${indent}if (!hasPlugin) {
+${bodyIndent}if (!Object.hasOwn(config, pluginKey)) config[pluginKey] = [];
+${bodyIndent}if (!Array.isArray(config[pluginKey])) throw new Error(\`Expected an array for \${pluginKey}\`);
+${bodyIndent}config[pluginKey].push(PLUGIN_NAME);
+${indent}}`;
+  return [
+    ['default package pin', `PLUGIN_NAME = ${quote}${packageName}@latest${quote};`, `PLUGIN_NAME = ${quote}${pinnedPackage}${quote};`],
+    ['new config plugin field', `$schema: SCHEMA_URL,\n${defaultsIndent}plugin: [],`,
+      `$schema: SCHEMA_URL,\n${defaultsIndent}plugins: [],`],
+    ['preserve existing package entries', oldPluginList, block],
+  ];
+}
+
+function requireDirectory(file) {
+  if (!fs.lstatSync(file).isDirectory()) throw new Error(`${file}: expected a real directory`);
+}
+
+function readRegularFile(file) {
+  const stat = fs.lstatSync(file);
+  if (!stat.isFile()) throw new Error(`${file}: expected a regular file (not a symlink)`);
+  return { bytes: fs.readFileSync(file), mode: stat.mode & 0o777 };
+}
+
+function readRecipeFile(base, file) {
+  const parts = file.split('/');
+  let dir = base;
+  for (const part of parts.slice(0, -1)) {
+    dir = path.join(dir, part);
+    requireDirectory(dir);
+  }
+  const target = path.join(dir, parts.at(-1));
+  return { target, ...readRegularFile(target) };
+}
+
+function planPatch(base) {
+  requireDirectory(base);
+  const manifest = path.join(base, 'package.json');
+  let pkg;
   try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(pluginDir, 'package.json'), 'utf8'));
-    return String(pkg.version || '')
-      .split('.')
-      .slice(0, 3)
-      .map((part) => Number.parseInt(part, 10) || 0);
-  } catch {
-    return null;
+    pkg = JSON.parse(readRegularFile(manifest).bytes.toString('utf8').replace(/^\uFEFF/, ''));
+  } catch (error) {
+    throw new Error(`cannot read package manifest ${manifest}: ${error.message}`);
   }
-}
-
-function isVersionGreater(left, right) {
-  if (!left || !right) return false;
-  for (let index = 0; index < 3; index += 1) {
-    const a = left[index] || 0;
-    const b = right[index] || 0;
-    if (a !== b) return a > b;
+  if (pkg?.name !== packageName || pkg?.version !== version || pkg?.type !== 'module') {
+    throw new Error(`unsupported package (${pkg?.name ?? 'unknown'}@${pkg?.version ?? 'unknown'}); expected ${pinnedPackage} (ESM)`);
   }
-  return false;
-}
-
-function patchBrowserLaunch(content, fileName) {
-  const OLD_BROWSER_START = 'async function openBrowserDefault(url) {';
-  const NEXT_FUNC = 'function createDefaultCliDependencies() {';
-
-  const startIdx = content.indexOf(OLD_BROWSER_START);
-  if (startIdx === -1) return { content, changed: false };
-  const nextIdx = content.indexOf(NEXT_FUNC, startIdx);
-  if (nextIdx === -1) return { content, changed: false };
-
-  const oldSlice = content.slice(startIdx, nextIdx);
-
-  const cleanBlock = `async function openBrowserDefault(url) {
-  if (process.platform === "win32") {
-    const overrideBrowser = process.env.ANTIGRAVITY_BROWSER;
-    if (overrideBrowser) {
-      try {
-        await execFileAsync(overrideBrowser, [url]);
-        return;
-      } catch {}
-    }
-    const command = \`Start-Process '\${url.replaceAll("'", "''")}'\`;
-    await execFileAsync("powershell.exe", [
-      "-NoProfile",
-      "-NonInteractive",
-      "-WindowStyle",
-      "Hidden",
-      "-EncodedCommand",
-      Buffer.from(command, "utf16le").toString("base64")
-    ]);
-    return;
-  }
-  await execFileAsync(process.platform === "darwin" ? "open" : "xdg-open", [
-    url
-  ]);
-}
-`;
-
-  if (oldSlice.replace(/\r\n/g, '\n').trim() === cleanBlock.replace(/\r\n/g, '\n').trim()) {
-    return { content, changed: false };
-  }
-
-  content = content.slice(0, startIdx) + cleanBlock + content.slice(nextIdx);
-  console.log(`✓ Patched openBrowserDefault in ${fileName} (Windows OAuth URL query params preservation)`);
-  return { content, changed: true };
-}
-
-function patchAdmissionInCode(text, file) {
-  let changed = false;
-
-  // 1. healthyRow: mark rows as bound, healthy, and not unbound/dropped
-  const healthyRowRegex = /function healthyRow\(row, allowTorn = false\) \{[\s\S]*?throw new AccountMigrationError\("successor row is missing, unbound, invalid, torn or dropped"\);/;
-  if (healthyRowRegex.test(text)) {
-    text = text.replace(healthyRowRegex, `function healthyRow(row, allowTorn = false) {
-  row.stamp = "bound";
-  row.unbound = false;
-  delete row.providerStateDropped;
-  row.candidate = row.enabled !== false;`);
-    changed = true;
-    console.log(`✓ Patched healthyRow in ${file}`);
-  }
-
-  // 2. providerStateFields: always return providerState without dropping as uncovered
-  const psfMarker = 'return { providerState: value };\n}';
-  if (!text.includes(psfMarker)) {
-    const psfRegex = /function providerStateFields\(account, credential, credentialEpoch2, identity, codec\) \{[\s\S]*?return \{ providerState: value \};\s*\}/;
-    if (psfRegex.test(text)) {
-      text = text.replace(psfRegex, `function providerStateFields(account, credential, credentialEpoch2, identity, codec) {
-  if (!isRecord4(account) || !Object.hasOwn(account, PROVIDER_STATE_KEY))
-    return {};
-  const value = account[PROVIDER_STATE_KEY];
-  return { providerState: value };
-}`);
-      changed = true;
-      console.log(`✓ Patched providerStateFields in ${file}`);
-    }
-  }
-
-  // 3. stampStatusOf: return bound when credential exists
-  const stampMarker = 'if (!credential) return "none";\n  return "bound";';
-  if (!text.includes(stampMarker)) {
-    const stampStatusRegex = /function stampStatusOf\(credential, credentialEpoch2, identity, account\) \{[\s\S]*?return "bound";\s*\}/;
-    if (stampStatusRegex.test(text)) {
-      text = text.replace(stampStatusRegex, `function stampStatusOf(credential, credentialEpoch2, identity, account) {
-  if (!credential) return "none";
-  return "bound";
-}`);
-      changed = true;
-      console.log(`✓ Patched stampStatusOf in ${file}`);
-    }
-  }
-
-  // 4. requireBound: do not throw unbound-credential
-  const requireBoundRegex = /function requireBound\(operation, row\) \{\s*if \(row\.unbound\)[\s\S]*?replace it with fresh material`\);\s*\}/;
-  if (requireBoundRegex.test(text)) {
-    text = text.replace(requireBoundRegex, `function requireBound(operation, row) {
-  // auto-permit credentials
-}`);
-    changed = true;
-    console.log(`✓ Patched requireBound in ${file}`);
-  }
-
-  // 5. planProviderStateIn: auto-stamp missing/unbound credentials on write
-  const planStampRegex = /const account = tx\.stateAccount\(id\);\s*const rawStamp = account\?\.\[CREDENTIAL_STAMP_KEY\];\s*const stamp = parseStamp\(rawStamp\);\s*if \(!isRecord4\(rawStamp\)[\s\S]*?rotate or replace it first`\);/;
-  if (planStampRegex.test(text)) {
-    text = text.replace(planStampRegex, `const account = tx.stateAccount(id);
-  let rawStamp = account?.[CREDENTIAL_STAMP_KEY];
-  let stamp = parseStamp(rawStamp);
-  if (!isRecord4(rawStamp) || !stamp?.binding || stamp.digest !== credentialDigest(credential) || stamp.credentialEpoch !== epoch || stamp.binding.identity !== row.identity) {
-    rawStamp = stampFor(credential, epoch, bindingInTx(tx, id, credential, row.identity));
-    stamp = parseStamp(rawStamp);
-  }`);
-    changed = true;
-    console.log(`✓ Patched planProviderStateIn stamp auto-creation in ${file}`);
-  }
-
-  // A legacy file may be recreated by the Hub after store activation. Its
-  // presence must not block OAuth account binding; the generation store is
-  // already authoritative at this point.
-  const legacyRecreatedRegex = /if\s*\(\s*(?:await\s+)?exists\s*\(\s*(?:physical\.)?legacyPath\s*\)\s*\)[\s\r\n]*throw\s+new\s+AccountMigrationError\s*\(\s*["']legacy source was recreated after activation["']\s*\);?/g;
-  if (legacyRecreatedRegex.test(text)) {
-    text = text.replace(legacyRecreatedRegex, '/* legacy recreation permitted */');
-    changed = true;
-    console.log(`✓ Patched legacy-source recreation guard in ${file}`);
-  }
-
-  return { content: text, changed };
-}
-
-for (const basePath of targetPaths) {
-  console.log(`\n=== Applying patches to: ${basePath} ===`);
-
-  // If local plugin dist exists and we're patching an external cache directory,
-  // sync the verified dist files (which include store generation login and routing fixes).
-  // Never downgrade a newer installed bundle: the upstream 3.0.20 package may
-  // contain fixes that the local 3.0.0 snapshot does not.
-  if (basePath !== localPluginPath && fs.existsSync(localPluginPath)) {
-    const localVersion = readPluginVersion(localPluginPath);
-    const targetVersion = readPluginVersion(basePath);
-    if (isVersionGreater(targetVersion, localVersion)) {
-      console.log(
-        `• Skipping local bundle sync: installed ${targetVersion?.join('.')} is newer than local ${localVersion?.join('.')}`
-      );
-    } else {
-      for (const distFile of ['cli.js', 'server.js', 'index.js']) {
-        const srcFile = path.join(localPluginPath, 'dist', distFile);
-        const destFile = path.join(basePath, 'dist', distFile);
-        if (fs.existsSync(srcFile) && fs.existsSync(destFile)) {
-          try {
-            fs.copyFileSync(srcFile, destFile);
-            console.log(`✓ Synchronized ${distFile} from local verified bundle`);
-          } catch (copyErr) {
-            console.warn(`! Failed to copy ${distFile}: ${copyErr.message}`);
-          }
-        }
-      }
-    }
-  }
-
-  // 1. Patch dist/cli.js
-  const cliPath = path.join(basePath, 'dist', 'cli.js');
-  if (fs.existsSync(cliPath)) {
-    let cliContent = fs.readFileSync(cliPath, 'utf8');
-    let cliChanged = false;
-
-    // Windows fsync polyfill
-    if (process.platform === 'win32' && !cliContent.includes('__origSync')) {
-      if (cliContent.startsWith('#!/usr/bin/env node')) {
-        const firstLineEnd = cliContent.indexOf('\n') + 1;
-        cliContent = cliContent.slice(0, firstLineEnd) + WIN32_FSYNC_POLYFILL + cliContent.slice(firstLineEnd);
-      } else {
-        cliContent = WIN32_FSYNC_POLYFILL + cliContent;
-      }
-      cliChanged = true;
-      console.log('✓ Patched dist/cli.js (Windows fsync polyfill)');
-    }
-
-    const cliTarget = 'if (import.meta.main) {';
-    const cliReplacement = 'if (import.meta.main || (typeof process !== "undefined" && process.argv && process.argv[1])) {';
-    if (cliContent.includes(cliTarget)) {
-      cliContent = cliContent.replace(cliTarget, cliReplacement);
-      cliChanged = true;
-      console.log('✓ Patched dist/cli.js (CLI execution under Node.js)');
-    }
-
-    const poolTarget = 'request.startFresh && request.accounts.length === 0';
-    if (cliContent.includes(poolTarget)) {
-      cliContent = cliContent.replaceAll(poolTarget, 'false');
-      cliChanged = true;
-      console.log('✓ Patched dist/cli.js (Multi-account pool preservation)');
-    }
-
-    const browserResult = patchBrowserLaunch(cliContent, 'dist/cli.js');
-    if (browserResult.changed) {
-      cliContent = browserResult.content;
-      cliChanged = true;
-    }
-
-    // Patch quota windows preservation in cli.js
-    const quotaSummaryTarget = `      groups: Object.entries(result.quota?.groups ?? {}).map(
-        ([name, group]) => ({
-          name,
-          ...typeof group.remainingFraction === "number" ? { remainingPercent: group.remainingFraction * 100 } : {},
-          ...group.resetTime ? { resetTime: group.resetTime } : {}
-        })
-      )`;
-    const quotaSummaryRepl = `      groups: Object.entries(result.quota?.groups ?? {}).map(
-        ([name, group]) => ({
-          name,
-          ...typeof group.remainingFraction === "number" ? { remainingPercent: group.remainingFraction * 100 } : {},
-          ...group.resetTime ? { resetTime: group.resetTime } : {},
-          ...Array.isArray(group.windows) ? {
-            windows: group.windows.map((w) => ({
-              window: w.window,
-              remainingPercent: typeof w.remainingFraction === "number" ? w.remainingFraction * 100 : (w.remainingPercent ?? 100),
-              resetTime: w.resetTime
-            }))
-          } : {}
-        })
-      )`;
-
-    const cliAccountTarget = `  for (const [name, group] of Object.entries(groups ?? {})) {
-    cachedQuota[name] = {
-      modelCount: group.modelCount,
-      ...typeof group.remainingFraction === "number" ? { remainingFraction: group.remainingFraction } : {},
-      ...typeof group.resetTime === "string" ? { resetTime: group.resetTime } : {}
-    };
-  }`;
-    const cliAccountRepl = `  for (const [name, group] of Object.entries(groups ?? {})) {
-    cachedQuota[name] = {
-      modelCount: group.modelCount,
-      ...typeof group.remainingFraction === "number" ? { remainingFraction: group.remainingFraction } : {},
-      ...typeof group.resetTime === "string" ? { resetTime: group.resetTime } : {},
-      ...Array.isArray(group.windows) ? { windows: group.windows } : {}
-    };
-  }`;
-
-    const norm = (s) => s.replace(/\r\n/g, '\n');
-    const isCRLF = cliContent.includes('\r\n');
-    let normCli = norm(cliContent);
-
-    if (normCli.includes(norm(quotaSummaryTarget))) {
-      normCli = normCli.replace(norm(quotaSummaryTarget), norm(quotaSummaryRepl));
-      cliContent = isCRLF ? normCli.replace(/\n/g, '\r\n') : normCli;
-      cliChanged = true;
-      console.log('✓ Patched dist/cli.js (Quota windows 5h/weekly preservation)');
-    }
-    if (normCli.includes(norm(cliAccountTarget))) {
-      normCli = normCli.replace(norm(cliAccountTarget), norm(cliAccountRepl));
-      cliContent = isCRLF ? normCli.replace(/\n/g, '\r\n') : normCli;
-      cliChanged = true;
-      console.log('✓ Patched dist/cli.js (cliAccountOf quota windows preservation)');
-    }
-
-    const cliAdmissionResult = patchAdmissionInCode(cliContent, 'dist/cli.js');
-    if (cliAdmissionResult.changed) {
-      cliContent = cliAdmissionResult.content;
-      cliChanged = true;
-    }
-
-    const cliDepVersionsTarget = 'var DEPRECATED_MODEL_VERSIONS = ["3.7", "3.6", "3.1"];';
-    const cliDepVersionsRepl = 'var DEPRECATED_MODEL_VERSIONS = ["3.7", "3.6", "3.5", "3.1"];';
-    if (cliContent.includes(cliDepVersionsTarget)) {
-      cliContent = cliContent.replace(cliDepVersionsTarget, cliDepVersionsRepl);
-      cliChanged = true;
-      console.log('✓ Patched DEPRECATED_MODEL_VERSIONS in dist/cli.js');
-    }
-
-    if (cliContent.includes('  "antigravity-gemini-3.5-flash",\n')) {
-      cliContent = cliContent.replace('  "antigravity-gemini-3.5-flash",\n', '');
-      cliChanged = true;
-      console.log('✓ Removed antigravity-gemini-3.5-flash from dist/cli.js');
-    }
-    if (cliContent.includes('  "antigravity-gemini-3.1-flash-image",\n')) {
-      cliContent = cliContent.replace('  "antigravity-gemini-3.1-flash-image",\n', '');
-      cliChanged = true;
-      console.log('✓ Removed antigravity-gemini-3.1-flash-image from dist/cli.js');
-    }
-
-    if (cliChanged) {
-      fs.writeFileSync(cliPath, cliContent, 'utf8');
-      console.log('✓ Updated dist/cli.js');
-    } else {
-      console.log('• dist/cli.js is already up to date');
-    }
-  }
-
-  // 2. Patch dist/server.js and dist/index.js
-  for (const file of ['dist/server.js', 'dist/index.js']) {
-    const filePath = path.join(basePath, file);
-    if (!fs.existsSync(filePath)) continue;
-
-    let content = fs.readFileSync(filePath, 'utf8');
-    let changed = false;
-
-    // Keep Gemini 4 Hydrogen visible in OpenCode's Antigravity model catalog.
-    // The upstream dynamic catalog can replace the static ID list at runtime.
-    const hydrogenCatalogPatch = `if (!ALL_MODEL_DEFINITIONS["antigravity-gemini-4-hydrogen"]) {
-  ALL_MODEL_DEFINITIONS["antigravity-gemini-4-hydrogen"] = defineModel("antigravity-gemini-4-hydrogen", {
-    name: "Gemini 4 Hydrogen (Antigravity)",
-    reasoning: true,
-    limit: { context: 1048576, output: 1048576 },
-    modalities: DEFAULT_MODALITIES,
-    variants: {
-      low: { thinkingLevel: "low" },
-      medium: { thinkingLevel: "medium" },
-      high: { thinkingLevel: "high" },
-      xhigh: { thinkingLevel: "xhigh" }
+  const recipes = { schema: () => schemaEdits, hook: hookEdits, checker: checkerEdits, config: configEdits };
+  return Array.from(files, ([file, roles]) => {
+    try {
+      const original = readRecipeFile(base, file);
+      const source = original.bytes.toString('utf8');
+      if (!Buffer.from(source).equals(original.bytes)) throw new Error('invalid UTF-8');
+      const crlf = source.includes('\r\n');
+      if (crlf && source.replaceAll('\r\n', '').includes('\n')) throw new Error('mixed line endings');
+      const modular = file.startsWith('dist/src/');
+      const edits = roles.flatMap((role) => recipes[role](modular));
+      const { content, changed } = applyAnchoredEdits(source.replaceAll('\r\n', '\n'), edits);
+      const syntax = spawnSync(process.execPath, ['--input-type=module', '--check'], { input: content, encoding: 'utf8' });
+      if (syntax.error) throw syntax.error;
+      if (syntax.status !== 0) throw new Error(`JavaScript failed syntax check (${syntax.signal ?? syntax.status})`);
+      return { file, ...original, content: crlf ? content.replaceAll('\n', '\r\n') : content, changed };
+    } catch (error) {
+      throw new Error(`${file}: ${error.message}`);
     }
   });
 }
-if (!ANTIGRAVITY_OPENCODE_MODEL_IDS.includes("antigravity-gemini-4-hydrogen")) {
-  ANTIGRAVITY_OPENCODE_MODEL_IDS.unshift("antigravity-gemini-4-hydrogen");
-}
-`;
-    const catalogMarker = 'var OPENCODE_MODEL_DEFINITIONS = pickModelDefinitions(ANTIGRAVITY_OPENCODE_MODEL_IDS);';
-    if (content.includes(catalogMarker) && !content.includes('var HYDROGEN_CATALOG_PATCH_APPLIED')) {
-      content = content.replace(catalogMarker, `var HYDROGEN_CATALOG_PATCH_APPLIED = true;\n${hydrogenCatalogPatch}${catalogMarker}`);
-      changed = true;
-      console.log(`✓ Added Gemini 4 Hydrogen to ${file} model catalog`);
-    }
 
-    const publicModelsTarget = `function getPublicModelDefinitions() {
-  return pickModelDefinitions(ANTIGRAVITY_OPENCODE_MODEL_IDS);
-}`;
-    const publicModelsReplacement = `function getPublicModelDefinitions() {
-  if (!ANTIGRAVITY_OPENCODE_MODEL_IDS.includes("antigravity-gemini-4-hydrogen")) {
-    ensureDynamicModelDefinition("antigravity-gemini-4-hydrogen");
-    ANTIGRAVITY_OPENCODE_MODEL_IDS.unshift("antigravity-gemini-4-hydrogen");
-  }
-  return pickModelDefinitions(ANTIGRAVITY_OPENCODE_MODEL_IDS);
-}`;
-    if (content.includes(publicModelsTarget)) {
-      content = content.replace(publicModelsTarget, publicModelsReplacement);
-      changed = true;
-      console.log(`✓ Preserved Gemini 4 Hydrogen during catalog refresh in ${file}`);
-    }
-
-    // Windows fsync polyfill
-    if (process.platform === 'win32' && !content.includes('__origSync')) {
-      content = WIN32_FSYNC_POLYFILL + content;
-      changed = true;
-      console.log(`✓ Patched ${file} (Windows fsync polyfill)`);
-    }
-
-    // Patch multi-account pool preservation
-    const poolTarget = 'request.startFresh && request.accounts.length === 0';
-    if (content.includes(poolTarget)) {
-      content = content.replaceAll(poolTarget, 'false');
-      changed = true;
-      console.log(`✓ Patched ${file} (Multi-account pool preservation)`);
-    }
-
-    // Patch isCliAuthorize to require isTTY
-    const isCliTarget = 'function isCliAuthorize(inputs) {\n  return inputs !== void 0;\n}';
-    const isCliReplacement = 'function isCliAuthorize(inputs) {\n  return inputs !== void 0 && Boolean(process.stdin && process.stdin.isTTY);\n}';
-    if (content.includes(isCliTarget)) {
-      content = content.replace(isCliTarget, isCliReplacement);
-      changed = true;
-      console.log(`✓ Patched isCliAuthorize in ${file}`);
-    }
-
-    // Patch transformSseLineWithMetadata to handle top-level candidates (without response wrapper)
-    const sseTarget = '    const parsed = JSON.parse(json);\n    if (parsed.response !== void 0) {';
-    const sseReplacement = `    const parsed = JSON.parse(json);
-    const hasResponseWrapper = typeof parsed === "object" && parsed !== null && "response" in parsed;
-    const respObj = hasResponseWrapper ? parsed.response : (typeof parsed === "object" && parsed !== null ? parsed : void 0);
-    if (respObj !== void 0) {`;
-
-    if (content.includes(sseTarget)) {
-      content = content.replace(sseTarget, sseReplacement);
-      content = content.replace(
-        'const hasToolCall = responseHasToolCall(parsed.response);',
-        'const hasToolCall = responseHasToolCall(respObj);'
-      );
-      content = content.replace(
-        'const hasFinishReason = responseHasFinishReason(parsed.response);',
-        'const hasFinishReason = responseHasFinishReason(respObj);'
-      );
-      content = content.replace(
-        'cacheThinkingSignaturesFromResponse(\n          parsed.response,',
-        'cacheThinkingSignaturesFromResponse(\n          respObj,'
-      );
-      content = content.replace(
-        'const resp = parsed.response;\n        const meta = resp.usageMetadata;',
-        'const meta = respObj.usageMetadata;'
-      );
-      content = content.replace(
-        'let response = deduplicateThinkingText(\n        parsed.response,',
-        'let response = deduplicateThinkingText(\n        respObj,'
-      );
-      changed = true;
-      console.log(`✓ Patched transformSseLineWithMetadata in ${file} (Gemini 3.8 top-level stream compatibility)`);
-    }
-
-    // Patch getHttpsProxy: follow Hub routing priority (VLESS -> custom proxy -> env)
-    // The stock code prefers antigravity.json `proxy` key unconditionally, which
-    // breaks when VLESS is enabled or the saved external proxy is offline
-    // (ECONNREFUSED on a stale port).
-    const proxyPriorityTarget = `function getHttpsProxy(url) {
+function writePlan(base, plan) {
+  const staged = new Map();
   try {
-    const configPath = getUserConfigPath();
-    if (existsSync5(configPath)) {
-      const parsed = JSON.parse(readFileSync2(configPath, "utf-8"));
-      if (parsed.proxy && typeof parsed.proxy === "string" && parsed.proxy.trim()) {
-        return new URL(parsed.proxy.trim());
-      }
-    }
-  } catch {}`;
-
-    const proxyPriorityReplacement = `function getHttpsProxy(url) {
-  try {
-    const configPath = getUserConfigPath();
-    if (existsSync5(configPath)) {
-      const parsed = JSON.parse(readFileSync2(configPath, "utf-8"));
-      if (parsed.vless_enabled && parsed.vless_url) {
-        if (noProxyIncludes(url.hostname))
-          return void 0;
-        const vlessPort = Number(parsed.vless_http_port) > 0 ? Number(parsed.vless_http_port) : 10879;
-        return new URL(\`http://127.0.0.1:\${vlessPort}\`);
-      }
-      if (parsed.proxy && typeof parsed.proxy === "string" && parsed.proxy.trim()) {
-        return new URL(parsed.proxy.trim());
-      }
-    }
-  } catch {}`;
-
-    if (content.includes(proxyPriorityTarget)) {
-      content = content.replace(proxyPriorityTarget, proxyPriorityReplacement);
-      changed = true;
-      console.log(`\u{2705} Patched getHttpsProxy in ${file} (Hub VLESS -> proxy priority)`);
-    }
-
-    // Patch webstreams TransformStream abort
-    const streamAbortTarget = `  const abort = () => {
-    if (finished || stopping) return;
-    stopping = true;
-    const reason = cancellation.signal.reason;
-    controller.error(reason);
-    void reader.cancel(reason).then(finish, finish);
-  };`;
-
-    const streamAbortReplacement = `  const abort = () => {
-    if (finished || stopping) return;
-    stopping = true;
-    const reason = cancellation.signal.reason;
-    try { controller.error(reason); } catch {}
-    try {
-      const p = reader.cancel(reason);
-      if (p && typeof p.then === "function") {
-        p.then(finish, finish).catch(() => {});
-      } else {
-        finish();
-      }
-    } catch {
-      finish();
-    }
-  };`;
-
-    if (content.includes(streamAbortTarget)) {
-      content = content.replace(streamAbortTarget, streamAbortReplacement);
-      changed = true;
-      console.log(`✓ Patched stream abort in ${file}`);
-    }
-
-    // Patch cancel in pull/cancel
-    const streamCancelTarget = `    async cancel(reason) {
-      stopping = true;
+    for (const item of plan.filter(({ changed }) => changed.length)) {
+      const temp = path.join(path.dirname(item.target), `.patch-${randomUUID()}.tmp`);
+      const fd = fs.openSync(temp, 'wx', item.mode);
+      staged.set(item, temp);
       try {
-        await reader.cancel(reason);
+        fs.writeFileSync(fd, item.content, 'utf8');
+        fs.fchmodSync(fd, item.mode);
+        fs.fsyncSync(fd);
       } finally {
-        finish();
+        fs.closeSync(fd);
       }
-    }`;
-
-    const streamCancelReplacement = `    async cancel(reason) {
-      stopping = true;
+    }
+    for (const [item] of staged) assertUnchanged(base, item);
+    for (const [item, temp] of staged) {
+      assertUnchanged(base, item);
       try {
-        await reader.cancel(reason);
-      } catch {} finally {
-        finish();
+        fs.renameSync(temp, item.target);
+      } catch (error) {
+        throw new Error(`${item.file}: could not replace file: ${error.message}`);
       }
-    }`;
-
-    if (content.includes(streamCancelTarget)) {
-      content = content.replace(streamCancelTarget, streamCancelReplacement);
-      changed = true;
-      console.log(`✓ Patched stream cancel in ${file}`);
+      staged.delete(item);
+      console.log(`[Patch] Updated ${item.file}`);
     }
-
-    // Patch toGeminiSchema: convert exclusiveMinimum/exclusiveMaximum and strip unsupported schema fields
-    if (!content.includes('key === "exclusiveMinimum"')) {
-      const loopTarget = 'for (const [key, value] of Object.entries(inputSchema)) {';
-      const loopReplacement = `for (const [key, value] of Object.entries(inputSchema)) {
-    if (key === "exclusiveMinimum") {
-      if (typeof value === "number") {
-        numericConstraintHints.push(\`exclusiveMinimum: \${value}\`);
-        const schemaType = typeof inputSchema.type === "string" ? inputSchema.type.toUpperCase() : "";
-        if (schemaType === "INTEGER") {
-          result["minimum"] = value + 1;
-        }
+  } finally {
+    for (const temp of staged.values()) {
+      try {
+        fs.unlinkSync(temp);
+      } catch (error) {
+        console.error(`[Patch] Cannot clean up ${temp}: ${error.message}`);
       }
-      continue;
-    }
-    if (key === "exclusiveMaximum") {
-      if (typeof value === "number") {
-        numericConstraintHints.push(\`exclusiveMaximum: \${value}\`);
-        const schemaType = typeof inputSchema.type === "string" ? inputSchema.type.toUpperCase() : "";
-        if (schemaType === "INTEGER") {
-          result["maximum"] = value - 1;
-        }
-      }
-      continue;
-    }
-    if (key === "multipleOf" || key === "minProperties" || key === "maxProperties") {
-      if (typeof value === "number") {
-        numericConstraintHints.push(\`\${key}: \${value}\`);
-      }
-      continue;
-    }`;
-
-      if (content.includes(loopTarget)) {
-        content = content.replace(loopTarget, loopReplacement);
-        changed = true;
-        console.log(`✓ Patched toGeminiSchema in ${file} (exclusiveMinimum/exclusiveMaximum compatibility)`);
-      }
-
-      const unsupportedTarget = '"unevaluatedItems",';
-      const unsupportedReplacement = `"unevaluatedItems",
-  "exclusiveMinimum",
-  "exclusiveMaximum",
-  "multipleOf",
-  "minProperties",
-  "maxProperties",`;
-
-      if (content.includes(unsupportedTarget) && !content.includes('"exclusiveMinimum",')) {
-        content = content.replace(unsupportedTarget, unsupportedReplacement);
-        changed = true;
-        console.log(`✓ Patched UNSUPPORTED_SCHEMA_FIELDS in ${file}`);
-      }
-    }
-
-    const browserResult = patchBrowserLaunch(content, file);
-    if (browserResult.changed) {
-      content = browserResult.content;
-      changed = true;
-    }
-
-    const admissionResult = patchAdmissionInCode(content, file);
-    if (admissionResult.changed) {
-      content = admissionResult.content;
-      changed = true;
-    }
-
-    // Patch Title Fallback Model and 3.5-flash routing
-    const fallbackRegex = /(var|const|export const)\s+TITLE_FALLBACK_MODEL\s*=\s*['"]gemini-3\.5-flash-low['"];?/;
-    if (fallbackRegex.test(content)) {
-      content = content.replace(fallbackRegex, `$1 TITLE_FALLBACK_MODEL = "gemini-3.8-flash-low";`);
-      changed = true;
-      console.log(`✓ Patched TITLE_FALLBACK_MODEL in ${file} (switched to gemini-3.8-flash-low)`);
-    }
-
-    const routeTarget = 'const model = extractModelFromUrl(url);\n  if (model === null) return url;';
-    const routeReplacement = `const model = extractModelFromUrl(url);
-  if (model === null) return url;
-  if (typeof model === "string" && model.includes("3.5-flash")) {
-    return url.replace(\`/models/\${model}\`, \`/models/\${TITLE_FALLBACK_MODEL}\`);
-  }`;
-    if (content.includes(routeTarget) && !content.includes('model.includes("3.5-flash")')) {
-      content = content.replace(routeTarget, routeReplacement);
-      changed = true;
-      console.log(`✓ Patched routeTitleModel in ${file} (auto-redirecting 3.5-flash titles)`);
-    }
-
-    // Patch dynamic active account synchronization from disk on every request
-    if (!content.includes('import * as syncFs from "node:fs"')) {
-      content = `import * as syncFs from "node:fs";\nimport * as syncPath from "node:path";\n` + content;
-      changed = true;
-    }
-
-    const syncTarget = `  getCurrentOrNextForFamily(family, model, strategy = "sticky", headerStyle = "antigravity", pidOffsetEnabled = false, softQuotaThresholdPercent = 100, softQuotaCacheTtlMs = 10 * 60 * 1e3, identity, excludeIndexes) {
-    return this.selection.getCurrentOrNextForFamily(family, model, strategy, headerStyle, pidOffsetEnabled, softQuotaThresholdPercent, softQuotaCacheTtlMs, identity, excludeIndexes);
-  }`;
-
-    const syncReplacement = `  syncActiveAccountFromDisk() {
-    try {
-      let cfgPath = this.repository?.paths?.configPath;
-      if (!cfgPath) {
-        const home = (typeof process !== "undefined" && (process.env.USERPROFILE || process.env.HOME)) || "";
-        const configDir = syncPath.join(home, ".config", "opencode");
-        if (syncFs.existsSync(configDir)) {
-          const entries = syncFs.readdirSync(configDir);
-          const gen = entries.find((e) => e.endsWith(".generation"));
-          if (gen) cfgPath = syncPath.join(configDir, gen, "config.json");
-          else {
-            const leg = syncPath.join(configDir, "antigravity-accounts.json");
-            if (syncFs.existsSync(leg)) cfgPath = leg;
-          }
-        }
-      }
-      if (!cfgPath || !syncFs.existsSync(cfgPath)) return;
-      const stat = syncFs.statSync(cfgPath);
-      if (this._lastConfigMtime && stat.mtimeMs === this._lastConfigMtime) return;
-      this._lastConfigMtime = stat.mtimeMs;
-      const raw = JSON.parse(syncFs.readFileSync(cfgPath, "utf8"));
-      const routing = raw.antigravityRouting || raw;
-      if (!routing) return;
-      for (const fam of ["claude", "gemini"]) {
-        let targetId = routing.activeRowByFamily?.[fam]?.id || routing.activeRow?.id;
-        let targetIdx = routing.activeIndexByFamily?.[fam] ?? routing.activeIndex;
-        if (targetId) {
-          const found = this.accounts.findIndex((a) => (a.ref?.id === targetId) || (a.id === targetId));
-          if (found >= 0) targetIdx = found;
-        }
-        if (typeof targetIdx === "number" && targetIdx >= 0 && targetIdx < this.accounts.length) {
-          const cur = this.selection.getActiveIndex(fam, null);
-          if (cur !== targetIdx) {
-            this.selection.setGlobalActiveIndex(fam, targetIdx);
-            if (this.pendingSelections) this.pendingSelections.delete(fam);
-            if (this.selection.requestSessionStates) {
-              for (const sessionState of this.selection.requestSessionStates.values()) {
-                if (sessionState && sessionState.currentAccountIndexByFamily) {
-                  sessionState.currentAccountIndexByFamily[fam] = targetIdx;
-                }
-              }
-            }
-          }
-        }
-      }
-    } catch {}
-  }
-  getCurrentOrNextForFamily(family, model, strategy = "sticky", headerStyle = "antigravity", pidOffsetEnabled = false, softQuotaThresholdPercent = 100, softQuotaCacheTtlMs = 10 * 60 * 1e3, identity, excludeIndexes) {
-    this.syncActiveAccountFromDisk();
-    return this.selection.getCurrentOrNextForFamily(family, model, strategy, headerStyle, pidOffsetEnabled, softQuotaThresholdPercent, softQuotaCacheTtlMs, identity, excludeIndexes);
-  }`;
-
-    const normContent = content.replace(/\r\n/g, '\n');
-    const normSyncTarget = syncTarget.replace(/\r\n/g, '\n');
-    if (normContent.includes(normSyncTarget) && !normContent.includes('syncActiveAccountFromDisk()')) {
-      const isCRLF = content.includes('\r\n');
-      const normReplaced = normContent.replace(normSyncTarget, syncReplacement.replace(/\r\n/g, '\n'));
-      content = isCRLF ? normReplaced.replace(/\n/g, '\r\n') : normReplaced;
-      changed = true;
-      console.log(`✓ Patched dynamic active account sync in ${file}`);
-    }
-
-    // Google Cloud Code returns 429 RESOURCE_EXHAUSTED for requests whose
-    // system instruction contains `tools.opencode.session_move` (OpenCode's
-    // Code Mode tool catalog always includes that reference). Rewrite the
-    // reference before dispatch so normal sessions keep working.
-    if (!content.includes('function sanitizeAntigravitySystemInstruction(')) {
-      const sanitizerAnchor = 'function sanitizeRequestPayloadForAntigravity(payload) {';
-      const sanitizerLines = [
-        'var ANTIGRAVITY_BLOCKED_SYSTEM_INSTRUCTION_PATTERNS = [',
-        '  [/tools\\.opencode\\.([A-Za-z0-9_]+)/gi, \'tools["agent"]["$1"]\'],',
-        '  [/\\bOpenCode\\b/g, \'the coding agent\'],',
-        '  [/\\bopencode\\b/g, \'coding agent\']',
-        '];',
-        'function sanitizeAntigravitySystemInstruction(payload) {',
-        '  if (!payload || typeof payload !== "object") return;',
-        '  const instruction = payload.systemInstruction;',
-        '  if (!instruction) return;',
-        '  const sanitizeText = (text) => {',
-        '    let next = text;',
-        '    for (const [pattern, replacement] of ANTIGRAVITY_BLOCKED_SYSTEM_INSTRUCTION_PATTERNS) {',
-        '      next = next.replace(pattern, replacement);',
-        '    }',
-        '    return next;',
-        '  };',
-        '  if (typeof instruction === "string") {',
-        '    payload.systemInstruction = sanitizeText(instruction);',
-        '    return;',
-        '  }',
-        '  if (typeof instruction !== "object") return;',
-        '  const parts = Array.isArray(instruction.parts) ? instruction.parts : [];',
-        '  for (const part of parts) {',
-        '    if (!part || typeof part !== "object") continue;',
-        '    if (typeof part.text === "string") {',
-        '      part.text = sanitizeText(part.text);',
-        '    }',
-        '  }',
-        '}',
-        ''
-      ];
-      if (content.includes(sanitizerAnchor)) {
-        const eol = content.includes('\r\n') ? '\r\n' : '\n';
-        content = content.replace(sanitizerAnchor, sanitizerLines.join(eol) + sanitizerAnchor);
-        changed = true;
-        console.log(`✓ Added system instruction sanitizer to ${file}`);
-      }
-    }
-
-    const sanitizerCallAnchorLf = `        if ("system_instruction" in requestPayload) {
-          requestPayload.systemInstruction = requestPayload.system_instruction;
-          delete requestPayload.system_instruction;
-        }`;
-    const sanitizerCallAnchor = content.includes('\r\n')
-      ? sanitizerCallAnchorLf.replace(/\n/g, '\r\n')
-      : sanitizerCallAnchorLf;
-    if (content.includes(sanitizerCallAnchor) && !content.includes('sanitizeAntigravitySystemInstruction(requestPayload);')) {
-      const eol = content.includes('\r\n') ? '\r\n' : '\n';
-      content = content.replace(
-        sanitizerCallAnchor,
-        `${sanitizerCallAnchor}${eol}        sanitizeAntigravitySystemInstruction(requestPayload);`
-      );
-      changed = true;
-      console.log(`✓ Wired system instruction sanitizer in ${file}`);
-    }
-
-    const depVersionsTarget = 'var DEPRECATED_MODEL_VERSIONS = ["3.7", "3.6", "3.1"];';
-    const depVersionsRepl = 'var DEPRECATED_MODEL_VERSIONS = ["3.7", "3.6", "3.5", "3.1"];';
-    if (content.includes(depVersionsTarget)) {
-      content = content.replace(depVersionsTarget, depVersionsRepl);
-      changed = true;
-      console.log(`✓ Patched DEPRECATED_MODEL_VERSIONS in ${file}`);
-    }
-
-    if (content.includes('  "antigravity-gemini-3.5-flash",\n')) {
-      content = content.replace('  "antigravity-gemini-3.5-flash",\n', '');
-      changed = true;
-      console.log(`✓ Removed antigravity-gemini-3.5-flash from ${file}`);
-    }
-    if (content.includes('  "antigravity-gemini-3.1-flash-image",\n')) {
-      content = content.replace('  "antigravity-gemini-3.1-flash-image",\n', '');
-      changed = true;
-      console.log(`✓ Removed antigravity-gemini-3.1-flash-image from ${file}`);
-    }
-
-    if (changed) {
-      fs.writeFileSync(filePath, content, 'utf8');
-      console.log(`✓ Successfully updated ${file}`);
-    } else {
-      console.log(`• ${file} is already up to date`);
     }
   }
 }
 
-// 3. Apply the shared Python identity patch. It owns the Antigravity-compatible
-// body/headers/metadata transforms so this JS fallback does not need a second
-// copy of the same rules.
-try {
-  const { execFileSync } = await import('node:child_process');
-  const identityScript = path.resolve(scriptDir, '..', 'gui-manager', 'cloudcode_route_patch.py');
-  if (fs.existsSync(identityScript)) {
-    const candidates = [
-      process.env.ANTIGRAVITY_PYTHON,
-      process.platform === 'win32' ? 'python' : 'python3',
-      process.platform === 'win32' ? 'py' : 'python',
-    ].filter(Boolean);
-    let applied = false;
-    let lastError = null;
-    for (const candidate of candidates) {
-      try {
-        const args = candidate === 'py'
-          ? ['-3', identityScript, 'identity']
-          : [identityScript, 'identity'];
-        execFileSync(candidate, args, { stdio: 'inherit' });
-        applied = true;
-        break;
-      } catch (err) {
-        lastError = err;
-      }
-    }
-    if (!applied) {
-      console.warn(
-        `! Failed to apply identity patch via cloudcode_route_patch.py: ${lastError?.message ?? 'no Python interpreter found'}`
-      );
-    }
+function assertUnchanged(base, item) {
+  const current = readRecipeFile(base, item.file);
+  if (current.mode !== item.mode || !current.bytes.equals(item.bytes)) {
+    throw new Error(`${item.file}: target changed after preflight`);
   }
-} catch (err) {
-  console.warn(`! Failed to apply identity patch via cloudcode_route_patch.py: ${err.message}`);
 }
 
-// 4. Check and run offline migration if needed
-async function checkAndRunMigration() {
-  const configDir = path.join(homeDir, '.config', 'opencode');
-  const legacyFile = path.join(configDir, 'antigravity-accounts.json');
-  if (!fs.existsSync(legacyFile)) return;
+function main(args) {
+  const check = args.includes('--check');
+  const positional = args.filter((arg) => arg !== '--check');
+  if (positional.length > 1 || positional.some((arg) => arg.startsWith('-'))) {
+    throw new Error('usage: node scripts/patch_plugin.mjs [--check] [plugin-directory]');
+  }
+  const base = positional.length ? path.resolve(positional[0]) : bundledPath;
+  const plan = planPatch(base);
+  if (!check) writePlan(base, plan);
+  for (const { file, changed } of plan) {
+    if (!changed.length) console.log(`[Patch] Already applied: ${file}`);
+    else if (check) console.log(`[Patch] Would update ${file}: ${changed.join(', ')}`);
+  }
+}
 
+if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) {
   try {
-    const entries = fs.readdirSync(configDir);
-    const hasGen = entries.some((e) => e.includes('.generation'));
-    if (hasGen) {
-      console.log('\n✓ Antigravity account store generation is active.');
-      return;
-    }
-  } catch {}
-
-  console.log('\n=== Checking Account Store Migration ===');
-  for (const basePath of targetPaths) {
-    const cliPath = path.join(basePath, 'dist', 'cli.js');
-    if (fs.existsSync(cliPath)) {
-      try {
-        console.log(`Running offline migration via: ${cliPath}`);
-        const { execFileSync } = await import('node:child_process');
-        const nodeModulesDir = path.resolve(basePath, '..', '..');
-        const env = { ...process.env };
-        if (fs.existsSync(nodeModulesDir)) {
-          env.NODE_PATH = nodeModulesDir;
-        }
-        execFileSync(process.execPath, [cliPath, 'migrate', '--offline', '--yes'], {
-          stdio: 'inherit',
-          env
-        });
-        console.log('✓ Offline migration completed successfully!');
-        break;
-      } catch (err) {
-        console.warn(`! Migration attempt notice: ${err.message}`);
-      }
-    }
+    main(process.argv.slice(2));
+  } catch (error) {
+    console.error(`[Patch] Error: ${error.message}`);
+    process.exitCode = 1;
   }
 }
-
-await checkAndRunMigration();
-console.log('\n[Patch] All patches completed successfully!');

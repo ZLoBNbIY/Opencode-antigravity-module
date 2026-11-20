@@ -156,8 +156,8 @@ class AccountExportImportTests(unittest.TestCase):
         # Ensure the stale directory would win a plain glob[0] on this platform.
         os.utime(stale, (time.time() + 100, time.time() + 100))
 
-        self.assertEqual(antigravity_manager.get_active_generation_dir(self.config_dir), canonical)
-        self.assertEqual(antigravity_manager.ordered_generation_dirs(self.config_dir)[0], canonical)
+        self.assertEqual(antigravity_manager.get_active_generation_dir(self.config_dir).resolve(), canonical.resolve())
+        self.assertEqual(antigravity_manager.ordered_generation_dirs(self.config_dir)[0].resolve(), canonical.resolve())
         exported = antigravity_manager.export_google_accounts()
         self.assertEqual(len(exported), 1)
         self.assertEqual(exported[0]["email"], "new@example.com")

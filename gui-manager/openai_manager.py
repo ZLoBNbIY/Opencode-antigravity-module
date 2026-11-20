@@ -14,13 +14,14 @@ import threading
 import subprocess
 import sqlite3
 from pathlib import Path
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer
 import urllib.request
 import urllib.parse
 from contextlib import closing
 from html import escape
 
 import secure_storage
+from provider_proxy import _BoundedHandler
 
 OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 OPENAI_ISSUER = "https://auth.openai.com"
@@ -132,12 +133,12 @@ def sync_opencode_db_openai(account: dict | None):
         print(f"[OpenAI Manager] SQLite sync warning: {e}")
 
 
-def sync_opencode_cli_openai(account: dict | None):
-    """Trigger opencode-cli auth import / logout to notify the running OpenCode service."""
-    cli = find_opencode_cli()
-    if not cli:
-        return
+def sync_opencode_cli_openai(account: dict | None) -> bool:
+    """Notify OpenCode via stdin; never create a plaintext OAuth import file."""
     try:
+        cli = find_opencode_cli()
+        if not cli:
+            return True  # Legacy installations use auth.json instead.
         if account:
             cred_id = get_openai_cred_id()
             label = account.get("name") or account.get("email") or "ChatGPT OAuth"
@@ -163,15 +164,20 @@ def sync_opencode_cli_openai(account: dict | None):
             subprocess.run(
                 [cli, "auth", "import"],
                 input=json.dumps(payload),
-                capture_output=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 text=True,
                 encoding="utf-8",
                 timeout=10,
+                check=True,
             )
         else:
-            subprocess.run([cli, "auth", "logout", "openai"], capture_output=True, timeout=10)
+            subprocess.run([cli, "auth", "logout", "openai"], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=10, check=True)
+        return True
     except Exception as e:
-        print(f"[OpenAI Manager] CLI sync warning: {e}")
+        print(f"[OpenAI Manager] CLI sync failed ({type(e).__name__})")
+        return False
 
 
 def decode_jwt_payload(jwt_token: str) -> dict:
@@ -281,12 +287,19 @@ def write_active_auth_openai(account: dict | None) -> bool:
 
             # Sync into OpenCode 2.0 database & notify daemon
             sync_opencode_db_openai(account)
-            sync_opencode_cli_openai(account)
-
-            return True
+            return sync_opencode_cli_openai(account)
         except Exception as e:
             print(f"[OpenAI Manager] Error updating auth: {e}")
             return False
+
+
+def _read_openai_account_file(path):
+    raw = json.loads(path.read_text(encoding="utf-8-sig"))
+    protected = isinstance(raw, dict) and ("protection" in raw or "payload" in raw)
+    accounts = secure_storage.unprotect_payload(raw, "openai-accounts").get("accounts") if protected else raw
+    if not isinstance(accounts, list) or any(not isinstance(a, dict) for a in accounts):
+        raise ValueError("Invalid OpenAI account store")
+    return accounts, protected
 
 
 def load_openai_accounts() -> list[dict]:
@@ -294,15 +307,12 @@ def load_openai_accounts() -> list[dict]:
         accounts = []
         if OPENAI_ACCOUNTS_FILE.exists():
             try:
-                raw_data = json.loads(OPENAI_ACCOUNTS_FILE.read_text(encoding="utf-8"))
-                if isinstance(raw_data, dict) and "protection" in raw_data and "payload" in raw_data:
-                    unprotected = secure_storage.unprotect_payload(raw_data, "openai-accounts")
-                    loaded = unprotected.get("accounts", [])
-                    accounts = loaded if isinstance(loaded, list) else []
-                elif isinstance(raw_data, list):
-                    accounts = raw_data
+                accounts, protected = _read_openai_account_file(OPENAI_ACCOUNTS_FILE)
+                if not protected:
+                    save_openai_accounts(accounts)
             except Exception as e:
-                print(f"[OpenAI Manager] Error reading openai-accounts.json: {e}")
+                print(f"[OpenAI Manager] Error reading account store ({type(e).__name__})")
+                return []
 
         # Seed an empty Hub pool from the active OpenCode credential.
         active_auth = get_active_auth_openai()
@@ -342,6 +352,8 @@ def save_openai_accounts(accounts: list[dict]) -> bool:
     with _accounts_lock:
         try:
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            if OPENAI_ACCOUNTS_FILE.exists():
+                _read_openai_account_file(OPENAI_ACCOUNTS_FILE)
             record = secure_storage.protect_payload("openai-accounts", {"accounts": accounts})
             secure_storage.atomic_write(
                 OPENAI_ACCOUNTS_FILE,
@@ -349,7 +361,7 @@ def save_openai_accounts(accounts: list[dict]) -> bool:
             )
             return True
         except Exception as e:
-            print(f"[OpenAI Manager] Error saving openai-accounts.json: {e}")
+            print(f"[OpenAI Manager] Error saving account store ({type(e).__name__})")
             return False
 
 
@@ -404,7 +416,8 @@ def import_openai_accounts(imported_list: list[dict]) -> int:
 
         # Re-resolve active account after refresh and sync to OpenCode
         active_acc = next((a for a in accounts if a.get("is_active")), accounts[0])
-        save_openai_accounts(accounts)
+        if not save_openai_accounts(accounts):
+            return 0
         write_active_auth_openai(active_acc)
 
     return count
@@ -421,9 +434,7 @@ def set_active_openai_account(account_id: str) -> bool:
             acc["is_active"] = False
 
     if target_account:
-        save_openai_accounts(accounts)
-        write_active_auth_openai(target_account)
-        return True
+        return save_openai_accounts(accounts) and write_active_auth_openai(target_account)
     return False
 
 
@@ -438,14 +449,15 @@ def remove_openai_account(account_id: str) -> bool:
         (acc.get("id") == account_id or acc.get("accountId") == account_id) and acc.get("is_active")
         for acc in accounts
     )
+    if len(remaining) == len(accounts):
+        return False
 
     if remaining and was_active:
         remaining[0]["is_active"] = True
-        write_active_auth_openai(remaining[0])
-    elif not remaining and was_active:
-        write_active_auth_openai(None)
-
-    save_openai_accounts(remaining)
+    if not save_openai_accounts(remaining):
+        return False
+    if was_active:
+        return write_active_auth_openai(remaining[0] if remaining else None)
     return True
 
 
@@ -458,9 +470,7 @@ def set_openai_account_enabled(account_id: str, enabled: bool) -> bool:
             acc["enabled"] = enabled
             changed = True
             break
-    if changed:
-        save_openai_accounts(accounts)
-    return changed
+    return changed and save_openai_accounts(accounts)
 
 
 def set_openai_account_candidate(account_id: str, candidate: bool) -> bool:
@@ -472,9 +482,7 @@ def set_openai_account_candidate(account_id: str, candidate: bool) -> bool:
             acc["candidate"] = candidate
             changed = True
             break
-    if changed:
-        save_openai_accounts(accounts)
-    return changed
+    return changed and save_openai_accounts(accounts)
 
 
 def _get_http_opener(timeout: int = 15):
@@ -695,7 +703,8 @@ def check_and_auto_rotate_openai(accounts: list[dict]) -> tuple[bool, str]:
         return False, "Все аккаунты OpenAI исчерпали доступную квоту."
 
     next_acc = candidates[0]
-    set_active_openai_account(next_acc.get("accountId") or next_acc.get("id"))
+    if not set_active_openai_account(next_acc.get("accountId") or next_acc.get("id")):
+        return False, "Не удалось активировать следующий аккаунт OpenAI."
     for a in accounts:
         a["is_active"] = (a.get("accountId") == next_acc.get("accountId"))
 
@@ -718,46 +727,53 @@ def refresh_all_openai_accounts() -> tuple[list[dict], str | None]:
 
 # --- OAuth Server Handler for Browser Login ---
 
-class _OAuthCallbackHandler(BaseHTTPRequestHandler):
+class _OAuthCallbackHandler(_BoundedHandler):
     def log_message(self, format, *args):
         # Suppress standard logging to keep output clean
         pass
 
     def do_GET(self):
-        url = urllib.parse.urlparse(self.path)
-        if url.path != "/auth/callback":
+        if self.path.partition("?")[0] != "/auth/callback":
             self.send_response(404)
             self.end_headers()
             self.wfile.write(b"Not Found")
             return
 
-        params = urllib.parse.parse_qs(url.query)
+        try:
+            params = urllib.parse.parse_qs(self.path.partition("?")[2], max_num_fields=16)
+        except ValueError:
+            self.send_error(400, "Invalid OAuth callback")
+            return
         error = params.get("error_description", [None])[0] or params.get("error", [None])[0]
         code = params.get("code", [None])[0]
         state = params.get("state", [None])[0]
 
         server: _OAuthServer = self.server  # type: ignore
 
-        if error:
-            server.auth_error = error
-            self._render_page(False, f"Ошибка авторизации: {error}")
-            server.done_event.set()
+        if (server.done_event.is_set() or len(params.get("state", [])) != 1 or
+                not secrets.compare_digest(state.encode("utf-8"), server.expected_state.encode("utf-8"))):
+            self._render_page(False, "Неверное состояние OAuth.")
             return
 
-        if not code or state != server.expected_state:
-            err_msg = "Неверное состояние OAuth или отсутствует код авторизации."
-            server.auth_error = err_msg
-            self._render_page(False, err_msg)
-            server.done_event.set()
+        if error or not code or len(params.get("code", [])) != 1:
+            server.auth_error = "Сервер авторизации отклонил запрос." if error else "Отсутствует код авторизации."
+            try:
+                self._render_page(False, server.auth_error)
+            finally:
+                server.done_event.set()
             return
 
         server.auth_code = code
-        self._render_page(True, "Ответ получен. Вернитесь в Hub и дождитесь результата сохранения аккаунта.")
-        server.done_event.set()
+        try:
+            self._render_page(True, "Ответ получен. Вернитесь в Hub и дождитесь результата сохранения аккаунта.")
+        finally:
+            server.done_event.set()
 
     def _render_page(self, success: bool, message: str):
         self.send_response(200 if success else 400)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
 
         color = "#10b981" if success else "#ef4444"

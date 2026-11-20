@@ -73,6 +73,11 @@ def _kill_stray_hub_processes(exclude_pids: set[int]) -> None:
 
 
 def schedule_restart():
+    if getattr(sys, "frozen", False):
+        subprocess.Popen([sys.executable, "--restart-after", str(os.getpid())],
+                         cwd=str(Path(sys.executable).parent),
+                         env={**os.environ, "PYINSTALLER_RESET_ENVIRONMENT": "1"})
+        return
     kwargs = {"cwd": str(Path(__file__).resolve().parent)}
     if os.name == "nt":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -80,6 +85,18 @@ def schedule_restart():
         [sys.executable, str(Path(__file__).resolve()), str(os.getpid())],
         **kwargs,
     )
+
+
+def relaunch_packaged(parent_pid: str) -> int:
+    try:
+        pid = int(parent_pid)
+    except ValueError:
+        return 1
+    if pid <= 0 or not wait_for_exit(pid):
+        return 1
+    subprocess.Popen([sys.executable], cwd=str(Path(sys.executable).parent),
+                     env={**os.environ, "PYINSTALLER_RESET_ENVIRONMENT": "1"})
+    return 0
 
 
 if __name__ == "__main__":

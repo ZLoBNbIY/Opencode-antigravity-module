@@ -62,7 +62,11 @@ class AutoTransportTests(unittest.TestCase):
                     'latency_ms': 1 if str(self.closed.getsockname()[1]) in upstream else 30}
         self.router = auto_router.AutoRouter(provider_proxy._connect_upstream, probe=probe)
         self.assertTrue(self.router.refresh('openai', self.hub, self.oc).wait(2))
+        # Simulate a public DNS answer; the fixture proxy routes it only
+        # to the in-process target. No external DNS or provider traffic.
         self.patches = [patch('auto_router.router', self.router),
+                        patch('provider_proxy._resolve_public', return_value=['93.184.216.34']),
+                        patch('gemini_routes.matches', return_value=False),
                         patch('provider_proxy._read_json', side_effect=lambda path: self.hub if path.name == 'antigravity.json' else self.oc)]
         for item in self.patches:
             item.start()
@@ -112,6 +116,25 @@ class AutoTransportTests(unittest.TestCase):
             response = self.read_response(conn)
         self.assertIn(b'502', response)
         self.assertEqual(self.received, [])
+
+
+    def test_nvidia_connect_is_dispatched_over_loopback(self):
+        with patch('provider_proxy.connect_public_routed') as route:
+            route.side_effect = lambda *_: (
+                socket.create_connection(('127.0.0.1', self.target.server_port), timeout=2), None)
+            with socket.create_connection(('127.0.0.1', self.dispatcher.server_port), timeout=4) as conn:
+                conn.sendall(b'CONNECT integrate.api.nvidia.com:443 HTTP/1.1\r\n'
+                             b'Host: integrate.api.nvidia.com:443\r\n\r\n')
+                headers = b''
+                while b'\r\n\r\n' not in headers:
+                    part = conn.recv(4096)
+                    self.assertTrue(part, headers)
+                    headers += part
+                self.assertIn(b'200 Connection Established', headers)
+                conn.sendall(b'GET /nvidia-fixture HTTP/1.1\r\nHost: integrate.api.nvidia.com\r\n\r\n')
+                self.assertIn(b'fixture-ok', self.read_response(conn))
+            route.assert_called_once_with('integrate.api.nvidia.com', 443, self.oc)
+        self.assertEqual(self.received, ['/nvidia-fixture'])
 
 
 if __name__ == '__main__':

@@ -13,14 +13,18 @@ class StorageError(Exception):
 
 
 def atomic_write(path: Path, text: str):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if os.name != "nt":
+    atomic_write_bytes(path, text.encode("utf-8"))
+
+
+def atomic_write_bytes(path: Path, data: bytes, *, private_parent=True):
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if private_parent and os.name != "nt":
         path.parent.chmod(0o700)
     temporary = path.with_name(path.name + "." + secrets.token_hex(6) + ".tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(text)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)

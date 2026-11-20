@@ -92,6 +92,20 @@ class XpikiQuotaTests(unittest.TestCase):
                 self.assertEqual(cleared["api_key"], "")
                 self.assertEqual(cleared["cached_quota"], {})
 
+    def test_disconnect_removes_only_matching_hub_provider(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            config = directory / "opencode.json"
+            entry = {"name": "Claude API (Xpiki)", "npm": "@ai-sdk/anthropic",
+                     "options": {"apiKey": "sk-hub-test"}}
+            config.write_text(json.dumps({"provider": {"xpiki": entry, "other": {}}}), encoding="utf-8")
+            with patch.object(xpiki_manager, "CONFIG_DIR", directory):
+                self.assertTrue(xpiki_manager.configure_opencode("", previous_key="sk-other-test"))
+                self.assertIn("xpiki", json.loads(config.read_text(encoding="utf-8"))["provider"])
+                self.assertTrue(xpiki_manager.configure_opencode("", previous_key="sk-hub-test"))
+            self.assertEqual(json.loads(config.read_text(encoding="utf-8"))["provider"], {"other": {}})
+
     def test_connection_does_not_mask_401_with_messages_probe(self):
         import io
         import urllib.error

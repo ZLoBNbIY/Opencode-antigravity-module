@@ -1,4 +1,5 @@
 {
+  "auto_update": false,
   "account_selection_strategy": "hybrid",
   "soft_quota_threshold_percent": 100,
   "switch_on_first_rate_limit": true,

@@ -182,7 +182,7 @@
           <div class="panel-heading"><h2>HTTP(S)-прокси и ротация пула</h2><span class="connection-indicator idle" id="http-proxy-indicator"></span></div>
           <p class="help-text">Прокси проверяются в порядке списка: верхний — основной, ниже — резервные. Перемещайте узлы стрелками. При включённом Failover Hub переходит к следующему прокси, если предыдущий не подключился.</p>
           <div style="display: flex; gap: 8px; margin-bottom: 10px;">
-            <input id="network-proxy" type="text" autocomplete="off" placeholder="http://host:port или http://user:pass@host:port" style="flex:1; font-family: Consolas, monospace; font-size:12px; padding: 9px 12px; background: rgba(0,0,0,0.3); border: 1px solid var(--glass-border); border-radius: 8px; color: #fff;">
+            <input id="network-proxy" type="password" autocomplete="off" placeholder="http://host:port или http://user:pass@host:port" style="flex:1; font-family: Consolas, monospace; font-size:12px; padding: 9px 12px; background: rgba(0,0,0,0.3); border: 1px solid var(--glass-border); border-radius: 8px; color: #fff;">
             <button class="btn-primary" type="button" onclick="addProxyToPool()">＋ Добавить</button>
           </div>
           <div id="proxy-pool-container" style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; max-height: 180px; overflow-y: auto;">
@@ -777,7 +777,7 @@
         <div class="glass-card" style="margin-bottom: 16px;">
           <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 4px;">Резервное копирование и перенос на другой ПК</div>
           <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
-            Экспорт и импорт всех настроенных аккаунтов (Google, ChatGPT, Claude, Xpiki), API-ключей, маршрутов и параметров сети для быстрого переноса настроек Hub на новый компьютер.
+            Экспорт аккаунтов Google, ChatGPT и Claude, ключей Xpiki, OpenRouter, TokenLavka и DeepSeek, маршрутов и настроек сети. Новые копии шифруются паролем (.agb). Старые копии .json и .agb можно импортировать.
           </div>
           <div style="display: flex; gap: 10px; flex-wrap: wrap;">
             <button class="btn-primary" onclick="exportBackup()">
@@ -879,7 +879,7 @@
               <span>🗑</span> Сбросить профили браузера
             </button>
             <button class="btn-secondary" onclick="uninstallHubCompletely()" style="color: var(--accent-red); margin-left: auto;">
-              <span>⚠️</span> Полное удаление модуля
+              <span>⚠️</span> Удалить локальные данные Hub
             </button>
           </div>
           <p class="help-text" id="storage-status-text" style="margin-top: 8px;"></p>
@@ -924,6 +924,14 @@
   </div>
 </div>
 
+  <dialog id="backup-password-dialog" aria-labelledby="backup-password-title" class="glass-card">
+    <form id="backup-password-form">
+      <label id="backup-password-title" for="backup-password">Пароль резервной копии</label>
+      <input id="backup-password" type="password" required maxlength="1024" autofocus>
+      <button class="btn-primary" type="submit">Продолжить</button>
+      <button class="btn-secondary" type="button" onclick="this.closest('dialog').close()">Отмена</button>
+    </form>
+  </dialog>
 <script src="app.js?v=20261120-model-cards"></script>
 </body>
 </html>

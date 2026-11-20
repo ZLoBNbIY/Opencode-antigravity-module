@@ -1,133 +1,167 @@
 param([switch]$Yes)
 
-$ErrorActionPreference = 'Continue'
-$configDir = if ($env:OPENCODE_CONFIG_DIR) {
-    [Environment]::ExpandEnvironmentVariables($env:OPENCODE_CONFIG_DIR)
-} else {
-    Join-Path $HOME '.config\opencode'
-}
-$hubCentralDir = if ($env:APPDATA) { Join-Path $env:APPDATA 'AntigravityHub' } else { Join-Path $HOME '.config\AntigravityHub' }
-$hubDataDir = Join-Path $HOME '.local\share\antigravity-hub'
+$ErrorActionPreference = 'Stop'
+$script:failed = $false
 
-Write-Host 'OpenCode Antigravity Hub - complete removal' -ForegroundColor Cyan
-Write-Host 'This removes Hub accounts/tokens, configuration, plugin cache, and integration settings.'
-Write-Host 'OpenCode itself and its chats/history will not be removed.'
+Write-Host 'OpenCode Antigravity Hub - remove known Hub files and integration settings' -ForegroundColor Cyan
+Write-Host 'Stop Hub and OpenCode first. Shared credentials, chats, browser profiles and custom stores will be preserved.'
 if (-not $Yes) {
-    $answer = Read-Host 'This cannot be undone. Continue? Type DELETE'
-    if ($answer -cne 'DELETE') { Write-Host 'Cancelled.'; exit 0 }
+    if ((Read-Host 'This cannot be undone. Continue? Type DELETE') -cne 'DELETE') {
+        Write-Host 'Cancelled.'
+        exit 0
+    }
 }
 
-# Stop only the Hub manager, not unrelated Python processes.
-Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -match 'antigravity_manager\.pyw' } |
-    ForEach-Object {
-        try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch { }
+function Try-Cleanup($Label, [scriptblock]$Action) {
+    try { & $Action }
+    catch {
+        $script:failed = $true
+        Write-Warning "${Label}: $_"
     }
+}
 
-# Remove only Hub-owned entries from OpenCode config; retain all other settings.
-$opencodeConfig = Join-Path $configDir 'opencode.json'
-if (Test-Path -LiteralPath $opencodeConfig) {
+function Get-SafeFile([string]$Path) {
+    # Nothing from a migration pointer or a user-supplied config path reaches here.
+    $canonical = [IO.Path]::GetFullPath($Path)
+    if ($canonical -ine $Path -or $canonical -notmatch '^[A-Za-z]:\\') {
+        throw "Not a canonical local path: $Path"
+    }
+    $parts = [Collections.Generic.List[string]]::new()
+    for ($part = $Path; $part; $part = [IO.Path]::GetDirectoryName($part)) {
+        $parts.Insert(0, $part)
+    }
+    foreach ($part in $parts) {
+        try { $item = Get-Item -LiteralPath $part -Force }
+        catch [System.Management.Automation.ItemNotFoundException] { return }
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "Link or junction left untouched: $part"
+        }
+        if ($item.PSIsContainer -eq ($part -ieq $Path)) {
+            throw "Unexpected file type left untouched: $part"
+        }
+    }
+    return $item
+}
+
+function Remove-SafeFile([string]$Path) {
+    if (Get-SafeFile $Path) {
+        Remove-Item -LiteralPath $Path -Force
+        Write-Host "Removed: $Path"
+    }
+}
+
+$profileRoot = [Environment]::GetFolderPath('UserProfile')
+if (-not $profileRoot) { throw 'Cannot determine the current user profile.' }
+$hubRoot = Join-Path $profileRoot 'AppData\Roaming\AntigravityHub'
+$configDir = Join-Path $profileRoot '.config\opencode'
+$centralConfig = Join-Path $hubRoot 'config\antigravity.json'
+$defaultHub = -not $env:ANTIGRAVITY_HUB_DATA_DIR -and $env:APPDATA -and
+    (Join-Path $env:APPDATA 'AntigravityHub') -ieq $hubRoot
+
+function Remove-HubPlugin([string]$Path) {
+    if (-not (Get-SafeFile $Path)) { return }
+    $utf8 = [Text.UTF8Encoding]::new($false, $true)
+    $original = $utf8.GetString([IO.File]::ReadAllBytes($Path))
+    $plain = $original.TrimStart([char]0xFEFF)
+    $cfg = ConvertFrom-Json -InputObject $plain
+    # Avoid a lossy rewrite of the entire OpenCode config. Only change a
+    # uniquely matched plugin property with a string or array of strings.
+    $package = '^@cortexkit/opencode-antigravity-auth(?:@[^@\s]+)?$'
+    $plugin = $cfg.PSObject.Properties | Where-Object { $_.Name -ceq 'plugin' }
+    if (-not $plugin) { return }
+    $entries = @($plugin.Value)
+    $owned = @($entries | Where-Object { $_ -is [string] -and $_ -cmatch $package })
+    if (-not $owned.Count) { return }
+    if (@($entries | Where-Object { $_ -isnot [string] }).Count) {
+        throw 'Plugin list contains structured entries; remove the Hub plugin manually.'
+    }
+    $quoted = '"(?:\\.|[^"\\])*"'
+    $array = '\[\s*(?:' + $quoted + '(?:\s*,\s*' + $quoted + ')*)?\s*\]'
+    $match = [regex]::Matches($original, '"plugin"\s*:\s*(?<value>' + $array + '|' + $quoted + ')')
+    if ($match.Count -ne 1) { throw 'Cannot identify the plugin field safely.' }
+    $value = $match[0].Groups['value']
+    $candidate = @((ConvertFrom-Json -InputObject ('{"value":' + $value.Value + '}')).value)
+    if ((ConvertTo-Json -InputObject $candidate -Compress) -cne (ConvertTo-Json -InputObject $entries -Compress)) {
+        throw 'Cannot verify the plugin field safely.'
+    }
+    $keep = @($entries | Where-Object { $_ -cnotmatch $package })
+    $replacement = ConvertTo-Json -InputObject $keep -Compress
+    $updated = $original.Substring(0, $value.Index) + $replacement + $original.Substring($value.Index + $value.Length)
+    $parsed = ConvertFrom-Json -InputObject ($updated.TrimStart([char]0xFEFF))
+    if ((ConvertTo-Json -InputObject @($parsed.plugin) -Compress) -cne $replacement) {
+        throw 'Cannot verify the updated plugin field.'
+    }
+    $temp = Join-Path (Split-Path -Parent $Path) ('.hub-uninstall-' + [guid]::NewGuid() + '.tmp')
+    $stream = [IO.File]::Open($temp, 'CreateNew', 'Write', 'None')
     try {
-        $cfg = Get-Content -LiteralPath $opencodeConfig -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($cfg.plugin -is [array]) {
-            $cfg.plugin = @($cfg.plugin | Where-Object { $_ -notmatch '^@cortexkit/opencode-antigravity-auth(?:@|$)' })
-            if ($cfg.plugin.Count -eq 0) { $cfg.PSObject.Properties.Remove('plugin') }
-        } elseif ($cfg.plugin -is [string] -and $cfg.plugin -match '^@cortexkit/opencode-antigravity-auth(?:@|$)') {
-            $cfg.PSObject.Properties.Remove('plugin')
+        try {
+            $bytes = $utf8.GetBytes($updated)
+            $stream.Write($bytes, 0, $bytes.Length)
+        } finally { $stream.Dispose() }
+        if ($utf8.GetString([IO.File]::ReadAllBytes($Path)) -cne $original) {
+            throw 'The config changed during uninstall; no changes were written.'
         }
-        if ($cfg.provider -and $cfg.provider.google -and $cfg.provider.google.options -and $cfg.provider.google.options.apiKey -eq 'antigravity') {
-            $cfg.provider.google.options.PSObject.Properties.Remove('apiKey')
-            if ($cfg.provider.google.options.PSObject.Properties.Count -eq 0) { $cfg.provider.PSObject.Properties.Remove('google') }
-            if ($cfg.provider.PSObject.Properties.Count -eq 0) { $cfg.PSObject.Properties.Remove('provider') }
-        }
-        foreach ($property in @('model','small_model')) {
-            if ($cfg.$property -is [string] -and $cfg.$property -match '^(google/antigravity-|opencode-antigravity)') {
-                $cfg.PSObject.Properties.Remove($property)
-            }
-        }
-        foreach ($sectionName in @('agent','agents')) {
-            $section = $cfg.$sectionName
-            if ($section -and $section.title -and $section.title.model -eq 'opencode/big-pickle') {
-                $section.title.PSObject.Properties.Remove('model')
-                if ($section.title.PSObject.Properties.Count -eq 0) { $section.PSObject.Properties.Remove('title') }
-                if ($section.PSObject.Properties.Count -eq 0) { $cfg.PSObject.Properties.Remove($sectionName) }
-            }
-        }
-        $cfg | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $opencodeConfig -Encoding UTF8
-        Write-Host 'Removed Hub settings from opencode.json.'
-    } catch { Write-Warning "Could not safely update opencode.json; file was preserved: $_" }
-}
-
-# Follow the migration pointer before deleting it, if the account store was relocated.
-$pointer = Join-Path $configDir 'antigravity-accounts.json.store.pointer.json'
-if (Test-Path -LiteralPath $pointer) {
-    try {
-        $pointerData = Get-Content -LiteralPath $pointer -Raw -Encoding UTF8 | ConvertFrom-Json
-        $legacyPath = $pointerData.relocatedTo.legacyPath
-        if ($legacyPath) {
-            $storeDir = Split-Path -Parent ([Environment]::ExpandEnvironmentVariables([string]$legacyPath))
-            if ((Test-Path -LiteralPath $storeDir) -and $storeDir -match 'antigravity') {
-                Remove-Item -LiteralPath $storeDir -Recurse -Force -ErrorAction SilentlyContinue
-            }
-        }
-    } catch { Write-Warning "Could not read account-store pointer: $_" }
-}
-
-# Remove Hub account/config files, private data, and only its plugin cache.
-foreach ($base in @($configDir, $hubDataDir)) {
-    if (Test-Path -LiteralPath $base) {
-        foreach ($pattern in @('antigravity.json','antigravity-accounts.json*','*antigravity*accounts*','antigravity-auth*','antigravity-vault*')) {
-            Get-ChildItem -LiteralPath $base -Filter $pattern -File -ErrorAction SilentlyContinue |
-                Remove-Item -Force -ErrorAction SilentlyContinue
-        }
-    }
-}
-foreach ($path in @(
-    $hubCentralDir,
-    $hubDataDir,
-    (Join-Path $HOME '.cache\opencode\npm\node_modules\@cortexkit\opencode-antigravity-auth'),
-    (Join-Path $HOME '.cache\opencode\packages\@cortexkit\opencode-antigravity-auth@latest')
-)) {
-    if (Test-Path -LiteralPath $path) {
-        Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
-        Write-Host "Removed: $path"
+        [IO.File]::Replace($temp, $Path, [NullString]::Value)
+        Write-Host 'Removed the Hub plugin from OpenCode configuration.'
+    } finally {
+        if ([IO.File]::Exists($temp)) { [IO.File]::Delete($temp) }
     }
 }
 
-# Remove Hub-specific logs only.
-$logDir = Join-Path $HOME '.local\share\opencode\log'
-if (Test-Path -LiteralPath $logDir) {
-    Get-ChildItem -LiteralPath $logDir -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match 'antigravity|hub' } |
-        Remove-Item -Force -ErrorAction SilentlyContinue
-}
-
-# Remove Hub-owned sentinel env var and dynamic models cache.
-if ([Environment]::GetEnvironmentVariable('GOOGLE_GENERATIVE_AI_API_KEY', 'User') -eq 'antigravity') {
-    [Environment]::SetEnvironmentVariable('GOOGLE_GENERATIVE_AI_API_KEY', $null, 'User')
-    Write-Host 'Removed GOOGLE_GENERATIVE_AI_API_KEY sentinel.'
-}
-$appDataOpencode = if ($env:APPDATA) { Join-Path $env:APPDATA 'opencode' } else { $null }
-if ($appDataOpencode) {
-    $modelsCache = Join-Path $appDataOpencode 'antigravity-models-cache.json'
-    if (Test-Path -LiteralPath $modelsCache) {
-        Remove-Item -LiteralPath $modelsCache -Force -ErrorAction SilentlyContinue
-        Write-Host "Removed: $modelsCache"
+if ($env:OPENCODE_CONFIG_DIR) {
+    Write-Warning 'Custom OpenCode configuration was left untouched.'
+} else {
+    Try-Cleanup 'OpenCode configuration' {
+        if (Get-SafeFile (Join-Path $configDir 'opencode.jsonc')) {
+            throw 'JSONC config was preserved. Remove the Hub plugin using the Hub UI or manually.'
+        }
+        Remove-HubPlugin (Join-Path $configDir 'opencode.json')
+    }
+    Try-Cleanup 'Hub configuration mirror' {
+        $mirror = Join-Path $configDir 'antigravity.json'
+        if ((Get-SafeFile $mirror) -and $defaultHub -and (Get-SafeFile $centralConfig) -and
+            (Get-FileHash -LiteralPath $mirror).Hash -ceq (Get-FileHash -LiteralPath $centralConfig).Hash) {
+            Remove-SafeFile $mirror
+        }
     }
 }
 
-# Remove the Windows uninstall registration and desktop shortcut.
+if ($defaultHub) {
+    foreach ($file in @(
+        'config\antigravity.json', 'config\gemini_domains.json',
+        'accounts\openai-accounts.json', 'accounts\claude-accounts.json',
+        'accounts\xpiki.json', 'accounts\tokenlavka.json', 'accounts\deepseek-api.json',
+        'secure\openrouter.json', 'secure\tokenlavka.json', 'secure\deepseek-api-key.json',
+        'vless\config.json', 'vless\core.log'
+    )) {
+        Try-Cleanup $file { Remove-SafeFile (Join-Path $hubRoot $file) }
+    }
+} else {
+    Write-Warning 'Custom or redirected Hub storage was left untouched.'
+}
+
+# Remove only an installation registration stamped by our installer. Never
+# recurse into either the registry or Programs; foreign descendants are kept.
+$installedScript = Join-Path $profileRoot 'AppData\Local\Programs\Antigravity Hub\uninstall.ps1'
 $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AntigravityHub'
-if (Test-Path -LiteralPath $uninstallKey) { Remove-Item -LiteralPath $uninstallKey -Recurse -Force -ErrorAction SilentlyContinue }
-$desktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Antigravity Hub.lnk'
-if (Test-Path -LiteralPath $desktopShortcut) { Remove-Item -LiteralPath $desktopShortcut -Force -ErrorAction SilentlyContinue }
-
-# Delete the registered uninstaller copy after this process exits.
-$installedDir = Join-Path $env:LOCALAPPDATA 'Programs\Antigravity Hub'
-$currentScript = $PSCommandPath
-if ($currentScript -and $currentScript.StartsWith($installedDir, [StringComparison]::OrdinalIgnoreCase)) {
-    $cleanup = "Start-Sleep -Seconds 2; Remove-Item -LiteralPath '$($installedDir.Replace("'", "''"))' -Recurse -Force -ErrorAction SilentlyContinue"
-    Start-Process -FilePath (Get-Command powershell.exe).Source -WindowStyle Hidden -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-Command',$cleanup) -ErrorAction SilentlyContinue
+Try-Cleanup 'Hub uninstall registration' {
+    if (Test-Path -LiteralPath $uninstallKey) {
+        $registration = Get-ItemProperty -LiteralPath $uninstallKey
+        $expected = '"' + (Get-Command powershell.exe).Source + '" -NoProfile -ExecutionPolicy Bypass -File "' + $installedScript + '"'
+        if ($registration.DisplayName -cne 'Antigravity Hub' -or
+            $registration.Publisher -cne 'Antigravity Hub' -or
+            $registration.UninstallString -ine $expected -or
+            @(Get-ChildItem -LiteralPath $uninstallKey).Count) {
+            throw 'Registration does not match the Hub installer; left untouched.'
+        }
+        Remove-Item -LiteralPath $uninstallKey
+        if ($PSCommandPath -ieq $installedScript) { Remove-SafeFile $installedScript }
+    }
 }
 
-Write-Host 'Done. Restart OpenCode. OpenCode and separately installed tools were not removed.' -ForegroundColor Green
+Write-Host 'Account-store pointers and all targets, shared provider settings and credentials, and unlisted files were preserved.'
+if ($script:failed) {
+    Write-Warning 'Cleanup completed with errors or items requiring manual review.'
+    exit 1
+}
+Write-Host 'Cleanup complete. Restart OpenCode before using it again.' -ForegroundColor Green

@@ -31,8 +31,8 @@ echo "Repo: $ROOT"
 echo "Python: $PYTHON"
 
 echo
-echo "[1/3] Node patches"
-"$NODE" "$SCRIPT_DIR/patch_plugin.mjs" || echo "patch_plugin.mjs failed; continuing with Python patches."
+echo "[1/3] Bundled plugin updater safety checks"
+"$NODE" "$SCRIPT_DIR/patch_plugin.mjs"
 
 echo
 echo "[2/3] Hub route patch"

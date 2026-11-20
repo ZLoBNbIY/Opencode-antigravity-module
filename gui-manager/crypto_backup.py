@@ -9,13 +9,41 @@ import hashlib
 import hmac
 import secrets
 
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
 MAGIC_HEADER_V1 = b"AGY_ENCRYPTED_V1\n"
 MAGIC_HEADER_V2 = b"AGY_ENCRYPTED_V2\n"
 MAGIC_HEADER = MAGIC_HEADER_V2
 PBKDF2_ITERATIONS_V1 = 100_000
 PBKDF2_ITERATIONS_V2 = 600_000
+MAX_BACKUP_BYTES = 16 * 1024 * 1024
+
+
+def validate_password(password: str) -> None:
+    if not isinstance(password, str) or not password or len(password) > 1024:
+        raise ValueError("Укажите непустой пароль (не более 1024 символов)")
+
+
+def load_backup_json(raw: bytes) -> dict:
+    def unique(pairs):
+        result = dict(pairs)
+        if len(result) != len(pairs):
+            raise ValueError("Резервная копия содержит повторяющиеся поля")
+        return result
+
+    def reject_constant(_):
+        raise ValueError("Некорректное число в резервной копии")
+
+    def finite_float(value):
+        import math
+        result = float(value)
+        if not math.isfinite(result):
+            reject_constant(value)
+        return result
+
+    parsed = json.loads(raw.decode("utf-8-sig"), object_pairs_hook=unique,
+                        parse_constant=reject_constant, parse_float=finite_float)
+    if not isinstance(parsed, dict):
+        raise ValueError("Некорректная структура файла бэкапа")
+    return parsed
 
 
 def _derive_keys_v1(password: str, salt: bytes) -> tuple[bytes, bytes]:
@@ -53,10 +81,12 @@ def encrypt_backup(data_dict: dict, password: str) -> bytes:
     """Encrypts JSON dict into an authenticated AES-256-GCM binary payload."""
     if not isinstance(data_dict, dict):
         raise ValueError("Данные бэкапа должны быть JSON-объектом")
-    if not isinstance(password, str) or not password:
-        raise ValueError("Укажите непустой пароль для шифрования")
+    validate_password(password)
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-    raw_json = json.dumps(data_dict, ensure_ascii=False).encode("utf-8")
+    raw_json = json.dumps(data_dict, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    if len(raw_json) + len(MAGIC_HEADER_V2) + 44 > MAX_BACKUP_BYTES:
+        raise ValueError("Резервная копия превышает 16 МиБ")
     salt = secrets.token_bytes(16)
     nonce = secrets.token_bytes(12)
     key = _derive_key_v2(password, salt)
@@ -66,10 +96,14 @@ def encrypt_backup(data_dict: dict, password: str) -> bytes:
 
 def decrypt_backup(encrypted_bytes: bytes, password: str) -> dict:
     """Decrypts authenticated V2 (AES-GCM) or legacy V1 payload back to JSON dict."""
-    if not isinstance(password, str) or not password:
-        raise ValueError("Укажите пароль для расшифровки")
+    validate_password(password)
+    if len(encrypted_bytes) > MAX_BACKUP_BYTES:
+        raise ValueError("Резервная копия превышает 16 МиБ")
 
     if encrypted_bytes.startswith(MAGIC_HEADER_V2):
+        from cryptography.exceptions import InvalidTag
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
         offset = len(MAGIC_HEADER_V2)
         # salt (16) + nonce (12) + GCM tag (16) = 44 bytes minimum
         if len(encrypted_bytes) < offset + 44:
@@ -80,7 +114,7 @@ def decrypt_backup(encrypted_bytes: bytes, password: str) -> dict:
         key = _derive_key_v2(password, salt)
         try:
             plaintext = AESGCM(key).decrypt(nonce, ciphertext, MAGIC_HEADER_V2)
-        except Exception:
+        except InvalidTag:
             raise ValueError("Неверный пароль или файл повреждён!") from None
     elif encrypted_bytes.startswith(MAGIC_HEADER_V1):
         offset = len(MAGIC_HEADER_V1)
@@ -98,10 +132,7 @@ def decrypt_backup(encrypted_bytes: bytes, password: str) -> dict:
     else:
         raise ValueError("Файл не является зашифрованным бэкапом Antigravity")
 
-    parsed = json.loads(plaintext.decode("utf-8"))
-    if not isinstance(parsed, dict):
-        raise ValueError("Некорректная структура расшифрованного бэкапа")
-    return parsed
+    return load_backup_json(plaintext)
 
 
 def is_encrypted_backup(file_bytes: bytes) -> bool:

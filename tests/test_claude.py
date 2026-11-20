@@ -1,5 +1,6 @@
 import io
 import json
+import http.client
 from pathlib import Path
 import sys
 import unittest
@@ -30,18 +31,7 @@ class ClaudeManagerTests(unittest.TestCase):
 
         seen_urls = []
 
-        class FakeResp:
-            def __init__(self, body: bytes):
-                self._body = body
-
-            def read(self):
-                return self._body
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return False
+        FakeResp = io.BytesIO
 
         def fake_open(req, timeout=45):
             seen_urls.append(req.full_url)
@@ -89,6 +79,45 @@ class ClaudeManagerTests(unittest.TestCase):
                     self.assertNotIn("sk-ant-secret", raw_text)
                 loaded = mgr.load_accounts()
                 self.assertEqual(loaded[0]["session_key"], "sk-ant-secret")
+
+    def test_bridge_http_checks_precede_account_lookup(self):
+        bridge = ClaudeSubscriptionBridge(port=0)
+        bridge.ensure_running()
+        server = bridge._server
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        key = {"Authorization": f"Bearer {bridge.bridge_token}"}
+
+        def request(method, path, headers, body=None):
+            conn = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+            try:
+                conn.request(method, path, body=body, headers=headers)
+                with conn.getresponse() as response:
+                    response.read()
+                    self.assertIsNone(response.getheader("Access-Control-Allow-Origin"))
+                    return response.status
+            finally:
+                conn.close()
+
+        with patch.object(claude_manager.claude_service, "get_active_account") as active:
+            self.assertEqual(request("GET", "/v1/models", {}), 401)
+            self.assertEqual(request("GET", "/v1/models", {"x-api-key": bridge.bridge_token}), 200)
+            self.assertEqual(request("POST", "/v1/messages", {**key, "Origin": "https://example.test"}, b"{}"), 403)
+            self.assertEqual(request("POST", "/v1/messages-extra", key, b"{}"), 404)
+            self.assertEqual(request("POST", "/v1/messages", {**key, "Content-Length": "99999999"}), 413)
+            self.assertEqual(request("POST", "/v1/messages", key, b"[]"), 400)
+            active.assert_not_called()
+
+    def test_claude_plaintext_pool_is_migrated_in_place(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pool = root / "claude-accounts.json"
+            account = {"session_key": "legacy"}
+            pool.write_text(json.dumps({"accounts": [account]}), encoding="utf-8")
+            with patch.multiple(claude_manager, CLAUDE_ACCOUNTS_FILE=pool, CONFIG_DIR=root):
+                self.assertEqual(ClaudeAccountManager().load_accounts(), [account])
+            self.assertIn("protection", json.loads(pool.read_text(encoding="utf-8")))
 
     def test_bridge_token_persists_across_restarts_and_configures_jsonc(self):
         import tempfile

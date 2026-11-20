@@ -1,4 +1,13 @@
-import json
+import concurrent.futures
+import ctypes
+import hashlib
+import io
+import socket
+import ssl
+import stat
+import threading
+import urllib.request
+import zipfile
 from pathlib import Path
 import sys
 import unittest
@@ -10,26 +19,164 @@ import vless_manager
 from vless_manager import VlessParser, vless_service
 
 
+class ScopedMocksTestCase(unittest.TestCase):
+    def enter_context(self, context):
+        value = context.__enter__()
+        self.addCleanup(context.__exit__, None, None, None)
+        return value
+
+
+class CoreInstallationTests(ScopedMocksTestCase):
+    def setUp(self):
+        self.manager = vless_manager.VlessManager()
+        self.folder = Path(self.enter_context(tempfile.TemporaryDirectory()))
+        self.enter_context(mock.patch.object(vless_manager.VlessManager, "get_bin_dir", return_value=self.folder))
+        self.enter_context(mock.patch.object(vless_manager, "platform", mock.Mock()))
+        vless_manager.platform.machine.return_value = "AMD64"
+        self.enter_context(mock.patch.object(vless_manager, "sys", mock.Mock(platform="win32")))
+        self.build = self.enter_context(mock.patch("vless_manager.urllib.request.build_opener"))
+        self.opener = self.build.return_value
+        self.managed = self.folder / "managed-vless"
+
+    def pin_zip(self, entries=None):
+        if entries is None:
+            entries = [("version/sing-box.exe", b"test core"), ("version/libcronet.dll", b"test dll")]
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, "w") as archive:
+            for name, content in entries:
+                archive.writestr(name, content)
+        contents = data.getvalue()
+        self.url = vless_manager._CORE_RELEASES["sing-box"][0]
+        self.digest = hashlib.sha256(contents).hexdigest()
+        self.enter_context(mock.patch.dict(vless_manager._CORE_RELEASES, {"sing-box": (self.url, self.digest)}))
+        self.destination = self.managed / f"sing-box-{self.digest}"
+        self.opener.open.side_effect = lambda *args, **kwargs: self.response(contents)
+        return contents
+
+    @staticmethod
+    def response(contents, url="https://release-assets.githubusercontent.com/test"):
+        stream = io.BytesIO(contents)
+        stream.geturl = lambda: url
+        return stream
+
+    def test_verified_install_and_engine_specific_discovery(self):
+        self.pin_zip()
+        (self.folder / "xray.exe").write_bytes(b"unverified legacy")
+        ok, message = self.manager.download_core("sing-box")
+        self.assertTrue(ok, message)
+        self.assertEqual(list(self.managed.iterdir()), [self.destination])
+        exe = self.destination / "sing-box.exe"
+        self.assertEqual(exe.read_bytes(), b"test core")
+        self.assertEqual((self.destination / "libcronet.dll").read_bytes(), b"test dll")
+        self.assertEqual(self.manager.find_core_executable(core_type="sing-box"), exe)
+        self.assertIsNone(self.manager.find_core_executable(core_type="xray"))
+        self.assertIsNone(self.manager.find_core_executable(str(self.folder / "xray.exe")))
+        self.assertEqual(self.manager.find_core_executable(str(exe)), exe)
+        self.assertTrue(self.manager.download_core("sing-box")[0])
+        self.opener.open.assert_called_once()
+        self.assertEqual(self.opener.open.call_args.args[0].full_url, self.url)
+
+    def test_checksum_mismatch_fails_before_opening_zip(self):
+        data = self.pin_zip()
+        self.opener.open.side_effect = lambda *args, **kwargs: self.response(data + b"changed")
+        with mock.patch("vless_manager.zipfile.ZipFile") as unzip:
+            self.assertFalse(self.manager.download_core("sing-box")[0])
+            unzip.assert_not_called()
+        self.assertEqual(list(self.managed.iterdir()), [])
+
+    def test_unsafe_and_ambiguous_zip_members_leave_no_install(self):
+        symlink = zipfile.ZipInfo("version/link")
+        symlink.create_system = 3
+        symlink.external_attr = stat.S_IFLNK << 16
+        for entries in (
+            [("version/sing-box.exe", b"test"), ("../libcronet.dll", b"test")],
+            [("version/sing-box.exe", b"test"), ("other/SING-BOX.exe", b"test")],
+            [("version/sing-box.exe", b"test"), (symlink, b"test")],
+            [("version/xray.exe", b"wrong engine")],
+        ):
+            with self.subTest(entries=entries):
+                self.pin_zip(entries)
+                self.assertFalse(self.manager.download_core("sing-box")[0])
+                self.assertEqual(list(self.managed.iterdir()), [])
+
+    def test_extraction_failure_never_publishes_partial_install(self):
+        self.pin_zip()
+        with mock.patch("vless_manager.shutil.copyfileobj", side_effect=OSError("disk full")):
+            self.assertFalse(self.manager.download_core("sing-box")[0])
+        self.assertEqual(list(self.managed.iterdir()), [])
+
+    def test_tampered_install_is_neither_launched_nor_reported_installed(self):
+        self.pin_zip()
+        self.assertTrue(self.manager.download_core("sing-box")[0])
+        exe = self.destination / "sing-box.exe"
+        for path, data in (
+            (exe, b"same size"),
+            (self.destination / "libcronet.dll", b"malicious"),
+            (self.destination / "untrusted.dll", b"extra"),
+            (self.destination / vless_manager._ARCHIVE_NAME, b"corrupt"),
+        ):
+            with self.subTest(path=path):
+                previous = path.read_bytes() if path.exists() else None
+                path.write_bytes(data)
+                self.assertFalse(self.manager.download_core("sing-box")[0])
+                with mock.patch("vless_manager.subprocess.Popen") as popen:
+                    self.assertFalse(self.manager.start_tunnel("vless://id@example.org:443", custom_core_path=str(exe))[0])
+                    popen.assert_not_called()
+                if previous is None:
+                    path.unlink()
+                else:
+                    path.write_bytes(previous)
+
+    def test_concurrent_installers_publish_one_complete_release(self):
+        data = self.pin_zip()
+        barrier = threading.Barrier(2, timeout=5)
+
+        def response(*args, **kwargs):
+            barrier.wait()
+            return self.response(data)
+
+        self.opener.open.side_effect = response
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            jobs = [pool.submit(vless_manager.VlessManager().download_core, "sing-box") for _ in range(2)]
+            for job in jobs:
+                ok, message = job.result(timeout=10)
+                self.assertTrue(ok, message)
+        self.assertEqual(list(self.managed.iterdir()), [self.destination])
+        self.assertEqual(self.manager.find_core_executable(core_type="sing-box"), self.destination / "sing-box.exe")
+
+    def test_certificate_failure_has_no_retry_and_no_unverified_context(self):
+        self.opener.open.side_effect = ssl.SSLCertVerificationError("bad cert")
+        with mock.patch("vless_manager.ssl._create_unverified_context") as insecure:
+            self.assertFalse(self.manager.download_core("sing-box")[0])
+            insecure.assert_not_called()
+        self.opener.open.assert_called_once()
+        handler = next(h for h in self.build.call_args.args if isinstance(h, urllib.request.HTTPSHandler))
+        self.assertTrue(handler._context.check_hostname)
+        self.assertEqual(handler._context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertEqual(list(self.managed.iterdir()), [])
+
+    def test_redirect_policy_and_final_origin(self):
+        data = self.pin_zip()
+        handler = vless_manager._ReleaseRedirectHandler()
+        request = urllib.request.Request(self.url)
+        for url in ("http://github.com/file", "https://github.com.evil.example/file",
+                    "https://evil.example/file", "https://evil@github.com/file", "https://github.com:444/file"):
+            with self.subTest(url=url):
+                with self.assertRaises(ValueError):
+                    handler.redirect_request(request, None, 302, "redirect", {}, url)
+                self.opener.open.side_effect = lambda *args, **kwargs: self.response(data, url)
+                self.assertFalse(self.manager.download_core("sing-box")[0])
+        approved = "https://release-assets.githubusercontent.com/file"
+        self.assertEqual(handler.redirect_request(request, None, 302, "redirect", {}, approved).full_url, approved)
+        self.assertEqual(list(self.managed.iterdir()), [])
+
+    def test_unsupported_platform_requires_manual_binary_without_network(self):
+        vless_manager.platform.machine.return_value = "ARM64"
+        self.assertFalse(self.manager.download_core("sing-box")[0])
+        self.build.assert_not_called()
+
+
 class VlessManagerTests(unittest.TestCase):
-    def test_core_status_and_download_check_the_requested_engine(self):
-        root = Path(__file__).resolve().parent.parent
-        with tempfile.TemporaryDirectory(dir=root) as directory:
-            folder = Path(directory)
-            self.assertEqual(folder.resolve().parent, root)
-            (folder / 'sing-box.exe').touch()
-            manager = vless_manager.VlessManager()
-            with mock.patch.object(manager, 'get_bin_dir', return_value=folder), \
-                 mock.patch.object(vless_manager, 'CONFIG_DIR', folder), \
-                 mock.patch('vless_manager.shutil.which', return_value=None), \
-                 mock.patch('vless_manager.urllib.request.build_opener', side_effect=OSError('offline')) as opener:
-                self.assertEqual(manager.find_core_executable(core_type='sing-box'), folder / 'sing-box.exe')
-                self.assertIsNone(manager.find_core_executable(core_type='xray'))
-                ok, _ = manager.download_core('sing-box')
-                self.assertTrue(ok)
-                opener.assert_not_called()
-                ok, _ = manager.download_core('xray')
-                self.assertFalse(ok)
-                self.assertGreater(opener.call_count, 0)
 
     def test_connection_returns_country_code_from_cloudflare_trace_first(self):
         manager = vless_manager.VlessManager()
@@ -39,7 +186,9 @@ class VlessManagerTests(unittest.TestCase):
         response.read.return_value = trace.encode()
         response.__enter__ = mock.Mock(return_value=response)
         response.__exit__ = mock.Mock(return_value=False)
-        with mock.patch.object(manager, 'check_port_listening', return_value=True), \
+        manager._process = mock.Mock()
+        manager._ports = (10879,)
+        with mock.patch.object(manager, '_is_ready', return_value=True), \
              mock.patch("vless_manager.urllib.request.build_opener") as build:
             opener = build.return_value
             opener.open.return_value = response
@@ -50,84 +199,24 @@ class VlessManagerTests(unittest.TestCase):
         requested_urls = [call.args[0].full_url for call in opener.open.call_args_list]
         self.assertIn("https://cloudflare.com/cdn-cgi/trace", requested_urls)
 
-    def test_resolve_sing_box_download_url_redirect(self):
-        fake_resp = mock.MagicMock()
-        fake_resp.geturl.return_value = "https://github.com/SagerNet/sing-box/releases/tag/v1.14.4"
-        fake_opener = mock.MagicMock()
-        fake_opener.open.return_value.__enter__.return_value = fake_resp
+    def test_connection_does_not_report_success_without_a_valid_ip(self):
+        manager = vless_manager.VlessManager()
+        manager._process = mock.Mock()
+        manager._ports = (10879,)
+        with mock.patch.object(manager, "_is_ready", return_value=True), \
+             mock.patch("vless_manager.urllib.request.build_opener") as build:
+            build.return_value.open.side_effect = lambda *args, **kwargs: io.BytesIO(b'{"ip":"not an ip"}')
+            self.assertFalse(manager.test_connection()["ok"])
 
-        with mock.patch("vless_manager.urllib.request.build_opener", return_value=fake_opener):
-            url = vless_manager.resolve_sing_box_download_url()
-            self.assertEqual(
-                url,
-                "https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-windows-amd64.zip",
-            )
-
-    def test_resolve_sing_box_download_url_api_fallback(self):
-        # 1st call to redirect fails, 2nd call to API succeeds
-        api_data = {
-            "tag_name": "v1.14.4",
-            "assets": [
-                {
-                    "name": "sing-box-1.14.4-windows-amd64.zip",
-                    "browser_download_url": "https://example.com/sb.zip",
-                }
-            ],
-        }
-
-        class MockOpener:
-            def open(self, req, timeout=None):
-                if "api.github.com" in req.full_url:
-                    cm = mock.MagicMock()
-                    cm.__enter__.return_value.read.return_value = json.dumps(api_data).encode("utf-8")
-                    return cm
-                raise OSError("redirect failed")
-
-        with mock.patch("vless_manager.urllib.request.build_opener", return_value=MockOpener()):
-            url = vless_manager.resolve_sing_box_download_url()
-            self.assertEqual(url, "https://example.com/sb.zip")
-
-    def test_resolve_sing_box_download_url_offline_fallback(self):
-        with mock.patch("vless_manager.urllib.request.build_opener", side_effect=OSError("offline")):
-            url = vless_manager.resolve_sing_box_download_url()
-            self.assertEqual(url, vless_manager.SING_BOX_FALLBACK_URL)
-            self.assertIn("sing-box-1.14.4-windows-amd64.zip", url)
-
-    def test_download_core_sing_box_extracts_executable(self):
-        import io
-        import zipfile
-
-        # Create mock zip in memory
-        zip_buf = io.BytesIO()
-        with zipfile.ZipFile(zip_buf, "w") as zf:
-            zf.writestr("sing-box-1.14.4-windows-amd64/sing-box.exe", b"fake binary")
-            zf.writestr("sing-box-1.14.4-windows-amd64/libcronet.dll", b"fake dll")
-        zip_bytes = zip_buf.getvalue()
-
-        def make_fake_resp():
-            resp = mock.MagicMock()
-            resp.length = len(zip_bytes)
-            resp.read.side_effect = [zip_bytes, b""]
-            resp.__enter__.return_value = resp
-            return resp
-
-        fake_opener = mock.MagicMock()
-        fake_opener.open.side_effect = lambda req, timeout=None: make_fake_resp()
-
-        root = Path(__file__).resolve().parent.parent
-        with tempfile.TemporaryDirectory(dir=root) as directory:
-            folder = Path(directory)
-            manager = vless_manager.VlessManager()
-            with mock.patch.object(manager, 'get_bin_dir', return_value=folder), \
-                 mock.patch.object(vless_manager, 'CONFIG_DIR', folder), \
-                 mock.patch('vless_manager.shutil.which', return_value=None), \
-                 mock.patch('vless_manager.resolve_sing_box_download_url', return_value="https://mock/sb.zip"), \
-                 mock.patch('vless_manager.urllib.request.build_opener', return_value=fake_opener):
-                ok, msg = manager.download_core('sing-box')
-                self.assertTrue(ok)
-                self.assertTrue((folder / 'sing-box.exe').exists())
-                self.assertEqual((folder / 'sing-box.exe').read_bytes(), b"fake binary")
-                self.assertTrue((folder / 'libcronet.dll').exists())
+    def test_explicit_proxy_ignores_environment_bypass(self):
+        proxy = "http://127.0.0.1:10879"
+        req = urllib.request.Request("https://api.ipify.org")
+        handler = vless_manager._TunnelProxyHandler({"https": proxy})
+        with mock.patch("vless_manager.urllib.request.proxy_bypass", return_value=True) as bypass:
+            handler.proxy_open(req, proxy, "https")
+        bypass.assert_not_called()
+        self.assertEqual(req.host, "127.0.0.1:10879")
+        self.assertEqual(req._tunnel_host, "api.ipify.org")
 
     def test_parse_vless_reality(self):
         url = (
@@ -233,37 +322,133 @@ class VlessManagerTests(unittest.TestCase):
             vless_manager.DEFAULT_HTTP_PORT, vless_manager.DEFAULT_SOCKS_PORT
         )
 
-    def test_reclaim_core_ports_targets_only_hub_core(self):
-        from unittest.mock import patch, MagicMock
+class CoreProcessTests(ScopedMocksTestCase):
+    URL = "vless://id@example.org:443"
+    HTTP = 21879
+    SOCKS = 21878
 
-        svc = vless_manager.VlessManager()
-        with patch.object(
-            svc, "_get_listener_pids",
-            side_effect=lambda port: [4242] if port == 10879 else []
-        ) as listener_mock, \
-             patch.object(
-            svc, "_get_process_image", return_value="sing-box.exe"
-        ), \
-             patch.object(svc, "_kill_pid") as kill_mock:
-            ok, err = svc._reclaim_core_ports(10879, 10878)
-        self.assertTrue(ok)
-        self.assertEqual(err, "")
-        self.assertTrue(listener_mock.called)
-        kill_mock.assert_called_once_with(4242)
+    def setUp(self):
+        self.svc = vless_manager.VlessManager()
+        self.root = Path(self.enter_context(tempfile.TemporaryDirectory()))
+        self.enter_context(mock.patch.object(vless_manager, "VLESS_RUNTIME_DIR", self.root))
+        self.exe = self.root / "xray.exe"
+        self.exe.touch()
+        self.child = mock.Mock(pid=4242)
+        self.child.poll.return_value = None
+        self.popen = self.enter_context(mock.patch("vless_manager.subprocess.Popen", return_value=self.child))
+        self.run = self.enter_context(mock.patch("vless_manager.subprocess.run"))
+        self.probe = self.enter_context(mock.patch.object(self.svc, "check_port_listening",
+                                                        side_effect=lambda port: self.popen.called))
+        self.ownership = self.enter_context(mock.patch.object(self.svc, "_owned_listener_ports",
+                                                            side_effect=lambda pid, ports: set(ports)))
+        self.enter_context(mock.patch.object(vless_manager, "_START_TIMEOUT", 0))
 
-        # A foreign program on a port must not be killed; an error returned
-        with patch.object(
-            svc, "_get_listener_pids", side_effect=lambda port: [5555]
-        ), \
-             patch.object(
-            svc, "_get_process_image", return_value="clash-verge.exe"
-        ), \
-             patch.object(svc, "_kill_pid") as kill_mock:
-            ok, err = svc._reclaim_core_ports(10879, 10878)
+    def start(self):
+        return self.svc.start_tunnel(self.URL, self.HTTP, self.SOCKS, str(self.exe))
+
+    def test_explicit_operator_binary_starts_and_stops_only_owned_child(self):
+        ok, message = self.start()
+        self.assertTrue(ok, message)
+        self.assertTrue(self.svc.is_running())
+        self.assertEqual(self.popen.call_args.args[0][0], str(self.exe.resolve()))
+        self.ownership.assert_called_with(4242, (self.HTTP, self.SOCKS))
+        self.assertTrue(self.svc.stop_tunnel()[0])
+        self.child.terminate.assert_called_once_with()
+        self.child.kill.assert_not_called()
+        self.run.assert_not_called()
+        self.assertFalse(self.svc.is_running())
+        self.assertEqual(list(self.root.iterdir()), [self.exe])
+
+    def test_foreign_listener_does_not_count_as_ready_and_is_not_touched(self):
+        self.probe.side_effect = None
+        self.probe.return_value = True
+        self.assertFalse(self.svc.is_running())
+        self.assertFalse(self.svc.test_connection(self.HTTP)["ok"])
+        ok, message = self.start()
         self.assertFalse(ok)
-        self.assertIn("clash-verge.exe", err)
-        self.assertIn("10879", err)
-        kill_mock.assert_not_called()
+        self.assertIn(str(self.HTTP), message)
+        self.assertTrue(self.svc.stop_tunnel()[0])
+        self.popen.assert_not_called()
+        self.run.assert_not_called()
+
+    def test_listening_port_race_does_not_report_success_or_kill_by_pid(self):
+        self.ownership.side_effect = None
+        self.ownership.return_value = set()
+        self.assertFalse(self.start()[0])
+        self.assertFalse(self.svc.is_running())
+        self.child.terminate.assert_called_once_with()
+        self.run.assert_not_called()
+
+    def test_xray_requires_both_listeners_but_sing_box_requires_only_mixed_port(self):
+        self.ownership.side_effect = None
+        self.ownership.return_value = {self.HTTP}
+        self.assertFalse(self.start()[0])
+        self.child.terminate.assert_called_once_with()
+        self.popen.reset_mock()
+        self.exe = self.root / "sing-box.exe"
+        self.exe.touch()
+        self.assertTrue(self.start()[0])
+        self.ownership.assert_called_with(self.child.pid, (self.HTTP,))
+
+    def test_early_exit_not_reported_as_ready(self):
+        self.child.poll.return_value = 9
+        ok, message = self.start()
+        self.assertFalse(ok)
+        self.assertIn("9", message)
+        self.assertFalse(self.svc.is_running())
+        self.child.terminate.assert_not_called()
+
+    def test_running_child_no_longer_owns_listeners(self):
+        self.assertTrue(self.start()[0])
+        self.ownership.side_effect = None
+        self.ownership.return_value = set()
+        self.assertFalse(self.svc.is_running())
+        self.assertFalse(self.start()[0])
+        self.popen.assert_called_once()
+
+    def test_concurrent_start_cannot_report_pending_child_as_ready_and_stop_cancels(self):
+        self.ownership.side_effect = None
+        self.ownership.return_value = set()
+        sleeping, resume = threading.Event(), threading.Event()
+
+        def wait_for_stop(_delay):
+            sleeping.set()
+            resume.wait(5)
+
+        with mock.patch.object(vless_manager, "_START_TIMEOUT", 10), \
+             mock.patch("vless_manager.time.sleep", side_effect=wait_for_stop), \
+             concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            start = pool.submit(self.start)
+            try:
+                self.assertTrue(sleeping.wait(5))
+                self.assertFalse(self.start()[0])
+                self.assertTrue(self.svc.stop_tunnel()[0])
+            finally:
+                resume.set()
+            self.assertFalse(start.result(timeout=5)[0])
+        self.popen.assert_called_once()
+        self.child.terminate.assert_called_once()
+
+    def test_windows_listener_ownership_uses_loopback_state_and_pid(self):
+        loopback = int.from_bytes(socket.inet_aton("127.0.0.1"), "little")
+        port, socks = socket.htons(self.HTTP), socket.htons(self.SOCKS)
+        rows = [3, 2, loopback, port, 0, 0, 4242, 2, loopback, socks, 0, 0, 5555,
+                5, loopback, socks, 0, 0, 4242]
+        data = (ctypes.c_uint32 * len(rows))(*rows)
+
+        def table(buffer, size, *_args):
+            if buffer is None:
+                ctypes.cast(size, ctypes.POINTER(ctypes.c_uint32)).contents.value = ctypes.sizeof(data)
+                return 122
+            ctypes.memmove(buffer, data, ctypes.sizeof(data))
+            return 0
+
+        get_table = mock.Mock(side_effect=table)
+        with mock.patch.object(ctypes, "WinDLL", create=True) as dll:
+            dll.return_value.GetExtendedTcpTable = get_table
+            self.assertEqual(vless_manager._windows_listener_ports(4242, (self.HTTP, self.SOCKS)), {self.HTTP})
+            data[9] = port
+            self.assertEqual(vless_manager._windows_listener_ports(4242, (self.HTTP, self.SOCKS)), set())
 
 
 class ActiveProxyPriorityTests(unittest.TestCase):
@@ -300,7 +485,10 @@ class ActiveProxyPriorityTests(unittest.TestCase):
         cfg = {"dns_mode": "system"}
         self.assertIsNone(vless_manager.get_active_proxy(cfg, port_probe=lambda p: False))
 
-    def test_detached_core_port_respects_config_file(self):
+    def test_unowned_listener_is_not_promoted_to_a_proxy(self):
+        self.assertIsNone(vless_manager.get_active_proxy({}, port_probe=lambda p: True))
+
+    def test_custom_port_respects_config_file(self):
         # All code paths must derive the port from the same config keys
         with mock.patch.object(vless_manager, "load_hub_config",
                                return_value={"vless_http_port": 20801}):
@@ -309,34 +497,6 @@ class ActiveProxyPriorityTests(unittest.TestCase):
         with mock.patch.object(vless_manager, "load_hub_config",
                                return_value={"vless_http_port": 20801}):
             self.assertEqual(vless_manager.get_http_port(), 20801)
-
-    def test_download_core_never_disables_tls_verification(self):
-        import ssl
-        root = Path(__file__).resolve().parent.parent
-        with tempfile.TemporaryDirectory(dir=root) as directory:
-            folder = Path(directory)
-            manager = vless_manager.VlessManager()
-            opener = mock.MagicMock()
-            opener.open.side_effect = ssl.SSLCertVerificationError("bad cert")
-            with mock.patch.object(manager, "get_bin_dir", return_value=folder), \
-                 mock.patch.object(vless_manager, "CONFIG_DIR", folder), \
-                 mock.patch("vless_manager.shutil.which", return_value=None), \
-                 mock.patch("vless_manager.resolve_sing_box_download_url", return_value="https://mock/sb.zip"), \
-                 mock.patch("vless_manager.urllib.request.build_opener", return_value=opener), \
-                 mock.patch("vless_manager.ssl._create_unverified_context") as unverified:
-                ok, _ = manager.download_core("sing-box")
-            self.assertFalse(ok)
-            unverified.assert_not_called()
-
-    def test_get_process_image_ignores_localized_info_messages(self):
-        svc = vless_manager.VlessManager()
-        fake_proc = mock.MagicMock(returncode=0, stdout="ИНФОРМАЦИЯ: Задачи, отвечающие заданным критериям, отсутствуют.\n")
-        with mock.patch("vless_manager.subprocess.run", return_value=fake_proc):
-            self.assertEqual(svc._get_process_image(99999), "")
-        valid_proc = mock.MagicMock(returncode=0, stdout='"sing-box.exe","4242","Console","1","12,000 K"\n')
-        with mock.patch("vless_manager.subprocess.run", return_value=valid_proc):
-            self.assertEqual(svc._get_process_image(4242), "sing-box.exe")
-
 
 if __name__ == "__main__":
     unittest.main()

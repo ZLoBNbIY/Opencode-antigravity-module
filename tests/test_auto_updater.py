@@ -29,21 +29,23 @@ class AutoUpdaterTests(unittest.TestCase):
             self.assertTrue(auto_updater._git_commit_contains(Path("repo"), "remote-sha"))
         self.assertEqual(run.call_args.args[0], ["git", "merge-base", "--is-ancestor", "remote-sha", "HEAD"])
 
-    def test_apply_update_git_aborts_rebase_on_pull_failure(self):
-        calls = []
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            if cmd[:3] == ["git", "status", "--porcelain"]:
-                return subprocess.CompletedProcess(cmd, 0, "", "")
-            if cmd[:3] == ["git", "pull", "--rebase"]:
-                return subprocess.CompletedProcess(cmd, 1, "", "conflict")
-            return subprocess.CompletedProcess(cmd, 0, "", "")
-
-        with patch.object(auto_updater.subprocess, "run", side_effect=fake_run):
+    def test_fetch_failure_stops_before_merge(self):
+        with patch.object(auto_updater, "_clean_v2_head", return_value="a" * 40), \
+             patch.object(auto_updater, "_upstream_sha", return_value="b" * 40), \
+             patch.object(auto_updater, "_git_output", side_effect=RuntimeError("fetch failed")) as git:
             ok, msg = auto_updater.apply_update_git(Path("repo"))
         self.assertFalse(ok)
-        self.assertIn("conflict", msg)
-        self.assertIn(["git", "rebase", "--abort"], calls)
+        self.assertIn("fetch failed", msg)
+        git.assert_called_once()
+        self.assertEqual(git.call_args.args[1], "fetch")
+
+    def test_changed_remote_commit_requires_new_confirmation(self):
+        with patch.object(auto_updater, "_clean_v2_head", return_value="a" * 40), \
+             patch.object(auto_updater, "_upstream_sha", return_value="b" * 40), \
+             patch.object(auto_updater, "_git_output") as git:
+            ok, _ = auto_updater.apply_update_git(Path("repo"), expected_commit="c" * 40)
+        self.assertFalse(ok)
+        git.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -4,15 +4,18 @@ Supports parsing vless:// URLs, configuring and running Xray-core or sing-box,
 and routing traffic from OpenCode and Antigravity Hub.
 """
 
+import ctypes
+import hashlib
+import ipaddress
 import os
+import platform
 import sys
-import csv
-import io
 import json
 import time
-import secrets
 import socket
 import ssl
+import stat
+import tempfile
 import urllib.parse
 import urllib.request
 import subprocess
@@ -39,63 +42,130 @@ DEFAULT_HTTP_PORT = 10879
 DEFAULT_SOCKS_PORT = 10878
 LOCAL_DNS_PROXY_PORT = 51180
 
-SING_BOX_FALLBACK_VERSION = "1.14.4"
-SING_BOX_FALLBACK_URL = (
-    f"https://github.com/SagerNet/sing-box/releases/download/v{SING_BOX_FALLBACK_VERSION}/"
-    f"sing-box-{SING_BOX_FALLBACK_VERSION}-windows-amd64.zip"
-)
-SING_BOX_DOWNLOAD_URL = SING_BOX_FALLBACK_URL
-XRAY_DOWNLOAD_URL = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip"
+# SHA-256 from the official GitHub Releases API asset `digest` fields:
+# /repos/SagerNet/sing-box/releases/tags/v1.14.4
+# /repos/XTLS/Xray-core/releases/tags/v26.11.9
+# Update URLs and digests together; do not fetch replacement digests at runtime.
+_CORE_RELEASES = {
+    "sing-box": (
+        "https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-windows-amd64.zip",
+        "99185d75d314a07dbba4a130c8ad986cbeb629a07927975636b341ca61f991df",
+    ),
+    "xray": (
+        "https://github.com/XTLS/Xray-core/releases/download/v26.11.9/Xray-windows-64.zip",
+        "1262522266337b824f07beb8e1375786b437683b3890105469088f8e17e0a69d",
+    ),
+}
+_RELEASE_HOSTS = {"github.com", "release-assets.githubusercontent.com"}
+_ARCHIVE_NAME = "release.zip"
+_MAX_ARCHIVE_SIZE = 256 * 1024 * 1024
+_MAX_EXTRACTED_SIZE = 512 * 1024 * 1024
+_START_TIMEOUT = 8.0
 
 
-def resolve_sing_box_download_url(timeout: float = 6.0) -> str:
-    """
-    Dynamically discovers the latest sing-box Windows AMD64 download URL.
-    Falls back to a known stable release if discovery fails.
-    """
-    # 1. Try redirect on releases/latest (GET /releases/latest -> /releases/tag/vX.Y.Z)
-    try:
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        req = urllib.request.Request(
-            "https://github.com/SagerNet/sing-box/releases/latest",
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-        )
-        with opener.open(req, timeout=timeout) as resp:
-            final_url = resp.geturl()
-            if "/tag/" in final_url:
-                tag = final_url.rstrip("/").split("/")[-1]
-                version = tag.lstrip("v")
-                if version:
-                    return f"https://github.com/SagerNet/sing-box/releases/download/{tag}/sing-box-{version}-windows-amd64.zip"
-    except Exception:
-        pass
+def _check_release_origin(url: str) -> None:
+    parsed = urllib.parse.urlsplit(url)
+    if (parsed.scheme != "https" or parsed.hostname not in _RELEASE_HOSTS
+            or parsed.username is not None or parsed.password is not None
+            or parsed.port not in (None, 443)):
+        raise ValueError("Недоверенный источник загрузки ядра")
 
-    # 2. Try GitHub Releases API
-    try:
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        req = urllib.request.Request(
-            "https://api.github.com/repos/SagerNet/sing-box/releases/latest",
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-                "Accept": "application/vnd.github.v3+json",
-            },
-        )
-        with opener.open(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            for asset in data.get("assets", []):
-                name = asset.get("name", "")
-                if name.endswith("-windows-amd64.zip") and "legacy" not in name:
-                    dl = asset.get("browser_download_url")
-                    if dl:
-                        return dl
-            tag = data.get("tag_name", "")
-            if tag:
-                version = tag.lstrip("v")
-                return f"https://github.com/SagerNet/sing-box/releases/download/{tag}/sing-box-{version}-windows-amd64.zip"
-    except Exception:
-        pass
 
-    return SING_BOX_FALLBACK_URL
+class _ReleaseRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _check_release_origin(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+class _TunnelProxyHandler(urllib.request.ProxyHandler):
+    def proxy_open(self, req, proxy, proxy_type):
+        # These probes must not bypass the explicitly selected proxy via NO_PROXY.
+        if req.type != "https":
+            raise ValueError("HTTPS required for tunnel health checks")
+        req.set_proxy(urllib.parse.urlsplit(proxy).netloc, "http")
+        return None
+
+
+class _TunnelRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if urllib.parse.urlsplit(newurl).scheme != "https":
+            raise ValueError("HTTPS required for tunnel health checks")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _sha256(stream) -> str:
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _plain_path(path: Path, mode_check) -> bool:
+    info = path.lstat()
+    return (mode_check(info.st_mode)
+            and not getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _verified_archive(archive, digest: str) -> None:
+    if os.fstat(archive.fileno()).st_size > _MAX_ARCHIVE_SIZE or _sha256(archive) != digest:
+        raise ValueError("Контрольная сумма SHA-256 архива ядра не совпадает")
+    archive.seek(0)
+
+
+def _core_members(zf: zipfile.ZipFile, core_type: str) -> Dict[str, zipfile.ZipInfo]:
+    allowed = {f"{core_type}.exe"}
+    if core_type == "sing-box":
+        allowed.add("libcronet.dll")
+    else:
+        allowed.update(("geoip.dat", "geosite.dat"))
+    members = {}
+    for entry in zf.infolist():
+        parts = entry.orig_filename.rstrip("/").split("/")
+        unix_type = stat.S_IFMT(entry.external_attr >> 16)
+        if (any(part in ("", ".", "..") or any(c in part for c in "\\:\0") for part in parts)
+                or unix_type not in (0, stat.S_IFREG, stat.S_IFDIR)):
+            raise ValueError("Недопустимый путь или тип файла в архиве ядра")
+        name = parts[-1].lower()
+        if name in allowed:
+            if name in members or entry.is_dir() or unix_type == stat.S_IFDIR:
+                raise ValueError("Неоднозначный файл в архиве ядра")
+            members[name] = entry
+    if f"{core_type}.exe" not in members or sum(e.file_size for e in members.values()) > _MAX_EXTRACTED_SIZE:
+        raise ValueError("Неожиданное содержимое архива ядра")
+    return members
+
+
+def _windows_listener_ports(pid: int, ports: Tuple[int, ...]) -> set[int]:
+    # GetExtendedTcpTable: DWORD count, then MIB_TCPROW_OWNER_PID rows (6 DWORDs).
+    dword = ctypes.c_uint32
+    row_type = dword * 6
+    get_table = ctypes.WinDLL("iphlpapi.dll", winmode=0x800).GetExtendedTcpTable
+    get_table.argtypes = [ctypes.c_void_p, ctypes.POINTER(dword), ctypes.c_int,
+                          dword, ctypes.c_int, dword]
+    get_table.restype = dword
+    size = dword()
+    buffer = None
+    for _ in range(4):
+        result = get_table(buffer, ctypes.byref(size), 0, socket.AF_INET, 3, 0)
+        if result == 0 and buffer is not None:
+            count = dword.from_buffer(buffer).value
+            if count > (len(buffer) - ctypes.sizeof(dword)) // ctypes.sizeof(row_type):
+                break
+            rows = (row_type * count).from_buffer(buffer, ctypes.sizeof(dword))
+            loopback = int.from_bytes(socket.inet_aton("127.0.0.1"), "little")
+            owned, competing = set(), set()
+            for state, address, network_port, _, _, owner in rows:
+                port = socket.ntohs(network_port & 0xFFFF)
+                if state == 2 and port in ports:
+                    if address == loopback and owner == pid:
+                        owned.add(port)
+                    elif address in (0, loopback):
+                        competing.add(port)
+            return owned - competing
+        if result != 122 or not 0 < size.value <= 16 * 1024 * 1024:
+            break
+        buffer = ctypes.create_string_buffer(size.value)
+    return set()
 
 
 def load_hub_config() -> Dict[str, Any]:
@@ -166,12 +236,9 @@ def get_active_proxy(
 
     http_port = _sanitize_port(cfg.get("vless_http_port"), DEFAULT_HTTP_PORT)
 
-    # 1. VLESS tunnel
+    # 1. VLESS is a routing preference, not a readiness check. Do not silently
+    # switch a configured VLESS route to direct when the tunnel is unavailable.
     if cfg.get("vless_enabled") and cfg.get("vless_url"):
-        return f"http://127.0.0.1:{http_port}"
-
-    # A detached core may keep listening even when the flag was lost
-    if port_probe(http_port):
         return f"http://127.0.0.1:{http_port}"
 
     # 2. User-defined external proxy
@@ -194,6 +261,8 @@ class VlessParser:
 
     @staticmethod
     def parse_url(url_str: str) -> Dict[str, Any]:
+        if not isinstance(url_str, str):
+            raise ValueError("Укажите ссылку VLESS")
         url_str = url_str.strip()
         if not url_str.startswith("vless://"):
             raise ValueError("Ссылка должна начинаться с 'vless://'")
@@ -243,6 +312,8 @@ class VlessManager:
 
     def __init__(self):
         self._process: Optional[subprocess.Popen] = None
+        self._runtime: Optional[Path] = None
+        self._ports: Tuple[int, ...] = ()
         self._lock = threading.Lock()
         self._status = "stopped"
         self._last_test_result: Optional[Dict[str, Any]] = None
@@ -263,135 +334,121 @@ class VlessManager:
             local_bin.mkdir(parents=True, exist_ok=True)
             return local_bin
 
+    def _managed_core(self, directory: Path, core_type: str, digest: str) -> Path:
+        archive_path = directory / _ARCHIVE_NAME
+        if (not _plain_path(directory.parent, stat.S_ISDIR)
+                or not _plain_path(directory, stat.S_ISDIR)
+                or not _plain_path(archive_path, stat.S_ISREG)):
+            raise ValueError("Небезопасный каталог управляемого ядра")
+        # The retained pinned archive authenticates the installed files. A local
+        # sidecar of hashes could be altered together with the executable.
+        with archive_path.open("rb") as archive:
+            _verified_archive(archive, digest)
+            with zipfile.ZipFile(archive) as zf:
+                members = _core_members(zf, core_type)
+                if {p.name for p in directory.iterdir()} != {*members, _ARCHIVE_NAME}:
+                    raise ValueError("Неожиданные файлы в каталоге ядра")
+                for name, member in members.items():
+                    path = directory / name
+                    if not _plain_path(path, stat.S_ISREG) or path.stat().st_size != member.file_size:
+                        raise ValueError("Повреждён файл установленного ядра")
+                    with path.open("rb") as installed, zf.open(member) as original:
+                        if _sha256(installed) != _sha256(original):
+                            raise ValueError("Контрольная сумма установленного файла не совпадает")
+        return directory / f"{core_type}.exe"
+
     def find_core_executable(self, custom_path: Optional[str] = None, core_type: Optional[str] = None) -> Optional[Path]:
-        if custom_path and os.path.exists(custom_path) and os.path.isfile(custom_path):
-            return Path(custom_path)
-
-        names = (f"{core_type}.exe", core_type) if core_type else ("xray.exe", "sing-box.exe", "xray", "sing-box")
-        search_dirs = [self.get_bin_dir(), CONFIG_DIR / "bin"]
-        # Legacy module-bundled engines remain a fallback for normal runtime
-        # discovery, but must not mask an engine-specific install/download.
-        if core_type is None:
-            search_dirs.append(Path(__file__).resolve().parent / "bin")
-        for b_dir in search_dirs:
-            if b_dir.exists():
-                for name in names:
-                    cand = b_dir / name
-                    if cand.exists():
-                        return cand
-
-        # Check system PATH
-        for cmd in names:
-            found = shutil.which(cmd)
-            if found:
-                return Path(found)
-
+        try:
+            bin_dir = self.get_bin_dir().absolute()
+            managed = bin_dir / "managed-vless"
+            candidate = Path(os.path.abspath(custom_path)) if custom_path else None
+            if candidate is not None:
+                resolved = candidate.resolve(strict=True)
+                # Old flat installs were not verified. Do not implicitly trust
+                # them, even if an old Hub configuration stored the path.
+                managed_roots = (managed, bin_dir, CONFIG_DIR / "bin", Path(__file__).resolve().parent / "bin")
+                managed_path = any(path.is_relative_to(root_path)
+                                   for path in (candidate, resolved)
+                                   for root in managed_roots
+                                   for root_path in (root.absolute(), root.resolve()))
+                if not managed_path:
+                    # An explicit path outside Hub bin dirs is operator trust.
+                    return resolved if resolved.is_file() else None
+            for kind in ((core_type,) if core_type else ("xray", "sing-box")):
+                if kind not in _CORE_RELEASES:
+                    continue
+                _, digest = _CORE_RELEASES[kind]
+                directory = managed / f"{kind}-{digest}"
+                if candidate is not None and candidate != directory / f"{kind}.exe":
+                    continue
+                try:
+                    return self._managed_core(directory, kind, digest)
+                except (OSError, ValueError, RuntimeError, zipfile.BadZipFile):
+                    continue
+        except (OSError, ValueError, RuntimeError):
+            pass
         return None
 
     def is_core_available(self, custom_path: Optional[str] = None) -> bool:
         return self.find_core_executable(custom_path) is not None
 
     def download_core(self, core_type: str = "sing-box", progress_callback=None) -> Tuple[bool, str]:
-        """Downloads sing-box or xray-core into bin folder, bypassing dead local proxies."""
-        bin_dir = self.get_bin_dir()
-        if core_type not in ("sing-box", "xray"):
+        """Install a pinned archive via an atomic, same-filesystem directory rename."""
+        if core_type not in _CORE_RELEASES:
             return False, "Неизвестное ядро"
-        existing = self.find_core_executable(core_type=core_type)
-        if existing:
-            return True, f"Ядро уже установлено: {existing.name}"
-
-        candidate_urls: list[str] = []
-        if core_type == "sing-box":
-            resolved_url = resolve_sing_box_download_url()
-            candidate_urls.extend([
-                resolved_url,
-                f"https://gh-proxy.com/{resolved_url}",
-                f"https://ghfast.top/{resolved_url}",
-            ])
-            if resolved_url != SING_BOX_FALLBACK_URL:
-                candidate_urls.extend([
-                    SING_BOX_FALLBACK_URL,
-                    f"https://gh-proxy.com/{SING_BOX_FALLBACK_URL}",
-                    f"https://ghfast.top/{SING_BOX_FALLBACK_URL}",
-                ])
-        else:
-            candidate_urls.extend([
-                XRAY_DOWNLOAD_URL,
-                f"https://gh-proxy.com/{XRAY_DOWNLOAD_URL}",
-                f"https://ghfast.top/{XRAY_DOWNLOAD_URL}",
-            ])
-
-        archive_path = bin_dir / f"core_archive_{secrets.token_hex(4)}.zip"
-
-        last_error = None
-        for candidate_url in candidate_urls:
-            try:
+        if sys.platform != "win32" or platform.machine().lower() not in ("amd64", "x86_64"):
+            return False, "Автоустановка поддерживает только Windows x64. Укажите путь к проверенному ядру."
+        url, digest = _CORE_RELEASES[core_type]
+        try:
+            bin_dir = self.get_bin_dir().absolute()
+            if not _plain_path(bin_dir, stat.S_ISDIR):
+                raise ValueError("Небезопасный каталог для установки ядра")
+            managed = bin_dir / "managed-vless"
+            managed.mkdir(exist_ok=True)
+            if not _plain_path(managed, stat.S_ISDIR):
+                raise ValueError("Небезопасный каталог управляемого ядра")
+            destination = managed / f"{core_type}-{digest}"
+            if os.path.lexists(destination):
+                core = self._managed_core(destination, core_type, digest)
+                return True, f"Ядро уже установлено: {core.name}"
+            _check_release_origin(url)
+            with tempfile.TemporaryDirectory(prefix=".stage-", dir=managed) as staging_path:
+                staging = Path(staging_path)
                 if progress_callback:
                     progress_callback(f"Загрузка {core_type}...")
-
-                if not str(candidate_url).startswith("https://"):
-                    raise ValueError("Разрешена загрузка ядер только по HTTPS")
-                req = urllib.request.Request(
-                    candidate_url,
-                    headers={
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                        "Accept": "*/*",
-                    }
+                req = urllib.request.Request(url, headers={"User-Agent": "AntigravityHub/1.0"})
+                opener = urllib.request.build_opener(
+                    urllib.request.ProxyHandler({}),
+                    urllib.request.HTTPSHandler(context=ssl.create_default_context()),
+                    _ReleaseRedirectHandler(),
                 )
-                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-                resp = opener.open(req, timeout=30)
-
-                with resp, open(archive_path, "wb") as f:
-                    total_size = resp.length or 0
+                with opener.open(req, timeout=30) as resp, (staging / _ARCHIVE_NAME).open("xb") as archive:
+                    _check_release_origin(resp.geturl())
                     downloaded = 0
-                    while True:
-                        chunk = resp.read(65536)
-                        if not chunk:
-                            break
-                        f.write(chunk)
+                    for chunk in iter(lambda: resp.read(65536), b""):
                         downloaded += len(chunk)
-                        if progress_callback and total_size > 0:
-                            pct = int((downloaded / total_size) * 100)
-                            progress_callback(f"Загрузка {core_type}: {pct}%")
-
+                        if downloaded > _MAX_ARCHIVE_SIZE:
+                            raise ValueError("Архив ядра слишком велик")
+                        archive.write(chunk)
                 if progress_callback:
-                    progress_callback("Распаковка архива...")
-
-                with zipfile.ZipFile(archive_path, "r") as zf:
-                    for member in zf.namelist():
-                        member_path = Path(member)
-                        if member_path.is_absolute() or ".." in member_path.parts:
-                            raise ValueError("Небезопасный путь в архиве ядра")
-                        basename = os.path.basename(member)
-                        if basename in ("sing-box.exe", "xray.exe") or (basename.endswith(".dll") and "cronet" in basename.lower()):
-                            with zf.open(member) as source:
-                                target_file = bin_dir / basename
-                                with open(target_file, "wb") as out_f:
-                                    shutil.copyfileobj(source, out_f)
-
-                # Cleanup zip archive safely on Windows
-                import gc
-                gc.collect()
-                time.sleep(0.2)
+                    progress_callback("Проверка и распаковка архива...")
+                with (staging / _ARCHIVE_NAME).open("rb") as archive:
+                    _verified_archive(archive, digest)
+                    with zipfile.ZipFile(archive) as zf:
+                        for name, member in _core_members(zf, core_type).items():
+                            with zf.open(member) as source, (staging / name).open("xb") as target:
+                                shutil.copyfileobj(source, target)
                 try:
-                    if archive_path.exists():
-                        archive_path.unlink()
-                except Exception:
-                    pass
-
-                found = self.find_core_executable(core_type=core_type)
-                if found:
-                    return True, f"Ядро успешно установлено: {found.name}"
-            except Exception as e:
-                last_error = e
-                if archive_path.exists():
-                    try:
-                        archive_path.unlink()
-                    except Exception:
-                        pass
-                continue
-
-        return False, f"Ошибка загрузки ядра: {last_error}"
+                    # Concurrent installers cannot replace a populated release.
+                    staging.rename(destination)
+                except OSError:
+                    if not os.path.lexists(destination):
+                        raise
+                    self._managed_core(destination, core_type, digest)
+            return True, f"Ядро успешно установлено: {core_type}.exe"
+        except Exception as e:
+            return False, (f"Ошибка установки ядра: {e}. Если установка повреждена, удалите её каталог "
+                           "вручную или укажите путь к проверенному ядру.")
 
     def generate_xray_config(self, params: Dict[str, Any], http_port: int, socks_port: int) -> Dict[str, Any]:
         """Creates an Xray JSON config."""
@@ -534,7 +591,7 @@ class VlessManager:
             "log": {"level": "warn"},
             "dns": {
                 "servers": [
-                    {"tag": "remote-dns", "address": "https://1.1.1.1/dns-query", "detour": "vless-out"}
+                    {"type": "https", "tag": "remote-dns", "server": "1.1.1.1", "detour": "vless-out"}
                 ]
             },
             "inbounds": [
@@ -554,18 +611,12 @@ class VlessManager:
 
     def is_running(self) -> bool:
         with self._lock:
-            # If the tunnel HTTP port is actively listening, tunnel is definitely up!
-            if self.check_port_listening(get_http_port()):
-                self._status = "running"
-                return True
-            if self._process is None:
-                return False
-            poll = self._process.poll()
-            if poll is not None:
-                self._process = None
-                self._status = "stopped"
-                return False
-            return True
+            return self._is_ready()
+
+    def _is_ready(self) -> bool:
+        proc = self._process
+        return (self._status == "running" and proc is not None
+                and self._owns_listeners(proc, self._ports))
 
     def check_port_listening(self, port: int, timeout: float = 0.5) -> bool:
         try:
@@ -574,84 +625,76 @@ class VlessManager:
         except (socket.timeout, ConnectionRefusedError, OSError):
             return False
 
-    # ------------------------------------------------------------------
-    # Safe process handling: never kill foreign Xray/sing-box instances
-    # (for example the one spawned by a browser VLESS-bridge extension).
-    # ------------------------------------------------------------------
-    def _get_listener_pids(self, port: int) -> list:
-        """Returns PIDs of processes listening on loopback/wildcard:port."""
-        pids = []
+    def _owned_listener_ports(self, pid: int, ports: Tuple[int, ...]) -> set[int]:
+        """Check OS socket ownership, not process names or an open port alone."""
+        addresses = {f"127.0.0.1:{port}": port for port in ports}
         try:
-            ps_cmd = (
-                "Get-NetTCPConnection -LocalPort %d -State Listen -ErrorAction SilentlyContinue "
-                "| Where-Object { $_.LocalAddress -in @('127.0.0.1','0.0.0.0','::','::1') } "
-                "| Select-Object -ExpandProperty OwningProcess" % port
-            )
-            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            proc = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps_cmd],
-                capture_output=True, text=True, creationflags=flags, timeout=10,
-            )
-            for line in proc.stdout.splitlines():
-                line = line.strip()
-                if line.isdigit():
-                    pid = int(line)
-                    if pid > 4:
-                        pids.append(pid)
-        except Exception:
+            if sys.platform == "win32":
+                return _windows_listener_ports(pid, ports)
+            if sys.platform.startswith("linux"):
+                proc_dir = Path("/proc") / str(pid)
+                sockets = set()
+                for fd in (proc_dir / "fd").iterdir():
+                    try:
+                        sockets.add(os.readlink(fd))
+                    except FileNotFoundError:
+                        continue
+                address_hex = int.from_bytes(socket.inet_aton("127.0.0.1"), sys.byteorder)
+                keys = {f"{address_hex:08X}:{port:04X}": port for port in ports}
+                wildcard = {f"00000000:{port:04X}": port for port in ports}
+                rows = (proc_dir / "net/tcp").read_text().splitlines()[1:]
+                owned, competing = set(), set()
+                for row in map(str.split, rows):
+                    if len(row) < 10 or row[3] != "0A":
+                        continue
+                    if row[1] in keys:
+                        if f"socket:[{row[9]}]" in sockets:
+                            owned.add(keys[row[1]])
+                        else:
+                            competing.add(keys[row[1]])
+                    elif row[1] in wildcard:
+                        competing.add(wildcard[row[1]])
+                return owned - competing
+            if sys.platform == "darwin":
+                result = subprocess.run(
+                    ["/usr/sbin/lsof", "-nP", "-a", "-p", str(pid), "-i4TCP", "-sTCP:LISTEN", "-Fn"],
+                    capture_output=True, text=True, errors="replace", timeout=2, check=True,
+                )
+                return {addresses[line[1:]] for line in result.stdout.splitlines()
+                        if line.startswith("n") and line[1:] in addresses}
+        except (OSError, subprocess.SubprocessError):
             pass
-        return sorted(set(pids))
+        return set()
 
-    def _get_process_image(self, pid: int) -> str:
-        try:
-            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            proc = subprocess.run(
-                ["tasklist", "/fi", f"PID eq {pid}", "/fo", "csv", "/nh"],
-                capture_output=True, text=True, creationflags=flags, timeout=10,
-            )
-            if proc.returncode != 0:
-                return ""
-            for row in csv.reader(io.StringIO(proc.stdout)):
-                if len(row) >= 2 and row[1].strip() == str(pid):
-                    return row[0].strip()
-        except Exception:
-            pass
-        return ""
+    def _owns_listeners(self, proc: subprocess.Popen, ports: Tuple[int, ...]) -> bool:
+        return (bool(ports) and proc.poll() is None
+                and self._owned_listener_ports(proc.pid, ports) == set(ports)
+                and all(self.check_port_listening(port) for port in ports)
+                and proc.poll() is None)
 
-    def _kill_pid(self, pid: int) -> None:
-        try:
-            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            subprocess.run(
-                ["taskkill", "/f", "/pid", str(pid)],
-                capture_output=True, creationflags=flags, timeout=10,
-            )
-            subprocess.run(
-                ["taskkill", "/f", "/t", "/pid", str(pid)],
-                capture_output=True, creationflags=flags, timeout=10,
-            )
-        except Exception:
-            pass
+    def _clear_child(self) -> None:
+        self._process = None
+        self._ports = ()
+        self._status = "stopped"
+        if self._runtime is not None:
+            shutil.rmtree(self._runtime, ignore_errors=True)
+            self._runtime = None
 
-    def _reclaim_core_ports(self, http_port: int, socks_port: int) -> Tuple[bool, str]:
-        """
-        Frees tunnel ports from leftover (detached) instances of OUR core only.
-        Returns (killed_something, error_message). Error message is returned if the
-        port is occupied by a foreign program (not sing-box/xray).
-        """
-        core_images = ("sing-box.exe", "xray.exe", "sing-box", "xray")
-        for port in (http_port, socks_port):
-            for pid in self._get_listener_pids(port):
-                image = self._get_process_image(pid).lower()
-                if image in core_images:
-                    self._kill_pid(pid)
-                    time.sleep(0.3)
-                elif image:
-                    return False, (
-                        f"Порт {port} занят другой программой ({image}, PID {pid}). "
-                        f"Измените vless_http_port/vless_socks_port в "
-                        f"{CONFIG_DIR / 'antigravity.json'} и повторите запуск."
-                    )
-        return True, ""
+    def _stop_child(self) -> bool:
+        proc = self._process
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=1)
+            except (OSError, subprocess.SubprocessError):
+                if proc.poll() is None:
+                    return False
+        self._clear_child()
+        return True
 
     def start_tunnel(
         self,
@@ -666,132 +709,95 @@ class VlessManager:
 
         with self._lock:
             if self._process and self._process.poll() is None:
-                return True, "Туннель уже запущен."
+                if self._is_ready():
+                    return True, "Туннель уже запущен."
+                return False, "Ядро уже запускается или не готово. При необходимости остановите его."
+            self._clear_child()
+            try:
+                params = VlessParser.parse_url(vless_url)
+            except ValueError as e:
+                return False, f"Ошибка в URL VLESS: {e}"
 
             core_exe = self.find_core_executable(custom_core_path)
             if not core_exe:
-                return False, "Исполняемый файл Xray/sing-box не найден. Скачайте его или укажите путь."
-
-            try:
-                params = VlessParser.parse_url(vless_url)
-            except Exception as e:
-                return False, f"Ошибка в URL VLESS: {e}"
-
+                return False, ("Не найдено проверенное ядро Xray/sing-box. Установите его и выберите заново "
+                               "или укажите путь к ядру, которое вы проверили самостоятельно.")
             is_xray = "xray" in core_exe.name.lower()
-            config_file = VLESS_RUNTIME_DIR / "config.json"
-
-            if is_xray:
-                config_data = self.generate_xray_config(params, http_port, socks_port)
-                cmd = [str(core_exe), "run", "-c", str(config_file)]
-            else:
-                config_data = self.generate_sing_box_config(params, http_port, socks_port)
-                cmd = [str(core_exe), "run", "-c", str(config_file)]
-
-            try:
-                config_file.write_text(json.dumps(config_data, indent=2, ensure_ascii=False), encoding="utf-8")
-            except Exception as e:
-                return False, f"Не удалось записать конфигурацию: {e}"
-
-            # Run process without visible window on Windows
-            creation_flags = 0
-            if sys.platform == "win32":
-                creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
-
-            # If ports are occupied by a previously detached core, stop it first.
-            # Foreign programs (e.g. browser Xray extension) are never touched.
-            ok, err = self._reclaim_core_ports(http_port, socks_port)
-            if not ok:
-                return False, err
-            if self.check_port_listening(http_port) or self.check_port_listening(socks_port):
+            ports = (http_port, socks_port) if is_xray else (http_port,)
+            if (any(type(port) is not int or not 1024 <= port <= 65535 for port in ports)
+                    or len(set(ports)) != len(ports)):
+                return False, "Недопустимые или совпадающие локальные порты VLESS."
+            if any(self.check_port_listening(port) for port in ports):
                 return False, (
-                    f"Не удалось освободить локальные порты {http_port}/{socks_port}. "
-                    f"Проверьте, не заняты ли они другой программой, или измените "
+                    f"Локальный порт VLESS занят ({'/'.join(map(str, ports))}). "
+                    f"Остановите другую программу самостоятельно или измените "
                     f"vless_http_port/vless_socks_port в {CONFIG_DIR / 'antigravity.json'}."
                 )
-
-            # Log core output to file for diagnosis
-            log_file = VLESS_RUNTIME_DIR / "core.log"
-            log_fh = None
+            generate = self.generate_xray_config if is_xray else self.generate_sing_box_config
+            config_data = generate(params, http_port, socks_port)
             try:
-                log_fh = open(log_file, "w", encoding="utf-8")
-                stdout_target = log_fh
-            except Exception:
-                stdout_target = subprocess.DEVNULL
-
-            try:
-                proc = subprocess.Popen(
-                    cmd,
-                    cwd=str(VLESS_RUNTIME_DIR),
-                    creationflags=creation_flags,
-                    stdout=stdout_target,
-                    stderr=subprocess.STDOUT,
-                )
+                self._runtime = Path(tempfile.mkdtemp(prefix="run-", dir=VLESS_RUNTIME_DIR.absolute()))
+                config_file = self._runtime / "config.json"
+                config_file.write_text(json.dumps(config_data, indent=2, ensure_ascii=False), encoding="utf-8")
+                log_file = self._runtime / "core.log"
+                with log_file.open("xb") as log:
+                    proc = subprocess.Popen(
+                        [str(core_exe), "run", "-c", str(config_file)],
+                        cwd=str(self._runtime),
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                    )
                 self._process = proc
+                self._ports = ports
+                self._status = "starting"
                 self._exit_generation += 1
-            except Exception as e:
+            except (OSError, ValueError) as e:
+                self._clear_child()
                 return False, f"Не удалось запустить процесс ядра: {e}"
-            finally:
-                if log_fh is not None:
+
+        deadline = time.monotonic() + _START_TIMEOUT
+        while True:
+            with self._lock:
+                if self._process is not proc:
+                    return False, "Запуск туннеля отменён."
+                rc = proc.poll()
+                if rc is not None:
+                    details = ""
                     try:
-                        log_fh.close()
-                    except Exception:
+                        with log_file.open("rb") as log:
+                            log.seek(max(0, log_file.stat().st_size - 4096))
+                            lines = log.read(4096).decode("utf-8", errors="replace").strip().splitlines()
+                        details = "\n".join(lines[-4:])
+                    except OSError:
                         pass
-
-        # Wait for port to become active
-        for _ in range(35):
+                    self._clear_child()
+                    return False, f"Процесс ядра завершился с кодом {rc}. {details}"
+                if self._owns_listeners(proc, ports):
+                    self._status = "running"
+                    return True, f"VLESS туннель запущен на 127.0.0.1:{http_port}"
+                if time.monotonic() >= deadline:
+                    stopped = self._stop_child()
+                    message = f"Ядро не открыло ожидаемые порты VLESS за отведённое время ({ports})."
+                    return False, message if stopped else message + " Не удалось остановить процесс ядра."
             time.sleep(0.1)
-            if self.check_port_listening(http_port):
-                self._status = "running"
-                return True, f"VLESS туннель успешно запущен на 127.0.0.1:{http_port}"
-
-        # Check if process died
-        with self._lock:
-            current_proc = self._process
-            rc = current_proc.poll() if current_proc is not None else None
-        if current_proc is not None and rc is not None:
-            err_details = ""
-            log_file = VLESS_RUNTIME_DIR / "core.log"
-            if log_file.exists():
-                try:
-                    lines = log_file.read_text(encoding="utf-8", errors="ignore").strip().splitlines()
-                    if lines:
-                        err_details = "\n".join(lines[-4:])
-                except Exception:
-                    pass
-            return False, f"Процесс ядра завершился с кодом ошибки {rc}.{err_details}"
-
-        return False, f"Туннель не открыл порт {http_port} за отведённое время."
 
     def stop_tunnel(self) -> Tuple[bool, str]:
-        cfg_http, cfg_socks = get_configured_ports()
         with self._lock:
             self._exit_generation += 1
-            if self._process is not None:
-                try:
-                    self._process.terminate()
-                    try:
-                        self._process.wait(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        self._process.kill()
-                        self._process.wait(timeout=1)
-                except Exception:
-                    pass
-                finally:
-                    self._process = None
-
-            # Clean up only OUR leftover core (detached case); foreign Xray
-            # processes (e.g. launched by browser extensions) are not touched.
-            self._reclaim_core_ports(cfg_http, cfg_socks)
-
-            self._status = "stopped"
+            if not self._stop_child():
+                return False, "Не удалось остановить процесс ядра VLESS."
 
         return True, "VLESS туннель остановлен."
 
     def test_connection(self, http_port: Optional[int] = None, timeout: int = 8) -> Dict[str, Any]:
         """Tests the proxy connection by fetching IP and country through the tunnel."""
-        if http_port is None:
-            http_port = get_http_port()
-        if not self.check_port_listening(http_port):
+        with self._lock:
+            proc = self._process
+            if http_port is None:
+                http_port = self._ports[0] if self._ports else get_http_port()
+            ready = self._is_ready() and http_port == self._ports[0]
+        if not ready:
             return {
                 "ok": False,
                 "message": f"Локальный порт {http_port} недоступен. Запустите туннель перед проверкой.",
@@ -801,8 +807,8 @@ class VlessManager:
             }
 
         proxy_url = f"http://127.0.0.1:{http_port}"
-        proxy_handler = urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
-        opener = urllib.request.build_opener(proxy_handler)
+        proxy_handler = _TunnelProxyHandler({"http": proxy_url, "https": proxy_url})
+        opener = urllib.request.build_opener(proxy_handler, _TunnelRedirectHandler())
 
         start = time.time()
 
@@ -863,17 +869,23 @@ class VlessManager:
                                 ip = line.split("=", 1)[1]
                             elif line.startswith("loc="):
                                 country = line.split("=", 1)[1]
-                    if not country:
+                    ip = str(ipaddress.ip_address(ip))
+                    if len(country) != 2 or not country.isascii() or not country.isalpha():
                         country = lookup_country(ip)
+                    else:
+                        country = country.upper()
 
                     result = {
                         "ok": True,
-                        "message": f"Туннель активен! IP: {ip or 'OK'}" + (f" ({country})" if country else ""),
+                        "message": f"Туннель активен! IP: {ip}" + (f" ({country})" if country else ""),
                         "latency_ms": elapsed,
                         "ip": ip,
                         "country": country,
                     }
-                    self._last_test_result = result
+                    with self._lock:
+                        if self._process is not proc or not self._is_ready():
+                            break
+                        self._last_test_result = result
                     return result
             except Exception:
                 continue

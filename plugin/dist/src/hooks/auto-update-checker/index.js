@@ -1,9 +1,9 @@
-import { invalidatePackage } from './cache';
-import { findPluginEntry, getCachedVersion, getLatestVersion, getLocalDevVersion, updatePinnedVersion, } from './checker';
-import { PACKAGE_NAME } from './constants';
+// Background checks do not modify the OpenCode cache.
+import { findPluginEntry, getCachedVersion, getLatestVersion, getLocalDevVersion, } from './checker';
+// Plugin selection is handled by the checker.
 import { logAutoUpdate } from './logging';
 export function createAutoUpdateCheckerHook(client, directory, options = {}) {
-    const { showStartupToast = true, autoUpdate = true } = options;
+    const { showStartupToast = true, autoUpdate = false } = options;
     let hasChecked = false;
     return {
         event: ({ event }) => {
@@ -24,23 +24,24 @@ export function createAutoUpdateCheckerHook(client, directory, options = {}) {
                     logAutoUpdate('Local development mode');
                     return;
                 }
-                runBackgroundUpdateCheck(client, directory, autoUpdate).catch((err) => {
+                if (!autoUpdate) return;
+                runBackgroundUpdateCheck(client, directory).catch((err) => {
                     logAutoUpdate(`Background update check failed: ${err}`);
                 });
             }, 0);
         },
     };
 }
-async function runBackgroundUpdateCheck(client, directory, autoUpdate) {
+async function runBackgroundUpdateCheck(client, directory) {
     const pluginInfo = findPluginEntry(directory);
     if (!pluginInfo) {
         logAutoUpdate('Plugin not found in config');
         return;
     }
-    const cachedVersion = getCachedVersion();
-    const currentVersion = cachedVersion ?? pluginInfo.pinnedVersion;
+    if (pluginInfo.isPinned) return;
+    const currentVersion = getCachedVersion();
     if (!currentVersion) {
-        logAutoUpdate('No version found (cached or pinned)');
+        logAutoUpdate('No installed version found');
         return;
     }
     if (currentVersion.includes('-')) {
@@ -57,33 +58,14 @@ async function runBackgroundUpdateCheck(client, directory, autoUpdate) {
         return;
     }
     logAutoUpdate(`Update available: ${currentVersion} → ${latestVersion}`);
-    if (!autoUpdate) {
-        await showUpdateAvailableToast(client, latestVersion);
-        logAutoUpdate('Auto-update disabled, notification only');
-        return;
-    }
-    if (pluginInfo.isPinned) {
-        const updated = updatePinnedVersion(pluginInfo.configPath, pluginInfo.entry, latestVersion);
-        if (updated) {
-            invalidatePackage(PACKAGE_NAME);
-            await showAutoUpdatedToast(client, currentVersion, latestVersion);
-            logAutoUpdate(`Config updated: ${pluginInfo.entry} → ${PACKAGE_NAME}@${latestVersion}`);
-        }
-        else {
-            await showUpdateAvailableToast(client, latestVersion);
-        }
-    }
-    else {
-        invalidatePackage(PACKAGE_NAME);
-        await showUpdateAvailableToast(client, latestVersion);
-    }
+    await showUpdateAvailableToast(client, latestVersion);
 }
 async function showUpdateAvailableToast(client, latestVersion) {
     await client.tui
         .showToast({
         body: {
             title: `Antigravity Auth Update`,
-            message: `v${latestVersion} available. Restart OpenCode to apply.`,
+            message: `v${latestVersion} available. Review it with the OpenCode plugin manager.`,
             variant: 'info',
             duration: 8000,
         },
@@ -91,19 +73,7 @@ async function showUpdateAvailableToast(client, latestVersion) {
         .catch(() => { });
     logAutoUpdate(`Update available toast shown: v${latestVersion}`);
 }
-async function showAutoUpdatedToast(client, oldVersion, newVersion) {
-    await client.tui
-        .showToast({
-        body: {
-            title: `Antigravity Auth Updated!`,
-            message: `v${oldVersion} → v${newVersion}\nRestart OpenCode to apply.`,
-            variant: 'success',
-            duration: 8000,
-        },
-    })
-        .catch(() => { });
-    logAutoUpdate(`Auto-updated toast shown: v${oldVersion} → v${newVersion}`);
-}
+// Updates are installed explicitly through OpenCode.
 async function showLocalDevToast(client, version) {
     await client.tui
         .showToast({

@@ -12,6 +12,7 @@ import shutil
 import sys
 from pathlib import Path
 from typing import Dict, Any
+from secure_storage import atomic_write_bytes
 
 
 def get_hub_data_dir() -> Path:
@@ -44,7 +45,7 @@ BROWSER_DIR = HUB_ROOT / "browser_profiles"
 LOG_DIR = HUB_ROOT / "logs"
 
 for _dir in (CONFIG_DIR, ACCOUNTS_DIR, SECURE_DIR, BIN_DIR, VLESS_DIR, BROWSER_DIR, LOG_DIR):
-    _dir.mkdir(parents=True, exist_ok=True)
+    _dir.mkdir(mode=0o700, parents=True, exist_ok=True)
 
 # Central file paths
 HUB_CONFIG_FILE = CONFIG_DIR / "antigravity.json"
@@ -69,15 +70,22 @@ OPENCODE_SHARED_ANTIGRAVITY_CONFIG = OPENCODE_CONFIG_DIR / "antigravity.json"
 def sync_shared_antigravity_config():
     """Keeps ~/.config/opencode/antigravity.json in sync with Hub central config."""
     try:
-        if HUB_CONFIG_FILE.exists():
-            OPENCODE_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-            content = HUB_CONFIG_FILE.read_bytes()
-            OPENCODE_SHARED_ANTIGRAVITY_CONFIG.write_bytes(content)
-        elif OPENCODE_SHARED_ANTIGRAVITY_CONFIG.exists():
-            content = OPENCODE_SHARED_ANTIGRAVITY_CONFIG.read_bytes()
-            HUB_CONFIG_FILE.write_bytes(content)
-    except Exception as e:
-        print(f"[Hub Paths] Config sync notice: {e}")
+        paths = (HUB_CONFIG_FILE, OPENCODE_SHARED_ANTIGRAVITY_CONFIG)
+        candidates = sorted((p for p in paths if p.is_file()),
+                            key=lambda p: p.stat().st_mtime_ns, reverse=True)
+        for source in candidates:
+            content = source.read_bytes()
+            try:
+                if not isinstance(json.loads(content.decode("utf-8-sig")), dict):
+                    continue
+            except (UnicodeError, ValueError):
+                continue
+            target = next(p for p in paths if p != source)
+            if not target.is_file() or target.read_bytes() != content:
+                atomic_write_bytes(target, content, private_parent=target == HUB_CONFIG_FILE)
+            return
+    except OSError as e:
+        print(f"[Hub Paths] Config sync failed: {type(e).__name__}")
 
 
 def migrate_legacy_locations():
@@ -90,7 +98,6 @@ def migrate_legacy_locations():
 
     # 1. Configs & Accounts
     pairs = [
-        (legacy_opencode_dir / "antigravity.json", HUB_CONFIG_FILE),
         (legacy_opencode_dir / "openai-accounts.json", OPENAI_ACCOUNTS_FILE),
         (legacy_opencode_dir / "xpiki.json", XPIKI_CONFIG_FILE),
         (legacy_opencode_dir / "gemini_domains.json", GEMINI_DOMAINS_FILE),
@@ -101,10 +108,10 @@ def migrate_legacy_locations():
 
     for old_path, new_path in pairs:
         try:
-            if old_path.exists() and not new_path.exists():
-                shutil.copy2(old_path, new_path)
-        except Exception:
-            pass
+            if old_path.is_file() and not new_path.exists():
+                atomic_write_bytes(new_path, old_path.read_bytes())
+        except OSError as exc:
+            print(f"[Hub Paths] Migration failed for {new_path.name}: {type(exc).__name__}")
 
     # 2. Browser profiles (Claude)
     legacy_claude = legacy_opencode_dir / "claude_profile"
@@ -114,18 +121,7 @@ def migrate_legacy_locations():
         except Exception:
             pass
 
-    # 3. Binaries (sing-box, xray)
-    for old_bin in (legacy_opencode_dir / "bin", Path(__file__).resolve().parent / "bin"):
-        if old_bin.exists():
-            for item in old_bin.glob("*"):
-                target = BIN_DIR / item.name
-                if not target.exists() and item.is_file():
-                    try:
-                        shutil.copy2(item, target)
-                    except Exception:
-                        pass
-
-    # 4. Sync mirrored config for OpenCode plugin compatibility
+    # Never auto-adopt legacy executables of unknown origin.
     sync_shared_antigravity_config()
 
 
@@ -207,7 +203,7 @@ def clean_browser_profiles() -> Dict[str, Any]:
     deleted_bytes = _dir_size(BROWSER_DIR)
     try:
         if BROWSER_DIR.exists():
-            shutil.rmtree(BROWSER_DIR, ignore_errors=True)
+            shutil.rmtree(BROWSER_DIR)
             BROWSER_DIR.mkdir(parents=True, exist_ok=True)
         return {"ok": True, "message": f"Профили браузера удалены (освобождено {_format_size(deleted_bytes)})"}
     except Exception as e:

@@ -223,7 +223,7 @@ function renderAutoComparison(provider, tab) {
   for (const row of state.rows || []) {
     const div = document.createElement('div');
     div.className = 'auto-route-row';
-    div.innerHTML = `<span>${html(routeNames[row.mode])}</span><span class="${row.available ? 'status-good' : 'quota-unknown'}">${row.available ? `${row.passed}/${row.total} · ${row.latency_ms ?? '—'} мс` : 'Недоступен'}</span>${state.selected === row.mode ? `<strong>${automatic ? 'Выбран Auto' : 'Рекомендуется'}</strong>` : ''}`;
+    div.innerHTML = `<span>${html(routeNames[row.mode])}</span><span class="${row.available ? 'status-good' : 'quota-unknown'}">${row.available ? `${html(row.passed)}/${html(row.total)} · ${html(row.latency_ms ?? '—')} мс` : 'Недоступен'}</span>${state.selected === row.mode ? `<strong>${automatic ? 'Выбран Auto' : 'Рекомендуется'}</strong>` : ''}`;
     container.appendChild(div);
   }
   if (!state.rows?.length) container.textContent = state.status === 'not-configured' ? 'Нет настроенных маршрутов для сравнения' : state.running ? 'Проверяем HTTPS без API-ключей…' : 'Нажмите «Сравнить маршруты» или выберите Auto';
@@ -290,7 +290,7 @@ function renderNetworkTab() {
   const cfg = appState.config || {};
   // Show which pool config is active and which country/IP it currently exits from.
   const activePool = Array.isArray(cfg.vless_pool) ? cfg.vless_pool : [];
-  const activeEntry = activePool.find(entry => entry.url === String(cfg.vless_url || '').trim());
+  const activeEntry = activePool.find(entry => entry.id === cfg.vless_url);
   const summary = document.getElementById('vless-active-summary');
   if (summary) {
     if (activeEntry) {
@@ -391,6 +391,19 @@ function dashboardProxyStatus() {
   return { status: 'error', label: 'Ошибка', badge: 'badge-error' };
 }
 
+function proxyLabel(id) {
+  const saved = appState.config?.proxy_labels?.[id];
+  if (saved) return saved;
+  // Older state may still contain a URL; never render its userinfo or path.
+  try { return new URL(id).host || 'Прокси'; } catch { return 'Прокси'; }
+}
+
+function updateProxyState(result) {
+  for (const key of ['proxy_pool', 'proxy', 'proxy_labels']) appState.config[key] = result[key];
+  renderProxyPool();
+  scheduleProxyChecks();
+}
+
 function renderProxyPool() {
   const container = document.getElementById('proxy-pool-container');
   if (!container) return;
@@ -410,7 +423,7 @@ function renderProxyPool() {
       <div style="display:flex; align-items:center; gap:8px; flex:1; min-width:0;">
         <span class="badge-pill ${idx === 0 ? 'badge-available' : 'badge-pool'}" style="font-size:10px; padding:2px 6px; white-space:nowrap;">${idx === 0 ? 'Основной' : `Резерв ${idx + 1}`}</span>
         <span class="badge-pill ${statusClass}" style="font-size:10px; padding:2px 6px;">${html(statusText)}</span>
-        <span style="font-family:Consolas, monospace; color:#fff; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${html(proxyUrl)}</span>
+        <span style="font-family:Consolas, monospace; color:#fff; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${html(proxyLabel(proxyUrl))}</span>
       </div>
       <div style="display:flex; gap:6px;">
         <button class="btn-secondary" data-action="up" title="Повысить приоритет" ${idx === 0 ? 'disabled' : ''}>↑</button>
@@ -443,10 +456,8 @@ async function addProxyToPool() {
       const res = await window.pywebview.api.add_proxy_pool(url);
       if (res && res.ok) {
         if (!appState.config) appState.config = {};
-        appState.config.proxy_pool = res.pool || [];
-        if (!appState.config.proxy && res.pool?.length) appState.config.proxy = res.pool[0];
+        updateProxyState(res);
         input.value = '';
-        renderProxyPool();
         showToast('Прокси успешно добавлен в пул');
       } else {
         showToast(res?.message || 'Не удалось добавить прокси');
@@ -454,17 +465,6 @@ async function addProxyToPool() {
     } catch (e) {
       showToast(`Ошибка добавления прокси: ${e}`);
     }
-  } else {
-    if (!appState.config) appState.config = {};
-    const pool = (appState.config.proxy_pool || []).filter(Boolean);
-    if (!pool.includes(url)) {
-      pool.push(url);
-      appState.config.proxy_pool = pool;
-      if (!appState.config.proxy) appState.config.proxy = url;
-    }
-    input.value = '';
-    renderProxyPool();
-    await saveNetworkSettings();
   }
 }
 
@@ -477,12 +477,8 @@ async function removeProxyItem(idx) {
     try {
       const res = await window.pywebview.api.delete_proxy_pool(targetUrl);
       if (res && res.ok) {
-        appState.config.proxy_pool = res.pool || [];
-        if (appState.config.proxy === targetUrl) {
-          appState.config.proxy = res.pool?.[0] || '';
-        }
         proxyChecks.delete(targetUrl);
-        renderProxyPool();
+        updateProxyState(res);
         showToast('Прокси удалён из пула');
       } else {
         showToast(res?.message || 'Не удалось удалить прокси');
@@ -490,20 +486,12 @@ async function removeProxyItem(idx) {
     } catch (e) {
       showToast(`Ошибка удаления: ${e}`);
     }
-  } else {
-    appState.config.proxy_pool.splice(idx, 1);
-    if (appState.config.proxy === targetUrl) {
-      appState.config.proxy = appState.config.proxy_pool[0] || '';
-    }
-    proxyChecks.delete(targetUrl);
-    renderProxyPool();
-    await saveNetworkSettings();
   }
 }
 
 async function testProxyItem(proxyUrl) {
   if (!window.pywebview?.api?.test_proxy) return;
-  showToast(`Проверка прокси ${proxyUrl}...`);
+  showToast(`Проверка прокси ${proxyLabel(proxyUrl)}...`);
   try {
     const res = await window.pywebview.api.test_proxy(proxyUrl);
     proxyChecks.set(proxyUrl, res);
@@ -535,21 +523,12 @@ async function moveProxyItem(fromIndex, toIndex) {
     try {
       const result = await window.pywebview.api.move_proxy_pool_item(fromIndex, toIndex);
       if (!result?.ok) throw new Error(result?.message || 'Не удалось изменить порядок');
-      appState.config.proxy_pool = result.pool || [];
-      appState.config.proxy = appState.config.proxy_pool[0] || '';
-      renderProxyPool();
+      updateProxyState(result);
       showToast('Приоритет прокси сохранён');
     } catch (error) {
       showToast(`Ошибка изменения приоритета: ${error}`);
     }
-    return;
   }
-  const [item] = pool.splice(fromIndex, 1);
-  pool.splice(toIndex, 0, item);
-  appState.config.proxy_pool = pool;
-  appState.config.proxy = pool[0] || '';
-  renderProxyPool();
-  await saveNetworkSettings();
 }
 
 function renderDnsPresetOptions(selected = 'custom') {
@@ -717,17 +696,16 @@ async function saveNetworkSettings() {
   const button = document.getElementById('btn-network-save');
   button.disabled = true;
   try {
-    const pool = (appState.config?.proxy_pool || []).filter(Boolean);
-    const primaryProxy = value('network-proxy') || pool[0] || '';
+    const primaryProxy = value('network-proxy');
     const result = await window.pywebview.api.save_network_settings({
       vless_kill_switch:document.getElementById('vless-kill-switch').checked,
       dns_mode:value('dns-mode'), custom_dns:[value('dns-primary'),value('dns-secondary')].filter(Boolean),
       dot_host:value('dns-dot'), doh_url:value('dns-doh'),
-      proxy: primaryProxy,
-      proxy_pool: pool,
+      ...(primaryProxy ? {proxy: primaryProxy} : {}),
       proxy_failover: document.getElementById('switch-proxy-failover')?.checked !== false
     });
     if (!result.ok) throw new Error(result.message);
+    if (primaryProxy) document.getElementById('network-proxy').value = '';
     networkDirty = false;
     document.getElementById('network-save-result').textContent = result.message;
     await refreshState();
@@ -758,12 +736,11 @@ function renderVlessPool() {
     return;
   }
   pool.forEach((entry, idx) => {
-    const url = String(entry.url || '');
-    const isActive = url === active;
+    const isActive = entry.id === active;
     const statusOk = entry.status === 'ok';
     const statusBadge = statusOk ? 'badge-available' : entry.status === 'error' ? 'badge-error' : 'badge-pool';
     const statusText = statusOk
-      ? `● ${html(entry.ip || 'OK')}${entry.country ? ` · ${countryFlag(entry.country)} ${html(entry.country)}` : ''}${entry.latency_ms != null ? ` · ${entry.latency_ms} мс` : ''}`
+      ? `● ${html(entry.ip || 'OK')}${entry.country ? ` · ${countryFlag(entry.country)} ${html(entry.country)}` : ''}${entry.latency_ms != null ? ` · ${html(entry.latency_ms)} мс` : ''}`
       : entry.status === 'error' ? '● Ошибка' : '● Не проверен';
     const row = document.createElement('div');
     row.style = 'display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 10px; background:rgba(255,255,255,0.03); border:1px solid var(--glass-border); border-radius:8px; font-size:11px;';
@@ -771,7 +748,7 @@ function renderVlessPool() {
       <div style="display:flex; align-items:center; gap:6px; flex:1; min-width:0;">
         <span class="badge-pill ${isActive ? 'badge-available' : 'badge-pool'}" style="font-size:10px; padding:2px 6px; white-space:nowrap;">${isActive ? 'Активен' : `№${idx + 1}`}</span>
         <span class="badge-pill ${statusBadge}" style="font-size:10px; padding:2px 6px; white-space:nowrap;">${statusText}</span>
-        <span style="color:#fff; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${html(url)}">${html(entry.label || url)}</span>
+        <span style="color:#fff; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${html(entry.label || 'VLESS')}</span>
       </div>
       <div style="display:flex; gap:6px;">
         <button class="btn-secondary" data-action="activate" title="${isActive ? 'Перезапустить и проверить' : 'Сделать активным и запустить'}">✔</button>
@@ -802,14 +779,14 @@ async function addVlessConfig() {
       if (input) input.value = '';
       await refreshState();
       // Probe the new config right away so its exit IP/country is visible.
-      const idx = (res.pool || []).findIndex(entry => entry.url === url);
+      const idx = (appState.config?.vless_pool || []).findIndex(entry => entry.id === res.id);
       if (idx >= 0) await testVlessItem(idx);
     }
   } catch (e) { vlessPoolStatus(String(e)); }
 }
 async function removeVlessItem(idx) {
   const pool = Array.isArray(appState.config?.vless_pool) ? appState.config.vless_pool : [];
-  const url = pool[idx]?.url;
+  const url = pool[idx]?.id;
   if (!url || !window.pywebview?.api?.delete_vless_config) return;
   vlessPoolStatus('Удаление конфига…');
   try {
@@ -820,7 +797,7 @@ async function removeVlessItem(idx) {
 }
 async function activateVlessItem(idx) {
   const pool = Array.isArray(appState.config?.vless_pool) ? appState.config.vless_pool : [];
-  const url = pool[idx]?.url;
+  const url = pool[idx]?.id;
   if (!url || !window.pywebview?.api?.activate_vless_config) return;
   vlessPoolStatus('Переключение на выбранный конфиг…');
   try {
@@ -831,7 +808,7 @@ async function activateVlessItem(idx) {
 }
 async function testVlessItem(idx) {
   const pool = Array.isArray(appState.config?.vless_pool) ? appState.config.vless_pool : [];
-  const url = pool[idx]?.url;
+  const url = pool[idx]?.id;
   if (!url || !window.pywebview?.api?.test_vless_config) return;
   vlessPoolStatus('Проверка выходного IP и страны…');
   try {
@@ -1304,11 +1281,7 @@ function renderDashboard() {
   const dns = dashboardDns();
   const net = appState.network || {};
   const vlessExit = dashboardVlessExit(net);
-  let proxy = 'Не настроен';
-  try {
-    const url = new URL(appState.config?.proxy || '');
-    if (!(['127.0.0.1','localhost','[::1]'].includes(url.hostname) && ['10880','51180'].includes(url.port))) proxy=url.hostname+(url.port ? `:${url.port}` : '');
-  } catch {}
+  const proxy = appState.config?.proxy ? proxyLabel(appState.config.proxy) : 'Не настроен';
   const proxyStat = dashboardProxyStatus();
   document.getElementById('dashboard-network').innerHTML = `<div class="dashboard-network-row"><div><strong>VLESS</strong><span>${html(vlessExit)}</span></div><span class="badge-pill ${net.vlessRunning ? 'badge-available' : 'badge-pool'}">● ${net.vlessRunning ? 'Работает' : 'Остановлен'}</span></div><div class="dashboard-network-row"><div><strong>${html(dnsModeLabels[dns.mode] || 'DNS')}</strong><span>${html(dns.server)}</span></div><span class="badge-pill ${dns.status === 'ok' ? 'badge-available' : dns.status === 'error' ? 'badge-error' : dns.status === 'checking' ? 'badge-checking' : 'badge-pool'}">● ${html(dns.label)}</span></div><div class="dashboard-network-row"><div><strong>HTTP(S)-прокси</strong><span>${html(proxy)}</span></div><span class="badge-pill ${proxyStat.badge}">● ${html(proxyStat.label)}</span></div><p class="dashboard-quota-note">Auto сравнивает настроенные маршруты по HTTPS. Прямое подключение исключено.</p>`;
   const usesVless = tabs.some(tab=>appState.routes?.[providerTabs[tab]] === 'vless' || (['default','auto'].includes(appState.routes?.[providerTabs[tab]] || 'default') && autoRouteState(providerTabs[tab]).selected === 'vless'));
@@ -2636,15 +2609,24 @@ async function cleanBrowserProfiles() {
 
 async function uninstallHubCompletely() {
   if (!window.pywebview?.api?.uninstall_hub_completely) return;
-  const answer = prompt('ВНИМАНИЕ! Это действие полностью удалит модуль Antigravity Hub из OpenCode и сотрёт все локальные данные приложения.\n\nДля подтверждения введите DELETE:');
+  if (appState.desktopInstaller) {
+    try {
+      const result = await window.pywebview.api.uninstall_hub_completely();
+      showToast(result?.message || 'Используйте «Установленные приложения» Windows.');
+    } catch (e) {
+      showToast(`Не удалось открыть настройки Windows: ${e}`);
+    }
+    return;
+  }
+  const answer = prompt('Удалить известные локальные файлы Hub и настройки его плагина? Нестандартные хранилища, история и общие учётные данные OpenCode сохранятся.\n\nДля подтверждения введите DELETE:');
   if (answer !== 'DELETE') {
     showToast('Удаление отменено');
     return;
   }
   showToast('Удаление Antigravity Hub из системы...');
   try {
-    const res = await window.pywebview.api.uninstall_hub_completely();
-    alert(res.message || 'Antigravity Hub полностью удалён.');
+    const res = await window.pywebview.api.uninstall_hub_completely(answer);
+    alert(res?.message || 'Не удалось завершить очистку.');
     if (res?.ok) {
       window.close();
     }
@@ -2800,9 +2782,9 @@ async function checkUpdates() {
     if (res && res.has_update) {
       if (confirm(`${res.message}\n\nЗагрузить и применить обновление сейчас?`)) {
         showToast("Установка обновления с GitHub...");
-        const updateRes = await window.pywebview.api.apply_update();
+        const updateRes = await window.pywebview.api.apply_update(res.remote_commit);
         if (updateRes && updateRes.ok) {
-          alert("Обновление установлено!\n\nПерезапустите Antigravity Hub, чтобы применить изменения.");
+          alert(updateRes.message || "Проверьте изменения перед перезапуском Antigravity Hub.");
         } else {
           alert(`Не удалось установить обновление:\n${updateRes?.message || 'Ошибка git'}`);
         }
@@ -2821,10 +2803,37 @@ async function checkUpdates() {
 }
 
 // --- Backup & Profile Transfer ---
+function requestBackupPassword(exporting) {
+  const dialog = document.getElementById('backup-password-dialog');
+  const input = document.getElementById('backup-password');
+  if (dialog.open) return Promise.resolve(null);
+  document.getElementById('backup-password-title').textContent = exporting
+    ? 'Пароль для новой резервной копии' : 'Пароль резервной копии';
+  input.autocomplete = exporting ? 'new-password' : 'current-password';
+  dialog.returnValue = '';
+  input.value = '';
+  return new Promise(resolve => {
+    const form = document.getElementById('backup-password-form');
+    let password = null;
+    function onSubmit(event) {
+      event.preventDefault();
+      password = input.value;
+      dialog.close();
+    }
+    dialog.addEventListener('close', () => {
+      input.value = '';
+      form.removeEventListener('submit', onSubmit);
+      resolve(password);
+    }, {once: true});
+    form.addEventListener('submit', onSubmit);
+    dialog.showModal();
+  });
+}
+
 async function exportBackup() {
   if (!window.pywebview?.api?.export_backup) return;
   const statusEl = document.getElementById('backup-status-text');
-  const pwd = prompt('Введите пароль для шифрования резервной копии (или оставьте пустым для сохранения без пароля):');
+  const pwd = await requestBackupPassword(true);
   if (pwd === null) {
     if (statusEl) statusEl.textContent = 'Экспорт отменён';
     return;
@@ -2832,7 +2841,7 @@ async function exportBackup() {
   if (statusEl) statusEl.textContent = 'Сохранение резервной копии…';
   showToast('Экспорт профилей и настроек…');
   try {
-    const res = await window.pywebview.api.export_backup(null, pwd || null);
+    const res = await window.pywebview.api.export_backup(pwd);
     if (res && res.ok) {
       if (statusEl) statusEl.textContent = res.message;
       showToast(res.message);
@@ -2855,7 +2864,7 @@ async function importBackup() {
   try {
     let res = await window.pywebview.api.import_backup();
     if (res && res.requires_password) {
-      const pwd = prompt('Резервная копия зашифрована паролем.\nВведите пароль для расшифровки:');
+      const pwd = await requestBackupPassword(false);
       if (!pwd) {
         if (statusEl) statusEl.textContent = 'Импорт отменён (не указан пароль)';
         showToast('Импорт отменён: не указан пароль');

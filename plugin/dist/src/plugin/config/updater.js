@@ -10,7 +10,7 @@ import { getAntigravityOpencodeModelIds, OPENCODE_MODEL_DEFINITIONS, } from './m
 // =============================================================================
 // Constants
 // =============================================================================
-const PLUGIN_NAME = '@cortexkit/opencode-antigravity-auth@latest';
+const PLUGIN_NAME = '@cortexkit/opencode-antigravity-auth@3.0.0';
 const SCHEMA_URL = 'https://opencode.ai/config.json';
 const OPENCODE_JSON_FILENAME = 'opencode.json';
 const OPENCODE_JSONC_FILENAME = 'opencode.jsonc';
@@ -76,7 +76,7 @@ export async function updateOpencodeConfig(options = {}) {
             // Create default config structure
             config = {
                 $schema: SCHEMA_URL,
-                plugin: [],
+                plugins: [],
                 provider: {},
             };
         }
@@ -84,14 +84,17 @@ export async function updateOpencodeConfig(options = {}) {
         if (!config.$schema) {
             config.$schema = SCHEMA_URL;
         }
-        // Ensure plugin array exists and contains our plugin
-        if (!Array.isArray(config.plugin)) {
-            config.plugin = [];
-        }
-        // Check if plugin is already in the list (any version)
-        const hasPlugin = config.plugin.some((p) => p.includes('opencode-antigravity-auth'));
+        const pluginKey = Object.hasOwn(config, "plugins") || !Object.hasOwn(config, "plugin") ? "plugins" : "plugin";
+        const hasPlugin = [config.plugins, config.plugin].some((entries) =>
+            Array.isArray(entries) && entries.some((item) => {
+              const entry = typeof item === "string" ? item : item?.package;
+              return typeof entry === "string" && entry.includes("opencode-antigravity-auth");
+            })
+        );
         if (!hasPlugin) {
-            config.plugin.push(PLUGIN_NAME);
+            if (!Object.hasOwn(config, pluginKey)) config[pluginKey] = [];
+            if (!Array.isArray(config[pluginKey])) throw new Error(`Expected an array for ${pluginKey}`);
+            config[pluginKey].push(PLUGIN_NAME);
         }
         // Ensure provider.google structure exists
         if (!config.provider) {

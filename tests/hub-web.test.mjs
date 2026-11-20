@@ -45,6 +45,41 @@ const state = {
       balance:{status:'ok',issued:1000,spent:600,balance:400,reserved:0,remaining_percent:40,used_percent:60,checked_at:1794309000,error:null}}},
 };
 
+test('network markup escapes diagnostic values and omits saved connection secrets', () => {
+  const fixture = structuredClone(state);
+  const bad = '<img src=x onerror=alert(1)>';
+  fixture.config.proxy = 'http://private-user:private-password@proxy.example:8080';
+  fixture.config.vless_url = 'opaque-id';
+  fixture.config.vless_pool = [{id:'opaque-id', url:'vless://private-value@host:443',
+    label:'Saved node', status:'ok', latency_ms:bad}];
+  fixture.network.autoRoutes = {google:{selected:'vless', status:'ready',
+    rows:[{mode:'vless', available:true, passed:bad, total:2, latency_ms:bad}]}};
+  const {elements} = frontend(fixture);
+  const vless = elements.get('vless-pool-container').children[0].innerHTML;
+  const proxy = elements.get('proxy-pool-container').children[0].innerHTML;
+  const automatic = [...elements.values()].flatMap(el => el.children).map(el => el.innerHTML).join('');
+  assert.match(vless, /&lt;img/);
+  assert.doesNotMatch(vless, /<img|private-value/);
+  assert.match(proxy, /proxy.example:8080/);
+  assert.doesNotMatch(proxy, /private-user|private-password/);
+  assert.match(automatic, /&lt;img.*\/2/);
+  assert.doesNotMatch(automatic, /<img src=x/);
+});
+
+test('backup export uses a masked input and passes only the password to the bridge', async () => {
+  const {context} = frontend(state);
+  assert.match(markup, /id="backup-password" type="password" required/);
+  const calls = [];
+  context.window.pywebview = {api:{export_backup:async (...args) => {
+    calls.push(args);
+    return {ok:false, cancelled:true};
+  }}};
+  await vm.runInContext(`requestBackupPassword = async () => null; exportBackup()`, context);
+  assert.deepEqual(calls, []);
+  await vm.runInContext(`requestBackupPassword = async () => 'test-password'; exportBackup()`, context);
+  assert.deepEqual(calls, [['test-password']]);
+});
+
 test('all account tabs render with active identity and real zero ChatGPT quota', () => {
   const {elements} = frontend(state);
   const google = elements.get('google-accounts-list').children;
@@ -188,7 +223,7 @@ test('service cards show labeled green, amber and red domain summaries', () => {
 
 test('automatic checks run for enabled providers, are throttled, and refresh after route changes', async () => {
   const fixture = structuredClone(state);
-  fixture.config.providers_visibility = {antigravity:true,openai:true,claude:false,xpiki:false,deepseek:false,openrouter:false,tokenlavka:false};
+  fixture.config.providers_visibility = {antigravity:true,openai:true,claude:false,xpiki:false,deepseek:false,openrouter:false,tokenlavka:false,nvidia:false};
   const {context} = frontend(fixture);
   const calls = [];
   context.window.pywebview = {api:{run_provider_diagnostics:async provider => {
@@ -294,7 +329,7 @@ test('each provider sidebar shows the actual active profile or masked API key', 
 
 test('DNS checks start after loading state, share pending requests, and refresh only expired addresses', async () => {
   const fixture = structuredClone(state);
-  fixture.config.providers_visibility = {antigravity:false,openai:false,claude:false,xpiki:false,deepseek:false,openrouter:false,tokenlavka:false};
+  fixture.config.providers_visibility = {antigravity:false,openai:false,claude:false,xpiki:false,deepseek:false,openrouter:false,tokenlavka:false,nvidia:false};
   const {elements, context} = frontend(fixture);
   const calls = [];
   context.window.pywebview = {api:{get_state:async ()=>fixture, test_dns:async (mode,value) => {
@@ -339,7 +374,7 @@ test('synchronous DNS bridge errors do not leave a permanent pending request', a
 
 test('Dashboard summarizes enabled providers and preserves real zero and unknown quotas', () => {
   const fixture = structuredClone(state);
-  fixture.config.providers_visibility = {antigravity:true,openai:true,claude:false,xpiki:false,deepseek:false,openrouter:false,tokenlavka:false};
+  fixture.config.providers_visibility = {antigravity:true,openai:true,claude:false,xpiki:false,deepseek:false,openrouter:false,tokenlavka:false,nvidia:false};
   const {elements} = frontend(fixture);
   const cards = elements.get('dashboard-providers').children;
   assert.equal(cards.length, 2);
@@ -372,7 +407,7 @@ test('Dashboard uses saved DNS status and hides proxy credentials', async () => 
 
 test('Dashboard handles all providers disabled and navigation places Network above Diagnostics', () => {
   const fixture = structuredClone(state);
-  fixture.config.providers_visibility = {antigravity:false,openai:false,claude:false,xpiki:false,deepseek:false,openrouter:false,tokenlavka:false};
+  fixture.config.providers_visibility = {antigravity:false,openai:false,claude:false,xpiki:false,deepseek:false,openrouter:false,tokenlavka:false,nvidia:false};
   const {elements, nav, context} = frontend(fixture);
   assert.equal(vm.runInContext('activeTab', context), 'dashboard');
   assert.equal(nav[0].dataset.tab, 'dashboard');

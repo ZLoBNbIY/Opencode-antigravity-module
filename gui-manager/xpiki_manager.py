@@ -92,7 +92,12 @@ def load_xpiki_config() -> Dict[str, Any]:
         if isinstance(raw, dict) and "protection" in raw and "payload" in raw:
             data = secure_storage.unprotect_payload(raw, "xpiki-config")
             return data if isinstance(data, dict) else default
-        return raw if isinstance(raw, dict) else default
+        if isinstance(raw, dict):
+            if raw.get("api_key"):
+                # Upgrade old Hub-owned plaintext records without touching OpenCode.
+                save_xpiki_config(raw)
+            return raw
+        return default
     except Exception:
         return default
 
@@ -179,7 +184,8 @@ def test_xpiki_connection(api_key: str, base_url: str = DEFAULT_BASE_URL, timeou
         return False, f"Не удалось подключиться к {base_url}: {e}", {}
 
 
-def configure_opencode(api_key: str, base_url: str = DEFAULT_BASE_URL, enabled_models: Optional[List[str]] = None) -> bool:
+def configure_opencode(api_key: str, base_url: str = DEFAULT_BASE_URL,
+                       enabled_models: Optional[List[str]] = None, *, previous_key: str = "") -> bool:
     """Configures the xpiki provider in ~/.config/opencode/opencode.json(c)."""
     import jsonc_config
     api_key = str(api_key or "").strip()
@@ -212,10 +218,13 @@ def configure_opencode(api_key: str, base_url: str = DEFAULT_BASE_URL, enabled_m
             })
         else:
             providers = cfg_data.get("provider", {})
-            if isinstance(providers, dict) and "xpiki" in providers:
-                updated = jsonc_config.set_property(original, ("provider", "xpiki", "models"), {})
-            else:
-                updated = original
+            entry = providers.get("xpiki") if isinstance(providers, dict) else None
+            opts = entry.get("options") if isinstance(entry, dict) else None
+            owned = (previous_key and isinstance(opts, dict)
+                     and entry.get("name") == "Claude API (Xpiki)"
+                     and entry.get("npm") == "@ai-sdk/anthropic"
+                     and opts.get("apiKey") == previous_key)
+            updated = jsonc_config.remove_property(original, ("provider", "xpiki")) if owned else original
 
         if updated != original or not cfg_path.exists():
             secure_storage.atomic_write(cfg_path, updated)
@@ -233,11 +242,12 @@ def configure_opencode(api_key: str, base_url: str = DEFAULT_BASE_URL, enabled_m
 def disconnect_xpiki() -> bool:
     """Removes Xpiki from OpenCode provider configuration and clears stored key."""
     cfg = load_xpiki_config()
+    if not configure_opencode("", previous_key=cfg.get("api_key", "")):
+        return False
     cfg["connected"] = False
     cfg["api_key"] = ""
     cfg["cached_quota"] = {}
-    save_xpiki_config(cfg)
-    return configure_opencode("")
+    return save_xpiki_config(cfg)
 
 
 def fetch_xpiki_quota(api_key: str, base_url: str = DEFAULT_BASE_URL, timeout: int = 12) -> Dict[str, Any]:

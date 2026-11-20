@@ -1,6 +1,9 @@
 import sys
 import unittest
-from unittest.mock import patch
+from io import BytesIO
+from http.client import HTTPMessage
+from tempfile import TemporaryDirectory
+from unittest.mock import MagicMock, patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gui-manager"))
@@ -164,6 +167,72 @@ class ProviderRouteProxyTests(unittest.TestCase):
                          "https://tokenlavka.com/v1")
         self.assertEqual(provider_proxy._Handler.do_POST,
                          provider_proxy._Handler._dispatch)
+
+    @patch("gemini_routes.matches", return_value=False)
+    def test_jsonc_origins_match_exact_scheme_host_and_port(self, gemini):
+        import provider_proxy as proxy
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "opencode.jsonc").write_text(
+                '{"provider": {/* comment */ "custom":{"settings":'
+                '{"baseURL":"https://gateway.example:8443/v1",},},},}', encoding="utf-8")
+            config = proxy._read_json(root / "opencode.json")
+        self.assertTrue(proxy._destination_allowed("gateway.example", 8443, "https", config))
+        self.assertTrue(proxy._destination_allowed("gateway.example", 8443, None, config))
+        self.assertFalse(proxy._destination_allowed("gateway.example", 8443, "http", config))
+        self.assertFalse(proxy._destination_allowed("gateway.example", 443, None, config))
+        self.assertFalse(proxy._destination_allowed("a.gateway.example", 8443, None, config))
+        self.assertTrue(proxy._destination_allowed("integrate.api.nvidia.com", 443, None, {}))
+        self.assertTrue(proxy._destination_allowed("registry.npmjs.org", 443, None, {}))
+        self.assertFalse(proxy._destination_allowed("unconfigured.example", 443, None, {}))
+
+    @patch("gemini_routes.matches", return_value=False)
+    def test_protected_xpiki_custom_origin_is_allowed(self, gemini):
+        import provider_proxy as proxy
+        import xpiki_manager
+        with TemporaryDirectory() as directory, patch.multiple(
+            xpiki_manager, CONFIG_DIR=Path(directory),
+            XPIKI_CONFIG_FILE=Path(directory) / "xpiki.json",
+        ):
+            self.assertTrue(xpiki_manager.save_xpiki_config({
+                "base_url": "https://xpiki-gateway.example:8443/v1", "api_key": "fixture"}))
+            self.assertTrue(proxy._destination_allowed("xpiki-gateway.example", 8443, None, {}))
+            self.assertFalse(proxy._destination_allowed("xpiki-gateway.example", 443, None, {}))
+
+    @patch("provider_proxy.socket.getaddrinfo", return_value=[
+        (2, 1, 6, "", ("93.184.216.34", 443)),
+        (2, 1, 6, "", ("10.0.0.1", 443)),
+    ])
+    def test_mixed_dns_answers_are_not_connected(self, resolve):
+        import provider_proxy as proxy
+        with self.assertRaises(OSError):
+            proxy._resolve_public("gateway.example", 443)
+
+    @patch("provider_proxy._read_json", return_value={})
+    @patch("provider_proxy._relay")
+    @patch("provider_proxy.ssl.create_default_context")
+    @patch("provider_proxy.connect_public_routed")
+    def test_tokenlavka_reverse_sends_one_framed_post(self, connect, ssl, relay, read):
+        import provider_proxy as proxy
+        upstream = MagicMock()
+        wire = ssl.return_value.wrap_socket.return_value = MagicMock()
+        connect.return_value = upstream, None
+        handler = proxy._Handler.__new__(proxy._Handler)
+        handler.path = "/r/tokenlavka/v1/chat/completions"
+        handler.command = "POST"
+        handler.headers = HTTPMessage()
+        handler.headers["Content-Length"] = "2"
+        handler.headers["Authorization"] = "Bearer fixture"
+        handler.rfile = BytesIO(b"{}")
+        handler.connection = MagicMock()
+        handler._dispatch()
+        connect.assert_called_once_with("tokenlavka.com", 443, {})
+        header, body = [call.args[0] for call in wire.sendall.call_args_list]
+        self.assertIn(b"POST /v1/chat/completions HTTP/1.1\r\n", header)
+        self.assertIn(b"Host: tokenlavka.com\r\n", header)
+        self.assertIn(b"Content-Length: 2\r\n", header)
+        self.assertEqual(body, b"{}")
+        relay.assert_called_once_with(handler.connection, wire, response_only=True)
 
     def test_ipv6_host_parsing_and_half_close_relay(self):
         import socket

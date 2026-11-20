@@ -1,4 +1,7 @@
 import json
+import io
+import subprocess
+from contextlib import redirect_stdout
 from pathlib import Path
 import sqlite3
 import sys
@@ -26,6 +29,8 @@ class OpenAiLoginTests(unittest.TestCase):
             # A favicon or unrelated request must not consume the callback listener.
             with self.assertRaises(urllib.error.HTTPError):
                 direct.open(base + '/favicon.ico', timeout=2)
+            with self.assertRaises(urllib.error.HTTPError):
+                direct.open(base + '/auth/callback?error=cancelled&state=unrelated', timeout=2)
             with direct.open(base + '/auth/callback?code=test&state=' + state, timeout=2) as response:
                 self.assertEqual(response.status, 200)
                 self.assertIn('Ответ браузера получен', response.read().decode('utf-8'))
@@ -92,6 +97,36 @@ class OpenAiLoginTests(unittest.TestCase):
             self.assertEqual(accounts[0]['id'], 'account-1')
             self.assertEqual(accounts[0]['email'], 'chatgpt@example.com')
             self.assertTrue(accounts[0]['is_active'])
+
+
+    def test_cli_import_failure_does_not_expose_tokens(self):
+        for error in (subprocess.CalledProcessError(1, ["cli"], stderr="secret-token"),
+                      subprocess.TimeoutExpired(["cli"], 10)):
+            with self.subTest(error=type(error).__name__):
+                output = io.StringIO()
+                with patch.object(manager, "find_opencode_cli", return_value="cli"), \
+                     patch.object(manager, "get_openai_cred_id", return_value="fixture"), \
+                     patch.object(manager.subprocess, "run", side_effect=error) as run, redirect_stdout(output):
+                    self.assertFalse(manager.sync_opencode_cli_openai({"access": "secret-token"}))
+                self.assertNotIn("secret-token", output.getvalue())
+                args, kwargs = run.call_args
+                self.assertEqual(args[0], ["cli", "auth", "import"])
+                self.assertTrue(kwargs["check"])
+                self.assertIn("secret-token", kwargs["input"])
+
+    def test_pool_migrates_legacy_and_does_not_overwrite_unreadable_record(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pool = root / "openai-accounts.json"
+            pool.write_text('[{"access":"legacy"}]', encoding="utf-8")
+            with patch.multiple(manager, CONFIG_DIR=root, OPENAI_ACCOUNTS_FILE=pool), \
+                 patch.object(manager, "get_active_auth_openai", return_value=None):
+                self.assertEqual(manager.load_openai_accounts()[0]["access"], "legacy")
+                self.assertIn("protection", json.loads(pool.read_text(encoding="utf-8")))
+                invalid = '{"protection":"invalid","payload":"unreadable"}'
+                pool.write_text(invalid, encoding="utf-8")
+                self.assertFalse(manager.save_openai_accounts([]))
+                self.assertEqual(pool.read_text(encoding="utf-8"), invalid)
 
 
 if __name__ == '__main__':

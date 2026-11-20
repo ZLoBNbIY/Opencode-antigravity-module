@@ -28,8 +28,10 @@ export function getLocalDevPath(directory) {
                 continue;
             const content = fs.readFileSync(configPath, 'utf-8');
             const config = JSON.parse(stripJsonComments(content));
-            const plugins = config.plugin ?? [];
-            for (const entry of plugins) {
+            const plugins = config.plugins ?? config.plugin ?? [];
+            for (const item of plugins) {
+                const entry = typeof item === "string" ? item : item?.package;
+                if (typeof entry !== "string") continue;
                 if (entry.startsWith('file://') && entry.includes(PACKAGE_NAME)) {
                     try {
                         return fileURLToPath(entry);
@@ -95,8 +97,10 @@ export function findPluginEntry(directory) {
                 continue;
             const content = fs.readFileSync(configPath, 'utf-8');
             const config = JSON.parse(stripJsonComments(content));
-            const plugins = config.plugin ?? [];
-            for (const entry of plugins) {
+            const plugins = config.plugins ?? config.plugin ?? [];
+            for (const item of plugins) {
+                const entry = typeof item === "string" ? item : item?.package;
+                if (typeof entry !== "string") continue;
                 if (entry === PACKAGE_NAME) {
                     return { entry, isPinned: false, pinnedVersion: null, configPath };
                 }
@@ -147,47 +151,8 @@ export function getCachedVersion() {
     return null;
 }
 export function updatePinnedVersion(configPath, oldEntry, newVersion) {
-    try {
-        const content = fs.readFileSync(configPath, 'utf-8');
-        const newEntry = `${PACKAGE_NAME}@${newVersion}`;
-        const pluginMatch = content.match(/"plugin"\s*:\s*\[/);
-        if (!pluginMatch || pluginMatch.index === undefined) {
-            logAutoUpdate(`No "plugin" array found in ${configPath}`);
-            return false;
-        }
-        const startIdx = pluginMatch.index + pluginMatch[0].length;
-        let bracketCount = 1;
-        let endIdx = startIdx;
-        for (let i = startIdx; i < content.length && bracketCount > 0; i++) {
-            if (content[i] === '[')
-                bracketCount++;
-            else if (content[i] === ']')
-                bracketCount--;
-            endIdx = i;
-        }
-        const before = content.slice(0, startIdx);
-        const pluginArrayContent = content.slice(startIdx, endIdx);
-        const after = content.slice(endIdx);
-        const escapedOldEntry = oldEntry.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const regex = new RegExp(`["']${escapedOldEntry}["']`);
-        if (!regex.test(pluginArrayContent)) {
-            logAutoUpdate(`Entry "${oldEntry}" not found in plugin array of ${configPath}`);
-            return false;
-        }
-        const updatedPluginArray = pluginArrayContent.replace(regex, `"${newEntry}"`);
-        const updatedContent = before + updatedPluginArray + after;
-        if (updatedContent === content) {
-            logAutoUpdate(`No changes made to ${configPath}`);
-            return false;
-        }
-        fs.writeFileSync(configPath, updatedContent, 'utf-8');
-        logAutoUpdate(`Updated ${configPath}: ${oldEntry} → ${newEntry}`);
-        return true;
-    }
-    catch (err) {
-        console.error(`[auto-update-checker] Failed to update config file ${configPath}:`, err);
-        return false;
-    }
+    // The user's package selection is never updated automatically.
+    return false;
 }
 export async function getLatestVersion() {
     try {

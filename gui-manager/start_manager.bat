@@ -98,18 +98,12 @@ if exist "!PY_DIR!pythonw.exe" (
 )
 
 :: Проверка зависимостей нового интерфейса WebView
-"!PY_EXE!" -c "import webview, playwright" >nul 2>nul
+"!PY_EXE!" -c "import webview, playwright, cryptography" >nul 2>nul
 if !ERRORLEVEL! neq 0 (
-    echo [*] Первый запуск: установка необходимых библиотек GUI...
-    "!PY_EXE!" -m pip install -r "%~dp0requirements.txt"
-    if !ERRORLEVEL! neq 0 (
-        echo.
-        echo [!] Не удалось автоматически установить библиотеки через pip.
-        echo     Попробуйте вручную: "!PY_EXE!" -m pip install -r "%~dp0requirements.txt"
-        echo.
-        pause
-        exit /b 1
-    )
+    echo [!] Не найдены зависимости GUI. Запустите локальный install.ps1.
+    echo     Менеджер не загружает зависимости автоматически при запуске.
+    pause
+    exit /b 1
 )
 
 :: Запуск Antigravity Hub

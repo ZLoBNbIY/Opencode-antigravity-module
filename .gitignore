@@ -26,9 +26,16 @@ session/
 
 # Local backups (may contain live configs with credentials)
 .backups/
+*.agb
+antigravity-accounts.json
+claude-accounts.json
+openai-accounts.json
+xpiki.json
+tokenlavka.json
 
 # Binaries & downloaded cores
 gui-manager/bin/
 *.exe
 *.result.txt
 
+/artifacts/

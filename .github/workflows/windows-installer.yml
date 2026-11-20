@@ -1,0 +1,147 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [V2]
+
+concurrency:
+  group: windows-release-v2
+  queue: max
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    if: github.ref == 'refs/heads/V2'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+      publish: ${{ steps.plan.outputs.publish }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select release version
+        id: plan
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$(python3 packaging/windows/release_version.py)"
+          release="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
+            --jq ".[] | select(.tag_name == \"$tag\") | .draft")"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [[ "$release" == "false" ]]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Release $tag already published."
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: version
+    if: needs.version.outputs.publish == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Prepare build tools
+        shell: pwsh
+        run: |
+          python -m pip install --require-hashes -r gui-manager/requirements-win-py312-x64.lock
+          if ($LASTEXITCODE -ne 0) { throw 'Could not install runtime dependencies' }
+          python -m pip install pyinstaller==6.22.3
+          if ($LASTEXITCODE -ne 0) { throw 'Could not install PyInstaller' }
+          $inno = Join-Path $env:RUNNER_TEMP 'inno.exe'
+          $dir = Join-Path $env:RUNNER_TEMP 'InnoSetup'
+          Invoke-WebRequest 'https://github.com/jrsoftware/issrc/releases/download/is-6_5_4/innosetup-6.5.4.exe' -OutFile $inno
+          if ((Get-FileHash -LiteralPath $inno).Hash -ne 'fa73bf47a4da250d185d07561c2bfda387e5e20db77e4570004cf6a133cc10b1') {
+            throw 'Inno Setup hash mismatch'
+          }
+          $p = Start-Process $inno -Wait -PassThru -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/CURRENTUSER', '/NORESTART', ('/DIR="' + $dir + '"'))
+          if ($p.ExitCode -ne 0) { throw 'Could not install build compiler' }
+          $webview = Join-Path $env:RUNNER_TEMP 'MicrosoftEdgeWebview2Setup.exe'
+          Invoke-WebRequest 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $webview
+          "INNO_COMPILER=$(Join-Path $dir 'ISCC.exe')" >> $env:GITHUB_ENV
+          "WEBVIEW_BOOTSTRAP=$webview" >> $env:GITHUB_ENV
+      - name: Build and test packaged app
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          $version = $env:RELEASE_TAG.Substring(1)
+          ./packaging/windows/build.ps1 -Version $version -InnoCompiler $env:INNO_COMPILER -WebViewBootstrap $env:WEBVIEW_BOOTSTRAP
+      - name: Exercise install and uninstall on the build runner
+        shell: pwsh
+        run: |
+          $target = Join-Path $env:RUNNER_TEMP 'Installed Antigravity Hub'
+          $p = Start-Process './artifacts/windows/AntigravityHub-Setup-x64.exe' -Wait -PassThru -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOICONS', '/TASKS=""', ('/DIR="' + $target + '"'))
+          if ($p.ExitCode -ne 0) { throw "Setup failed: $($p.ExitCode)" }
+          $exe = Join-Path $target 'AntigravityHub.exe'
+          $report = Join-Path $env:RUNNER_TEMP 'installed-hub-test.json'
+          $app = Start-Process $exe -PassThru -ArgumentList @('--package-self-test', ('"' + $report + '"'))
+          if (-not $app.WaitForExit(90000)) { $app.Kill(); throw 'Installed app self-test timed out' }
+          if (Test-Path -LiteralPath $report) { Get-Content -LiteralPath $report }
+          if ($app.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $report)) { throw 'Installed app self-test failed' }
+          $p = Start-Process (Join-Path $target 'unins000.exe') -Wait -PassThru -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')
+          if ($p.ExitCode -ne 0 -or (Test-Path -LiteralPath $exe)) { throw 'Uninstallation failed' }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: AntigravityHub-Setup-x64
+          path: artifacts/windows/
+          if-no-files-found: error
+
+  publish:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.version.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: AntigravityHub-Setup-x64
+          path: release-assets
+      - name: Tag the tested commit and publish the installer
+        shell: bash
+        working-directory: release-assets
+        run: |
+          set -euo pipefail
+          sha256sum --strict --check AntigravityHub-Setup-x64.exe.sha256
+          owner_repo="$GITHUB_REPOSITORY"
+          matches="$(gh api --paginate "repos/$owner_repo/git/matching-refs/tags/$TAG" \
+            --jq ".[] | select(.ref == \"refs/tags/$TAG\") | .ref")"
+          if [[ -z "$matches" ]]; then
+            gh api --method POST "repos/$owner_repo/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$GITHUB_SHA" >/dev/null
+          fi
+          target="$(gh api "repos/$owner_repo/commits/$TAG" --jq '.sha')"
+          if [[ "$target" != "$GITHUB_SHA" ]]; then
+            echo "::error::Tag $TAG points to a different commit. Re-run all jobs to calculate a new version."
+            exit 1
+          fi
+          draft="$(gh api --paginate "repos/$owner_repo/releases" \
+            --jq ".[] | select(.tag_name == \"$TAG\") | .draft")"
+          if [[ "$draft" == "false" ]]; then
+            echo "Release $TAG already published."
+            exit 0
+          fi
+          if [[ -z "$draft" ]]; then
+            gh release create "$TAG" --repo "$owner_repo" --verify-tag --draft \
+              --title "Antigravity Hub $TAG" --generate-notes \
+              --notes "Windows x64 installer and SHA-256 checksum. The installer is unsigned."
+          fi
+          gh release upload "$TAG" AntigravityHub-Setup-x64.exe AntigravityHub-Setup-x64.exe.sha256 \
+            --repo "$owner_repo" --clobber
+          gh release edit "$TAG" --repo "$owner_repo" --draft=false

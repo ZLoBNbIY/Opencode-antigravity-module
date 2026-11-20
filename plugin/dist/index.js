@@ -30214,8 +30214,10 @@ function getLocalDevPath(directory) {
       if (!fs4.existsSync(configPath)) continue;
       const content = fs4.readFileSync(configPath, "utf-8");
       const config = JSON.parse(stripJsonComments(content));
-      const plugins = config.plugin ?? [];
-      for (const entry of plugins) {
+      const plugins = config.plugins ?? config.plugin ?? [];
+      for (const item of plugins) {
+        const entry = typeof item === "string" ? item : item?.package;
+        if (typeof entry !== "string") continue;
         if (entry.startsWith("file://") && entry.includes(PACKAGE_NAME)) {
           try {
             return fileURLToPath(entry);
@@ -30272,8 +30274,10 @@ function findPluginEntry(directory) {
       if (!fs4.existsSync(configPath)) continue;
       const content = fs4.readFileSync(configPath, "utf-8");
       const config = JSON.parse(stripJsonComments(content));
-      const plugins = config.plugin ?? [];
-      for (const entry of plugins) {
+      const plugins = config.plugins ?? config.plugin ?? [];
+      for (const item of plugins) {
+        const entry = typeof item === "string" ? item : item?.package;
+        if (typeof entry !== "string") continue;
         if (entry === PACKAGE_NAME) {
           return { entry, isPinned: false, pinnedVersion: null, configPath };
         }
@@ -30320,52 +30324,8 @@ function getCachedVersion() {
   return null;
 }
 function updatePinnedVersion(configPath, oldEntry, newVersion) {
-  try {
-    const content = fs4.readFileSync(configPath, "utf-8");
-    const newEntry = `${PACKAGE_NAME}@${newVersion}`;
-    const pluginMatch = content.match(/"plugin"\s*:\s*\[/);
-    if (!pluginMatch || pluginMatch.index === void 0) {
-      logAutoUpdate(`No "plugin" array found in ${configPath}`);
-      return false;
-    }
-    const startIdx = pluginMatch.index + pluginMatch[0].length;
-    let bracketCount = 1;
-    let endIdx = startIdx;
-    for (let i = startIdx; i < content.length && bracketCount > 0; i++) {
-      if (content[i] === "[") bracketCount++;
-      else if (content[i] === "]") bracketCount--;
-      endIdx = i;
-    }
-    const before = content.slice(0, startIdx);
-    const pluginArrayContent = content.slice(startIdx, endIdx);
-    const after = content.slice(endIdx);
-    const escapedOldEntry = oldEntry.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const regex = new RegExp(`["']${escapedOldEntry}["']`);
-    if (!regex.test(pluginArrayContent)) {
-      logAutoUpdate(
-        `Entry "${oldEntry}" not found in plugin array of ${configPath}`
-      );
-      return false;
-    }
-    const updatedPluginArray = pluginArrayContent.replace(
-      regex,
-      `"${newEntry}"`
-    );
-    const updatedContent = before + updatedPluginArray + after;
-    if (updatedContent === content) {
-      logAutoUpdate(`No changes made to ${configPath}`);
-      return false;
-    }
-    fs4.writeFileSync(configPath, updatedContent, "utf-8");
-    logAutoUpdate(`Updated ${configPath}: ${oldEntry} \u2192 ${newEntry}`);
-    return true;
-  } catch (err) {
-    console.error(
-      `[auto-update-checker] Failed to update config file ${configPath}:`,
-      err
-    );
-    return false;
-  }
+  // The user's package selection is never updated automatically.
+  return false;
 }
 async function getLatestVersion() {
   try {
@@ -30384,7 +30344,7 @@ async function getLatestVersion() {
 
 // src/hooks/auto-update-checker/index.ts
 function createAutoUpdateCheckerHook(client, directory, options = {}) {
-  const { showStartupToast = true, autoUpdate = true } = options;
+  const { showStartupToast = true, autoUpdate = false } = options;
   let hasChecked = false;
   return {
     event: ({ event }) => {
@@ -30403,23 +30363,24 @@ function createAutoUpdateCheckerHook(client, directory, options = {}) {
           logAutoUpdate("Local development mode");
           return;
         }
-        runBackgroundUpdateCheck(client, directory, autoUpdate).catch((err) => {
+        if (!autoUpdate) return;
+        runBackgroundUpdateCheck(client, directory).catch((err) => {
           logAutoUpdate(`Background update check failed: ${err}`);
         });
       }, 0);
     }
   };
 }
-async function runBackgroundUpdateCheck(client, directory, autoUpdate) {
+async function runBackgroundUpdateCheck(client, directory) {
   const pluginInfo = findPluginEntry(directory);
   if (!pluginInfo) {
     logAutoUpdate("Plugin not found in config");
     return;
   }
-  const cachedVersion = getCachedVersion();
-  const currentVersion = cachedVersion ?? pluginInfo.pinnedVersion;
+  if (pluginInfo.isPinned) return;
+  const currentVersion = getCachedVersion();
   if (!currentVersion) {
-    logAutoUpdate("No version found (cached or pinned)");
+    logAutoUpdate("No installed version found");
     return;
   }
   if (currentVersion.includes("-")) {
@@ -30438,36 +30399,13 @@ async function runBackgroundUpdateCheck(client, directory, autoUpdate) {
     return;
   }
   logAutoUpdate(`Update available: ${currentVersion} \u2192 ${latestVersion}`);
-  if (!autoUpdate) {
-    await showUpdateAvailableToast(client, latestVersion);
-    logAutoUpdate("Auto-update disabled, notification only");
-    return;
-  }
-  if (pluginInfo.isPinned) {
-    const updated = updatePinnedVersion(
-      pluginInfo.configPath,
-      pluginInfo.entry,
-      latestVersion
-    );
-    if (updated) {
-      invalidatePackage(PACKAGE_NAME);
-      await showAutoUpdatedToast(client, currentVersion, latestVersion);
-      logAutoUpdate(
-        `Config updated: ${pluginInfo.entry} \u2192 ${PACKAGE_NAME}@${latestVersion}`
-      );
-    } else {
-      await showUpdateAvailableToast(client, latestVersion);
-    }
-  } else {
-    invalidatePackage(PACKAGE_NAME);
-    await showUpdateAvailableToast(client, latestVersion);
-  }
+  await showUpdateAvailableToast(client, latestVersion);
 }
 async function showUpdateAvailableToast(client, latestVersion) {
   await client.tui.showToast({
     body: {
       title: `Antigravity Auth Update`,
-      message: `v${latestVersion} available. Restart OpenCode to apply.`,
+      message: `v${latestVersion} available. Review it with the OpenCode plugin manager.`,
       variant: "info",
       duration: 8e3
     }
@@ -30475,19 +30413,7 @@ async function showUpdateAvailableToast(client, latestVersion) {
   });
   logAutoUpdate(`Update available toast shown: v${latestVersion}`);
 }
-async function showAutoUpdatedToast(client, oldVersion, newVersion) {
-  await client.tui.showToast({
-    body: {
-      title: `Antigravity Auth Updated!`,
-      message: `v${oldVersion} \u2192 v${newVersion}
-Restart OpenCode to apply.`,
-      variant: "success",
-      duration: 8e3
-    }
-  }).catch(() => {
-  });
-  logAutoUpdate(`Auto-updated toast shown: v${oldVersion} \u2192 v${newVersion}`);
-}
+// Updates are installed explicitly through OpenCode.
 async function showLocalDevToast(client, version) {
   await client.tui.showToast({
     body: {
@@ -32295,7 +32221,7 @@ import { createInterface as createInterface2 } from "node:readline/promises";
 import { existsSync as existsSync8, mkdirSync as mkdirSync4, readFileSync as readFileSync6, writeFileSync as writeFileSync4 } from "node:fs";
 import { homedir as homedir6 } from "node:os";
 import { dirname as dirname16, join as join19 } from "node:path";
-var PLUGIN_NAME = "@cortexkit/opencode-antigravity-auth@latest";
+var PLUGIN_NAME = "@cortexkit/opencode-antigravity-auth@3.0.0";
 var SCHEMA_URL = "https://opencode.ai/config.json";
 var OPENCODE_JSON_FILENAME = "opencode.json";
 var OPENCODE_JSONC_FILENAME = "opencode.jsonc";
@@ -32333,21 +32259,24 @@ async function updateOpencodeConfig(options = {}) {
     } else {
       config = {
         $schema: SCHEMA_URL,
-        plugin: [],
+        plugins: [],
         provider: {}
       };
     }
     if (!config.$schema) {
       config.$schema = SCHEMA_URL;
     }
-    if (!Array.isArray(config.plugin)) {
-      config.plugin = [];
-    }
-    const hasPlugin = config.plugin.some(
-      (p) => p.includes("opencode-antigravity-auth")
+    const pluginKey = Object.hasOwn(config, "plugins") || !Object.hasOwn(config, "plugin") ? "plugins" : "plugin";
+    const hasPlugin = [config.plugins, config.plugin].some((entries) =>
+      Array.isArray(entries) && entries.some((item) => {
+        const entry = typeof item === "string" ? item : item?.package;
+        return typeof entry === "string" && entry.includes("opencode-antigravity-auth");
+      })
     );
     if (!hasPlugin) {
-      config.plugin.push(PLUGIN_NAME);
+      if (!Object.hasOwn(config, pluginKey)) config[pluginKey] = [];
+      if (!Array.isArray(config[pluginKey])) throw new Error(`Expected an array for ${pluginKey}`);
+      config[pluginKey].push(PLUGIN_NAME);
     }
     if (!config.provider) {
       config.provider = {};
@@ -35872,7 +35801,7 @@ var AntigravityConfigSchema = z.object({
    * Enable automatic plugin updates.
    * @default true
    */
-  auto_update: z.boolean().default(true),
+  auto_update: z.boolean().default(false),
   // =========================================================================
   // Operator Settings (Task 18: persistent runtime controls)
   // =========================================================================
@@ -35945,7 +35874,7 @@ var DEFAULT_CONFIG = {
   proactive_rotation_threshold_percent: 20,
   background_quota_refresh: true,
   background_quota_refresh_interval_minutes: 5,
-  auto_update: true,
+  auto_update: false,
   signature_cache: {
     enabled: true,
     memory_ttl_seconds: 3600,

@@ -17,14 +17,15 @@ import urllib.parse
 import urllib.error
 import http.client
 from pathlib import Path
-from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler
 from typing import Optional, Dict, Any, List, Tuple
 
 import secure_storage
+from provider_proxy import _BoundedHandler, _ThreadingServer
 
 try:
     import hub_paths
-    CONFIG_DIR = hub_paths.CONFIG_DIR
+    CONFIG_DIR = hub_paths.OPENCODE_CONFIG_DIR
     CLAUDE_ACCOUNTS_FILE = hub_paths.ACCOUNTS_DIR / "claude-accounts.json"
     CLAUDE_PROFILE_DIR = hub_paths.CLAUDE_PROFILE_DIR
     BRIDGE_TOKEN_FILE = hub_paths.SECURE_DIR / "claude-bridge-token.json"
@@ -34,6 +35,45 @@ except Exception:
     CLAUDE_PROFILE_DIR = CONFIG_DIR / "claude_profile"
     BRIDGE_TOKEN_FILE = CONFIG_DIR / "claude-bridge-token.json"
 DEFAULT_BRIDGE_PORT = 51186
+MAX_BRIDGE_BODY = 10 * 1024 * 1024
+MAX_UPSTREAM_BODY = 16 * 1024 * 1024
+MAX_EVENT_LINE = 1024 * 1024
+
+
+class _BridgeServer(_ThreadingServer):
+    max_workers = 8
+
+
+def _response_chunks(response, limit):
+    deadline = time.monotonic() + 300
+    # read1 allows the deadline to be checked between socket reads.
+    read = response.read1
+    while time.monotonic() < deadline:
+        chunk = read(min(65536, limit + 1))
+        if not chunk:
+            return
+        limit -= len(chunk)
+        if limit < 0:
+            raise ValueError("Claude upstream response too large")
+        yield chunk
+    raise TimeoutError("Claude upstream response timed out")
+
+
+def _response_lines(response):
+    pending = bytearray()
+    for chunk in _response_chunks(response, MAX_UPSTREAM_BODY):
+        parts = chunk.split(b"\n")
+        for part in parts[:-1]:
+            pending.extend(part)
+            if len(pending) > MAX_EVENT_LINE:
+                raise ValueError("Claude event line too large")
+            yield bytes(pending)
+            pending.clear()
+        pending.extend(parts[-1])
+        if len(pending) > MAX_EVENT_LINE:
+            raise ValueError("Claude event line too large")
+    if pending:
+        yield bytes(pending)
 
 CLAUDE_MODELS = {
     "claude-opus-5": {
@@ -110,34 +150,87 @@ def get_active_proxy() -> Optional[str]:
 
 def get_http_opener(timeout: int = 15) -> urllib.request.OpenerDirector:
     proxy = get_active_proxy()
-    return urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": proxy, "https": proxy}), _NoRedirect())
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def _api_opener(base_url):
+    """Keep credentialed requests scoped to the selected HTTPS origin."""
+    import provider_proxy
+
+    url, host, port = provider_proxy._origin(base_url)
+    if url.scheme != "https" or url.query:
+        raise ValueError("Claude API requires an HTTPS base URL")
+    if provider_proxy._builtin_host(host) and port == 443:
+        return get_http_opener()
+    config = provider_proxy._read_json(provider_proxy.CONFIG_DIR / "opencode.json")
+    routes = dict(config.get("provider") or {})
+    routes["claude-pro"] = {"options": {"baseURL": base_url}}
+    config = {**config, "provider": routes}
+
+    class OriginConnection(http.client.HTTPSConnection):
+        def connect(self):
+            if (provider_proxy._public_host(self.host), self.port) != (host, port):
+                raise ValueError("Unexpected Claude API origin")
+            sock, _ = provider_proxy.connect_public_routed(host, port, config)
+            try:
+                sock.settimeout(self.timeout)
+                self.sock = self._context.wrap_socket(sock, server_hostname=host)
+            except BaseException:
+                sock.close()
+                raise
+
+    class OriginHandler(urllib.request.HTTPSHandler):
+        def https_open(self, request):
+            return self.do_open(OriginConnection, request, context=self._context)
+
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect(), OriginHandler())
 
 
 class ClaudeAccountManager:
     """Manages Claude Pro / Team accounts and subscriptions."""
 
     def __init__(self):
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _read_account_file(path):
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        protected = isinstance(data, dict) and ("protection" in data or "payload" in data)
+        if protected:
+            data = secure_storage.unprotect_payload(data, "claude-accounts")
+        accounts = data.get("accounts") if isinstance(data, dict) else None
+        if not isinstance(accounts, list) or any(not isinstance(a, dict) for a in accounts):
+            raise ValueError("Invalid Claude account store")
+        return accounts, protected
 
     def load_accounts(self) -> List[Dict[str, Any]]:
         with self._lock:
-            if not CLAUDE_ACCOUNTS_FILE.exists():
-                return []
+            source = CLAUDE_ACCOUNTS_FILE
+            if not source.exists():
+                source = CONFIG_DIR / "claude-accounts.json"
+                if not source.exists():
+                    return []
             try:
-                data = json.loads(CLAUDE_ACCOUNTS_FILE.read_text(encoding="utf-8"))
-                if isinstance(data, dict) and "protection" in data and "payload" in data:
-                    unprotected = secure_storage.unprotect_payload(data, "claude-accounts")
-                    accs = unprotected.get("accounts", [])
-                    return accs if isinstance(accs, list) else []
-                accs = data.get("accounts", []) if isinstance(data, dict) else []
-                return accs if isinstance(accs, list) else []
+                accounts, protected = self._read_account_file(source)
             except Exception:
+                print("[Claude Manager] Unable to read account store")
                 return []
+            if not protected or source != CLAUDE_ACCOUNTS_FILE:
+                self.save_accounts(accounts)
+            return accounts
 
     def save_accounts(self, accounts: List[Dict[str, Any]]) -> bool:
         with self._lock:
             try:
+                if CLAUDE_ACCOUNTS_FILE.exists():
+                    self._read_account_file(CLAUDE_ACCOUNTS_FILE)
                 record = secure_storage.protect_payload("claude-accounts", {"accounts": accounts})
                 secure_storage.atomic_write(
                     CLAUDE_ACCOUNTS_FILE,
@@ -145,7 +238,7 @@ class ClaudeAccountManager:
                 )
                 return True
             except Exception as e:
-                print(f"[Claude Manager] Error saving accounts: {e}")
+                print(f"[Claude Manager] Error saving accounts ({type(e).__name__})")
                 return False
 
     def get_active_account(self) -> Optional[Dict[str, Any]]:
@@ -166,8 +259,7 @@ class ClaudeAccountManager:
                 found = True
             else:
                 a["active"] = False
-        if found:
-            self.save_accounts(accounts)
+        if found and self.save_accounts(accounts):
             self.configure_opencode_provider()
             return True
         return False
@@ -178,7 +270,8 @@ class ClaudeAccountManager:
         if len(new_accs) != len(accounts):
             if new_accs and not any(a.get("active") for a in new_accs):
                 new_accs[0]["active"] = True
-            self.save_accounts(new_accs)
+            if not self.save_accounts(new_accs):
+                return False
             self.configure_opencode_provider()
             return True
         return False
@@ -190,12 +283,14 @@ class ClaudeAccountManager:
         if not session_key:
             return False, "Укажите sessionKey (куки claude.ai) или API-ключ Claude (sk-...)", None
 
-        opener = get_http_opener(timeout=15)
-
         # Case A: Anthropic API / Third-Party Proxy (Xpiki, etc.) / Claude Code setup-token
         is_api_token = session_key.startswith("sk-ant-api") or session_key.startswith("sk-") or bool(base_url)
         if is_api_token and not session_key.startswith("sk-ant-sid"):
             target_base = base_url or "https://api.anthropic.com/v1"
+            try:
+                opener = _api_opener(target_base)
+            except (ValueError, OSError):
+                return False, "Укажите доступный HTTPS URL для Claude API.", None
             test_url = f"{target_base}/models"
             headers = {
                 "User-Agent": USER_AGENT,
@@ -206,7 +301,7 @@ class ClaudeAccountManager:
             try:
                 req = urllib.request.Request(test_url, headers=headers)
                 with opener.open(req, timeout=12) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
+                    data = json.loads(b"".join(_response_chunks(resp, MAX_UPSTREAM_BODY)))
             except Exception:
                 # Fallback probe to /messages with small ping
                 try:
@@ -221,7 +316,7 @@ class ClaudeAccountManager:
                         headers={**headers, "Content-Type": "application/json"}
                     )
                     with opener.open(probe_req, timeout=12) as resp:
-                        data = json.loads(resp.read().decode("utf-8"))
+                        data = json.loads(b"".join(_response_chunks(resp, MAX_UPSTREAM_BODY)))
                 except urllib.error.HTTPError as e:
                     return False, f"Ошибка авторизации Claude API ({e.code}): недействительный ключ или эндпоинт {target_base}.", None
                 except Exception as e:
@@ -264,7 +359,8 @@ class ClaudeAccountManager:
                     account_data["active"] = True
                 accounts.append(account_data)
 
-            self.save_accounts(accounts)
+            if not self.save_accounts(accounts):
+                return False, "Не удалось сохранить аккаунт Claude.", None
             self.configure_opencode_provider()
             self.configure_claude_cli_settings(session_key, target_base)
             return True, f"Аккаунт Claude API ({email}) успешно подключён!", account_data
@@ -286,9 +382,10 @@ class ClaudeAccountManager:
         }
 
         try:
+            opener = get_http_opener(timeout=15)
             req = urllib.request.Request("https://claude.ai/api/organizations", headers=headers)
             with opener.open(req, timeout=10) as resp:
-                orgs = json.loads(resp.read().decode("utf-8"))
+                orgs = json.loads(b"".join(_response_chunks(resp, MAX_UPSTREAM_BODY)))
 
             if not orgs or not isinstance(orgs, list):
                 return False, "Не удалось получить список организаций claude.ai. Проверьте sessionKey.", None
@@ -302,7 +399,7 @@ class ClaudeAccountManager:
             try:
                 prof_req = urllib.request.Request("https://claude.ai/api/auth/current_user", headers=headers)
                 with opener.open(prof_req, timeout=10) as resp:
-                    u_data = json.loads(resp.read().decode("utf-8"))
+                    u_data = json.loads(b"".join(_response_chunks(resp, MAX_UPSTREAM_BODY)))
                     email = u_data.get("email_address") or u_data.get("email") or email
             except Exception:
                 pass
@@ -343,7 +440,8 @@ class ClaudeAccountManager:
                     account_data["active"] = True
                 accounts.append(account_data)
 
-            self.save_accounts(accounts)
+            if not self.save_accounts(accounts):
+                return False, "Не удалось сохранить аккаунт Claude.", None
             self.configure_opencode_provider()
             return True, f"Аккаунт {email} ({plan_type.upper()}) успешно подключён!", account_data
         except urllib.error.HTTPError as e:
@@ -592,11 +690,13 @@ class ClaudeAccountManager:
                         p = sync_playwright().start()
                         proxy = get_active_proxy()
                         proxy_cfg = {"server": proxy} if proxy else None
+                        browser_options = {"channel": "chromium"} if getattr(sys, "frozen", False) else {}
                         ctx = p.chromium.launch_persistent_context(
                             str(CLAUDE_PROFILE_DIR),
                             headless=True,
                             proxy=proxy_cfg,
-                            user_agent=USER_AGENT
+                            user_agent=USER_AGENT,
+                            **browser_options,
                         )
                         page = ctx.new_page()
                         page.goto("https://claude.ai/", wait_until="networkidle", timeout=15000)
@@ -632,7 +732,7 @@ class ClaudeSubscriptionBridge:
     def __init__(self, port: int = DEFAULT_BRIDGE_PORT):
         self.port = port
         self.bridge_token = self._load_or_create_token()
-        self._server: Optional[ThreadingHTTPServer] = None
+        self._server: Optional[_BridgeServer] = None
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
 
@@ -674,13 +774,19 @@ class ClaudeSubscriptionBridge:
         return token
 
     def _is_authorized(self, headers) -> bool:
+        def matches(token):
+            return hmac.compare_digest(token.encode("utf-8"), self.bridge_token.encode("utf-8"))
+
+        if hasattr(headers, "get_all") and any(len(headers.get_all(name, [])) > 1
+                                              for name in ("Authorization", "x-api-key")):
+            return False
         auth = str(headers.get("Authorization") or "").strip()
         if auth.lower().startswith("bearer "):
             token = auth[7:].strip()
-            if token and hmac.compare_digest(token, self.bridge_token):
+            if token and matches(token):
                 return True
         api_key = str(headers.get("x-api-key") or "").strip()
-        if api_key and hmac.compare_digest(api_key, self.bridge_token):
+        if api_key and matches(api_key):
             return True
         return False
 
@@ -691,13 +797,17 @@ class ClaudeSubscriptionBridge:
             try:
                 bridge_self = self
 
-                class Handler(BaseHTTPRequestHandler):
-                    def log_message(self, format, *args):
-                        pass
+                class Handler(_BoundedHandler):
+                    def parse_request(self):
+                        if not super().parse_request():
+                            return False
+                        if "Origin" in self.headers or "Sec-Fetch-Site" in self.headers:
+                            self.send_error(403, "Browser requests are not permitted")
+                            return False
+                        return True
 
                     def do_OPTIONS(self):
-                        self.send_response(204)
-                        self.end_headers()
+                        self.send_error(405, "Method Not Allowed")
 
                     def do_GET(self):
                         if not bridge_self._is_authorized(self.headers):
@@ -724,23 +834,27 @@ class ClaudeSubscriptionBridge:
                         if not bridge_self._is_authorized(self.headers):
                             self.send_error(401, "Unauthorized")
                             return
-                        if not self.path.startswith("/v1/chat/completions") and not self.path.startswith("/v1/messages"):
+                        if self.path not in ("/v1/chat/completions", "/v1/messages", "/v1/messages?beta=true"):
                             self.send_error(404, "Not Found")
                             return
 
-                        try:
-                            length = int(self.headers.get("Content-Length", 0))
-                        except (TypeError, ValueError):
-                            self.send_error(400, "Invalid Content-Length")
+                        body_bytes = self._read_body(MAX_BRIDGE_BODY, required=True)
+                        if body_bytes is None:
                             return
-                        if length < 0 or length > 10 * 1024 * 1024:
-                            self.send_error(413, "Payload Too Large")
-                            return
-                        body_bytes = self.rfile.read(length)
                         try:
                             payload = json.loads(body_bytes.decode("utf-8"))
-                        except Exception:
+                        except (ValueError, RecursionError):
                             self.send_error(400, "Invalid JSON payload")
+                            return
+                        if not isinstance(payload, dict) or not isinstance(payload.get("model", ""), str):
+                            self.send_error(400, "Invalid completion payload")
+                            return
+                        messages = payload.get("messages", [])
+                        if not isinstance(messages, list) or any(
+                            not isinstance(msg, dict) or not isinstance(msg.get("content", ""), (str, list))
+                            for msg in messages
+                        ):
+                            self.send_error(400, "Invalid completion messages")
                             return
 
                         acc = claude_service.get_active_account()
@@ -751,8 +865,7 @@ class ClaudeSubscriptionBridge:
                         # Forward to claude.ai API
                         bridge_self.handle_completion_request(self, payload, acc)
 
-                self._server = ThreadingHTTPServer(("127.0.0.1", self.port), Handler)
-                self._server.daemon_threads = True
+                self._server = _BridgeServer(("127.0.0.1", self.port), Handler)
                 self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
                 self._thread.start()
             except Exception as e:
@@ -768,7 +881,8 @@ class ClaudeSubscriptionBridge:
             headers={**req_headers, "Accept": "application/json"},
         )
         with opener.open(create_req, timeout=20) as resp:
-            resp.read()
+            for _ in _response_chunks(resp, 128 * 1024):
+                pass
         return f"https://claude.ai/api/organizations/{safe_org}/chat_conversations/{conv_uuid}/completion"
 
     def handle_completion_request(self, handler: BaseHTTPRequestHandler, payload: dict, account: dict):
@@ -778,10 +892,14 @@ class ClaudeSubscriptionBridge:
         model_info = CLAUDE_MODELS.get(requested_model, CLAUDE_MODELS.get("claude-3-7-sonnet", {}))
         actual_model = model_info.get("api_model", requested_model)
 
-        opener = get_http_opener(timeout=60)
         session_key = account.get("session_key", "")
         org_id = account.get("org_id", "")
         base_url = account.get("base_url") or "https://api.anthropic.com/v1"
+        try:
+            opener = _api_opener(base_url) if account.get("token_type") == "api_token" else get_http_opener()
+        except (ValueError, OSError):
+            handler.send_error(502, "Claude upstream is unavailable")
+            return
 
         # Extract messages and separate system prompt
         raw_messages = payload.get("messages", [])
@@ -792,7 +910,8 @@ class ClaudeSubscriptionBridge:
             role = m.get("role", "user")
             content = m.get("content", "")
             if isinstance(content, list):
-                text_parts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
+                text_parts = [c["text"] for c in content if isinstance(c, dict)
+                              and c.get("type") == "text" and isinstance(c.get("text"), str)]
                 content = "\n".join(text_parts)
             if role == "system":
                 system_parts.append(content)
@@ -829,7 +948,7 @@ class ClaudeSubscriptionBridge:
             handler.send_response(200)
             handler.send_header("Content-Type", "text/event-stream")
             handler.send_header("Cache-Control", "no-cache")
-            handler.send_header("Connection", "keep-alive")
+            handler.send_header("Connection", "close")
             handler.end_headers()
 
             # Stream synthetic response chunks
@@ -849,7 +968,7 @@ class ClaudeSubscriptionBridge:
 
             def emit_chunk(delta_text: str):
                 nonlocal compaction_buffer, summary_started
-                if not delta_text:
+                if not isinstance(delta_text, str) or not delta_text:
                     return
                 if is_compaction and not summary_started:
                     compaction_buffer += delta_text
@@ -901,7 +1020,7 @@ class ClaudeSubscriptionBridge:
 
                     req = urllib.request.Request(target_url, data=json.dumps(anthropic_body).encode("utf-8"), headers=anthropic_headers)
                     with opener.open(req, timeout=45) as resp:
-                        for line in resp:
+                        for line in _response_lines(resp):
                             if not line:
                                 continue
                             line_str = line.decode("utf-8", errors="ignore")
@@ -912,13 +1031,13 @@ class ClaudeSubscriptionBridge:
                                     if ev.get("type") == "content_block_delta":
                                         delta_text = ev.get("delta", {}).get("text", "")
                                     emit_chunk(delta_text)
-                                except Exception:
+                                except (ValueError, AttributeError):
                                     pass
                 else:
                     target_url = self._claude_web_completion_url(opener, org_id, req_headers)
                     req = urllib.request.Request(target_url, data=json.dumps(claude_payload).encode("utf-8"), headers=req_headers)
                     with opener.open(req, timeout=45) as resp:
-                        for line in resp:
+                        for line in _response_lines(resp):
                             if not line:
                                 continue
                             line_str = line.decode("utf-8", errors="ignore")
@@ -927,17 +1046,21 @@ class ClaudeSubscriptionBridge:
                                     data = json.loads(line_str[6:].strip())
                                     completion = data.get("completion") or data.get("text") or ""
                                     emit_chunk(completion)
-                                except Exception:
+                                except (ValueError, AttributeError):
                                     pass
-            except Exception as e:
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            except Exception:
                 err_chunk = {
                     "id": chunk_id,
                     "object": "chat.completion.chunk",
                     "created": int(time.time()),
                     "model": requested_model,
-                    "choices": [{"index": 0, "delta": {"content": f"\n\n[Claude Subscription Error: {e}]"}, "finish_reason": "stop"}],
+                    "choices": [{"index": 0, "delta": {"content": "\n\n[Claude upstream request failed]"}, "finish_reason": "stop"}],
                 }
                 handler.wfile.write(f"data: {json.dumps(err_chunk)}\n\n".encode("utf-8"))
+                handler.wfile.write(b"data: [DONE]\n\n")
+                return
 
             # If compaction summary was not found in buffer, wrap buffer in summary tags
             if is_compaction and not summary_started and compaction_buffer:
@@ -982,14 +1105,14 @@ class ClaudeSubscriptionBridge:
                         anthropic_body["system"] = system_text
                     req = urllib.request.Request(target_url, data=json.dumps(anthropic_body).encode("utf-8"), headers=anthropic_headers)
                     with opener.open(req, timeout=45) as resp:
-                        res_json = json.loads(resp.read().decode("utf-8"))
+                        res_json = json.loads(b"".join(_response_chunks(resp, MAX_UPSTREAM_BODY)))
                         text_blocks = [c.get("text", "") for c in res_json.get("content", []) if c.get("type") == "text"]
                         raw_text = "".join(text_blocks)
                 else:
                     target_url = self._claude_web_completion_url(opener, org_id, req_headers)
                     req = urllib.request.Request(target_url, data=json.dumps(claude_payload).encode("utf-8"), headers=req_headers)
                     with opener.open(req, timeout=45) as resp:
-                        body_text = resp.read().decode("utf-8", errors="ignore")
+                        body_text = b"".join(_response_chunks(resp, MAX_UPSTREAM_BODY)).decode("utf-8", errors="ignore")
                     if "data: " in body_text:
                         parts = []
                         for line_str in body_text.splitlines():
@@ -1026,8 +1149,10 @@ class ClaudeSubscriptionBridge:
                 handler.send_header("Content-Length", str(len(data_bytes)))
                 handler.end_headers()
                 handler.wfile.write(data_bytes)
-            except Exception as e:
-                handler.send_error(500, f"Claude Proxy Error: {e}")
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            except Exception:
+                handler.send_error(502, "Claude upstream request failed")
 
 
 # Singleton instances

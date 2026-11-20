@@ -476,7 +476,7 @@ export const AntigravityConfigSchema = z.object({
      * Enable automatic plugin updates.
      * @default true
      */
-    auto_update: z.boolean().default(true),
+    auto_update: z.boolean().default(false),
     // =========================================================================
     // Operator Settings (Task 18: persistent runtime controls)
     // =========================================================================
@@ -558,7 +558,7 @@ export const DEFAULT_CONFIG = {
     proactive_rotation_threshold_percent: 20,
     background_quota_refresh: true,
     background_quota_refresh_interval_minutes: 5,
-    auto_update: true,
+    auto_update: false,
     signature_cache: {
         enabled: true,
         memory_ttl_seconds: 3600,

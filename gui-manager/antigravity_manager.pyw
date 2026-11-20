@@ -72,6 +72,8 @@ def set_windows_taskbar_identity():
 
 # --- Paths & Dynamic Resolution ---
 def get_node_executable():
+    if getattr(sys, "frozen", False):
+        return str(Path(sys._MEIPASS) / "playwright" / "driver" / "node.exe")
     node = shutil.which("node")
     if node and os.path.exists(node):
         return node
@@ -89,6 +91,8 @@ def get_node_executable():
     return "node"
 
 def get_cli_js():
+    if getattr(sys, "frozen", False):
+        return str(Path(sys._MEIPASS) / "plugin" / "dist" / "cli.js")
     local_cli = Path(__file__).resolve().parent.parent / "plugin" / "dist" / "cli.js"
     if local_cli.exists():
         return str(local_cli)
@@ -170,7 +174,7 @@ def ordered_generation_dirs(config_dir: Path | None = None) -> list[Path]:
     """
     base = Path(config_dir) if config_dir else CONFIG_DIR
     active = get_active_generation_dir(base)
-    dirs = list(base.glob("*.generation"))
+    dirs = _generation_dirs(base)
     if active is not None and active in dirs:
         return [active] + [p for p in dirs if p != active]
     def _safe_mtime(p: Path) -> float:
@@ -821,16 +825,30 @@ def compute_google_dispatch_digest(access_token: str | None, refresh_token: str,
     return hashlib.sha256(f"credential-dispatch\x00{parts_json}".encode("utf-8")).hexdigest()
 
 
+def _generation_dirs(config_dir: Path) -> list[Path]:
+    root = config_dir.resolve()
+    dirs = []
+    for entry in config_dir.glob("*.generation"):
+        try:
+            resolved = entry.resolve()
+            if resolved.parent == root and resolved.name == entry.name and resolved.is_dir():
+                dirs.append(resolved)
+        except (OSError, RuntimeError):
+            continue
+    return dirs
+
+
 def get_active_generation_dir(config_dir: Path) -> Path | None:
+    dirs = _generation_dirs(config_dir)
     pointer_file = config_dir / "antigravity-accounts.json.store.pointer.json"
     if pointer_file.exists():
         try:
             ptr = json.loads(pointer_file.read_text(encoding="utf-8"))
             dirname = ptr.get("directoryBasename")
-            if isinstance(dirname, str) and dirname:
-                p = (config_dir / dirname).resolve()
-                if p.parent == config_dir.resolve() and p.is_dir():
-                    return p
+            if isinstance(dirname, str):
+                selected = next((path for path in dirs if path.name == dirname), None)
+                if selected is not None:
+                    return selected
         except Exception:
             pass
     def _safe_mtime(p: Path) -> float:
@@ -838,7 +856,7 @@ def get_active_generation_dir(config_dir: Path) -> Path | None:
             return p.stat().st_mtime
         except OSError:
             return 0.0
-    gen_dirs = sorted(config_dir.glob("*.generation"), key=_safe_mtime, reverse=True)
+    gen_dirs = sorted(dirs, key=_safe_mtime, reverse=True)
     return gen_dirs[0] if gen_dirs else None
 
 
@@ -1068,9 +1086,19 @@ def import_google_account(account_dict: dict) -> bool:
 
 
 if __name__ == "__main__":
+    sys.modules["antigravity_manager"] = sys.modules[__name__]
+    if getattr(sys, "frozen", False):
+        bundle = Path(sys._MEIPASS)
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(bundle / "browsers")
+        if len(sys.argv) == 3 and sys.argv[1] == "--restart-after":
+            from hub_restart import relaunch_packaged
+            sys.exit(relaunch_packaged(sys.argv[2]))
+        if len(sys.argv) == 3 and sys.argv[1] == "--package-self-test":
+            os.environ["ANTIGRAVITY_HUB_DATA_DIR"] = str(Path(sys.argv[2]).with_suffix(".data"))
+            from package_smoke import check_bundle
+            sys.exit(check_bundle(bundle, Path(sys.argv[2])))
     if not acquire_single_instance():
         sys.exit(0)
     set_windows_taskbar_identity()
-    sys.modules["antigravity_manager"] = sys.modules[__name__]
     import webview_backend
     webview_backend.run_webview_app()

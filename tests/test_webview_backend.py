@@ -95,6 +95,9 @@ class WebviewBackendTests(unittest.TestCase):
         self.backend.ANTIGRAVITY_CONFIG_FILE = Path(self.temp.name) / 'antigravity.json'
         self.backend.OPENCODE_CONFIG_FILE = Path(self.temp.name) / 'opencode.json'
         self.backend.HUB_CONFIG_FILE = Path(self.temp.name) / 'hub_antigravity.json'
+        startup_migration = patch.object(self.backend.hub_paths, "migrate_legacy_locations")
+        startup_migration.start()
+        self.addCleanup(startup_migration.stop)
 
     def test_tokenlavka_configure_validates_saves_and_registers_models(self):
         self.tokenlavka.test_connection.return_value = (True, 'ok')
@@ -387,19 +390,22 @@ class WebviewBackendTests(unittest.TestCase):
         api = self.backend.HubApi()
         first = "vless://aaa@1.1.1.1:443?security=reality#DE"
         second = "vless://bbb@2.2.2.2:443?security=tls#US"
-        self.assertTrue(api.add_vless_config(first)["ok"])
-        self.assertTrue(api.add_vless_config(second)["ok"])
+        added_first = api.add_vless_config(first)
+        added_second = api.add_vless_config(second)
+        self.assertTrue(added_first["ok"])
+        self.assertTrue(added_second["ok"])
         state = api.get_vless_pool()
         self.assertEqual(len(state["pool"]), 2)
-        self.assertEqual(state["active"], first)
+        self.assertEqual(state["active"], added_first["id"])
+        self.assertNotIn("vless://", json.dumps(state))
         # First config becomes active automatically when it is the only one.
-        activated = api.activate_vless_config(second)
+        activated = api.activate_vless_config(added_second["id"])
         self.assertTrue(activated["ok"])
         self.assertEqual(api.load_config()["vless_url"], second)
-        self.assertEqual(api.get_vless_pool()["activeEntry"]["url"], second)
+        self.assertEqual(api.get_vless_pool()["activeEntry"]["id"], added_second["id"])
         # Tunnel is stopped in this fixture, so activation probes the new config.
         self.vless.start_tunnel.assert_called()
-        removed = api.delete_vless_config(second)
+        removed = api.delete_vless_config(added_second["id"])
         self.assertTrue(removed["ok"])
         self.assertEqual(api.load_config()["vless_url"], first)
         self.assertEqual(len(api.get_vless_pool()["pool"]), 1)
@@ -410,9 +416,9 @@ class WebviewBackendTests(unittest.TestCase):
         api.save_config({"vless_pool": [url, url, "not-a-vless-url"]})
         pool = api.get_vless_pool()["pool"]
         self.assertEqual(len(pool), 1)
-        self.assertEqual(pool[0]["url"], url)
+        self.assertNotIn("url", pool[0])
         self.assertEqual(pool[0]["status"], "untested")
-        checked = api.test_vless_config(url)
+        checked = api.test_vless_config(pool[0]["id"])
         self.assertTrue(checked["ok"])
         self.assertEqual(checked["ip"], "1.2.3.4")
         entry = api.get_vless_pool()["pool"][0]
@@ -557,7 +563,7 @@ class WebviewBackendTests(unittest.TestCase):
         api = self.backend.HubApi()
         api.save_config({"dns_mode": "system", "vless_core_path": "C:/safe/xray.exe"})
         backup_file = Path(self.temp.name) / "backup.agb"
-        res = api.export_backup(str(backup_file), password="strong-password")
+        res = api._export_backup(str(backup_file), password="strong-password")
         self.assertTrue(res["ok"])
         self.assertTrue(res["encrypted"])
         raw = backup_file.read_bytes()
@@ -575,11 +581,14 @@ class WebviewBackendTests(unittest.TestCase):
             }
         }), encoding="utf-8")
         imp = api.import_backup(str(malicious))
-        self.assertTrue(imp["ok"])
+        self.assertFalse(imp["ok"])
         saved = api.load_config()
         self.assertEqual(saved["vless_core_path"], "C:/safe/xray.exe")
-        self.assertEqual(saved["doh_url"], "")
-        self.assertEqual(saved["proxy"], "")
+        self.assertNotIn("doh_url", saved)
+        self.assertNotIn("proxy", saved)
+        malicious.write_text('{"config":{"vless_core_path":"C:/evil/payload.exe"}}', encoding="utf-8")
+        self.assertTrue(api.import_backup(str(malicious))["ok"])
+        self.assertEqual(api.load_config()["vless_core_path"], "C:/safe/xray.exe")
 
     def test_full_backup_export_import_roundtrip_all_providers_and_missing_cli(self):
         self.manager.export_google_accounts.return_value = [{"email": "g@example.com", "refreshToken": "g-ref"}]
@@ -617,8 +626,8 @@ class WebviewBackendTests(unittest.TestCase):
             "providers_visibility": {"openai": False},
         })
 
-        backup_no_ext = Path(self.temp.name) / "full_backup"
-        exp = api.export_backup(str(backup_no_ext), password="pw")
+        target = Path(self.temp.name) / "full_backup.agb"
+        exp = api._export_backup(str(target), password="pw")
         self.assertTrue(exp["ok"])
         self.assertTrue(exp["path"].endswith(".agb"))
         self.assertEqual(exp["counts"], {"google": 1, "openai": 1, "claude": 1})
@@ -643,6 +652,98 @@ class WebviewBackendTests(unittest.TestCase):
         self.deepseek.save_config.assert_called_once()
         oc_after = json.loads(self.backend.OPENCODE_CONFIG_FILE.read_text(encoding="utf-8"))
         self.assertIn("openai", oc_after.get("disabled_providers", []))
+
+    def test_export_bridge_requires_password_and_native_save_dialog(self):
+        api = self.backend.HubApi(SimpleNamespace(create_file_dialog=Mock(return_value=None)))
+        bridge = self.backend._WebviewBridge(api)
+        self.assertFalse(hasattr(bridge, "_export_backup"))
+        self.assertFalse(hasattr(bridge, "load_config"))
+        self.assertFalse(hasattr(bridge, "save_config"))
+        self.assertFalse(bridge.export_backup()["ok"])
+        api._window_holder.create_file_dialog.assert_not_called()
+        with patch.dict("sys.modules", {"webview": SimpleNamespace(FileDialog=SimpleNamespace(SAVE=1))}):
+            self.assertTrue(bridge.export_backup("password")["cancelled"])
+        api._window_holder.create_file_dialog.assert_called_once()
+
+    def test_invalid_later_section_and_oversized_backup_do_not_mutate(self):
+        import crypto_backup
+        api = self.backend.HubApi()
+        self.manager.import_google_accounts = Mock()
+        target = Path(self.temp.name) / "invalid.json"
+        target.write_text('{"accounts":[{"refreshToken":"test"}],"config":{"proxy_pool":[{}]}}')
+        self.assertFalse(api.import_backup(str(target))["ok"])
+        self.manager.import_google_accounts.assert_not_called()
+        target.write_bytes(b" " * 65)
+        with patch.object(crypto_backup, "MAX_BACKUP_BYTES", 64):
+            res = api.import_backup(str(target))
+        self.assertFalse(res["ok"])
+        self.assertIn("16", res["message"])
+
+    def test_proxy_public_state_and_operations_use_ids(self):
+        api = self.backend.HubApi()
+        url = "https://example-user:example-secret@proxy.example:8443"
+        added = api.add_proxy_pool(url)
+        self.assertTrue(added["ok"])
+        proxy_id = added["proxy"]
+        self.assertEqual(added["proxy_labels"][proxy_id], "proxy.example:8443")
+        self.assertNotIn("example-secret", json.dumps(api.get_state()))
+        self.assertTrue(api.test_proxy(proxy_id)["ok"])
+        self.router._connect_upstream.assert_called_once_with(url, "cloudcode-pa.googleapis.com", 443, timeout=6)
+        self.assertTrue(api.delete_proxy_pool(proxy_id)["ok"])
+
+    def test_uninstall_preserves_custom_root_and_edits_only_owned_fields(self):
+        api = self.backend.HubApi()
+        custom = Path(self.temp.name) / "custom"
+        custom.mkdir()
+        sentinel = custom / "sentinel.txt"
+        sentinel.write_text("keep")
+        with patch.dict("os.environ", {"ANTIGRAVITY_HUB_DATA_DIR": str(custom)}):
+            self.assertFalse(api.uninstall_hub_completely()["ok"])
+            self.assertTrue(api.uninstall_hub_completely("DELETE")["ok"])
+        self.assertEqual(sentinel.read_text(), "keep")
+        original = '''{
+          // Keep this
+          "plugin": ["@cortexkit/opencode-antigravity-auth@latest",
+                     "@cortexkit/opencode-antigravity-auth-extra"],
+          "provider": {"google":{"options":{"apiKey":"antigravity","custom":true},"models":{"g":{}}}},
+          "agent":{"title":{"model":"opencode/big-pickle"}}
+        }'''
+        updated = self.backend._remove_hub_opencode_settings(original)
+        self.assertIn("// Keep this", updated)
+        parsed = self.backend.jsonc_config.parse_config(updated)
+        self.assertEqual(parsed["plugin"], ["@cortexkit/opencode-antigravity-auth-extra"])
+        self.assertEqual(parsed["provider"]["google"], {"options":{"custom": True}, "models":{"g": {}}})
+        self.assertEqual(parsed["agent"]["title"]["model"], "opencode/big-pickle")
+
+    def test_uninstall_allowlist_and_failures_in_disposable_root(self):
+        api = self.backend.HubApi()
+        temp = Path(self.temp.name)
+        root = temp / "AppData" / "Roaming" / "AntigravityHub"
+        config_dir = temp / ".config" / "opencode"
+        accounts = root / "accounts"
+        accounts.mkdir(parents=True)
+        config_dir.mkdir(parents=True)
+        owned = accounts / "openai-accounts.json"
+        unrelated = accounts / "unrelated.json"
+        wrong_type = accounts / "claude-accounts.json"
+        owned.write_text("{}")
+        unrelated.write_text("keep")
+        wrong_type.mkdir()
+        pointer = config_dir / "antigravity-accounts.json.store.pointer.json"
+        pointer.write_text(json.dumps({"relocatedTo": {"legacyPath": str(unrelated)}}))
+        with patch.object(Path, "home", return_value=temp), \
+             patch.object(self.backend.sys, "platform", "win32"), \
+             patch.dict("os.environ", {"APPDATA": str(root.parent),
+                        "ANTIGRAVITY_HUB_DATA_DIR": "", "OPENCODE_CONFIG_DIR": ""}), \
+             patch.object(self.backend.hub_paths, "HUB_ROOT", root), \
+             patch.object(self.backend, "CONFIG_DIR", config_dir):
+            result = api.uninstall_hub_completely("DELETE")
+        self.assertFalse(result["ok"])
+        self.assertIn("claude-accounts.json", result["message"])
+        self.assertFalse(owned.exists())
+        self.assertTrue(wrong_type.is_dir())
+        self.assertTrue(pointer.is_file())
+        self.assertEqual(unrelated.read_text(), "keep")
 
     def test_set_strategy_validates_and_stop_vless_syncs_routes(self):
         api = self.backend.HubApi()

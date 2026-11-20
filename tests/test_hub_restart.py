@@ -24,3 +24,18 @@ class HubRestartTests(unittest.TestCase):
             self.assertTrue(hub_restart.wait_for_exit(child.pid, timeout=10))
         finally:
             child.wait(timeout=10)
+
+    @patch("hub_restart.subprocess.Popen")
+    def test_installed_restart_relaunches_exe_not_python_script(self, popen):
+        with patch.object(sys, "frozen", True, create=True):
+            hub_restart.schedule_restart()
+        self.assertEqual(popen.call_args.args[0],
+                         [sys.executable, "--restart-after", str(hub_restart.os.getpid())])
+        self.assertEqual(popen.call_args.kwargs["env"]["PYINSTALLER_RESET_ENVIRONMENT"], "1")
+
+    @patch("hub_restart.subprocess.Popen")
+    def test_installed_restart_aborts_if_parent_does_not_exit(self, popen):
+        with patch.object(hub_restart, "wait_for_exit", return_value=False) as wait:
+            self.assertEqual(hub_restart.relaunch_packaged("123"), 1)
+        wait.assert_called_once_with(123)
+        popen.assert_not_called()
