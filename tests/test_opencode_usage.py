@@ -2,7 +2,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,8 +11,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gui-manager"))
 import opencode_usage
 
 
+FIXTURE_TIMEZONE = timezone(timedelta(hours=3))
+
+
 def _ms(value: datetime) -> int:
-    return int(value.timestamp() * 1000)
+    return int(value.replace(tzinfo=FIXTURE_TIMEZONE).timestamp() * 1000)
+
+
+def _fixture_fromtimestamp(timestamp, tz=None):
+    if tz is None:
+        return datetime.fromtimestamp(timestamp, tz=FIXTURE_TIMEZONE).replace(tzinfo=None)
+    return datetime.fromtimestamp(timestamp, tz=tz)
 
 
 class OpenCodeUsageTests(unittest.TestCase):
@@ -23,6 +32,11 @@ class OpenCodeUsageTests(unittest.TestCase):
         self.patch = patch.object(opencode_usage, "DB_PATH", self.db_path)
         self.patch.start()
         self.addCleanup(self._cleanup)
+        # Pricing uses UTC, while the usage chart groups by local day. Pin the
+        # fixture's local timezone for both timestamp creation and day grouping.
+        local_clock = patch.object(opencode_usage, "datetime", wraps=datetime)
+        local_clock.start().fromtimestamp.side_effect = _fixture_fromtimestamp
+        self.addCleanup(local_clock.stop)
         self.now = datetime(2026, 11, 17, 12, 0, 0)
 
     def _cleanup(self):
