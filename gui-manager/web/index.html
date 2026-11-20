@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Antigravity Hub</title>
-  <link rel="stylesheet" href="style.css?v=20261120-nvidia-switches">
+  <link rel="stylesheet" href="style.css?v=20261120-model-cards">
 </head>
 <body>
 
@@ -354,7 +354,7 @@
         <div class="glass-card network-panel">
           <label class="field-label">API-ключ<input id="xpiki-key" type="password" autocomplete="off" placeholder="Введите API-ключ"></label>
           <label class="field-label">URL шлюза<input id="xpiki-base-url" value="https://api.xpiki.com/v1"></label>
-          <div class="model-picker" id="xpiki-models"></div>
+          <div class="model-picker model-card-grid" id="xpiki-models"></div>
           <div class="button-row"><button class="btn-primary" onclick="configureXpiki()">Добавить выбранные в OpenCode</button><button class="btn-secondary" onclick="refreshXpikiQuota()">Обновить квоту</button><button class="btn-secondary" onclick="disconnectXpiki()">Отключить</button></div>
           <p class="help-text" role="status" id="xpiki-result"></p>
         </div>
@@ -394,7 +394,7 @@
                 <span class="help-text" style="margin:0;">Модели DeepSeek для OpenCode</span>
                 <button class="btn-secondary" onclick="loadDeepSeekModels()">Загрузить каталог</button>
               </div>
-              <div id="deepseek-models" class="model-picker"></div>
+              <div id="deepseek-models" class="model-picker model-card-grid"></div>
               <div class="button-row"><button class="btn-primary" id="btn-apply-deepseek" onclick="applyDeepSeekModels()">Добавить выбранные в OpenCode</button></div>
               <p class="help-text">Ключ хранится в защищённом хранилище Hub (DPAPI на Windows) и используется для <code>GET /user/balance</code> и <code>GET /models</code>. Провайдер <code>deepseek</code> с выбранными моделями добавляется в OpenCode автоматически. У DeepSeek предоплаченный баланс, а не 5-часовые окна: показываются общий остаток, бонусы и пополненные средства.</p>
             </div>
@@ -448,7 +448,7 @@
               Добавить выбранные в OpenCode
             </button>
           </div>
-          <div id="openrouter-models-list" style="display: flex; flex-direction: column; gap: 8px; max-height: 340px; overflow-y: auto;">
+          <div id="openrouter-models-list" class="model-card-grid">
             <div style="color: var(--text-muted); font-size: 13px; text-align: center; padding: 30px;">
               Введите API-ключ выше и нажмите «Проверить и загрузить модели».
             </div>
@@ -512,7 +512,7 @@
                   Добавить выбранные в OpenCode
                 </button>
               </div>
-              <div id="tokenlavka-models-list" style="display: flex; flex-direction: column; gap: 8px; max-height: 340px; overflow-y: auto;"></div>
+              <div id="tokenlavka-models-list" class="model-card-grid"></div>
             </div>
           </div>
           <aside class="provider-route-sidebar" aria-label="Маршрут TokenLavka">
@@ -924,6 +924,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20261120-nvidia-autoload"></script>
+<script src="app.js?v=20261120-model-cards"></script>
 </body>
 </html>

@@ -1655,14 +1655,8 @@ function renderXpikiTab() {
   if (!xpikiFormInitialized) {
     document.getElementById('xpiki-base-url').value = cfg.baseUrl;
     const picker = document.getElementById('xpiki-models');
-    picker.innerHTML = '';
-    for (const model of cfg.models || []) {
-      const label = document.createElement('label');
-      label.className = 'model-choice';
-      const input = document.createElement('input');
-      input.type = 'checkbox'; input.value = model.id; input.checked = cfg.enabledModels.includes(model.id);
-      label.append(input, document.createTextNode(model.name)); picker.appendChild(label);
-    }
+    renderModelCards(picker, cfg.models || [], cfg.enabledModels || [],
+      {hint:'xpiki', suffix:'provider', providerLabel:'Claude API · Xpiki'});
     xpikiFormInitialized = true;
   }
   const quota = cfg.quota || {};
@@ -1906,15 +1900,7 @@ function renderDeepSeekModels(cfg) {
   if (!models.length) {
     picker.innerHTML = '<div class="help-text" style="grid-column:1/-1;">Каталог моделей ещё не загружен — сохраните ключ или нажмите «Загрузить каталог».</div>';
   }
-  for (const model of models) {
-    const label = document.createElement('label');
-    label.className = 'model-choice';
-    const input = document.createElement('input');
-    input.type = 'checkbox'; input.value = model.id;
-    input.checked = selected.length ? selected.includes(model.id) : true;
-    label.append(input, document.createTextNode(`${model.name || model.id} · ${model.id}`));
-    picker.appendChild(label);
-  }
+  renderModelCards(picker, models, selected, {hint:'deepseek', suffix:'context', defaultAll:true});
   const btn = document.getElementById('btn-apply-deepseek');
   if (btn) btn.disabled = !models.length;
   deepseekModelsInitialized = true;
@@ -2004,6 +1990,80 @@ function nvidiaVendor(modelId) {
 }
 function nvidiaModelName(modelId) {
   return String(modelId || '').split('/').pop() || String(modelId || '');
+}
+
+const extraModelVendorStyles = {
+  anthropic:{label:'Anthropic', glyph:'✦', color:'#e6a36b'},
+  claude:{label:'Claude', glyph:'✦', color:'#e6a36b'},
+  gpt:{label:'OpenAI', glyph:'◎', color:'#42d6a0'},
+  gemini:{label:'Google', glyph:'G', color:'#71a7ff'},
+  glm:{label:'GLM / Zhipu', glyph:'✧', color:'#5b8cff'},
+  zhipu:{label:'GLM / Zhipu', glyph:'✧', color:'#5b8cff'},
+  'z-ai':{label:'GLM / Zhipu', glyph:'✧', color:'#5b8cff'},
+  grok:{label:'xAI', glyph:'𝕏', color:'#c9d1d9'},
+  xai:{label:'xAI', glyph:'𝕏', color:'#c9d1d9'},
+  cohere:{label:'Cohere', glyph:'◐', color:'#d99a43'},
+  llama:{label:'Meta', glyph:'∞', color:'#4a8cff'},
+};
+const modelVendorStyles = Object.assign({}, nvidiaVendorStyles, extraModelVendorStyles);
+function modelVendorRgb(color) {
+  const match = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(String(color || ''));
+  return match ? `${parseInt(match[1], 16)}, ${parseInt(match[2], 16)}, ${parseInt(match[3], 16)}` : '67, 199, 208';
+}
+function modelVendor(modelId, hint) {
+  const segments = String(modelId || '').toLowerCase().split(/[/:._-]/).filter(Boolean);
+  const candidates = [];
+  if (hint) candidates.push(String(hint).toLowerCase());
+  candidates.push(...segments);
+  for (const candidate of candidates) {
+    const key = candidate.replace(/[^a-z0-9-]/g, '');
+    if (modelVendorStyles[key]) {
+      const style = Object.assign({}, modelVendorStyles[key]);
+      style.rgb = style.rgb || modelVendorRgb(style.color);
+      return style;
+    }
+  }
+  for (const [key, style] of Object.entries(modelVendorStyles)) {
+    if (segments.some(segment => segment.includes(key))) {
+      const copy = Object.assign({}, style);
+      copy.rgb = copy.rgb || modelVendorRgb(copy.color);
+      return copy;
+    }
+  }
+  const fallback = {label: hint || 'Модель', glyph:'◇', color:'#43c7d0'};
+  fallback.rgb = modelVendorRgb(fallback.color);
+  return fallback;
+}
+function renderModelCards(list, models, selectedIds, options = {}) {
+  if (!list) return;
+  const selected = new Set(Array.isArray(selectedIds) ? selectedIds : []);
+  const defaultIds = Array.isArray(options.defaultIds) ? options.defaultIds : [];
+  const defaultAll = options.defaultAll !== false && !defaultIds.length;
+  list.innerHTML = (models || []).map(model => {
+    const id = typeof model === 'string' ? model : model.id;
+    const name = typeof model === 'string' ? nvidiaModelName(model) : (model.name || nvidiaModelName(id));
+    const vendor = modelVendor(id, options.hint);
+    const checked = selected.size ? selected.has(id) : (defaultIds.length ? defaultIds.includes(id) : defaultAll);
+    const context = model && model.context ? Number(model.context).toLocaleString('ru-RU') : '';
+    let meta = '';
+    if (options.suffix === 'context' && context) meta = `контекст ${context}`;
+    else if (options.suffix === 'provider') meta = options.providerLabel || '';
+    return `<label class="model-card${checked ? ' is-selected' : ''}" style="--vendor-color:${html(vendor.color)};--vendor-rgb:${html(vendor.rgb)}" title="${html(id)}">
+      <input type="checkbox" class="switch-input card-switch" value="${html(id)}"${checked ? ' checked' : ''}>
+      <span class="model-card-logo">${html(vendor.glyph)}</span>
+      <span class="model-card-info">
+        <span class="model-card-name">${html(name)}</span>
+        <span class="model-card-id">${html(id)}</span>
+        <span class="model-card-vendor">${html(vendor.label)}</span>
+        ${meta ? `<span class="model-card-meta">${html(meta)}</span>` : ''}
+      </span>
+    </label>`;
+  }).join('');
+  if (typeof list.querySelectorAll === 'function') {
+    list.querySelectorAll('input').forEach(box => box.addEventListener('change', () => {
+      if (box.closest) box.closest('.model-card')?.classList.toggle('is-selected', !!box.checked);
+    }));
+  }
 }
 function selectedNvidiaModels() {
   return [...document.querySelectorAll('#nvidia-models-list input:checked')].map(input => input.value);
@@ -2132,13 +2192,7 @@ async function loadOpenRouterModels() {
     const list = document.getElementById('openrouter-models-list');
     list.innerHTML = '';
     const configured = appState.providers?.openrouter?.selectedModels || [];
-    for (const model of openrouterModels) {
-      const label = document.createElement('label'); label.className = 'model-choice';
-      const input = document.createElement('input'); input.type='checkbox'; input.value=model.id;
-      input.checked = configured.length ? configured.includes(model.id) : true;
-      label.append(input, document.createTextNode(`${model.name} · ${model.id} · контекст ${model.context.toLocaleString('ru-RU')}`));
-      list.appendChild(label);
-    }
+    renderModelCards(list, openrouterModels, configured, {hint:'openrouter', suffix:'context', defaultAll:true});
     document.getElementById('btn-apply-openrouter').disabled = !openrouterModels.length;
     output.textContent = `Ключ проверен. Бесплатных моделей: ${openrouterModels.length}. Выберите нужные и добавьте в OpenCode.`;
     await refreshState();
@@ -2196,14 +2250,8 @@ function renderTokenLavkaState() {
   if (keyInput) keyInput.placeholder = cfg.hasKey ? 'Ключ сохранён · оставьте пустым для замены' : 'sk-…';
   const list = document.getElementById('tokenlavka-models-list');
   if (list && !list.dataset.ready) {
-    list.innerHTML = '';
-    for (const model of cfg.models || []) {
-      const label = document.createElement('label'); label.className = 'model-choice';
-      const input = document.createElement('input'); input.type = 'checkbox'; input.value = model.id;
-      input.checked = cfg.selectedModels?.length ? cfg.selectedModels.includes(model.id) : model.id === 'gpt-6-luna';
-      label.append(input, document.createTextNode(`${model.name} · ${model.id} · контекст ${Number(model.context).toLocaleString('ru-RU')}`));
-      list.appendChild(label);
-    }
+    renderModelCards(list, cfg.models || [], cfg.selectedModels || [],
+      {hint:'tokenlavka', suffix:'context', defaultIds:['gpt-6-luna']});
     list.dataset.ready = '1';
   }
   const btn = document.getElementById('btn-apply-tokenlavka');
