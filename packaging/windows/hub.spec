@@ -14,7 +14,6 @@ required = {"chromium", "ffmpeg", "winldd"}
 datas = [
     (str(manager / "web"), "web"),
     (str(manager / "icon.ico"), "."),
-    (str(manager / "icon.png"), "."),
     (os.environ["HUB_BUILD_VERSION_FILE"], "."),
     (str(repo / "config-templates"), "config-templates"),
     (str(repo / "plugin" / "dist" / "cli.js"), "plugin/dist"),
