@@ -12,6 +12,9 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  PYTHONIOENCODING: utf-8
+
 jobs:
   version:
     if: github.ref == 'refs/heads/V2'

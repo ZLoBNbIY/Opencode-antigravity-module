@@ -5,6 +5,9 @@ on: [push, pull_request]
 permissions:
   contents: read
 
+env:
+  PYTHONIOENCODING: utf-8
+
 jobs:
   tests:
     # The Hub and its installer are Windows-only.  The Ubuntu runner cannot
