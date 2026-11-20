@@ -7,9 +7,12 @@ permissions:
 
 jobs:
   tests:
+    # The Hub and its installer are Windows-only.  The Ubuntu runner cannot
+    # import the Win32 tray module and its secure-storage fallback intentionally
+    # stores secrets in plaintext, so unit tests are Windows-only.
     strategy:
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
