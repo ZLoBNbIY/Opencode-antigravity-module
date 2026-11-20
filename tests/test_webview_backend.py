@@ -65,7 +65,6 @@ class WebviewBackendTests(unittest.TestCase):
         )
         modules = {
             "antigravity_manager": manager,
-            "proxy_config": SimpleNamespace(sync_provider_routes=Mock()),
             "opencode_config": ModuleType("opencode_config"),
             "auto_updater": ModuleType("auto_updater"),
             "openai_manager": self.openai,
@@ -130,12 +129,14 @@ class WebviewBackendTests(unittest.TestCase):
         self.assertEqual(result['status'], 'ok')
         self.assertIn('квоты обновлены', result['message'])
         self.assertIn('перезапущен', result['message'])
-        self.manager.run_google_route_cmd.assert_called_once_with(
-            ["node", "cli.js", "quota", "--refresh", "--json"], timeout=60)
-        self.assertEqual([c.args[0] for c in self.manager.run_silent_cmd.call_args_list],
+        self.assertEqual([c.args[0] for c in self.manager.run_google_route_cmd.call_args_list],
                          [["node", "cli.js", "login"],
-                          ["node", "cli.js", "migrate", "--offline", "--yes"],
-                          ["cli.exe", "service", "restart"]])
+                          ["node", "cli.js", "quota", "--refresh", "--json"]])
+        self.assertEqual([c.args[0] for c in self.manager.run_silent_cmd.call_args_list],
+                         [["node", "cli.js", "migrate", "--offline", "--yes"],
+                           ["cli.exe", "service", "restart"]])
+        self.assertEqual(self.manager.run_silent_cmd.call_args.kwargs["env"],
+                         self.backend.opencode_launch_environment())
 
     def test_google_login_reports_when_state_refresh_or_service_restart_fails(self):
         self.manager.get_node_executable = Mock(return_value="node")
@@ -143,7 +144,10 @@ class WebviewBackendTests(unittest.TestCase):
         self.manager.get_opencode_cli = Mock(return_value=None)
         self.manager.repair_legacy_google_account_file = Mock(return_value=None)
         self.manager.run_silent_cmd = Mock(return_value=SimpleNamespace(returncode=0, stdout="", stderr=""))
-        self.manager.run_google_route_cmd = Mock(return_value=SimpleNamespace(returncode=1, stdout="", stderr="quota failed"))
+        self.manager.run_google_route_cmd = Mock(side_effect=[
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+            SimpleNamespace(returncode=1, stdout="", stderr="quota failed"),
+        ])
         with patch.object(self.backend.os.path, "exists", return_value=True):
             result = self.backend.HubApi().add_google_account()
         self.assertEqual(result['status'], 'ok')
@@ -155,11 +159,13 @@ class WebviewBackendTests(unittest.TestCase):
         self.manager.get_node_executable = Mock(return_value="node")
         self.manager.get_cli_js = Mock(return_value="cli.js")
         self.manager.repair_legacy_google_account_file = Mock(return_value=None)
-        self.manager.run_silent_cmd = Mock(return_value=SimpleNamespace(returncode=1, stdout="", stderr="login failed"))
+        self.manager.run_silent_cmd = Mock()
+        self.manager.run_google_route_cmd = Mock(
+            return_value=SimpleNamespace(returncode=1, stdout="", stderr="login failed"))
         with patch.object(self.backend.os.path, "exists", return_value=True):
             result = self.backend.HubApi().add_google_account()
         self.assertEqual(result, {'status':'error', 'message':'login failed'})
-        self.manager.run_silent_cmd.assert_called_once()
+        self.manager.run_silent_cmd.assert_not_called()
 
     def test_openai_failure_and_exception_reach_frontend_and_unlock_retry(self):
         self.openai.login_openai_browser = Mock(side_effect=[(False, 'token exchange failed', None),
@@ -223,7 +229,18 @@ class WebviewBackendTests(unittest.TestCase):
             calls.attach_mock(start, 'start')
             self.assertTrue(api.restart_opencode())
         self.assertEqual([c[0] for c in calls.mock_calls], ['stop', 'service', 'start'])
-        self.manager.run_silent_cmd.assert_called_once_with(['cli.exe', 'service', 'restart'], timeout=45)
+        self.manager.run_silent_cmd.assert_called_once_with(
+            ['cli.exe', 'service', 'restart'], timeout=45, env=self.backend.opencode_launch_environment())
+
+    def test_desktop_launch_does_not_inherit_hub_proxy(self):
+        self.manager.get_opencode_exe = Mock(return_value="OpenCode.exe")
+        api = self.backend.HubApi()
+        with patch.dict("os.environ", {"HTTPS_PROXY": "http://127.0.0.1:10880",
+                                       "NO_PROXY": "localhost"}, clear=True), \
+             patch.object(self.backend.os.path, "exists", return_value=True), \
+             patch.object(self.backend.subprocess, "Popen") as launch:
+            self.assertTrue(api.start_opencode())
+        self.assertEqual(launch.call_args.kwargs["env"], {"NO_PROXY": "localhost"})
 
     def test_restart_service_failure_is_reported_and_retry_is_possible(self):
         self.manager.get_opencode_cli = Mock(return_value='cli.exe')

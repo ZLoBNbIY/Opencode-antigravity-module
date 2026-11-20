@@ -80,7 +80,8 @@ def _apply_autostart(enabled: bool) -> None:
 
 
 import antigravity_manager
-from proxy_config import sync_provider_routes
+from proxy_config import (NATIVE_PLUGIN_MARKER, NATIVE_PLUGIN_NAME, native_route_plugin,
+                          opencode_launch_environment, sync_provider_routes_text)
 import opencode_config
 import auto_updater
 import openai_manager
@@ -622,25 +623,31 @@ class HubApi:
         return True
 
     def _sync_routes(self, cfg):
+        with self._config_lock:
+            self._sync_routes_locked(cfg)
+
+    def _sync_routes_locked(self, cfg):
         oc_path = _opencode_config_path()
+        deepseek_provider_id = deepseek_api.load_config().get("provider_id")
+        config = {}
         if oc_path.exists():
-            try:
-                import jsonc_config
-                original = oc_path.read_text(encoding="utf-8-sig")
-                oc_data = jsonc_config.parse_config(original)
-                sync_provider_routes(oc_data, cfg, get_http_port(), cfg.get("provider_routes", {}))
-                if oc_path.suffix.lower() == ".jsonc" or "//" in original or "/*" in original:
-                    updated = original
-                    if "provider" in oc_data:
-                        updated = jsonc_config.set_property(updated, ("provider",), oc_data["provider"])
-                    if "providers" in oc_data:
-                        updated = jsonc_config.set_property(updated, ("providers",), oc_data["providers"])
-                    content = updated
-                else:
-                    content = json.dumps(oc_data, indent=2, ensure_ascii=False)
+            import jsonc_config
+            original = oc_path.read_text(encoding="utf-8-sig")
+            config = jsonc_config.parse_config(original)
+            content = sync_provider_routes_text(original, cfg, get_http_port(),
+                deepseek_provider_id=deepseek_provider_id)
+            if content != original:
                 secure_storage.atomic_write_bytes(oc_path, content.encode("utf-8"), private_parent=False)
-            except Exception:
-                pass
+        plugin_path = oc_path.parent / "plugins" / NATIVE_PLUGIN_NAME
+        exists = _safe_owned_file(plugin_path)
+        owner_path = sys.executable if getattr(sys, "frozen", False) else Path(__file__).resolve()
+        plugin = native_route_plugin(ANTIGRAVITY_CONFIG_FILE, config, deepseek_provider_id,
+                                     owner_path=owner_path)
+        current = plugin_path.read_bytes() if exists else b""
+        if exists and not current.startswith(NATIVE_PLUGIN_MARKER):
+            raise OSError("Файл маршрутизации Hub занят другим плагином")
+        if current != plugin:
+            secure_storage.atomic_write_bytes(plugin_path, plugin, private_parent=False)
         if not provider_proxy.start():
             raise RuntimeError("Маршрутизатор Hub недоступен на порту 10880")
 
@@ -1524,7 +1531,7 @@ class HubApi:
             repair_error = antigravity_manager.repair_legacy_google_account_file()
             if repair_error:
                 raise RuntimeError(repair_error)
-            result = antigravity_manager.run_silent_cmd([node_exe, cli_js, "login"], timeout=300)
+            result = antigravity_manager.run_google_route_cmd([node_exe, cli_js, "login"], timeout=300)
             if result.returncode:
                 raise RuntimeError(result.stderr or result.stdout or "Не удалось завершить вход в Google")
             repair_error = antigravity_manager.repair_legacy_google_account_file()
@@ -1555,7 +1562,7 @@ class HubApi:
                 cli = antigravity_manager.get_opencode_cli()
                 if cli and os.path.exists(cli):
                     svc = antigravity_manager.run_silent_cmd(
-                        [cli, "service", "restart"], timeout=45)
+                        [cli, "service", "restart"], timeout=45, env=opencode_launch_environment())
                     if svc.returncode != 0:
                         notes.append("перезапустить сервис OpenCode не удалось")
                 else:
@@ -1727,11 +1734,13 @@ class HubApi:
                 raise RuntimeError("CLI OpenCode не найден: невозможно перезапустить фоновый сервер")
             if not os.path.exists(antigravity_manager.get_opencode_exe()):
                 raise RuntimeError("Приложение OpenCode не найдено")
+            self._sync_routes(self.load_config())
             if not self.stop_opencode():
                 raise RuntimeError("Не удалось закрыть окно OpenCode")
             # Closing the desktop app leaves the v2 background service alive.
             # Restart it through its CLI so loaded plugins and OAuth state reset.
-            result = antigravity_manager.run_silent_cmd([cli, "service", "restart"], timeout=45)
+            result = antigravity_manager.run_silent_cmd(
+                [cli, "service", "restart"], timeout=45, env=opencode_launch_environment())
             if result.returncode != 0:
                 raise RuntimeError("Не удалось перезапустить фоновый сервер OpenCode: " +
                                    (result.stderr or result.stdout or "неизвестная ошибка"))
@@ -1754,7 +1763,7 @@ class HubApi:
         exe = antigravity_manager.get_opencode_exe()
         if os.path.exists(exe):
             try:
-                subprocess.Popen([exe], cwd=os.path.dirname(exe))
+                subprocess.Popen([exe], cwd=os.path.dirname(exe), env=opencode_launch_environment())
                 return True
             except Exception:
                 pass
@@ -1905,6 +1914,9 @@ class HubApi:
             if CONFIG_DIR != directory or os.environ.get("OPENCODE_CONFIG_DIR"):
                 preserved.append("нестандартная конфигурация OpenCode")
                 return
+            plugin = directory / "plugins" / NATIVE_PLUGIN_NAME
+            if _safe_owned_file(plugin) and plugin.read_bytes().startswith(NATIVE_PLUGIN_MARKER):
+                plugin.unlink()
             paths = [path for path in (directory / "opencode.json", directory / "opencode.jsonc")
                      if _safe_owned_file(path)]
             if len(paths) > 1:
@@ -2519,11 +2531,13 @@ def run_webview_app():
     def bg_refresher():
         cfg = api.load_config()
         try:
+            import cloudcode_route_patch
+            cloudcode_route_patch.patch_auth_plugin_transport(include_local=False)
             if cfg.get("vless_enabled") and cfg.get("vless_url"):
                 result = api.start_vless()
                 if not result["ok"]:
                     print(result["message"])
-            provider_proxy.start()
+            api._sync_routes(api.load_config())
             if claude_service and claude_service.get_active_account():
                 claude_manager.bridge_service.ensure_running()
         except Exception as exc:

@@ -7,7 +7,6 @@ import subprocess
 import sys
 import time
 
-
 def wait_for_exit(pid, timeout=60):
     if os.name == "nt":
         from ctypes import wintypes
@@ -73,6 +72,8 @@ def _kill_stray_hub_processes(exclude_pids: set[int]) -> None:
 
 
 def schedule_restart():
+    # This function can be imported by the old Hub after its files have been
+    # updated. The fresh helper, not the old process, cleans up its environment.
     if getattr(sys, "frozen", False):
         subprocess.Popen([sys.executable, "--restart-after", str(os.getpid())],
                          cwd=str(Path(sys.executable).parent),
@@ -94,12 +95,16 @@ def relaunch_packaged(parent_pid: str) -> int:
         return 1
     if pid <= 0 or not wait_for_exit(pid):
         return 1
+    from proxy_config import opencode_launch_environment
+
     subprocess.Popen([sys.executable], cwd=str(Path(sys.executable).parent),
-                     env={**os.environ, "PYINSTALLER_RESET_ENVIRONMENT": "1"})
+                     env={**opencode_launch_environment(), "PYINSTALLER_RESET_ENVIRONMENT": "1"})
     return 0
 
 
 if __name__ == "__main__":
+    from proxy_config import opencode_launch_environment
+
     if len(sys.argv) < 2:
         sys.exit(1)
     try:
@@ -111,4 +116,5 @@ if __name__ == "__main__":
         wait_for_exit(parent_pid, timeout=5)
     _kill_stray_hub_processes({os.getpid(), parent_pid})
     script = Path(__file__).resolve().with_name("antigravity_manager.pyw")
-    subprocess.Popen([sys.executable, str(script)], cwd=str(script.parent), close_fds=True)
+    subprocess.Popen([sys.executable, str(script)], cwd=str(script.parent), close_fds=True,
+                     env=opencode_launch_environment())

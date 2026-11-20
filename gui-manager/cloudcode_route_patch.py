@@ -3,10 +3,8 @@ import json
 import re
 
 
-def patch_auth_plugin_transport(plugin_cache: Path | None = None) -> bool:
-    """Route Cloud Code through Hub while preserving the plugin's other VLESS routes."""
-    import re
-
+def patch_auth_plugin_transport(plugin_cache: Path | None = None, *, include_local=True) -> bool:
+    """Use the Hub for explicitly routed Google requests in the Cloud Code transport."""
     roots = [Path(plugin_cache)] if plugin_cache else [
         Path.home() / ".cache" / "opencode" / "npm",
         Path.home() / ".cache" / "opencode" / "packages",
@@ -17,7 +15,7 @@ def patch_auth_plugin_transport(plugin_cache: Path | None = None) -> bool:
             continue
         candidates.extend(root.glob("**/@cortexkit/opencode-antigravity-auth/dist/server.js"))
         candidates.extend(root.glob("**/@cortexkit/opencode-antigravity-auth/dist/index.js"))
-    if plugin_cache is None:
+    if plugin_cache is None and include_local:
         local_plugin = Path(__file__).resolve().parent.parent / "plugin" / "dist"
         for name in ("server.js", "index.js"):
             cand = local_plugin / name
@@ -27,46 +25,58 @@ def patch_auth_plugin_transport(plugin_cache: Path | None = None) -> bool:
     if not candidates:
         return False
     patched = False
-    new_gate = (
-        "const gateHost = url.hostname === 'daily-cloudcode-pa.googleapis.com' || "
-        "url.hostname === 'cloudcode-pa.googleapis.com' || "
-        "url.hostname === 'cloudaicompanion.googleapis.com' || "
-        "url.hostname === 'generativelanguage.googleapis.com' || "
-        "url.hostname === 'oauth2.googleapis.com' || "
-        "url.hostname === 'aiplatform.googleapis.com' || "
-        "url.hostname.endsWith('.googleapis.com') || "
-        "url.hostname.endsWith('.google.com') || "
-        "url.hostname.endsWith('.google');"
+    selector = re.compile(r"^function getHttpsProxy\(url\) \{\n(.*?)^\}", re.M | re.S)
+    old_guard = '  if (url.protocol !== "https:" || noProxyIncludes(url.hostname))\n    return void 0;\n'
+    config_read = re.compile(r'^( *const parsed = JSON\.parse\()(readFileSync\d*\(configPath, "utf-8"\))\);$', re.M)
+    legacy_vless = re.compile(
+        r"^([ ]*)const hubRoutePort = 10880;\n"
+        r"\1const gateHost = [^\n]+;\n"
+        r"(\1const vlessPort = [^\n]+;\n)"
+        r"\1return new URL\(`http://127\.0\.0\.1:\$\{gateHost \? hubRoutePort : vlessPort\}`\);",
+        re.M,
     )
-    old_gate_exact = "const gateHost = url.hostname === 'daily-cloudcode-pa.googleapis.com' || url.hostname === 'cloudcode-pa.googleapis.com';"
+    explicit_route = (
+        '      const hubGoogleRoute = parsed.provider_routes?.google;\n'
+        '      if (["default", "auto", "direct", "vless", "proxy", "dns"].includes(hubGoogleRoute) &&\n'
+        '          [".googleapis.com", ".google.com", ".google"].some(suffix => url.hostname.endsWith(suffix))) {\n'
+        '        return new URL("http://127.0.0.1:10880");\n'
+        '      }\n'
+    )
 
     for path in candidates:
         try:
             source = path.read_text(encoding="utf-8")
-            changed = False
-
-            # 1. Route Cloud Code & all Gemini hosts to 10880
-            marker = "const hubRoutePort = 10880;"
-            if marker not in source:
-                pattern = re.compile(
-                    r"const vlessPort = Number\(parsed\.vless_http_port\) > 0 \? Number\(parsed\.vless_http_port\) : 10879;\s*"
-                    r"return new URL\(`http://127\.0\.0\.1:\$\{vlessPort\}`\);"
+            match = selector.search(source)
+            if not match:
+                continue
+            updated = source
+            body = match[1]
+            if explicit_route not in body:
+                if not body.startswith(old_guard) or "\n  } catch {}\n  const rawProxy =" not in body:
+                    continue
+                # Keep both standalone fallbacks and their NO_PROXY behavior, but
+                # check the explicit Hub route first. Hub owns even "direct" here.
+                body, count = config_read.subn(
+                    lambda m: m[1] + m[2] + r'.replace(/^\uFEFF/, ""));' + "\n"
+                    + explicit_route.rstrip("\n")
+                    + "\n      if (noProxyIncludes(url.hostname))\n        return void 0;",
+                    body,
                 )
-                replacement = (
-                    "const hubRoutePort = 10880;\n"
-                    f"        {new_gate}\n"
-                    "        const vlessPort = Number(parsed.vless_http_port) > 0 ? Number(parsed.vless_http_port) : 10879;\n"
-                    "        return new URL(`http://127.0.0.1:${gateHost ? hubRoutePort : vlessPort}`);"
+                if count != 1:
+                    continue
+                body = legacy_vless.sub(r"\2\1return new URL(`http://127.0.0.1:${vlessPort}`);", body)
+                if "hubRoutePort" in body:
+                    continue
+                body = '  if (url.protocol !== "https:")\n    return void 0;\n' + body[len(old_guard):]
+                body = body.replace(
+                    "\n  } catch {}\n  const rawProxy =",
+                    "\n  } catch {}\n  if (noProxyIncludes(url.hostname))\n    return void 0;\n  const rawProxy =",
+                    1,
                 )
-                source, count = pattern.subn(replacement, source, count=1)
-                if count:
-                    changed = True
-            elif old_gate_exact in source:
-                source = source.replace(old_gate_exact, new_gate, 1)
-                changed = True
+                updated = source[:match.start(1)] + body + source[match.end(1):]
 
-            # 2. Do not hang in retry loop on fatal 404 (model not found)
-            if "response.status === 404" in source and "/* no retry on 404 */" not in source:
+            # Keep the existing fatal-404 retry fix for supported bundles.
+            if "response.status === 404" in updated and "/* no retry on 404 */" not in updated:
                 for old_retry, new_retry in (
                     (
                         "const shouldRetryEndpoint = geoBlockedLocation || response.status === 403 || response.status === 404 || response.status >= 500;",
@@ -77,21 +87,19 @@ def patch_auth_plugin_transport(plugin_cache: Path | None = None) -> bool:
                         "const shouldRetryEndpoint = response.status === 403 || response.status >= 500; /* no retry on 404 */",
                     ),
                 ):
-                    if old_retry in source:
-                        source = source.replace(old_retry, new_retry, 1)
-                        changed = True
+                    if old_retry in updated:
+                        updated = updated.replace(old_retry, new_retry, 1)
                         break
 
-            if changed:
+            if updated != source:
                 backup = path.with_suffix(path.suffix + ".hub-route.bak")
                 if not backup.exists():
-                    backup.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
-                path.write_text(source, encoding="utf-8")
-                patched = True
+                    backup.write_text(source, encoding="utf-8")
+                path.write_text(updated, encoding="utf-8")
+            patched = True
         except OSError:
             continue
-    return patched or any("const hubRoutePort = 10880;" in p.read_text(encoding="utf-8")
-                          for p in candidates if p.exists())
+    return patched
 
 
 def restore_auth_plugin_transport(plugin_cache: Path | None = None) -> None:

@@ -1,6 +1,8 @@
 from pathlib import Path
+import importlib.util
 import subprocess
 import sys
+from types import ModuleType
 import unittest
 from unittest.mock import patch
 
@@ -9,6 +11,15 @@ import hub_restart
 
 
 class HubRestartTests(unittest.TestCase):
+    @patch("hub_restart.subprocess.Popen")
+    def test_old_hub_can_import_new_restart_helper(self, popen):
+        spec = importlib.util.spec_from_file_location("updated_restart", hub_restart.__file__)
+        helper = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {"proxy_config": ModuleType("proxy_config")}):
+            spec.loader.exec_module(helper)
+            helper.schedule_restart()
+        self.assertEqual(Path(popen.call_args.args[0][1]), Path(hub_restart.__file__))
+
     @patch("hub_restart.subprocess.Popen")
     def test_restart_uses_current_python_and_parent_pid(self, popen):
         hub_restart.schedule_restart()
@@ -39,3 +50,13 @@ class HubRestartTests(unittest.TestCase):
             self.assertEqual(hub_restart.relaunch_packaged("123"), 1)
         wait.assert_called_once_with(123)
         popen.assert_not_called()
+
+    @patch("hub_restart.subprocess.Popen")
+    def test_fresh_packaged_helper_drops_only_hub_proxy(self, popen):
+        with patch.object(hub_restart, "wait_for_exit", return_value=True), \
+             patch.dict("os.environ", {"HTTPS_PROXY": "http://127.0.0.1:10880",
+                                       "NO_PROXY": "example.test"}, clear=True):
+            self.assertEqual(hub_restart.relaunch_packaged("123"), 0)
+        self.assertEqual(popen.call_args.kwargs["env"], {
+            "NO_PROXY": "example.test", "PYINSTALLER_RESET_ENVIRONMENT": "1",
+        })

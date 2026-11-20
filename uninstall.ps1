@@ -117,6 +117,13 @@ if ($env:OPENCODE_CONFIG_DIR) {
         }
         Remove-HubPlugin (Join-Path $configDir 'opencode.json')
     }
+    Try-Cleanup 'OpenCode provider routing plugin' {
+        $path = Join-Path $configDir 'plugins\antigravity-hub-routes.js'
+        if ((Get-SafeFile $path) -and
+            (Get-Content -LiteralPath $path -TotalCount 1) -ceq '// Managed by AI HUB: provider-scoped routes') {
+            Remove-SafeFile $path
+        }
+    }
     Try-Cleanup 'Hub configuration mirror' {
         $mirror = Join-Path $configDir 'antigravity.json'
         if ((Get-SafeFile $mirror) -and $defaultHub -and (Get-SafeFile $centralConfig) -and

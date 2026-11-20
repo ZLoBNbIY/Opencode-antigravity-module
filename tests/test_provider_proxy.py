@@ -1,3 +1,4 @@
+import os
 import sys
 import unittest
 from io import BytesIO
@@ -153,6 +154,19 @@ class ProviderRouteProxyTests(unittest.TestCase):
         self.assertGreaterEqual(provider_proxy._ThreadingServer.request_queue_size, 64)
         self.assertEqual(provider_proxy._Handler.rbufsize, 0)
 
+    def test_dispatcher_start_does_not_install_global_proxy(self):
+        import provider_proxy as proxy
+        with patch("gemini_routes.refresh_async"), \
+             patch.object(proxy, "_server", None), patch.object(proxy, "_thread", None), \
+             patch.object(proxy, "_ThreadingServer"), patch("provider_proxy.threading.Thread"), \
+             patch.dict(os.environ, {"NO_PROXY": "example.test"}, clear=True):
+            self.assertTrue(proxy.start())
+            self.assertTrue(proxy.start())
+            self.assertEqual(dict(os.environ), {"NO_PROXY": "example.test"})
+            routed = proxy.proxy_environment()
+            self.assertEqual(routed["HTTPS_PROXY"], "http://127.0.0.1:10880")
+            self.assertNotIn("HTTPS_PROXY", os.environ)
+
     @patch("provider_proxy._read_json", return_value={"provider": {"tokenlavka": {
         "options": {"hubBaseURL": "https://tokenlavka.example/v1"}}}})
     def test_reverse_target_reads_saved_provider_endpoint(self, read):
@@ -259,6 +273,37 @@ class ProviderRouteProxyTests(unittest.TestCase):
         self.assertIn(b"Content-Length: 2\r\n", header)
         self.assertEqual(body, b"{}")
         relay.assert_called_once_with(handler.connection, wire, response_only=True)
+
+    def test_native_chatgpt_route_keeps_path_and_uses_openai_route(self):
+        import provider_proxy as proxy
+        from proxy_config import NATIVE_ROUTES, native_route_revision
+        endpoint = NATIVE_ROUTES["openai-chatgpt"][1]
+        handler = proxy._Handler.__new__(proxy._Handler)
+        handler.headers = HTTPMessage()
+        handler._forward_http = MagicMock()
+        handler.send_error = MagicMock()
+        handler.path = (f"/r/openai-chatgpt/{native_route_revision(endpoint)}"
+                        "/backend-api/codex/responses?fixture=1")
+        with patch("provider_proxy._read_json", return_value={}):
+            handler._reverse_proxy()
+        _, host, port, path, config = handler._forward_http.call_args.args
+        self.assertEqual((host, port, path, config),
+                         ("chatgpt.com", 443, "/backend-api/codex/responses?fixture=1", {}))
+        self.assertEqual(handler._forward_http.call_args.kwargs, {"provider_id": "openai"})
+        handler.send_error.assert_not_called()
+
+    def test_outdated_native_endpoint_does_not_forward_authorization(self):
+        import provider_proxy as proxy
+        handler = proxy._Handler.__new__(proxy._Handler)
+        handler.headers = HTTPMessage()
+        handler.headers["Authorization"] = "Bearer fixture"
+        handler._forward_http = MagicMock()
+        handler.send_error = MagicMock()
+        handler.path = "/r/xpiki-api/outdated/v1/chat/completions"
+        with patch("provider_proxy._read_json", return_value={}):
+            handler._reverse_proxy()
+        handler.send_error.assert_called_once_with(409, "Provider routing configuration changed")
+        handler._forward_http.assert_not_called()
 
     def test_ipv6_host_parsing_and_half_close_relay(self):
         import socket

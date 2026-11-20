@@ -1,6 +1,12 @@
 """Shared proxy routing rules for OpenCode configuration."""
 
+import hashlib
+import json
+import os
+from pathlib import Path
 from urllib.parse import urlparse
+
+import jsonc_config
 
 DNS_PROXY = "http://127.0.0.1:51180"
 VLESS_PROXY = "http://127.0.0.1:20809"
@@ -10,6 +16,127 @@ ROUTE_PROXY = "http://127.0.0.1:10880"
 # baseURL instead of options.proxy.
 REVERSE_BASE_URLS = {"tokenlavka": "http://127.0.0.1:10880/r/tokenlavka/v1"}
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+PROXY_ENV_KEYS = {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY"}
+MANAGED_PROVIDER_IDS = frozenset({
+    "google", "openai", "claude-pro", "xpiki", "deepseek-account",
+    "openrouter-free", "tokenlavka", "nvidia-nim",
+})
+# Native OpenCode requests use a provider-scoped HTTP hook. Keep destinations
+# fixed here; the dispatcher must never accept a destination from the client.
+NATIVE_ROUTES = {
+    "openai-chatgpt": ("openai", "https://chatgpt.com/backend-api/codex"),
+    "openai-api": ("openai", "https://api.openai.com/v1"),
+    "xpiki-api": ("xpiki", "https://api.xpiki.com/v1"),
+    "openrouter-free-api": ("openrouter-free", "https://openrouter.ai/api/v1"),
+    "deepseek-api": ("deepseek-account", "https://api.deepseek.com"),
+    "nvidia-nim-api": ("nvidia-nim", "https://integrate.api.nvidia.com/v1"),
+}
+NATIVE_PROVIDER_IDS = frozenset(provider for provider, _ in NATIVE_ROUTES.values())
+NATIVE_PLUGIN_NAME = "antigravity-hub-routes.js"
+NATIVE_PLUGIN_MARKER = b"// Managed by AI HUB: provider-scoped routes\n"
+
+
+def native_routes(config, deepseek_provider_id=None):
+    """Resolve provider-level custom API URLs without transferring auth data."""
+    routes = {}
+    for key, (provider, default) in NATIVE_ROUTES.items():
+        alias = (deepseek_provider_id if provider == "deepseek-account" and
+                 deepseek_provider_id not in {"opencode", "opencode-go"} else None)
+        endpoint = default
+        if provider in {"deepseek-account", "xpiki", "openrouter-free", "nvidia-nim"}:
+            for section in ("provider", "providers"):
+                entries = config.get(section)
+                entry = entries.get(alias or provider) if isinstance(entries, dict) else None
+                if not isinstance(entry, dict):
+                    continue
+                for holder in ("options", "settings"):
+                    settings = entry.get(holder)
+                    if not isinstance(settings, dict):
+                        continue
+                    base = settings.get("baseURL") or settings.get("baseUrl")
+                    if isinstance(base, str):
+                        try:
+                            parsed = urlparse(base)
+                            if (parsed.scheme == "https" and parsed.hostname and parsed.username is None
+                                    and not parsed.query and not parsed.fragment):
+                                endpoint = base.rstrip("/")
+                        except ValueError:
+                            pass
+        routes[key] = (provider, endpoint, alias)
+    return routes
+
+
+def native_route_revision(endpoint):
+    return hashlib.sha256(endpoint.encode("utf-8")).hexdigest()[:24]
+
+
+def native_route_plugin(config_path: Path, config=None, deepseek_provider_id=None, *, owner_path=None) -> bytes:
+    routes = [[key, *route, native_route_revision(route[1])]
+              for key, route in native_routes(config or {}, deepseek_provider_id).items()]
+    return NATIVE_PLUGIN_MARKER + f"""import {{ access, readFile }} from "node:fs/promises";
+
+const configPath = {json.dumps(str(config_path))};
+const ownerPath = {json.dumps(str(owner_path) if owner_path is not None else None)};
+const routes = {json.dumps(routes)};
+async function hubConfig() {{
+  try {{
+    if (ownerPath) await access(ownerPath);
+    return JSON.parse((await readFile(configPath, "utf8")).replace(/^\\uFEFF/, ""));
+  }} catch (error) {{
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }}
+}}
+
+export default {{
+  id: "antigravity-hub.provider-routes",
+  async setup(ctx) {{
+    const registrations = [];
+    const config = await hubConfig();
+    if (config && config.provider_routes?.openai !== "direct") {{
+      registrations.push(await ctx.provider.transform((editor) => {{
+        if (editor.get("openai")) editor.update("openai", (draft) => {{
+          draft.settings = {{ ...draft.settings, transport: "http" }};
+        }});
+      }}));
+    }}
+    for (const provider of new Set(routes.flatMap(([, id, , alias]) => alias ? [id, alias] : [id]))) {{
+      registrations.push(await ctx.session.hook("http.request", async (event) => {{
+        const url = new URL(event.request.url);
+        const match = routes.find(([, id, endpoint, alias]) => {{
+          if (id !== provider && alias !== provider) return false;
+          const base = new URL(endpoint);
+          return url.origin === base.origin &&
+            (base.pathname === "/" || url.pathname === base.pathname ||
+             url.pathname.startsWith(base.pathname + "/"));
+        }});
+        if (!match) return;
+        const config = await hubConfig();
+        if (!config || config.provider_routes?.[match[1]] === "direct") return;
+        event.request = new Request(
+          "{ROUTE_PROXY}/r/" + match[0] + "/" + match[4] + url.pathname + url.search, event.request);
+      }}, {{ providerID: provider }}));
+    }}
+    return async () => {{
+      for (const registration of registrations) await registration.dispose();
+    }};
+  }},
+}};
+""".encode("utf-8")
+
+
+def _legacy_hub_proxy(value):
+    return isinstance(value, str) and value.strip().lower().rstrip("/") in {
+        ROUTE_PROXY, DNS_PROXY,
+    }
+
+
+def opencode_launch_environment(base=None):
+    """Do not pass a stale Hub dispatcher to the whole OpenCode process."""
+    return {
+        key: value for key, value in (os.environ if base is None else base).items()
+        if not (key.upper() in PROXY_ENV_KEYS and _legacy_hub_proxy(value))
+    }
 
 
 def select_effective_proxy(config: dict, http_port: int) -> str | None:
@@ -83,12 +210,9 @@ def sync_provider_proxies(config: dict, proxy: str | None) -> dict:
     return config
 
 
-PROVIDER_ROUTE_MODES = ("default", "auto", "direct", "vless", "proxy", "dns")
-
-
 def sync_provider_routes(config: dict, hub_config: dict, http_port: int,
-                         routes: dict | None = None) -> dict:
-    """Configure external providers to use the loopback route dispatcher."""
+                         routes: dict | None = None, *, deepseek_provider_id=None) -> dict:
+    """Configure Hub providers and remove stale Hub proxies from other entries."""
     routes = routes or {}
 
     for section_name in ("provider", "providers"):
@@ -100,25 +224,27 @@ def sync_provider_routes(config: dict, hub_config: dict, http_port: int,
                 continue
             options = provider.get("options")
             settings = provider.get("settings")
+            deepseek_alias = (provider_name == deepseek_provider_id and
+                              provider_name not in {"opencode", "opencode-go"})
+            managed = provider_name in MANAGED_PROVIDER_IDS or deepseek_alias
+            route_key = "deepseek-account" if deepseek_alias else provider_name
+            mode = routes.get(route_key, "default")
+            if (not managed or route_key in NATIVE_PROVIDER_IDS
+                    or (mode == "direct" and provider_name not in REVERSE_BASE_URLS)):
+                for holder in (options, settings):
+                    if isinstance(holder, dict) and _legacy_hub_proxy(holder.get("proxy")):
+                        holder.pop("proxy", None)
+                continue
             target = options if isinstance(options, dict) else settings if isinstance(settings, dict) else None
             if target is None:
                 target = provider.setdefault("options", {})
             # A hub-managed reverse endpoint is local on purpose; it still
             # needs the route logic below (hubBaseURL holds the real target).
             if _is_local_endpoint(target) and not target.get("hubBaseURL"):
-                target.pop("proxy", None)
+                if _legacy_hub_proxy(target.get("proxy")):
+                    target.pop("proxy", None)
                 continue
 
-            mode = routes.get(provider_name)
-            if mode not in PROVIDER_ROUTE_MODES:
-                # Unmapped/unknown providers are Auto in the dispatcher
-                # (select_upstream defaults to "default"), so they still need it.
-                mode = "default"
-            # OpenCode has no per-provider proxy setting: every routed provider
-            # receives the same loopback dispatcher, which picks the actual
-            # upstream from provider_routes per request host. Only an explicit
-            # "direct" must NOT receive it, otherwise its traffic still leaves
-            # through the dispatcher (and fails when the Hub is restarting).
             if provider_name in REVERSE_BASE_URLS:
                 original = target.get("hubBaseURL") or target.get("baseURL")
                 if original and original != REVERSE_BASE_URLS[provider_name]:
@@ -128,8 +254,37 @@ def sync_provider_routes(config: dict, hub_config: dict, http_port: int,
                 # to the real https URL brings back ECONNRESET.
                 target["baseURL"] = REVERSE_BASE_URLS[provider_name]
                 target.pop("proxy", None)
-            elif mode == "direct":
-                target.pop("proxy", None)
             else:
                 target["proxy"] = ROUTE_PROXY
     return config
+
+
+def sync_provider_routes_text(text, hub_config, http_port, *, deepseek_provider_id=None):
+    """Migrate/set only Hub routing fields; preserve unrelated JSONC comments."""
+    before = jsonc_config.parse_config(text)
+    after = sync_provider_routes(jsonc_config.parse_config(text), hub_config, http_port,
+                                 hub_config.get("provider_routes"),
+                                 deepseek_provider_id=deepseek_provider_id)
+    for section_name in ("provider", "providers"):
+        section = after.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        for provider_name, provider in section.items():
+            if not isinstance(provider, dict):
+                continue
+            old_provider = before[section_name][provider_name]
+            for holder in ("options", "settings"):
+                current = provider.get(holder)
+                if not isinstance(current, dict):
+                    continue
+                old = old_provider.get(holder)
+                path = (section_name, provider_name, holder)
+                if not isinstance(old, dict):
+                    text = jsonc_config.set_property(text, path, current)
+                    continue
+                for key in ("proxy", "baseURL", "hubBaseURL"):
+                    if key not in current and key in old:
+                        text = jsonc_config.remove_property(text, (*path, key))
+                    elif key in current and (key not in old or current[key] != old[key]):
+                        text = jsonc_config.set_property(text, (*path, key), current[key])
+    return text

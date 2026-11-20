@@ -19,6 +19,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse, urlsplit
 
 import jsonc_config
+from proxy_config import NATIVE_ROUTES, native_route_revision, native_routes
 
 HOST = "127.0.0.1"
 PORT = 10880
@@ -281,11 +282,11 @@ def provider_for_host(host: str, opencode_config: dict | None = None) -> str | N
 
 
 def select_upstream(host: str, hub_config: dict | None = None,
-                    opencode_config: dict | None = None) -> str | None:
+                    opencode_config: dict | None = None, *, provider_id=None) -> str | None:
     """Return an HTTP proxy URL, or None for a direct connection."""
     hub = hub_config if isinstance(hub_config, dict) else _read_json(CONFIG_DIR / "antigravity.json")
     oc = opencode_config if isinstance(opencode_config, dict) else _read_json(CONFIG_DIR / "opencode.json")
-    provider = provider_for_host(host, oc)
+    provider = provider_id or provider_for_host(host, oc)
     routes = hub.get("provider_routes", {})
     mode = routes.get(provider, "default") if isinstance(routes, dict) else "default"
     http_port = hub.get("vless_http_port", 10879)
@@ -317,17 +318,17 @@ def _legacy_upstream(hub):
     return None
 
 
-def connect_routed(host, port, hub_config=None, opencode_config=None):
+def connect_routed(host, port, hub_config=None, opencode_config=None, *, provider_id=None):
     hub = hub_config if isinstance(hub_config, dict) else _read_json(CONFIG_DIR / "antigravity.json")
     oc = opencode_config if isinstance(opencode_config, dict) else _read_json(CONFIG_DIR / "opencode.json")
-    provider = provider_for_host(host, oc)
+    provider = provider_id or provider_for_host(host, oc)
     routes = hub.get("provider_routes")
     mode = routes.get(provider, "default") if isinstance(routes, dict) else "default"
     if provider and mode in ("default", "auto"):
         from auto_router import router
         return router.connect(provider, host, port, hub, oc)
 
-    upstream = select_upstream(host, hub, oc)
+    upstream = select_upstream(host, hub, oc, provider_id=provider_id)
 
     # If routing through external proxy and failover/rotation is enabled, try pool candidates
     candidates = _get_candidate_proxies(hub)
@@ -406,11 +407,11 @@ def _resolve_public(host, port, allow_fake_ip=False):
     raise OSError("Destination did not resolve exclusively to public addresses")
 
 
-def connect_public_routed(host, port, opencode_config=None):
+def connect_public_routed(host, port, opencode_config=None, *, provider_id=None):
     """Route an already authorized public destination without relaxing the listener."""
     context = _public_connect_deadline.set(time.monotonic() + 45)
     try:
-        return connect_routed(host, port, opencode_config=opencode_config)
+        return connect_routed(host, port, opencode_config=opencode_config, provider_id=provider_id)
     finally:
         _public_connect_deadline.reset(context)
 
@@ -650,6 +651,10 @@ class _Handler(_BoundedHandler):
 
     def _reverse_target(self, provider, config=None):
         oc = _read_json(CONFIG_DIR / "opencode.json") if config is None else config
+        if provider in NATIVE_ROUTES:
+            import hub_paths
+            deepseek = _read_json(hub_paths.ACCOUNTS_DIR / "deepseek-api.json")
+            return native_routes(oc, deepseek.get("provider_id"))[provider][1]
         for name, opts in _provider_options(oc):
             if name == provider and "hubBaseURL" in opts:
                 return opts["hubBaseURL"]
@@ -670,6 +675,12 @@ class _Handler(_BoundedHandler):
         if not base:
             self.send_error(404, "Unknown reverse provider")
             return
+        native = NATIVE_ROUTES.get(provider)
+        if native:
+            revision, _, tail = tail.partition("/")
+            if revision != native_route_revision(base):
+                self.send_error(409, "Provider routing configuration changed")
+                return
         try:
             target, host, port = _origin(base)
             if target.query or parsed.fragment or not _safe_path(target.path) or not _safe_path(tail):
@@ -686,7 +697,7 @@ class _Handler(_BoundedHandler):
         path = f"{base_path}/{tail}" if tail else (base_path or "/")
         if parsed.query:
             path += "?" + parsed.query
-        self._forward_http(target, host, port, path, config)
+        self._forward_http(target, host, port, path, config, provider_id=native[0] if native else None)
 
     def do_CONNECT(self):
         config = _read_json(CONFIG_DIR / "opencode.json")
@@ -723,7 +734,7 @@ class _Handler(_BoundedHandler):
         path = (parsed.path or "/") + (("?" + parsed.query) if parsed.query else "")
         self._forward_http(parsed, host, port, path, config)
 
-    def _forward_http(self, url, host, port, path, config):
+    def _forward_http(self, url, host, port, path, config, *, provider_id=None):
         if re.search(r"[\x00-\x20\x7f\\]", path) or not _safe_path(path.split("?", 1)[0]):
             self.send_error(400, "Invalid HTTP path")
             return
@@ -751,7 +762,8 @@ class _Handler(_BoundedHandler):
         request += f"Host: {authority}\r\nConnection: close\r\n\r\n"
         upstream = None
         try:
-            upstream, _ = connect_public_routed(host, port, config)
+            route = {"provider_id": provider_id} if provider_id else {}
+            upstream, _ = connect_public_routed(host, port, config, **route)
             upstream.settimeout(HEADER_TIMEOUT)
             if url.scheme == "https":
                 upstream = ssl.create_default_context().wrap_socket(upstream, server_hostname=host)
@@ -818,14 +830,12 @@ def _start() -> bool:
     import gemini_routes
     gemini_routes.refresh_async()
     if _server is not None:
-        _install_process_proxy_environment()
         return True
     try:
         _server = _ThreadingServer((HOST, PORT), _Handler)
         _thread = threading.Thread(target=_server.serve_forever, daemon=True, name="provider-route-proxy")
         _thread.start()
         threading.Thread(target=_maintain_auto_routes, daemon=True, name="provider-auto-routes").start()
-        _install_process_proxy_environment()
         return True
     except OSError:
         # Do not fall back to a running dispatcher with the old unrestricted policy.
@@ -835,7 +845,6 @@ def _start() -> bool:
             with probe.getresponse() as response:
                 compatible = response.status == 200 and response.getheader("X-Antigravity-Proxy-Policy") == "2"
             if compatible:
-                _install_process_proxy_environment()
                 return True
         except (OSError, http.client.HTTPException):
             pass
@@ -863,16 +872,6 @@ def _maintain_auto_routes():
         except Exception:
             pass
         time.sleep(5)
-
-
-def _install_process_proxy_environment() -> None:
-    # Existing clients (including the OpenCode child process) inherit these
-    # settings; compatibility relies on the restricted dispatcher above.
-    proxy = f"http://{HOST}:{PORT}"
-    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
-        os.environ[name] = proxy
-    for name in ("NO_PROXY", "no_proxy"):
-        os.environ[name] = "localhost,127.0.0.1,::1"
 
 
 def proxy_url_for_hub_requests() -> str:
