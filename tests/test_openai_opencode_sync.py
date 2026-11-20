@@ -1,6 +1,7 @@
+import io
 import json
 import sqlite3
-from contextlib import closing
+from contextlib import closing, redirect_stdout
 import subprocess
 import sys
 import time
@@ -225,6 +226,37 @@ class OpenCodeCredentialSyncTests(unittest.TestCase):
         self.assertEqual(active["access"], "access-b")
         self.assertEqual(active["accountId"], "acc-b")
         self.assertEqual(active["credentialId"], credential_id)
+
+    def test_valid_empty_database_does_not_resurrect_legacy_token(self):
+        self.auth.write_text(json.dumps({
+            "openai": {"access": "stale-access", "refresh": "stale", "accountId": "stale"}
+        }), encoding="utf-8")
+
+        self.assertIsNone(manager.get_active_auth_openai())
+
+    def test_unsupported_database_schema_fails_closed(self):
+        self.db.unlink()
+        with closing(sqlite3.connect(self.db)) as conn, conn:
+            conn.execute("CREATE TABLE unrelated (value TEXT)")
+        self.auth.write_text(json.dumps({
+            "openai": {"access": "stale-access", "refresh": "stale", "accountId": "stale"}
+        }), encoding="utf-8")
+
+        self.assertIsNone(manager.get_active_auth_openai())
+
+    def test_refresh_failure_does_not_log_tokens_or_email(self):
+        target = account("acc-b", "private@example.com", "secret-access")
+        target["refresh"] = "secret-refresh"
+        opener = Mock()
+        opener.open.side_effect = RuntimeError("secret-access secret-refresh")
+
+        output = io.StringIO()
+        with patch.object(manager, "_get_http_opener", return_value=opener), redirect_stdout(output):
+            manager.refresh_openai_token(target)
+
+        self.assertNotIn("secret-access", output.getvalue())
+        self.assertNotIn("secret-refresh", output.getvalue())
+        self.assertNotIn("private@example.com", output.getvalue())
 
     def test_set_active_commits_hub_state_only_after_opencode_acknowledgement(self):
         first = account("acc-a", "a@example.com", "access-a")

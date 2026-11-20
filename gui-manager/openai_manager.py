@@ -92,8 +92,10 @@ def get_openai_cred_id(account: dict | None = None) -> str:
         return f"{OPENCODE_CREDENTIAL_PREFIX}{digest}"
 
     rows = _read_opencode_credential_rows() or []
-    active = next((row for row in rows if row.get("active")), None)
-    selected = active or (rows[-1] if rows else None)
+    # Rows are ordered exactly like OpenCode's currentActive() selection:
+    # active DESC, time_created DESC, id DESC.  The first row is the effective
+    # credential even if active is null/false in a legacy migrated database.
+    selected = rows[0] if rows else None
     if selected and selected.get("id"):
         return str(selected["id"])
     return LEGACY_HUB_CREDENTIAL_ID
@@ -118,13 +120,15 @@ def _read_opencode_credential_rows(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='credential'"
             ).fetchone()
             if not table:
-                return []
+                # The DB file exists but has no v2 credential schema.  This is
+                # unsupported state, not an empty credential store.
+                return None
             columns = {row[1] for row in conn.execute("PRAGMA table_info(credential)")}
             # Older OpenCode databases have no credential ID column.  They can
             # still seed the Hub pool, but cannot participate in an ID-based
             # hot switch until OpenCode migrates the database.
             if not {"integration_id", "value"}.issubset(columns):
-                return []
+                return None
             selected = [
                 column for column in
                 ("id", "integration_id", "value", "label", "active", "time_created", "time_updated")
@@ -150,7 +154,9 @@ def _read_opencode_credential_rows(
         try:
             item["value"] = json.loads(item.get("value") or "{}")
         except (TypeError, ValueError):
-            item["value"] = {}
+            # A malformed canonical credential row must not cause a fallback to
+            # a stale legacy auth.json token.
+            return None
         result.append(item)
     return result
 
@@ -223,6 +229,9 @@ def sync_opencode_db_openai(account: dict | None) -> bool:
         return False
     if account is None:
         return not any(_is_hub_managed_credential_id(row.get("id")) for row in rows)
+    if sum(1 for row in rows if row.get("active")) != 1:
+        # OpenCode maintains exactly one active credential per integration.
+        return False
     credential_id = get_openai_cred_id(account)
     row = next((item for item in rows if item.get("id") == credential_id), None)
     wanted = _openai_credential_value(account)
@@ -457,24 +466,32 @@ def get_active_auth_openai() -> dict | None:
     # OpenCode v2 migrates auth.json once and then treats opencode.db as the
     # canonical credential store.  Reading the legacy file first can resurrect
     # a stale token and pair it with the wrong chatgpt-account-id.
+    db_exists = OPENCODE_DB_FILE.exists()
     rows = _read_opencode_credential_rows()
     if rows is None:
         # A canonical store that cannot be read must not be shadowed by a stale
         # legacy auth.json token.
         return None
-    active = next((row for row in rows if row.get("active")), None)
-    if active:
-        value = active.get("value") or {}
+    if db_exists:
+        if not rows:
+            # A valid, empty v2 DB is canonical.  It is not permission to
+            # resurrect a token from a one-time migration file.
+            return None
+        # OpenCode orders rows active DESC, time_created DESC, id DESC and
+        # selects the first one, even when active is null/false.
+        effective = rows[0]
+        value = effective.get("value") or {}
         if value.get("type") == "oauth" and value.get("access"):
             metadata = value.get("metadata") or {}
             return {
                 **value,
                 "accountId": metadata.get("accountID") or metadata.get("accountId"),
                 "email": metadata.get("email"),
-                "credentialId": active.get("id"),
+                "credentialId": effective.get("id"),
             }
+        return None
 
-    # Legacy fallback is used only when the canonical DB has no active entry.
+    # Legacy fallback is used only when no canonical OpenCode DB exists.
     for auth_path in AUTH_FILES:
         if auth_path.exists():
             try:
@@ -681,7 +698,7 @@ def import_openai_accounts(imported_list: list[dict]) -> int:
                 try:
                     refresh_openai_token(acc)
                 except Exception as err:
-                    print(f"[OpenAI Manager] Refresh on import warning for {acc.get('email')}: {err}")
+                    print(f"[OpenAI Manager] Refresh on import failed ({type(err).__name__})")
                 finally:
                     acc["is_active"] = was_active
 
@@ -888,7 +905,7 @@ def refresh_openai_token(account: dict) -> tuple[bool, dict]:
             return True, account
     except Exception as e:
         # Some HTTP/JSON exceptions embed the response body, which can contain tokens.
-        print(f"[OpenAI Manager] Token refresh failed for {account.get('email')} ({type(e).__name__})")
+        print(f"[OpenAI Manager] Token refresh failed ({type(e).__name__})")
         return False, account
 
 
@@ -923,9 +940,9 @@ def fetch_openai_usage(account: dict, _retried: bool = False) -> dict:
             ok, updated_acc = refresh_openai_token(account)
             if ok:
                 return fetch_openai_usage(updated_acc, _retried=True)
-        print(f"[OpenAI Manager] HTTP error {he.code} fetching usage: {he}")
+        print(f"[OpenAI Manager] Usage HTTP error {he.code}")
     except Exception as e:
-        print(f"[OpenAI Manager] Error fetching usage for {account.get('email')}: {e}")
+        print(f"[OpenAI Manager] Usage fetch failed ({type(e).__name__})")
 
     # Return cached or default fallback
     cached = account.get("quota") or {}
@@ -1097,7 +1114,7 @@ def refresh_all_openai_accounts() -> tuple[list[dict], str | None]:
             acc["quota"] = fetch_openai_usage(acc)
             acc["last_used"] = int(time.time())
         except Exception as e:
-            print(f"[OpenAI Manager] Failed refreshing quota for {acc.get('email')}: {e}")
+            print(f"[OpenAI Manager] Quota refresh failed ({type(e).__name__})")
     if not save_openai_accounts(accounts):
         raise OSError("Не удалось сохранить лимиты ChatGPT")
 
@@ -1235,7 +1252,7 @@ def login_openai_browser(timeout: int = 300) -> tuple[bool, str, dict | None]:
     try:
         server = _OAuthServer(("localhost", OPENAI_CALLBACK_PORT), state)
     except Exception as e:
-        return False, f"Не удалось запустить локальный сервер на порту {OPENAI_CALLBACK_PORT}: {e}", None
+        return False, f"Не удалось запустить локальный сервер на порту {OPENAI_CALLBACK_PORT} ({type(e).__name__})", None
 
     server_thread = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.1), daemon=True)
     server_thread.start()
@@ -1261,7 +1278,7 @@ def login_openai_browser(timeout: int = 300) -> tuple[bool, str, dict | None]:
             return False, "Не удалось открыть браузер по умолчанию.", None
         finished = server.done_event.wait(timeout=timeout)
     except Exception as e:
-        return False, f"Не удалось открыть браузер: {e}", None
+        return False, f"Не удалось открыть браузер ({type(e).__name__})", None
     finally:
         server.shutdown()
         server_thread.join(timeout=2)
@@ -1296,7 +1313,7 @@ def login_openai_browser(timeout: int = 300) -> tuple[bool, str, dict | None]:
         with opener.open(token_req, timeout=15) as resp:
             tokens = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
-        return False, f"Ошибка обмена кода на токены: {e}", None
+        return False, f"Ошибка обмена кода на токены ({type(e).__name__})", None
 
     if not tokens.get("access_token"):
         return False, "Сервер авторизации не вернул access_token.", None
@@ -1328,7 +1345,7 @@ def login_openai_browser(timeout: int = 300) -> tuple[bool, str, dict | None]:
     try:
         new_account["quota"] = fetch_openai_usage(new_account)
     except Exception as e:
-        print(f"[OpenAI Manager] Usage fetch error after login: {e}")
+        print(f"[OpenAI Manager] Usage fetch error after login ({type(e).__name__})")
 
     # Add to accounts pool
     accounts = load_openai_accounts()

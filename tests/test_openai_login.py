@@ -68,7 +68,7 @@ class OpenAiLoginTests(unittest.TestCase):
     def test_token_exchange_failure_is_reported(self):
         result, save, activate = self.login(token_error=True)
         self.assertFalse(result[0])
-        self.assertIn('exchange unavailable', result[1])
+        self.assertIn('OSError', result[1])
         save.assert_not_called()
 
     def test_empty_hub_pool_imports_active_opencode_database_account(self):
@@ -109,7 +109,12 @@ class OpenAiLoginTests(unittest.TestCase):
                      patch.object(manager.subprocess, "run", side_effect=error) as run, redirect_stdout(output):
                     self.assertFalse(manager.sync_opencode_cli_openai({"access": "secret-token"}))
                 self.assertNotIn("secret-token", output.getvalue())
-                args, kwargs = run.call_args
+                import_calls = [
+                    (args, kwargs) for args, kwargs in run.call_args_list
+                    if args[0][1:3] == ["auth", "import"]
+                ]
+                self.assertEqual(len(import_calls), 1)
+                args, kwargs = import_calls[0]
                 self.assertEqual(args[0], ["cli", "auth", "import"])
                 self.assertTrue(kwargs["check"])
                 self.assertIn("secret-token", kwargs["input"])
