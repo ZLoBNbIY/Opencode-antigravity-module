@@ -46,8 +46,8 @@ Source: "..\..\config-templates\opencode.json"; DestDir: "{code:OpenCodeConfigDi
 Source: "..\..\config-templates\antigravity.json"; DestDir: "{code:OpenCodeConfigDir}"; Flags: onlyifdoesntexist uninsneveruninstall; Tasks: opencode
 
 [Icons]
-Name: "{group}\AI HUB"; Filename: "{app}\AntigravityHub.exe"; WorkingDir: "{app}"
-Name: "{autodesktop}\AI HUB"; Filename: "{app}\AntigravityHub.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{group}\AI HUB"; Filename: "{app}\AntigravityHub.exe"; WorkingDir: "{app}"; IconFilename: "{app}\icon.ico"
+Name: "{autodesktop}\AI HUB"; Filename: "{app}\AntigravityHub.exe"; WorkingDir: "{app}"; IconFilename: "{app}\icon.ico"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\AntigravityHub.exe"; WorkingDir: "{app}"; Description: "{cm:LaunchProgram,AI HUB}"; Flags: nowait postinstall skipifsilent

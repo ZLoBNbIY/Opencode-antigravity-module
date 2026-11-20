@@ -176,6 +176,31 @@ Try-Cleanup 'Hub autostart entry' {
     }
 }
 
+Try-Cleanup 'Hub desktop shortcuts' {
+    $desktopPath = [Environment]::GetFolderPath('Desktop')
+    if (-not $desktopPath) { return }
+    $shell = New-Object -ComObject WScript.Shell
+    # Both the current name and the pre-rebrand name can exist on a machine
+    # upgraded from an older install; remove only shortcuts pointing at the Hub.
+    foreach ($name in @('AI HUB.lnk', 'Antigravity Hub.lnk')) {
+        $path = Join-Path $desktopPath $name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+        $target = $shell.CreateShortcut($path).TargetPath
+        if (-not $target) { continue }
+        $targetDir = Split-Path -Parent $target
+        # The pre-rebrand root launcher has a localized name, so recognize it by
+        # its Hub checkout layout instead of by the .bat file name.
+        $isHubTarget = $target -match 'antigravity_manager\.pyw|start_manager\.bat|AntigravityHub\.exe' -or
+            ((Test-Path -LiteralPath (Join-Path $targetDir 'gui-manager\start_manager.bat') -PathType Leaf) -and
+             (Test-Path -LiteralPath (Join-Path $targetDir 'gui-manager\antigravity_manager.pyw') -PathType Leaf))
+        if ($isHubTarget) {
+            Remove-SafeFile $path
+        } else {
+            Write-Warning "Desktop shortcut '$name' was left untouched: unexpected target '$target'."
+        }
+    }
+}
+
 Write-Host 'Account-store pointers and all targets, shared provider settings and credentials, and unlisted files were preserved.'
 if ($script:failed) {
     Write-Warning 'Cleanup completed with errors or items requiring manual review.'

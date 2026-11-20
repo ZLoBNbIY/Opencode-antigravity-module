@@ -57,6 +57,19 @@ function Find-Python {
     }
 }
 
+function Invoke-ShellIconRefresh {
+    # Windows caches the icon image resolved when a .lnk is created. Replacing
+    # icon.ico at the same path is not enough - tell the Shell to re-resolve it.
+    if (-not ('Win32.ShellIconRefresh' -as [type])) {
+        Add-Type -Namespace Win32 -Name ShellIconRefresh -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("shell32.dll")]
+public static extern void SHChangeNotify(uint wEventId, uint uFlags, System.IntPtr dwItem1, System.IntPtr dwItem2);
+'@
+    }
+    # SHCNE_ASSOCCHANGED | SHCNF_IDLIST: invalidate cached icon images.
+    [Win32.ShellIconRefresh]::SHChangeNotify(0x08000000, 0x0000, [IntPtr]::Zero, [IntPtr]::Zero)
+}
+
 function Publish-NewConfig([string]$Source, [string]$Destination, [string[]]$ExistingNames) {
     $parent = Split-Path -Parent $Destination
     $existing = @(Get-ChildItem -LiteralPath $parent -Force |
@@ -100,10 +113,11 @@ try {
     $requirements = Join-Path $scriptDir 'gui-manager\requirements.txt'
     $uninstallScript = Join-Path $scriptDir 'uninstall.ps1'
     $launcherBat = Join-Path $scriptDir 'gui-manager\start_manager.bat'
+    $iconPath = Join-Path $scriptDir 'gui-manager\icon.ico'
     $required = @($openCodeTemplate, $antigravityTemplate, $uninstallScript)
     if (-not $SkipPython) { $required += $requirements }
     if (-not $SkipPatch) { $required += $patchScript }
-    if (-not $NoShortcut) { $required += $launcherBat }
+    if (-not $NoShortcut) { $required += @($launcherBat, $iconPath) }
     foreach ($file in $required) {
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Required file is missing: $file" }
     }
@@ -194,14 +208,25 @@ try {
         $desktopPath = [Environment]::GetFolderPath('Desktop')
         if (-not $desktopPath) { throw 'Could not locate the Desktop to create the shortcut.' }
         $shell = New-Object -ComObject WScript.Shell
+
+        # Delete before recreating: Explorer keeps the icon it cached when the
+        # .lnk was first created, so overwriting the file can keep the old icon.
+        # Also remove the pre-rebrand shortcut so no stale copy is left behind.
+        foreach ($oldShortcut in @('Antigravity Hub.lnk', 'AI HUB.lnk')) {
+            $oldShortcutPath = Join-Path $desktopPath $oldShortcut
+            if (Test-Path -LiteralPath $oldShortcutPath) {
+                Remove-Item -LiteralPath $oldShortcutPath -Force
+            }
+        }
+
         $shortcut = $shell.CreateShortcut((Join-Path $desktopPath 'AI HUB.lnk'))
         $shortcut.TargetPath = $launcherBat
         $shortcut.WorkingDirectory = $scriptDir
         $shortcut.Description = 'AI HUB'
-        $iconPath = Join-Path $scriptDir 'gui-manager\icon.ico'
-        if (Test-Path -LiteralPath $iconPath -PathType Leaf) { $shortcut.IconLocation = "$iconPath,0" }
+        $shortcut.IconLocation = "$iconPath,0"
         $shortcut.Save()
-        Write-Host 'Created the AI HUB desktop shortcut.'
+        Invoke-ShellIconRefresh
+        Write-Host 'Created/refreshed the AI HUB desktop shortcut with the current application icon.'
     }
 
     Write-Host 'Installer steps completed. Existing configs, if any, were not updated or validated.'
