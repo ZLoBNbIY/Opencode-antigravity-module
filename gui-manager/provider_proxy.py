@@ -121,11 +121,25 @@ def _provider_options(config):
                         yield name, entry[key]
 
 
+# Transparent-proxy resolvers (sing-box, xray, Clash, OpenWrt packages) answer
+# with these ranges instead of real addresses. They are intentionally not
+# public, but the local resolver routes them through the tunnel, and direct
+# connections to allowlisted hosts must follow the same path.
+FAKE_IP_NETWORKS = (ipaddress.ip_network("198.18.0.0/15"), ipaddress.ip_network("fc00::/7"))
+
+
 def _global_ip(ip):
     address = ipaddress.ip_address(ip)
     if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
         address = address.ipv4_mapped
     return address.is_global and not address.is_multicast and not address.is_reserved
+
+
+def _fake_ip(ip):
+    address = ipaddress.ip_address(ip)
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    return any(address in network for network in FAKE_IP_NETWORKS)
 
 
 def _public_host(host):
@@ -160,8 +174,10 @@ def _origin(value):
 
 
 def _builtin_host(host):
-    return host in APP_HOSTS or any(_matches(host, domain)
-                                    for domains in LOCAL_ROUTES.values() for domain in domains)
+    # APP_HOSTS entries are suffixes: models.opencode.ai belongs to opencode.ai.
+    return (any(_matches(host, domain) for domain in APP_HOSTS)
+            or any(_matches(host, domain)
+                   for domains in LOCAL_ROUTES.values() for domain in domains))
 
 
 def _configured_urls(config):
@@ -375,12 +391,19 @@ def _resolve_with_hub_dns(host: str, hub_config=None, timeout=8) -> str:
     return resolved
 
 
-def _resolve_public(host, port):
+def _resolve_public(host, port, allow_fake_ip=False):
     addresses = list(dict.fromkeys(info[4][0] for info in socket.getaddrinfo(
         host, port, type=socket.SOCK_STREAM)))
-    if not addresses or not all(_global_ip(address) for address in addresses):
-        raise OSError("Destination did not resolve exclusively to public addresses")
-    return addresses
+    if not addresses:
+        raise OSError("Destination did not resolve to an address")
+    if all(_global_ip(address) for address in addresses):
+        return addresses
+    # A local transparent-proxy resolver may return fake-IP for every answer.
+    # Only accept that for direct tunnels: an external proxy must resolve the
+    # host itself, and mixed answers stay rejected.
+    if allow_fake_ip and all(_fake_ip(address) for address in addresses):
+        return addresses
+    raise OSError("Destination did not resolve exclusively to public addresses")
 
 
 def connect_public_routed(host, port, opencode_config=None):
@@ -409,7 +432,8 @@ def _connect_upstream(proxy_url: str | None, target_host: str, target_port: int,
         constrained = public_deadline is not None
         if not proxy_url or proxy_url == "dns://hub":
             resolved = _resolve_with_hub_dns(target_host, hub_config, remaining()) if proxy_url else target_host
-            addresses = _resolve_public(resolved, target_port) if constrained else [resolved]
+            addresses = (_resolve_public(resolved, target_port, allow_fake_ip=not proxy_url)
+                         if constrained else [resolved])
             for address in addresses:
                 try:
                     upstream = socket.create_connection((address, target_port), timeout=remaining())

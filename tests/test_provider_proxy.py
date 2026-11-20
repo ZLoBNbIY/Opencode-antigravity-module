@@ -208,6 +208,32 @@ class ProviderRouteProxyTests(unittest.TestCase):
         with self.assertRaises(OSError):
             proxy._resolve_public("gateway.example", 443)
 
+    @patch("gemini_routes.matches", return_value=False)
+    def test_app_host_subdomains_share_the_builtin_allowlist(self, gemini):
+        import provider_proxy as proxy
+        self.assertTrue(proxy._builtin_host("models.opencode.ai"))
+        self.assertTrue(proxy._destination_allowed("models.opencode.ai", 443, "https", {}))
+        self.assertFalse(proxy._destination_allowed("models.opencode.ai.evil.test", 443, "https", {}))
+
+    @patch("provider_proxy.socket.getaddrinfo", return_value=[
+        (2, 1, 6, "", ("198.18.0.85", 443)),
+    ])
+    def test_direct_tunnel_accepts_all_fake_ip_answers(self, resolve):
+        import provider_proxy as proxy
+        self.assertEqual(proxy._resolve_public("chatgpt.com", 443, allow_fake_ip=True),
+                         ["198.18.0.85"])
+        with self.assertRaises(OSError):
+            proxy._resolve_public("chatgpt.com", 443)
+
+    @patch("provider_proxy.socket.getaddrinfo", return_value=[
+        (2, 1, 6, "", ("198.18.0.85", 443)),
+        (2, 1, 6, "", ("10.0.0.1", 443)),
+    ])
+    def test_mixed_fake_ip_and_private_answers_are_rejected(self, resolve):
+        import provider_proxy as proxy
+        with self.assertRaises(OSError):
+            proxy._resolve_public("chatgpt.com", 443, allow_fake_ip=True)
+
     @patch("provider_proxy._read_json", return_value={})
     @patch("provider_proxy._relay")
     @patch("provider_proxy.ssl.create_default_context")
