@@ -59,124 +59,349 @@ def find_opencode_cli() -> str | None:
     return None
 
 
-def get_openai_cred_id() -> str:
-    if OPENCODE_DB_FILE.exists():
-        try:
-            with closing(sqlite3.connect(str(OPENCODE_DB_FILE), timeout=5)) as conn:
-                cur = conn.cursor()
-                cur.execute("SELECT id FROM credential WHERE integration_id = 'openai'")
-                row = cur.fetchone()
-                if row:
-                    return row[0]
-        except Exception:
-            pass
-    return "cred_openai_active"
+OPENCODE_CREDENTIAL_PREFIX = "cred_openai_hub_"
+LEGACY_HUB_CREDENTIAL_ID = "cred_openai_active"
 
 
-def sync_opencode_db_openai(account: dict | None):
-    """Sync OpenAI credential directly into opencode.db SQLite database."""
+def _is_hub_managed_credential_id(credential_id: object) -> bool:
+    value = str(credential_id or "")
+    return value.startswith(OPENCODE_CREDENTIAL_PREFIX) or value == LEGACY_HUB_CREDENTIAL_ID
+
+
+def _openai_account_identity(account: dict) -> str:
+    """Return a stable, non-secret identity used to map one Hub account to one credential."""
+    for field in ("accountId", "id", "email"):
+        value = str(account.get(field) or "").strip()
+        if value:
+            return value.casefold()
+    return ""
+
+
+def get_openai_cred_id(account: dict | None = None) -> str:
+    """Return the stable OpenCode credential ID for a Hub account.
+
+    Older Hub versions used one generic credential for every ChatGPT account.  A
+    per-account ID is required because OpenCode identifies a credential connection
+    by ID and publishes ``credential.switched`` when that connection is activated.
+    """
+    if isinstance(account, dict):
+        identity = _openai_account_identity(account)
+        if not identity:
+            return LEGACY_HUB_CREDENTIAL_ID
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+        return f"{OPENCODE_CREDENTIAL_PREFIX}{digest}"
+
+    rows = _read_opencode_credential_rows() or []
+    active = next((row for row in rows if row.get("active")), None)
+    selected = active or (rows[-1] if rows else None)
+    if selected and selected.get("id"):
+        return str(selected["id"])
+    return LEGACY_HUB_CREDENTIAL_ID
+
+
+def _read_opencode_credential_rows(
+    integration_id: str | None = "openai",
+) -> list[dict] | None:
+    """Read OpenCode credentials without mutating the canonical database.
+
+    Returns ``None`` when an existing database cannot be read.  Callers must not
+    confuse that with a legitimately empty credential store.  Pass
+    ``integration_id=None`` to inspect every integration for ID collisions.
+    """
     if not OPENCODE_DB_FILE.exists():
+        return []
+    try:
+        with closing(sqlite3.connect(
+            f"{OPENCODE_DB_FILE.resolve().as_uri()}?mode=ro", uri=True, timeout=2
+        )) as conn:
+            table = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='credential'"
+            ).fetchone()
+            if not table:
+                return []
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(credential)")}
+            # Older OpenCode databases have no credential ID column.  They can
+            # still seed the Hub pool, but cannot participate in an ID-based
+            # hot switch until OpenCode migrates the database.
+            if not {"integration_id", "value"}.issubset(columns):
+                return []
+            selected = [
+                column for column in
+                ("id", "integration_id", "value", "label", "active", "time_created", "time_updated")
+                if column in columns
+            ]
+            where = " WHERE integration_id = ?" if integration_id is not None else ""
+            params = (integration_id,) if integration_id is not None else ()
+            order_parts = [
+                column + " DESC" for column in ("active", "time_created", "id")
+                if column in columns
+            ]
+            order = f" ORDER BY {', '.join(order_parts)}" if order_parts else ""
+            rows = conn.execute(
+                f"SELECT {', '.join(selected)} FROM credential{where}{order}", params
+            ).fetchall()
+    except (OSError, sqlite3.Error, ValueError):
+        return None
+
+    result: list[dict] = []
+    for row in rows:
+        item = dict(zip(selected, row))
+        item.setdefault("id", "")
+        try:
+            item["value"] = json.loads(item.get("value") or "{}")
+        except (TypeError, ValueError):
+            item["value"] = {}
+        result.append(item)
+    return result
+
+
+def _openai_credential_value(account: dict) -> dict:
+    metadata: dict[str, str] = {}
+    account_id = str(account.get("accountId") or "").strip()
+    email = str(account.get("email") or "").strip()
+    if account_id:
+        metadata["accountID"] = account_id
+    if email:
+        metadata["email"] = email
+    return {
+        "type": "oauth",
+        "methodID": "chatgpt-browser",
+        "refresh": str(account.get("refresh") or ""),
+        "access": str(account.get("access") or ""),
+        "expires": int(account.get("expires") or 0),
+        "metadata": metadata,
+    }
+
+
+def _openai_credential_label(account: dict) -> str:
+    return str(account.get("name") or account.get("email") or "ChatGPT OAuth")
+
+
+def _openai_credential_matches_account(row: dict | None, account: dict) -> bool:
+    if not row or row.get("integration_id") != "openai":
+        return False
+    value = row.get("value") or {}
+    if value.get("type") != "oauth":
+        return False
+    metadata = value.get("metadata") or {}
+    stored_account_id = str(metadata.get("accountID") or metadata.get("accountId") or "")
+    wanted_account_id = str(account.get("accountId") or "").strip()
+    if wanted_account_id:
+        if not stored_account_id or stored_account_id != wanted_account_id:
+            return False
+    else:
+        stored_email = str(metadata.get("email") or "")
+        wanted_email = str(account.get("email") or "").strip()
+        if wanted_email and stored_email.casefold() != wanted_email.casefold():
+            return False
+    return True
+
+
+def _openai_credential_has_current_tokens(row: dict | None, wanted: dict) -> bool:
+    if not row:
+        return False
+    value = row.get("value") or {}
+    if value.get("access") == wanted.get("access") and value.get("refresh") == wanted.get("refresh"):
+        return True
+    # OpenCode may refresh the credential concurrently.  A strictly newer
+    # expiry means its token supersedes the value that Hub requested.
+    try:
+        return int(value.get("expires") or 0) > int(wanted.get("expires") or 0)
+    except (TypeError, ValueError):
+        return False
+
+
+def sync_opencode_db_openai(account: dict | None) -> bool:
+    """Verify the canonical OpenCode database after an official CLI operation.
+
+    This function intentionally performs no direct SQLite mutation.  OpenCode
+    must own credential writes so it can publish ``credential.updated`` and
+    ``credential.switched`` to an already-running server.
+    """
+    rows = _read_opencode_credential_rows()
+    if rows is None:
+        return False
+    if account is None:
+        return not any(_is_hub_managed_credential_id(row.get("id")) for row in rows)
+    credential_id = get_openai_cred_id(account)
+    row = next((item for item in rows if item.get("id") == credential_id), None)
+    wanted = _openai_credential_value(account)
+    return bool(
+        row
+        and row.get("active")
+        and _openai_credential_matches_account(row, account)
+        and _openai_credential_has_current_tokens(row, wanted)
+    )
+
+
+def _openai_import_payload(account: dict, credential_id: str) -> str:
+    return json.dumps([
+        {
+            "id": credential_id,
+            "integrationID": "openai",
+            "label": _openai_credential_label(account),
+            "active": True,
+            "value": _openai_credential_value(account),
+        }
+    ], ensure_ascii=False)
+
+
+def _run_opencode_cli(cli: str, args: list[str], input_text: str | None = None) -> None:
+    kwargs = {
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "text": True,
+        "encoding": "utf-8",
+        "timeout": 30,
+        "check": True,
+    }
+    if input_text is not None:
+        kwargs["input"] = input_text
+    subprocess.run([cli, *args], **kwargs)
+
+
+def _restore_opencode_credential(cli: str, row: dict, was_active: bool) -> None:
+    """Best-effort restoration of a credential removed before a failed import."""
+    credential_id = str(row.get("id") or "")
+    if not credential_id:
         return
     try:
-        with closing(sqlite3.connect(str(OPENCODE_DB_FILE), timeout=5)) as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='credential'")
-            if not cur.fetchone():
-                return
-            cols = {row[1] for row in cur.execute("PRAGMA table_info(credential)").fetchall()}
-
-            if account:
-                val_json = json.dumps({
-                    "type": "oauth",
-                    "methodID": "chatgpt-browser",
-                    "refresh": account.get("refresh", ""),
-                    "access": account.get("access", ""),
-                    "expires": account.get("expires", 0),
-                    "metadata": {
-                        "accountID": account.get("accountId", ""),
-                        "email": account.get("email", ""),
-                    }
-                }, ensure_ascii=False)
-                label = account.get("name") or account.get("email") or "ChatGPT OAuth"
-                now_ms = int(time.time() * 1000)
-
-                cur.execute("SELECT id FROM credential WHERE integration_id = 'openai'")
-                row = cur.fetchone()
-                if row:
-                    if "active" in cols:
-                        cur.execute(
-                            "UPDATE credential SET label = ?, value = ?, active = 1, time_updated = ? WHERE integration_id = 'openai'",
-                            (label, val_json, now_ms)
-                        )
-                    else:
-                        cur.execute(
-                            "UPDATE credential SET label = ?, value = ?, time_updated = ? WHERE integration_id = 'openai'",
-                            (label, val_json, now_ms)
-                        )
-                else:
-                    cred_id = get_openai_cred_id()
-                    if "active" in cols:
-                        cur.execute(
-                            "INSERT INTO credential (id, integration_id, label, active, value, time_created, time_updated) VALUES (?, 'openai', ?, 1, ?, ?, ?)",
-                            (cred_id, label, val_json, now_ms, now_ms)
-                        )
-                    else:
-                        cur.execute(
-                            "INSERT INTO credential (id, integration_id, label, value, time_created, time_updated) VALUES (?, 'openai', ?, ?, ?, ?)",
-                            (cred_id, label, val_json, now_ms, now_ms)
-                        )
-            else:
-                cur.execute("DELETE FROM credential WHERE integration_id = 'openai'")
-
-            conn.commit()
-    except Exception as e:
-        print(f"[OpenAI Manager] SQLite sync warning: {e}")
+        current = next(
+            (item for item in (_read_opencode_credential_rows() or []) if item.get("id") == credential_id),
+            None,
+        )
+        if current:
+            _run_opencode_cli(cli, ["auth", "logout", "openai", credential_id])
+        payload = [{
+            "id": credential_id,
+            "integrationID": "openai",
+            "label": str(row.get("label") or "ChatGPT OAuth"),
+            "active": bool(was_active),
+            "value": row.get("value") or {},
+        }]
+        _run_opencode_cli(cli, ["auth", "import"], json.dumps(payload, ensure_ascii=False))
+        if was_active:
+            _run_opencode_cli(cli, ["auth", "switch", "openai", credential_id])
+    except Exception:
+        # Never include credential values or labels in diagnostics.
+        print("[OpenAI Manager] Credential rollback failed")
 
 
 def sync_opencode_cli_openai(account: dict | None) -> bool:
-    """Notify OpenCode via stdin; never create a plaintext OAuth import file."""
+    """Create/replace and activate one ChatGPT credential through OpenCode's API.
+
+    ``auth import`` alone is not a switch: OpenCode 2.3.2 skips an existing ID
+    and only activates newly imported credentials.  The target is therefore
+    imported through stdin and then explicitly activated with ``auth switch``,
+    which publishes ``Credential.Event.Switched`` to the running server.
+    """
+    cli = find_opencode_cli()
+    db_exists = OPENCODE_DB_FILE.exists()
+    if not cli:
+        # A database-backed OpenCode installation needs its CLI for the switch
+        # event.  Legacy installations are migrated through auth.json instead.
+        return not db_exists
+
     try:
-        cli = find_opencode_cli()
-        if not cli:
-            return True  # Legacy installations use auth.json instead.
-        if account:
-            cred_id = get_openai_cred_id()
-            label = account.get("name") or account.get("email") or "ChatGPT OAuth"
-            payload = [
-                {
-                    "id": cred_id,
-                    "integrationID": "openai",
-                    "label": label,
-                    "active": True,
-                    "value": {
-                        "type": "oauth",
-                        "methodID": "chatgpt-browser",
-                        "refresh": account.get("refresh", ""),
-                        "access": account.get("access", ""),
-                        "expires": account.get("expires", 0),
-                        "metadata": {
-                            "accountID": account.get("accountId", ""),
-                            "email": account.get("email", ""),
-                        }
-                    }
-                }
+        if account is None:
+            rows = _read_opencode_credential_rows()
+            if rows is None:
+                return False
+            managed = [
+                str(row.get("id")) for row in rows
+                if _is_hub_managed_credential_id(row.get("id"))
             ]
-            subprocess.run(
-                [cli, "auth", "import"],
-                input=json.dumps(payload),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                encoding="utf-8",
-                timeout=10,
-                check=True,
-            )
-        else:
-            subprocess.run([cli, "auth", "logout", "openai"], stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, timeout=10, check=True)
+            for credential_id in managed:
+                _run_opencode_cli(cli, ["auth", "logout", "openai", credential_id])
+            return sync_opencode_db_openai(None)
+
+        credential_id = get_openai_cred_id(account)
+        wanted = _openai_credential_value(account)
+        if not db_exists:
+            # Legacy OpenCode has no canonical DB to verify.  Keep the historical
+            # stdin-only import path; the caller also updates auth.json.
+            _run_opencode_cli(cli, ["auth", "import"], _openai_import_payload(account, credential_id))
+            return True
+
+        rows = _read_opencode_credential_rows()
+        all_rows = _read_opencode_credential_rows(None)
+        if rows is None or all_rows is None:
+            return False
+        existing = next((row for row in rows if row.get("id") == credential_id), None)
+        previous_active = next((row for row in rows if row.get("active")), None)
+
+        # OpenCode activates and removes credentials by primary key across all
+        # integrations.  Never let a Hub-generated ID collide with another
+        # integration's credential.
+        if any(
+            row.get("id") == credential_id and row.get("integration_id") != "openai"
+            for row in all_rows
+        ):
+            print("[OpenAI Manager] Credential ID collision with another OpenCode integration")
+            return False
+        if existing and not _openai_credential_matches_account(existing, account):
+            # The deterministic ID must never be used to take over a credential
+            # that belongs to a different ChatGPT account.
+            print("[OpenAI Manager] Credential ID belongs to a different ChatGPT account")
+            return False
+
+        replaced = False
+        if existing and not _openai_credential_has_current_tokens(existing, wanted):
+            # OpenCode 2.3.2 exposes no public endpoint for replacing a
+            # credential value.  Remove and re-import this one ID through the
+            # official API, then activate it.  Other accounts are untouched.
+            _run_opencode_cli(cli, ["auth", "logout", "openai", credential_id])
+            replaced = True
+
+        try:
+            if not existing or replaced:
+                _run_opencode_cli(cli, ["auth", "import"], _openai_import_payload(account, credential_id))
+            _run_opencode_cli(cli, ["auth", "switch", "openai", credential_id])
+        except Exception:
+            if replaced and existing:
+                _restore_opencode_credential(cli, existing, bool(existing.get("active")))
+            elif not existing:
+                try:
+                    _run_opencode_cli(cli, ["auth", "logout", "openai", credential_id])
+                except Exception:
+                    pass
+            if previous_active and previous_active.get("id") != credential_id:
+                try:
+                    _run_opencode_cli(cli, ["auth", "switch", "openai", str(previous_active["id"])])
+                except Exception:
+                    pass
+            raise
+
+        if not sync_opencode_db_openai(account):
+            if replaced and existing:
+                _restore_opencode_credential(cli, existing, bool(existing.get("active")))
+            elif not existing:
+                try:
+                    _run_opencode_cli(cli, ["auth", "logout", "openai", credential_id])
+                except Exception:
+                    pass
+            if previous_active and previous_active.get("id") != credential_id:
+                try:
+                    _run_opencode_cli(cli, ["auth", "switch", "openai", str(previous_active["id"])])
+                except Exception:
+                    pass
+            return False
+
+        # Remove a legacy duplicate for the same ChatGPT account, but never
+        # touch credentials belonging to another account.
+        for row in (_read_opencode_credential_rows() or []):
+            other_id = str(row.get("id") or "")
+            if other_id == credential_id or not other_id:
+                continue
+            if _openai_credential_matches_account(row, account):
+                try:
+                    _run_opencode_cli(cli, ["auth", "logout", "openai", other_id])
+                except Exception:
+                    pass
         return True
-    except Exception as e:
-        print(f"[OpenAI Manager] CLI sync failed ({type(e).__name__})")
+    except Exception as exc:
+        # Never print subprocess output or credential data: both may contain a token.
+        print(f"[OpenAI Manager] CLI sync failed ({type(exc).__name__})")
         return False
 
 
@@ -229,6 +454,27 @@ def extract_claims_info(id_token: str, access_token: str) -> dict:
 
 
 def get_active_auth_openai() -> dict | None:
+    # OpenCode v2 migrates auth.json once and then treats opencode.db as the
+    # canonical credential store.  Reading the legacy file first can resurrect
+    # a stale token and pair it with the wrong chatgpt-account-id.
+    rows = _read_opencode_credential_rows()
+    if rows is None:
+        # A canonical store that cannot be read must not be shadowed by a stale
+        # legacy auth.json token.
+        return None
+    active = next((row for row in rows if row.get("active")), None)
+    if active:
+        value = active.get("value") or {}
+        if value.get("type") == "oauth" and value.get("access"):
+            metadata = value.get("metadata") or {}
+            return {
+                **value,
+                "accountId": metadata.get("accountID") or metadata.get("accountId"),
+                "email": metadata.get("email"),
+                "credentialId": active.get("id"),
+            }
+
+    # Legacy fallback is used only when the canonical DB has no active entry.
     for auth_path in AUTH_FILES:
         if auth_path.exists():
             try:
@@ -239,57 +485,53 @@ def get_active_auth_openai() -> dict | None:
                         return val
             except Exception:
                 pass
-
-    if OPENCODE_DB_FILE.exists():
-        try:
-            with closing(sqlite3.connect(f"{OPENCODE_DB_FILE.as_uri()}?mode=ro", uri=True, timeout=2)) as conn:
-                row = conn.execute(
-                    "SELECT value FROM credential WHERE integration_id = 'openai' AND active = 1 "
-                    "ORDER BY time_updated DESC LIMIT 1"
-                ).fetchone()
-            if row:
-                value = json.loads(row[0])
-                if value.get("type") == "oauth" and value.get("methodID") == "chatgpt-browser" and value.get("access"):
-                    metadata = value.get("metadata") or {}
-                    return {**value, "accountId": metadata.get("accountID"), "email": metadata.get("email")}
-        except (sqlite3.Error, ValueError, AttributeError):
-            pass
     return None
 
 
+def _write_legacy_auth_openai(account: dict | None) -> bool:
+    """Update legacy auth.json stores only when no canonical OpenCode DB exists."""
+    for auth_path in AUTH_FILES:
+        data = {}
+        if auth_path.exists():
+            try:
+                with open(auth_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                data = {}
+
+        if account:
+            data["openai"] = {
+                "type": "oauth",
+                "access": account.get("access", ""),
+                "refresh": account.get("refresh", ""),
+                "expires": account.get("expires", 0),
+                "accountId": account.get("accountId", ""),
+            }
+        else:
+            data.pop("openai", None)
+
+        secure_storage.atomic_write(
+            auth_path,
+            json.dumps(data, indent=2, ensure_ascii=False),
+        )
+    return True
+
+
 def write_active_auth_openai(account: dict | None) -> bool:
+    """Synchronize the selected Hub account and acknowledge the active credential."""
     with _accounts_lock:
         try:
-            for auth_path in AUTH_FILES:
-                data = {}
-                if auth_path.exists():
-                    try:
-                        with open(auth_path, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                    except Exception:
-                        data = {}
-
-                if account:
-                    data["openai"] = {
-                        "type": "oauth",
-                        "access": account.get("access", ""),
-                        "refresh": account.get("refresh", ""),
-                        "expires": account.get("expires", 0),
-                        "accountId": account.get("accountId", ""),
-                    }
-                else:
-                    data.pop("openai", None)
-
-                secure_storage.atomic_write(
-                    auth_path,
-                    json.dumps(data, indent=2, ensure_ascii=False),
-                )
-
-            # Sync into OpenCode 2.0 database & notify daemon
-            sync_opencode_db_openai(account)
-            return sync_opencode_cli_openai(account)
-        except Exception as e:
-            print(f"[OpenAI Manager] Error updating auth: {e}")
+            db_exists = OPENCODE_DB_FILE.exists()
+            if not sync_opencode_cli_openai(account):
+                return False
+            # Keep plaintext compatibility files only for legacy OpenCode.  Once
+            # the v2 DB exists it is canonical and must not be shadowed by a
+            # stale auth.json copy.
+            if not db_exists or account is None:
+                return _write_legacy_auth_openai(account)
+            return True
+        except Exception as exc:
+            print(f"[OpenAI Manager] Error updating auth ({type(exc).__name__})")
             return False
 
 
@@ -340,7 +582,7 @@ def load_openai_accounts() -> list[dict]:
         for acc in accounts:
             if active_account_id and acc.get("accountId") == active_account_id:
                 acc["is_active"] = True
-            elif not active_account_id and accounts and acc == accounts[0]:
+            elif not active_account_id and accounts and acc is accounts[0]:
                 acc["is_active"] = True
             else:
                 acc["is_active"] = False
@@ -365,6 +607,26 @@ def save_openai_accounts(accounts: list[dict]) -> bool:
             return False
 
 
+def _find_openai_account(accounts: list[dict], identifier: str) -> dict | None:
+    """Find exactly one Hub account without conflating its id and accountId fields."""
+    wanted = str(identifier or "").strip()
+    if not wanted:
+        return None
+    for field in ("id", "accountId", "email"):
+        if field == "email":
+            matches = [
+                account for account in accounts
+                if str(account.get(field) or "").casefold() == wanted.casefold()
+            ]
+        else:
+            matches = [account for account in accounts if account.get(field) == wanted]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            return None
+    return None
+
+
 def import_openai_accounts(imported_list: list[dict]) -> int:
     """
     Imports and merges a list of OpenAI accounts into the local store.
@@ -373,116 +635,198 @@ def import_openai_accounts(imported_list: list[dict]) -> int:
     """
     if not imported_list:
         return 0
-    accounts = load_openai_accounts()
-    count = 0
-    for new_acc in imported_list:
-        if not isinstance(new_acc, dict):
-            continue
-        acc_id = new_acc.get("accountId") or new_acc.get("id")
-        email = new_acc.get("email")
-        if not acc_id and not email:
-            continue
-        idx = next(
-            (i for i, a in enumerate(accounts) if (acc_id and a.get("accountId") == acc_id) or (email and a.get("email") == email)),
-            None
-        )
-        if idx is not None:
-            for k, v in new_acc.items():
-                if v is not None:
-                    accounts[idx][k] = v
-        else:
-            accounts.append(dict(new_acc))
-        count += 1
-
-    if accounts:
-        # Determine which account should be active
-        active_acc = next((a for a in accounts if a.get("is_active")), accounts[0])
-        for a in accounts:
-            a["is_active"] = (
-                a is active_acc
-                or (bool(active_acc.get("id")) and a.get("id") == active_acc.get("id"))
-                or (bool(active_acc.get("accountId")) and a.get("accountId") == active_acc.get("accountId"))
+    with _accounts_lock:
+        accounts = load_openai_accounts()
+        previous_active = next((acc for acc in accounts if acc.get("is_active")), None)
+        desired_active = previous_active
+        count = 0
+        for new_acc in imported_list:
+            if not isinstance(new_acc, dict):
+                continue
+            acc_id = new_acc.get("accountId") or new_acc.get("id")
+            email = new_acc.get("email")
+            if not acc_id and not email:
+                continue
+            idx = next(
+                (i for i, a in enumerate(accounts) if (acc_id and a.get("accountId") == acc_id) or (email and a.get("email") == email)),
+                None
             )
+            if idx is not None:
+                for k, v in new_acc.items():
+                    if v is not None:
+                        accounts[idx][k] = v
+                merged = accounts[idx]
+            else:
+                merged = dict(new_acc)
+                accounts.append(merged)
+            if new_acc.get("is_active") is True:
+                desired_active = merged
+            count += 1
 
-        # Proactively refresh tokens for accounts where token is missing, expired, or near expiry
+        if not accounts:
+            return 0
+
+        active_acc = desired_active if any(acc is desired_active for acc in accounts) else accounts[0]
+        original_flags = {id(acc): bool(acc.get("is_active")) for acc in accounts}
+
+        # Proactively refresh tokens for accounts where token is missing, expired,
+        # or near expiry.  Suppress the active-account side effect until the
+        # final OpenCode activation has been acknowledged.
         now_ms = int(time.time() * 1000)
         for acc in accounts:
             expires = acc.get("expires", 0)
             if not acc.get("access") or (expires - now_ms < 300000):
+                was_active = acc.get("is_active")
+                acc["is_active"] = False
                 try:
                     refresh_openai_token(acc)
                 except Exception as err:
                     print(f"[OpenAI Manager] Refresh on import warning for {acc.get('email')}: {err}")
+                finally:
+                    acc["is_active"] = was_active
 
-        # Re-resolve active account after refresh and sync to OpenCode
-        active_acc = next((a for a in accounts if a.get("is_active")), accounts[0])
+        # Persist imported tokens first, but do not publish a new active flag
+        # before OpenCode confirms the corresponding credential switch.
+        for acc in accounts:
+            acc["is_active"] = False
         if not save_openai_accounts(accounts):
+            for acc in accounts:
+                acc["is_active"] = original_flags.get(id(acc), False)
             return 0
-        write_active_auth_openai(active_acc)
+
+        if not write_active_auth_openai(active_acc):
+            for acc in accounts:
+                acc["is_active"] = original_flags.get(id(acc), False)
+            save_openai_accounts(accounts)
+            return 0
+
+        for acc in accounts:
+            acc["is_active"] = acc is active_acc
+        if not save_openai_accounts(accounts):
+            if previous_active and previous_active is not active_acc:
+                write_active_auth_openai(previous_active)
+            for acc in accounts:
+                acc["is_active"] = original_flags.get(id(acc), False)
+            save_openai_accounts(accounts)
+            return 0
 
     return count
 
 
 def set_active_openai_account(account_id: str) -> bool:
-    accounts = load_openai_accounts()
-    target_account = None
-    for acc in accounts:
-        if acc.get("id") == account_id or acc.get("accountId") == account_id:
-            acc["is_active"] = True
-            target_account = acc
-        else:
-            acc["is_active"] = False
+    """Activate one account in OpenCode before committing Hub's active state."""
+    with _accounts_lock:
+        accounts = load_openai_accounts()
+        target_account = _find_openai_account(accounts, account_id)
+        if not target_account:
+            return False
+        previous_account = next((acc for acc in accounts if acc.get("is_active")), None)
 
-    if target_account:
-        return save_openai_accounts(accounts) and write_active_auth_openai(target_account)
-    return False
+        # OpenCode must acknowledge the switch first.  Saving is_active before
+        # this point can make the UI claim a rotation that never reached the
+        # already-running server.
+        if not write_active_auth_openai(target_account):
+            return False
+
+        for acc in accounts:
+            acc["is_active"] = acc is target_account
+        if not save_openai_accounts(accounts):
+            # The server was switched successfully but the protected Hub store
+            # was not.  Restore the previous server selection to avoid a
+            # split-brain state.
+            if previous_account and previous_account is not target_account:
+                write_active_auth_openai(previous_account)
+            return False
+        return True
+
+
+def remove_opencode_credentials_openai(account: dict) -> bool:
+    """Remove only the OpenCode credentials that belong to one Hub account."""
+    if not OPENCODE_DB_FILE.exists():
+        return True
+    rows = _read_opencode_credential_rows()
+    if rows is None:
+        return False
+    credential_id = get_openai_cred_id(account)
+    credential_ids = {
+        str(row.get("id")) for row in rows
+        if row.get("id") and (
+            row.get("id") == credential_id
+            or _openai_credential_matches_account(row, account)
+        )
+    }
+    if not credential_ids:
+        return True
+    cli = find_opencode_cli()
+    if not cli:
+        return False
+    try:
+        for item in sorted(credential_ids):
+            _run_opencode_cli(cli, ["auth", "logout", "openai", item])
+        remaining_rows = _read_opencode_credential_rows()
+        if remaining_rows is None:
+            return False
+        remaining = {str(row.get("id")) for row in remaining_rows}
+        return not (credential_ids & remaining)
+    except Exception as exc:
+        print(f"[OpenAI Manager] Credential removal failed ({type(exc).__name__})")
+        return False
 
 
 def remove_openai_account(account_id: str) -> bool:
-    accounts = load_openai_accounts()
-    remaining = [
-        acc for acc in accounts
-        if acc.get("id") != account_id and acc.get("accountId") != account_id
-    ]
+    with _accounts_lock:
+        accounts = load_openai_accounts()
+        target = _find_openai_account(accounts, account_id)
+        if not target:
+            return False
+        remaining = [acc for acc in accounts if acc is not target]
+        was_active = bool(target.get("is_active"))
 
-    was_active = any(
-        (acc.get("id") == account_id or acc.get("accountId") == account_id) and acc.get("is_active")
-        for acc in accounts
-    )
-    if len(remaining) == len(accounts):
-        return False
+        if was_active and remaining:
+            replacement = next((acc for acc in remaining if acc.get("is_active")), remaining[0])
+            if not write_active_auth_openai(replacement):
+                return False
+            if not remove_opencode_credentials_openai(target):
+                write_active_auth_openai(target)
+                return False
+            for acc in accounts:
+                acc["is_active"] = acc is replacement
+            if not save_openai_accounts(remaining):
+                write_active_auth_openai(target)
+                return False
+            return True
 
-    if remaining and was_active:
-        remaining[0]["is_active"] = True
-    if not save_openai_accounts(remaining):
-        return False
-    if was_active:
-        return write_active_auth_openai(remaining[0] if remaining else None)
-    return True
+        if was_active and not remaining:
+            if not remove_opencode_credentials_openai(target):
+                return False
+            if not write_active_auth_openai(None):
+                write_active_auth_openai(target)
+                return False
+            return save_openai_accounts([])
+
+        if not remove_opencode_credentials_openai(target):
+            return False
+        return save_openai_accounts(remaining)
 
 
 def set_openai_account_enabled(account_id: str, enabled: bool) -> bool:
     """Enables or disables an OpenAI account."""
     accounts = load_openai_accounts()
-    changed = False
-    for acc in accounts:
-        if acc.get("id") == account_id or acc.get("accountId") == account_id or acc.get("email") == account_id:
-            acc["enabled"] = enabled
-            changed = True
-            break
-    return changed and save_openai_accounts(accounts)
+    target = _find_openai_account(accounts, account_id)
+    if not target:
+        return False
+    target["enabled"] = enabled
+    return save_openai_accounts(accounts)
 
 
 def set_openai_account_candidate(account_id: str, candidate: bool) -> bool:
     """Sets whether an OpenAI account participates in auto-rotation."""
     accounts = load_openai_accounts()
-    changed = False
-    for acc in accounts:
-        if acc.get("id") == account_id or acc.get("accountId") == account_id or acc.get("email") == account_id:
-            acc["candidate"] = candidate
-            changed = True
-            break
-    return changed and save_openai_accounts(accounts)
+    target = _find_openai_account(accounts, account_id)
+    if not target:
+        return False
+    target["candidate"] = candidate
+    return save_openai_accounts(accounts)
 
 
 def _get_http_opener(timeout: int = 15):
@@ -543,7 +887,8 @@ def refresh_openai_token(account: dict) -> tuple[bool, dict]:
 
             return True, account
     except Exception as e:
-        print(f"[OpenAI Manager] Token refresh failed for {account.get('email')}: {e}")
+        # Some HTTP/JSON exceptions embed the response body, which can contain tokens.
+        print(f"[OpenAI Manager] Token refresh failed for {account.get('email')} ({type(e).__name__})")
         return False, account
 
 
