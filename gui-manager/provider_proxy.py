@@ -47,6 +47,7 @@ LOCAL_ROUTES = {
     "xpiki": ("api.xpiki.com", "xpiki.com"),
     "deepseek-account": ("api.deepseek.com", "platform.deepseek.com"),
     "tokenlavka": ("tokenlavka.com",),
+    "nvidia-nim": ("integrate.api.nvidia.com", "nvidia.com"),
 }
 # Plain-HTTP reverse endpoints: baseURL on the OpenCode side is rewritten to
 # http://127.0.0.1:10880/r/<provider>/... so no CONNECT proxy is involved.

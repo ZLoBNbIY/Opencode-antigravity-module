@@ -36,11 +36,13 @@ except Exception:
     claude_service = None
 
 from vless_manager import get_http_port, get_socks_port, vless_service, VlessParser
+from vless_exit import VlessExitStatus
 import provider_proxy
 import auto_router
 import dns_tester
 import xpiki_manager
 import openrouter_manager
+import nvidia_manager
 import tokenlavka_manager
 import hub_paths
 import deepseek_api
@@ -72,10 +74,12 @@ PROVIDER_DOMAINS = {
     "openrouter-free": ["openrouter.ai"],
     "deepseek-account": ["api.deepseek.com"],
     "tokenlavka": ["tokenlavka.com"],
+    "nvidia-nim": ["integrate.api.nvidia.com"],
 }
 PROVIDER_SETTING_IDS = {"antigravity": "google", "openai": "openai", "claude": "claude-pro",
                         "xpiki": "xpiki", "openrouter": "openrouter-free",
-                        "deepseek": "deepseek-account", "tokenlavka": "tokenlavka"}
+                        "deepseek": "deepseek-account", "tokenlavka": "tokenlavka",
+                        "nvidia": "nvidia-nim"}
 
 
 def _vless_label(url: str) -> str:
@@ -175,8 +179,10 @@ class HubApi:
         self._diagnostic_lock = threading.Lock()
         self._diagnostic_running = set()
         self._openrouter_models = []
+        self._nvidia_catalog = ("", [])
         self._provider_lock = threading.RLock()
         self._core_lock = threading.Lock()
+        self._vless_exit = VlessExitStatus()
         self._restart_lock = threading.Lock()
         self._hub_restart_lock = threading.Lock()
         self._uninstalled = False
@@ -299,7 +305,8 @@ class HubApi:
         auto_states = {}
         for provider in PROVIDER_DOMAINS:
             visibility_key = {"google":"antigravity", "claude-pro":"claude", "openrouter-free":"openrouter",
-                              "deepseek-account":"deepseek", "tokenlavka":"tokenlavka"}.get(provider, provider)
+                              "deepseek-account":"deepseek", "tokenlavka":"tokenlavka",
+                              "nvidia-nim":"nvidia"}.get(provider, provider)
             enabled = cfg.get("providers_visibility", {}).get(visibility_key, True) and provider not in oc.get("disabled_providers", [])
             if enabled and cfg.get("provider_routes", {}).get(provider, "default") in ("default", "auto"):
                 auto_router.router.refresh(provider, cfg, oc)
@@ -312,9 +319,21 @@ class HubApi:
                 path = core
             cores[kind] = {"installed": bool(path), "path": str(path) if path else None,
                            "selected": bool(path and core and path == core)}
-        return {"autoRoutes": auto_states, "cores": cores, "vlessRunning": vless_service.is_running(),
-                "vlessCore": str(core) if core else None,
-                "httpPort": get_http_port(), "socksPort": get_socks_port()}
+        running = vless_service.is_running()
+        port = get_http_port()
+        if self._core_lock.acquire(blocking=False):
+            try:
+                identity = (cfg.get("vless_url"), port, vless_service.exit_generation()) if running else None
+                exit_status = self._vless_exit.snapshot(identity, port)
+            finally:
+                self._core_lock.release()
+        else:
+            # Pool diagnostics may briefly run a different tunnel.
+            self._vless_exit.snapshot(None)
+            exit_status = {"status": "checking" if running else "stopped"}
+        return {"autoRoutes": auto_states, "cores": cores, "vlessRunning": running, "vlessExit": exit_status,
+                 "vlessCore": str(core) if core else None,
+                 "httpPort": port, "socksPort": get_socks_port()}
 
     def refresh_auto_routes(self, provider: str) -> bool:
         if provider not in PROVIDER_DOMAINS:
@@ -425,15 +444,23 @@ class HubApi:
         """
         import health_checker
         provider = {"claude": "claude-pro", "openrouter": "openrouter-free",
-                    "tokenlavka": "tokenlavka"}.get(provider, provider)
+                    "tokenlavka": "tokenlavka", "nvidia": "nvidia-nim"}.get(provider, provider)
+        if provider == "nvidia-nim":
+            key = nvidia_manager.load_key()
+            models = nvidia_manager.state().get("selectedModels", [])
+            if not key or not models:
+                raise ValueError("Сначала подключите модель NVIDIA NIM")
+            nvidia_manager.probe_model(key, models[0])
+            return {"ok": True, "message": f"NVIDIA NIM: генерация через {models[0]} доступна"}
         if provider not in ("google", "openai", "claude-pro", "xpiki", "openrouter-free", "tokenlavka"):
             raise ValueError("Неизвестный провайдер")
         return health_checker.test_provider_deep_probe(provider, timeout=20)
 
     def set_provider_route(self, provider: str, route: str) -> bool:
         provider = {"claude": "claude-pro", "openrouter": "openrouter-free", "deepseek": "deepseek-account",
-                    "tokenlavka": "tokenlavka"}.get(provider, provider)
-        if provider not in ("google", "openai", "claude-pro", "xpiki", "openrouter-free", "deepseek-account", "tokenlavka"):
+                    "tokenlavka": "tokenlavka", "nvidia": "nvidia-nim"}.get(provider, provider)
+        if provider not in ("google", "openai", "claude-pro", "xpiki", "openrouter-free", "deepseek-account",
+                            "tokenlavka", "nvidia-nim"):
             raise ValueError("Неизвестный провайдер")
         if route not in ("direct", "default", "auto", "vless", "dns", "proxy"):
             raise ValueError("Неизвестный маршрут")
@@ -969,6 +996,7 @@ class HubApi:
                 "openrouter": {"hasKey": bool(openrouter_key), "keyLabel": key_label(openrouter_key),
                                "connected": bool(openrouter_key and selected), "selectedModels": selected},
                 "deepseek": deepseek_state,
+                "nvidia": self._nvidia_state(),
                 "tokenlavka": tokenlavka_manager.provider_state()}
 
     def configure_xpiki(self, key: str, base_url: str, models: list) -> dict:
@@ -1124,6 +1152,44 @@ class HubApi:
             openrouter_manager.disconnect()
             self._openrouter_models = []
         return True
+
+    def _nvidia_state(self) -> dict:
+        try:
+            return nvidia_manager.state()
+        except (OSError, ValueError):
+            return {"error": "Hub не смог прочитать конфигурацию OpenCode для NVIDIA NIM."}
+
+    def load_nvidia_models(self, key: str = "") -> list:
+        with self._provider_lock:
+            self._nvidia_catalog = ("", [])
+            key = key.strip() or nvidia_manager.load_key()
+            models = nvidia_manager.fetch_models(key)
+            self._nvidia_catalog = (key, models)
+            return models
+
+    def probe_nvidia_model(self, model_id: str) -> bool:
+        with self._provider_lock:
+            key, models = self._nvidia_catalog
+            if model_id not in models:
+                raise ValueError("Загрузите каталог и выберите модель NVIDIA.")
+            nvidia_manager.probe_model(key, model_id)
+        return True
+
+    def apply_nvidia_models(self, model_ids: list) -> dict:
+        with self._provider_lock, self._config_lock:
+            key, models = self._nvidia_catalog
+            if not isinstance(model_ids, list) or not model_ids or any(m not in models for m in model_ids):
+                raise ValueError("Загрузите каталог и выберите модели NVIDIA.")
+            nvidia_manager.configure(key, model_ids)
+            self._sync_routes(self.load_config())
+            return nvidia_manager.state()
+
+    def disconnect_nvidia(self) -> dict:
+        with self._provider_lock, self._config_lock:
+            nvidia_manager.disconnect()
+            self._nvidia_catalog = ("", [])
+            self._sync_routes(self.load_config())
+            return nvidia_manager.state()
 
     def check_tokenlavka_key(self, key: str = "") -> dict:
         key = str(key or "").strip() or tokenlavka_manager.load_api_key()
@@ -1514,6 +1580,8 @@ class HubApi:
 
     def uninstall_hub_completely(self) -> dict:
         try:
+            if nvidia_manager.KEY_FILE.exists():
+                self.disconnect_nvidia()
             self._uninstalled = True
             try:
                 vless_service.stop_tunnel()

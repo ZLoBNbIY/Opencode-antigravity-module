@@ -19,6 +19,7 @@ DEFAULT_HOSTS = {
     "xpiki": ("api.xpiki.com",), "openrouter-free": ("openrouter.ai",),
     "deepseek-account": ("api.deepseek.com",),
     "tokenlavka": ("tokenlavka.com",),
+    "nvidia-nim": ("integrate.api.nvidia.com",),
 }
 REFRESH_SECONDS = 60
 PROBE_SECONDS = 6

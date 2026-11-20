@@ -246,6 +246,11 @@ class VlessManager:
         self._lock = threading.Lock()
         self._status = "stopped"
         self._last_test_result: Optional[Dict[str, Any]] = None
+        self._exit_generation = 0
+
+    def exit_generation(self) -> int:
+        with self._lock:
+            return self._exit_generation
 
     def get_bin_dir(self) -> Path:
         try:
@@ -722,6 +727,7 @@ class VlessManager:
                     stderr=subprocess.STDOUT,
                 )
                 self._process = proc
+                self._exit_generation += 1
             except Exception as e:
                 return False, f"Не удалось запустить процесс ядра: {e}"
             finally:
@@ -759,6 +765,7 @@ class VlessManager:
     def stop_tunnel(self) -> Tuple[bool, str]:
         cfg_http, cfg_socks = get_configured_ports()
         with self._lock:
+            self._exit_generation += 1
             if self._process is not None:
                 try:
                     self._process.terminate()

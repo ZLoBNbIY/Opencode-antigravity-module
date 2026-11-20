@@ -205,6 +205,7 @@ DEFAULT_CONFIG = {
         "xpiki": True,
         "deepseek": True,
         "tokenlavka": True,
+        "nvidia": True,
     },
     "close_to_tray": True,
     "max_rate_limit_wait_seconds": 300,

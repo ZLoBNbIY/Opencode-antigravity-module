@@ -81,6 +81,26 @@ test('failed domains show error indicators and no invented milliseconds', () => 
   assert.match(elements.get('tokenlavka-balance').innerHTML, /progress-fill-emerald/);
 });
 
+test('Dashboard VLESS displays the exit country and address, not the core or config', () => {
+  const fixture = structuredClone(state);
+  Object.assign(fixture.network, {vlessRunning:true, vlessCore:'xray.exe',
+    vlessExit:{status:'ok', country:'DE', ip:'8.8.8.8'}});
+  const {elements, context} = frontend(fixture);
+  const network = elements.get('dashboard-network');
+  assert.match(network.innerHTML, /Германия · 8\.8\.8\.8/);
+  assert.doesNotMatch(network.innerHTML, /xray\.exe|Активный конфиг/);
+  vm.runInContext('appState.network.vlessRunning = false; renderDashboard()', context);
+  assert.match(network.innerHTML, /Нет активного подключения/);
+  assert.doesNotMatch(network.innerHTML, /8\.8\.8\.8/);
+});
+
+test('standalone Qwen provider is not registered or shown', () => {
+  const {context, nav, elements} = frontend(state);
+  assert.equal(vm.runInContext("Object.values(providerTabs).includes('qwen-code')", context), false);
+  assert.equal(nav.some(item => item.dataset.tab === 'qwen'), false);
+  assert.equal(elements.has('view-qwen'), false);
+});
+
 test('polling preserves edited DNS inputs and unknown quota stays unknown', () => {
   const fixture = structuredClone(state);
   fixture.openaiAccounts[0].quota = {status:'error'};

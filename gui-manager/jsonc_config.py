@@ -61,6 +61,13 @@ def parse_config(text: str) -> dict:
     return data
 
 
+_REMOVE = object()
+
+
+def remove_property(text: str, path: tuple[str, ...]) -> str:
+    return set_property(text, path, _REMOVE)
+
+
 def set_property(text: str, path: tuple[str, ...], value) -> str:
     """Replace only the requested value; preserve all other source text."""
     if not path:
@@ -87,6 +94,17 @@ def set_property(text: str, path: tuple[str, ...], value) -> str:
             value_start = skip(colon + 1)
             current, value_end = decoder.raw_decode(clean, value_start)
             if key == keys[0]:
+                if value is _REMOVE and len(keys) == 1:
+                    after = jsonc_text(text[value_end:skip(value_end)], mask_trailing_commas=False)
+                    following = after.find(",")
+                    comma = value_end + following if following >= 0 else -1
+                    if comma < 0 and last_end is not None:
+                        comma = clean.find(",", last_end, i)
+                    if comma >= value_end:
+                        return text[:i] + text[value_end:comma] + text[comma + 1:]
+                    if comma >= 0:
+                        return text[:comma] + text[comma + 1:i] + text[value_end:]
+                    return text[:i] + text[value_end:]
                 if len(keys) > 1:
                     return edit(value_start, keys[1:])
                 if type(current) is type(value) and current == value:
@@ -95,6 +113,8 @@ def set_property(text: str, path: tuple[str, ...], value) -> str:
                 return text[:value_start] + rendered + text[value_end:]
             last_end = value_end
             i = skip(value_end)
+        if value is _REMOVE:
+            return text
         nested = value
         for key in reversed(keys[1:]):
             nested = {key: nested}

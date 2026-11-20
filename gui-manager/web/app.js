@@ -20,7 +20,7 @@ const providerSettings = {
   claude:{key:'claude',id:'claude-pro'}, xpiki:{key:'xpiki',id:'xpiki'},
   deepseek:{key:'deepseek',id:'deepseek-account'},
   openrouter:{key:'openrouter',id:'openrouter-free'},
-  tokenlavka:{key:'tokenlavka',id:'tokenlavka'}
+  tokenlavka:{key:'tokenlavka',id:'tokenlavka'}, nvidia:{key:'nvidia',id:'nvidia-nim'}
 };
 function providerEnabled(tab) {
   const item = providerSettings[tab];
@@ -49,6 +49,11 @@ function switchTab(tabId) {
     void refreshAntigravityPatchStatus();
   }
   if (tabId === 'google') void refreshGooglePatchDisclaimer();
+  if (tabId === 'nvidia' && window.pywebview?.api) {
+    const list = document.getElementById('nvidia-models-list');
+    if (!list?.querySelector('.nvidia-model-card')) nvidiaAutoLoadAttempted = false;
+    maybeAutoLoadNvidiaCatalog();
+  }
 }
 
 function showDiagnostics(tab) {
@@ -84,6 +89,7 @@ let stateRefreshing = false;
 let stateRefreshQueued = false;
 let networkFormInitialized = false;
 let networkDirty = false;
+let nvidiaAutoLoadAttempted = false;
 
 function html(value) {
   return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
@@ -131,6 +137,7 @@ function renderAll() {
   renderXpikiTab();
   renderDeepSeekTab();
   renderOpenRouterState();
+  renderNvidiaState();
   renderTokenLavkaState();
   renderActiveAccounts();
   renderProviderDiagnostics();
@@ -157,6 +164,25 @@ function renderSidebar() {
       opencodeBadge.style.color = "var(--accent-red)";
       opencodeBadge.style.background = "rgba(248, 113, 113, 0.10)";
     }
+  }
+  const activeAccount = accounts => (accounts || []).find(account => account.is_active === true);
+  const providers = appState.providers || {};
+  const connected = {
+    google: !!activeAccount(appState.accounts),
+    openai: !!activeAccount(appState.openaiAccounts),
+    claude: !!activeAccount(appState.claudeAccounts),
+    xpiki: !!providers.xpiki?.connected,
+    deepseek: !!providers.deepseek?.connected,
+    openrouter: !!providers.openrouter?.connected,
+    tokenlavka: !!providers.tokenlavka?.connected,
+    nvidia: !!providers.nvidia?.connected,
+  };
+  for (const [tab, isConnected] of Object.entries(connected)) {
+    const dot = document.getElementById(`nav-status-${tab}`);
+    if (!dot) continue;
+    dot.className = `connection-indicator ${isConnected ? 'ok' : 'idle'}`;
+    dot.setAttribute('aria-label', isConnected ? `${tab}: подключён` : `${tab}: не подключён`);
+    dot.title = isConnected ? 'Подключён' : 'Не подключён';
   }
 }
 
@@ -215,8 +241,8 @@ async function refreshAutoRoutes(tab) {
 
 function renderNetworkTab() {
   const routes = appState.routes || {};
-  for (const provider of ['google', 'claude', 'openai', 'xpiki', 'deepseek', 'openrouter', 'tokenlavka']) {
-    const key = provider === 'claude' ? 'claude-pro' : provider === 'openrouter' ? 'openrouter-free' : provider === 'deepseek' ? 'deepseek-account' : provider;
+  for (const provider of ['google', 'claude', 'openai', 'xpiki', 'deepseek', 'openrouter', 'tokenlavka', 'nvidia']) {
+    const key = provider === 'claude' ? 'claude-pro' : provider === 'openrouter' ? 'openrouter-free' : provider === 'deepseek' ? 'deepseek-account' : provider === 'nvidia' ? 'nvidia-nim' : provider;
     const options = ['auto', 'dns', 'vless', 'direct', 'proxy'];
     // "default" is the legacy storage value for Auto. Show and save it as
     // "auto" so the control, the tooltip and the config file agree.
@@ -937,13 +963,13 @@ async function setProviderRoute(provider, route) {
   }
 }
 
-const providerTabs = {google:'google', openai:'openai', claude:'claude-pro', xpiki:'xpiki', deepseek:'deepseek-account', openrouter:'openrouter-free', tokenlavka:'tokenlavka'};
+const providerTabs = {google:'google', openai:'openai', claude:'claude-pro', xpiki:'xpiki', deepseek:'deepseek-account', openrouter:'openrouter-free', tokenlavka:'tokenlavka', nvidia:'nvidia-nim'};
 const diagnosticDomains = {
   google:['daily-cloudcode-pa.googleapis.com','cloudcode-pa.googleapis.com','cloudaicompanion.googleapis.com','generativelanguage.googleapis.com','oauth2.googleapis.com','aiplatform.googleapis.com','clients6.google.com','www.googleapis.com'],
   openai:['chatgpt.com','auth.openai.com','api.openai.com'],
   claude:['claude.ai','api.anthropic.com','console.anthropic.com'],
   xpiki:['api.xpiki.com'], deepseek:['api.deepseek.com'], openrouter:['openrouter.ai'],
-  tokenlavka:['tokenlavka.com']
+  tokenlavka:['tokenlavka.com'], nvidia:['integrate.api.nvidia.com']
 };
 const diagnosticBusy = new Set();
 const diagnosticAttempts = new Map();
@@ -1081,8 +1107,22 @@ const dashboardProviderInfo = {
   xpiki:{name:'Claude API · Xpiki',icon:'ϟ',color:'#f0b257'},
   deepseek:{name:'DeepSeek API',icon:'🔷',color:'#5b8cff'},
   openrouter:{name:'OpenRouter Free',icon:'◉',color:'#b29aff'},
-  tokenlavka:{name:'TokenLavka',icon:'🎟️',color:'#4fd1c5'}
+  tokenlavka:{name:'TokenLavka',icon:'🎟️',color:'#4fd1c5'},
+  nvidia:{name:'NVIDIA NIM',icon:'▣',color:'#76b900'}
 };
+function dashboardVlessExit(net) {
+  if (!net.vlessRunning) return 'Нет активного подключения';
+  const exit = net.vlessExit || {};
+  if (!exit.ip) return exit.status === 'unavailable' ? 'Не удалось определить IP' : 'Определяем страну и IP…';
+  const code = exit.country;
+  let country = 'Страна не определена';
+  if (/^[A-Z]{2}$/.test(code || '')) {
+    try { country = new Intl.DisplayNames(['ru'], {type:'region'}).of(code) || code; }
+    catch { country = code; }
+  }
+  return `${country} · ${exit.ip}`;
+}
+
 function dashboardAccess(tab) {
   if (['google','openai','claude'].includes(tab)) {
     const accounts = (tab === 'google' ? appState.accounts : tab === 'openai' ? appState.openaiAccounts : appState.claudeAccounts) || [];
@@ -1263,14 +1303,14 @@ function renderDashboard() {
   if (!tabs.length) providerGrid.innerHTML = '<div class="glass-card dashboard-empty"><h3>Провайдеры выключены</h3><p class="help-text">Включите нужные провайдеры в разделе «Настройки и система».</p></div>';
   const dns = dashboardDns();
   const net = appState.network || {};
-  const core = net.vlessCore ? String(net.vlessCore).split(/[\\/]/).pop() : 'Ядро не выбрано';
+  const vlessExit = dashboardVlessExit(net);
   let proxy = 'Не настроен';
   try {
     const url = new URL(appState.config?.proxy || '');
     if (!(['127.0.0.1','localhost','[::1]'].includes(url.hostname) && ['10880','51180'].includes(url.port))) proxy=url.hostname+(url.port ? `:${url.port}` : '');
   } catch {}
   const proxyStat = dashboardProxyStatus();
-  document.getElementById('dashboard-network').innerHTML = `<div class="dashboard-network-row"><div><strong>VLESS</strong><span>${html(core)}</span></div><span class="badge-pill ${net.vlessRunning ? 'badge-available' : 'badge-pool'}">● ${net.vlessRunning ? 'Работает' : 'Остановлен'}</span></div><div class="dashboard-network-row"><div><strong>${html(dnsModeLabels[dns.mode] || 'DNS')}</strong><span>${html(dns.server)}</span></div><span class="badge-pill ${dns.status === 'ok' ? 'badge-available' : dns.status === 'error' ? 'badge-error' : dns.status === 'checking' ? 'badge-checking' : 'badge-pool'}">● ${html(dns.label)}</span></div><div class="dashboard-network-row"><div><strong>HTTP(S)-прокси</strong><span>${html(proxy)}</span></div><span class="badge-pill ${proxyStat.badge}">● ${html(proxyStat.label)}</span></div><p class="dashboard-quota-note">Auto сравнивает настроенные маршруты по HTTPS. Прямое подключение исключено.</p>`;
+  document.getElementById('dashboard-network').innerHTML = `<div class="dashboard-network-row"><div><strong>VLESS</strong><span>${html(vlessExit)}</span></div><span class="badge-pill ${net.vlessRunning ? 'badge-available' : 'badge-pool'}">● ${net.vlessRunning ? 'Работает' : 'Остановлен'}</span></div><div class="dashboard-network-row"><div><strong>${html(dnsModeLabels[dns.mode] || 'DNS')}</strong><span>${html(dns.server)}</span></div><span class="badge-pill ${dns.status === 'ok' ? 'badge-available' : dns.status === 'error' ? 'badge-error' : dns.status === 'checking' ? 'badge-checking' : 'badge-pool'}">● ${html(dns.label)}</span></div><div class="dashboard-network-row"><div><strong>HTTP(S)-прокси</strong><span>${html(proxy)}</span></div><span class="badge-pill ${proxyStat.badge}">● ${html(proxyStat.label)}</span></div><p class="dashboard-quota-note">Auto сравнивает настроенные маршруты по HTTPS. Прямое подключение исключено.</p>`;
   const usesVless = tabs.some(tab=>appState.routes?.[providerTabs[tab]] === 'vless' || (['default','auto'].includes(appState.routes?.[providerTabs[tab]] || 'default') && autoRouteState(providerTabs[tab]).selected === 'vless'));
   if (!net.vlessRunning && (usesVless || appState.config?.vless_enabled)) alerts.push({priority:0,network:true,text:'VLESS нужен для выбранного маршрута, но туннель остановлен'});
   if (dns.status === 'error') alerts.push({priority:2,network:true,text:'Сохранённый DNS-сервер не прошёл проверку доступности'});
@@ -1929,6 +1969,153 @@ async function disconnectDeepSeekApi() {
     await refreshState();
     document.getElementById('deepseek-result').textContent = 'API-ключ DeepSeek удалён';
   } catch (e) { showToast(String(e)); }
+}
+
+let nvidiaBusy = false;
+
+function maybeAutoLoadNvidiaCatalog() {
+  if (nvidiaBusy || nvidiaAutoLoadAttempted || !window.pywebview?.api) return;
+  const cfg = appState.providers?.nvidia || {};
+  const input = document.getElementById('nvidia-key-input');
+  if (!cfg.hasKey || (input && input.value.trim())) return;
+  const list = document.getElementById('nvidia-models-list');
+  if (list && list.querySelector('.nvidia-model-card')) return;
+  nvidiaAutoLoadAttempted = true;
+  void nvidiaAction('load');
+}
+
+const nvidiaVendorStyles = {
+  nvidia:{label:'NVIDIA', glyph:'▣', color:'#76b900'},
+  meta:{label:'Meta', glyph:'∞', color:'#4a8cff'},
+  mistralai:{label:'Mistral AI', glyph:'M', color:'#ff8f3d'},
+  google:{label:'Google', glyph:'G', color:'#71a7ff'},
+  deepseek:{label:'DeepSeek', glyph:'◈', color:'#5b8cff'},
+  'deepseek-ai':{label:'DeepSeek', glyph:'◈', color:'#5b8cff'},
+  qwen:{label:'Qwen', glyph:'◆', color:'#a799ff'},
+  openai:{label:'OpenAI', glyph:'◎', color:'#42d6a0'},
+  microsoft:{label:'Microsoft', glyph:'⊞', color:'#5ab0ff'},
+  stabilityai:{label:'Stability AI', glyph:'✦', color:'#d99a43'},
+  bytedance:{label:'ByteDance', glyph:'瓣', color:'#f0728f'},
+  blackforestlabs:{label:'Black Forest Labs', glyph:'❖', color:'#b29aff'},
+};
+function nvidiaVendor(modelId) {
+  const vendor = String(modelId || '').split('/')[0].toLowerCase();
+  return nvidiaVendorStyles[vendor] || {label: vendor || 'NVIDIA NIM', glyph:'◇', color:'#43c7d0'};
+}
+function nvidiaModelName(modelId) {
+  return String(modelId || '').split('/').pop() || String(modelId || '');
+}
+function selectedNvidiaModels() {
+  return [...document.querySelectorAll('#nvidia-models-list input:checked')].map(input => input.value);
+}
+
+function renderNvidiaState() {
+  const cfg = appState.providers?.nvidia || {};
+  const count = cfg.selectedModels?.length || 0;
+  const connected = !!cfg.connected || (cfg.hasKey && count > 0);
+  const input = document.getElementById('nvidia-key-input');
+  const selected = selectedNvidiaModels();
+  input.placeholder = cfg.hasKey ? 'Ключ сохранён · оставьте поле пустым' : 'nvapi-…';
+  input.disabled = nvidiaBusy;
+  document.getElementById('nvidia-configured').textContent = cfg.error ||
+    (cfg.hasKey ? `Ключ сохранён · моделей в OpenCode: ${count}` : 'Ключ не сохранён');
+  document.getElementById('btn-nvidia-load').disabled = nvidiaBusy;
+  document.getElementById('btn-nvidia-apply').disabled = nvidiaBusy || !selected.length;
+  document.getElementById('btn-nvidia-probe').disabled = nvidiaBusy || selected.length !== 1;
+  document.getElementById('btn-nvidia-disconnect').disabled = nvidiaBusy || !(cfg.hasKey || count);
+
+  const badge = document.getElementById('nvidia-connection-status');
+  if (badge) {
+    const state = connected ? 'ok' : 'idle';
+    const label = connected ? 'Подключён' : cfg.hasKey ? 'Ключ сохранён · нет моделей' : 'Не подключён';
+    badge.className = `badge-pill ${connected ? 'badge-available' : 'badge-pool'}`;
+    badge.innerHTML = `<span class="connection-indicator ${state}"></span> ${html(label)}`;
+  }
+  const access = document.getElementById('nvidia-access-status');
+  if (access) {
+    access.textContent = connected ? '● Подключён' : cfg.hasKey ? 'Ключ сохранён · модели не добавлены' : 'Не подключён';
+    access.className = `detail-val ${connected ? 'status-good' : ''}`;
+  }
+  const keyStatus = document.getElementById('nvidia-key-status');
+  if (keyStatus) keyStatus.textContent = cfg.hasKey ? 'Сохранён' : 'Не задан';
+  const modelCount = document.getElementById('nvidia-model-count');
+  if (modelCount) modelCount.textContent = String(count);
+
+  document.querySelectorAll('#nvidia-models-list input').forEach(box => {
+    box.disabled = nvidiaBusy;
+    box.closest('.nvidia-model-card')?.classList.toggle('is-selected', !!box.checked);
+  });
+  maybeAutoLoadNvidiaCatalog();
+}
+
+function resetNvidiaCatalog() {
+  document.getElementById('nvidia-models-list').innerHTML = '';
+  const badge = document.getElementById('nvidia-catalog-count');
+  if (badge) { badge.textContent = 'Каталог не загружен'; badge.className = 'badge-pill badge-pool'; }
+  renderNvidiaState();
+}
+
+async function nvidiaAction(action) {
+  if (nvidiaBusy) return;
+  if (action === 'disconnect' && !confirm('Удалить ключ NVIDIA NIM и отключить модели в обеих копиях Hub?')) return;
+  const input = document.getElementById('nvidia-key-input');
+  const status = document.getElementById('nvidia-status');
+  nvidiaBusy = true;
+  renderNvidiaState();
+  status.textContent = 'Выполняется…';
+  try {
+    const api = window.pywebview.api;
+    if (action === 'load') {
+      resetNvidiaCatalog();
+      const models = await api.load_nvidia_models(input.value);
+      input.value = '';
+      const list = document.getElementById('nvidia-models-list');
+      const configured = new Set(appState.providers?.nvidia?.selectedModels || []);
+      if (!models.length) {
+        list.innerHTML = '<p class="help-text">Каталог NVIDIA NIM вернул только нечатные модели (embeddings, rerank, safety). Попробуйте другой ключ или обновите каталог позже.</p>';
+      } else {
+        list.innerHTML = models.map(model => {
+          const vendor = nvidiaVendor(model);
+          const checked = configured.has(model);
+          return `<label class="nvidia-model-card${checked ? ' is-selected' : ''}" style="--nvidia-vendor:${html(vendor.color)}" title="${html(model)}">
+            <input type="checkbox" class="switch-input nvidia-card-switch" value="${html(model)}"${checked ? ' checked' : ''}>
+            <span class="nvidia-model-logo">${html(vendor.glyph)}</span>
+            <span class="nvidia-model-info">
+              <span class="nvidia-model-name">${html(nvidiaModelName(model))}</span>
+              <span class="nvidia-model-id">${html(model)}</span>
+              <span class="nvidia-model-vendor">${html(vendor.label)} · NIM</span>
+            </span>
+          </label>`;
+        }).join('');
+        list.querySelectorAll('input').forEach(box => box.addEventListener('change', renderNvidiaState));
+      }
+      const badge = document.getElementById('nvidia-catalog-count');
+      if (badge) { badge.textContent = `В каталоге: ${models.length}`; badge.className = 'badge-pill badge-available'; }
+      status.textContent = `Загружено моделей: ${models.length}. Для проверки доступа запустите генерацию.`;
+    } else if (action === 'probe') {
+      const [model] = selectedNvidiaModels();
+      await api.probe_nvidia_model(model);
+      status.textContent = `${model}: NVIDIA вернула результат генерации.`;
+    } else {
+      const next = action === 'apply'
+        ? await api.apply_nvidia_models(selectedNvidiaModels())
+        : await api.disconnect_nvidia();
+      (appState.providers ||= {}).nvidia = next;
+      if (action === 'disconnect') {
+        input.value = '';
+        resetNvidiaCatalog();
+      }
+      status.textContent = action === 'apply'
+        ? `Добавлено моделей: ${next.selectedModels.length}. Выберите NVIDIA NIM в OpenCode Desktop.`
+        : 'NVIDIA NIM отключён.';
+      await refreshState();
+    }
+  } catch (e) {
+    status.textContent = e.message || String(e);
+  } finally {
+    nvidiaBusy = false;
+    renderNvidiaState();
+  }
 }
 
 function renderOpenRouterState() {

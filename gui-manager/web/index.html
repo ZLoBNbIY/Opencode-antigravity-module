@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Antigravity Hub</title>
-  <link rel="stylesheet" href="style.css?v=20261117d">
+  <link rel="stylesheet" href="style.css?v=20261120-nvidia-switches">
 </head>
 <body>
 
@@ -28,7 +28,7 @@
         <div class="nav-item" data-tab="google" onclick="switchTab('google')">
           <span class="nav-icon">🚀</span>
           <div class="nav-text">
-            <span>Google Antigravity</span>
+            <span>Google Antigravity <span class="connection-indicator idle" id="nav-status-google" role="img" aria-label="Google не подключён"></span></span>
             <span class="nav-sub">Cloud Code · Gemini · APIs</span>
           </div>
         </div>
@@ -36,7 +36,7 @@
         <div class="nav-item" data-tab="openai" onclick="switchTab('openai')">
           <span class="nav-icon">🟢</span>
           <div class="nav-text">
-            <span>ChatGPT</span>
+            <span>ChatGPT <span class="connection-indicator idle" id="nav-status-openai" role="img" aria-label="ChatGPT не подключён"></span></span>
             <span class="nav-sub">Аккаунты · Доступ</span>
           </div>
         </div>
@@ -44,19 +44,19 @@
         <div class="nav-item" data-tab="claude" onclick="switchTab('claude')">
           <span class="nav-icon">🟠</span>
           <div class="nav-text">
-            <span>Claude</span>
+            <span>Claude <span class="connection-indicator idle" id="nav-status-claude" role="img" aria-label="Claude не подключён"></span></span>
             <span class="nav-sub">Pro · Аккаунты</span>
           </div>
         </div>
 
-        <div class="nav-item" data-tab="xpiki" onclick="switchTab('xpiki')"><span class="nav-icon">⚡</span><div class="nav-text"><span>Claude API · Xpiki</span><span class="nav-sub">Ключ · Модели · Квота</span></div></div>
+        <div class="nav-item" data-tab="xpiki" onclick="switchTab('xpiki')"><span class="nav-icon">⚡</span><div class="nav-text"><span>Claude API · Xpiki <span class="connection-indicator idle" id="nav-status-xpiki" role="img" aria-label="Xpiki не подключён"></span></span><span class="nav-sub">Ключ · Модели · Квота</span></div></div>
 
-        <div class="nav-item" data-tab="deepseek" onclick="switchTab('deepseek')"><span class="nav-icon">🔷</span><div class="nav-text"><span>DeepSeek API</span><span class="nav-sub">Platform API · Баланс</span></div></div>
+        <div class="nav-item" data-tab="deepseek" onclick="switchTab('deepseek')"><span class="nav-icon">🔷</span><div class="nav-text"><span>DeepSeek API <span class="connection-indicator idle" id="nav-status-deepseek" role="img" aria-label="DeepSeek не подключён"></span></span><span class="nav-sub">Platform API · Баланс</span></div></div>
 
         <div class="nav-item" data-tab="openrouter" onclick="switchTab('openrouter')">
           <span class="nav-icon">🟣</span>
           <div class="nav-text">
-            <span>OpenRouter Free</span>
+            <span>OpenRouter Free <span class="connection-indicator idle" id="nav-status-openrouter" role="img" aria-label="OpenRouter не подключён"></span></span>
             <span class="nav-sub">Бесплатные модели</span>
           </div>
         </div>
@@ -64,9 +64,14 @@
         <div class="nav-item" data-tab="tokenlavka" onclick="switchTab('tokenlavka')">
           <span class="nav-icon">🎟️</span>
           <div class="nav-text">
-            <span>TokenLavka</span>
+            <span>TokenLavka <span class="connection-indicator idle" id="nav-status-tokenlavka" role="img" aria-label="TokenLavka не подключён"></span></span>
             <span class="nav-sub">Ключ · Модели · OpenAI-совместимый</span>
           </div>
+        </div>
+
+        <div class="nav-item" data-tab="nvidia" onclick="switchTab('nvidia')">
+          <span class="nav-icon">▣</span>
+          <div class="nav-text"><span>NVIDIA NIM <span class="connection-indicator idle" id="nav-status-nvidia" role="img" aria-label="NVIDIA NIM не подключён"></span></span><span class="nav-sub">API-ключ · Модели · Маршрут</span></div>
         </div>
 
         <div class="nav-item" data-tab="network" onclick="switchTab('network')">
@@ -533,6 +538,55 @@
       <!-- ===============================================================
            SETTINGS & SYSTEM
            =============================================================== -->
+      <section id="view-nvidia" class="view-tab" style="display:none">
+        <div class="page-header">
+          <div class="header-left"><h1>NVIDIA NIM</h1><p>Модели NVIDIA в OpenCode Desktop без терминала</p></div>
+          <div class="header-right"><span class="badge-pill badge-pool" id="nvidia-connection-status" role="status"><span class="connection-indicator idle"></span> Не подключён</span></div>
+        </div>
+        <div class="provider-account-layout">
+          <div class="provider-account-content">
+            <div class="glass-card">
+              <div class="service-card-header"><div class="service-name">Подключение</div></div>
+              <label for="nvidia-key-input" class="help-text">API-ключ с build.nvidia.com</label>
+              <div class="openrouter-key-row" style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0">
+                <input type="password" id="nvidia-key-input" placeholder="nvapi-…" autocomplete="off" oninput="resetNvidiaCatalog()"
+                  style="flex:1;min-width:180px;background:rgba(0,0,0,0.3);border:1px solid var(--glass-border);border-radius:10px;padding:10px 14px;color:#fff">
+                <button class="btn-primary" id="btn-nvidia-load" onclick="nvidiaAction('load')">Загрузить модели</button>
+                <button class="btn-secondary" id="btn-nvidia-disconnect" onclick="nvidiaAction('disconnect')" disabled>Отключить</button>
+              </div>
+              <p class="help-text" id="nvidia-configured"></p>
+              <p class="help-text" id="nvidia-status" role="status">Загрузка каталога не подтверждает, что ключ имеет доступ к генерации.</p>
+            </div>
+            <div class="glass-card" style="margin-top:16px">
+              <div class="service-card-header"><div class="service-name">Модели NVIDIA</div><span class="badge-pill badge-pool" id="nvidia-catalog-count">Каталог не загружен</span></div>
+              <div id="nvidia-models-list" class="nvidia-model-grid"></div>
+              <div class="button-row">
+                <button class="btn-primary" id="btn-nvidia-apply" onclick="nvidiaAction('apply')" disabled>Добавить выбранные в OpenCode</button>
+                <button class="btn-secondary" id="btn-nvidia-probe" onclick="nvidiaAction('probe')" disabled title="Один короткий запрос, который может расходовать квоту">⚡ Проверить генерацию выбранной модели</button>
+              </div>
+              <p class="help-text">Для проверки отметьте одну модель. После добавления выберите NVIDIA NIM в списке моделей OpenCode Desktop. Каталог показывает только чат-модели hosted NIM API.</p>
+            </div>
+          </div>
+          <aside class="provider-route-sidebar" aria-label="Маршрут NVIDIA NIM">
+            <div class="glass-card service-card" data-provider-card="nvidia">
+              <div class="service-card-header"><div class="service-name">NVIDIA NIM</div><span class="badge-pill badge-pool provider-status" id="provider-status-nvidia" role="status"><span class="connection-indicator idle"></span> Не проверено</span></div>
+              <div class="route-section-title">Маршрут подключения</div><div class="segmented-group" id="seg-group-nvidia"></div>
+              <p class="help-text provider-route-description" id="card-route-nvidia"></p>
+              <details class="auto-comparison"><summary>Сравнение маршрутов Auto</summary><div id="auto-routes-nvidia"></div><button class="btn-secondary" id="auto-check-nvidia" onclick="refreshAutoRoutes('nvidia')">Сравнить маршруты</button></details>
+              <div class="provider-check-row"><span class="help-text" id="card-check-time-nvidia">Проверка ещё не запускалась</span><div style="display:flex; gap:6px;"><button class="btn-secondary" id="btn-deep-probe-card-nvidia" onclick="runDeepProbe('nvidia')" title="Отправить короткий запрос модели для проверки доступа и генерации">⚡ Проверить генерацию</button><button class="btn-secondary" id="card-check-nvidia" onclick="showDiagnostics('nvidia')">Диагностика →</button></div></div>
+            </div>
+            <div class="glass-card active-account-panel">
+              <h2>Статус подключения</h2>
+              <div class="details-list">
+                <div class="detail-row"><span class="detail-key">Состояние</span><span class="detail-val" id="nvidia-access-status">Не подключён</span></div>
+                <div class="detail-row"><span class="detail-key">API-ключ</span><span class="detail-val" id="nvidia-key-status">Не задан</span></div>
+                <div class="detail-row"><span class="detail-key">Моделей в OpenCode</span><span class="detail-val" id="nvidia-model-count">0</span></div>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
       <section id="view-diagnostics" class="view-tab" style="display:none">
         <div class="page-header"><div class="header-left"><h1>🩺 Диагностика</h1><p>Домены Google, ChatGPT, Claude, Xpiki и OpenRouter через выбранные маршруты</p></div><div class="header-right"><button class="btn-primary" id="btn-diag-all" onclick="runAllDiagnostics()">Проверить все</button></div></div>
         <p class="help-text">Автопроверка включённых провайдеров выполняется раз в минуту. Отключённые провайдеры можно включить в настройках.</p>
@@ -641,6 +695,21 @@
             <p class="help-text">● зелёный — TCP доступен · ● красный — ошибка · ● серый — ещё не проверялся. IP соединения может принадлежать локальному прокси.</p>
           </details>
         </div>
+        <div class="glass-card diag-card provider-diagnostics" id="diagnostics-nvidia">
+          <div class="diag-header"><div><h2>Диагностика NVIDIA NIM</h2><p class="help-text">Домен hosted NIM API через выбранный маршрут. Кнопка «Проверить генерацию» отправляет короткий запрос к подключённой модели и может расходовать квоту.</p></div><div style="display:flex; gap:8px;"><button class="btn-secondary" id="btn-deep-diag-nvidia" onclick="runDeepProbe('nvidia')">⚡ Проверить генерацию</button><button class="btn-primary" id="btn-diag-nvidia" onclick="runDiagnostics('nvidia')">Проверить домены</button></div></div>
+          <details class="diag-details" id="diag-details-nvidia">
+            <summary class="diag-summary-toggle">
+              <span class="diag-summary-left">
+                <span class="diag-arrow">▶</span>
+                <span>Список хостов и доменов NVIDIA</span>
+                <span class="badge-pill diag-status-badge" id="diag-badge-nvidia">Показать</span>
+              </span>
+              <span class="help-text diag-toggle-hint">Нажмите для просмотра</span>
+            </summary>
+            <div class="diagnostic-scroll"><table class="diag-table"><thead><tr><th>Сервис / домен</th><th>Доступность</th><th>Задержка</th><th>Маршрут</th><th>IP соединения</th></tr></thead><tbody id="diag-tbody-nvidia"></tbody></table></div>
+            <p class="help-text">● зелёный — TCP доступен · ● красный — ошибка · ● серый — ещё не проверялся. IP соединения может принадлежать локальному прокси.</p>
+          </details>
+        </div>
       </section>
 
       <section id="view-settings" class="view-tab" style="display: none;">
@@ -682,6 +751,7 @@
           <label class="provider-toggle-row"><span>DeepSeek API</span><input type="checkbox" class="switch-input" id="provider-enabled-deepseek" checked onchange="markSettingsDirty()" aria-label="Включить DeepSeek API"></label>
           <label class="provider-toggle-row"><span>OpenRouter Free</span><input type="checkbox" class="switch-input" id="provider-enabled-openrouter" checked onchange="markSettingsDirty()" aria-label="Включить OpenRouter Free"></label>
           <label class="provider-toggle-row"><span>TokenLavka</span><input type="checkbox" class="switch-input" id="provider-enabled-tokenlavka" checked onchange="markSettingsDirty()" aria-label="Включить TokenLavka"></label>
+          <label class="provider-toggle-row"><span>NVIDIA NIM</span><input type="checkbox" class="switch-input" id="provider-enabled-nvidia" checked onchange="markSettingsDirty()" aria-label="Включить NVIDIA NIM"></label>
           <p class="help-text" id="provider-settings-result" role="status"></p>
         </div>
         <div class="glass-card" style="margin-bottom: 16px;">
@@ -854,6 +924,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20261117d"></script>
+<script src="app.js?v=20261120-nvidia-autoload"></script>
 </body>
 </html>
