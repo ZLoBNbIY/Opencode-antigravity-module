@@ -110,7 +110,7 @@ test('failed domains show error indicators and no invented milliseconds', () => 
   assert.equal(elements.get('diag-tbody-tokenlavka').children.length, 1);
   assert.equal(elements.get('seg-group-deepseek').children.length, 5);
   assert.equal(elements.get('seg-group-tokenlavka').children.length, 5);
-  assert.equal(elements.get('tokenlavka-models-list').children.length, 1);
+  assert.equal((elements.get('tokenlavka-models-list').innerHTML.match(/<label class="model-card\b/g) || []).length, 1);
   assert.match(elements.get('vless-active-summary').textContent, /не выбран/);
   assert.match(elements.get('tokenlavka-balance').innerHTML, /40%/);
   assert.match(elements.get('tokenlavka-balance').innerHTML, /progress-fill-emerald/);
