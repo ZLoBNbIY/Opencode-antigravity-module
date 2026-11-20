@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AI HUB</title>
   <link rel="icon" type="image/png" href="../icon.png">
-  <link rel="stylesheet" href="style.css?v=20261120-aihub-glass">
+  <link rel="stylesheet" href="style.css?v=20261120-single-theme">
 </head>
 <body>
 
@@ -726,23 +726,6 @@
           </div>
         </div>
 
-        <div class="glass-card" style="margin-bottom: 16px;">
-          <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 6px;">Цветовая тема</div>
-          <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">Акцентный цвет кнопок, переключателей и подсветки интерфейса. Применяется сразу и сохраняется автоматически.</div>
-          <div class="theme-swatches" id="accent-theme-picker">
-            <button type="button" class="theme-swatch" data-theme="amber" onclick="selectAccentTheme('amber')" aria-pressed="false"><span class="theme-swatch-dot" style="--swatch:#d99a43"></span><span>Янтарный</span></button>
-            <button type="button" class="theme-swatch" data-theme="azure" onclick="selectAccentTheme('azure')" aria-pressed="false"><span class="theme-swatch-dot" style="--swatch:#5b9cff"></span><span>Лазурь</span></button>
-            <button type="button" class="theme-swatch" data-theme="violet" onclick="selectAccentTheme('violet')" aria-pressed="false"><span class="theme-swatch-dot" style="--swatch:#a78bfa"></span><span>Аметист</span></button>
-            <button type="button" class="theme-swatch" data-theme="rose" onclick="selectAccentTheme('rose')" aria-pressed="false"><span class="theme-swatch-dot" style="--swatch:#f472b6"></span><span>Роза</span></button>
-            <button type="button" class="theme-swatch" data-theme="crimson" onclick="selectAccentTheme('crimson')" aria-pressed="false"><span class="theme-swatch-dot" style="--swatch:#ff4d4f"></span><span>Красный</span></button>
-            <button type="button" class="theme-swatch" data-theme="cyan" onclick="selectAccentTheme('cyan')" aria-pressed="false"><span class="theme-swatch-dot" style="--swatch:#22d3ee"></span><span>Циан</span></button>
-            <button type="button" class="theme-swatch" data-theme="indigo" onclick="selectAccentTheme('indigo')" aria-pressed="false"><span class="theme-swatch-dot" style="--swatch:#6366f1"></span><span>Индиго</span></button>
-            <button type="button" class="theme-swatch" data-theme="mango" onclick="selectAccentTheme('mango')" aria-pressed="false"><span class="theme-swatch-dot" style="--swatch:#ff9f43"></span><span>Манго</span></button>
-            <button type="button" class="theme-swatch" data-theme="magenta" onclick="selectAccentTheme('magenta')" aria-pressed="false"><span class="theme-swatch-dot" style="--swatch:#d946ef"></span><span>Магента</span></button>
-            <button type="button" class="theme-swatch" data-theme="gray" onclick="selectAccentTheme('gray')" aria-pressed="false"><span class="theme-swatch-dot" style="--swatch:#9ca3af"></span><span>Серый</span></button>
-          </div>
-        </div>
-
         <div class="glass-card provider-settings">
           <h2>Провайдеры</h2><p class="help-text">Отключённый провайдер скрывается в Hub и из выбора моделей OpenCode. Аккаунты и ключи сохраняются. Нажмите «Сохранить настройки», чтобы применить изменения.</p>
           <label class="provider-toggle-row"><span>Google Antigravity</span><input type="checkbox" class="switch-input" id="provider-enabled-antigravity" checked onchange="markSettingsDirty()" aria-label="Включить Google Antigravity"></label>
@@ -933,6 +916,6 @@
       <button class="btn-secondary" type="button" onclick="this.closest('dialog').close()">Отмена</button>
     </form>
   </dialog>
-<script src="app.js?v=20261120-aihub-theme"></script>
+<script src="app.js?v=20261120-single-theme"></script>
 </body>
 </html>

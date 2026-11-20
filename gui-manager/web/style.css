@@ -25,79 +25,6 @@
   --blur: 40px;
 }
 
-/* Accent themes — switched by the picker in Settings */
-body[data-accent="azure"] {
-  --accent-amber: #5b9cff;
-  --accent-amber-light: #8fbaff;
-  --accent-amber-rgb: 91, 156, 255;
-  --accent-amber-dark: #2c5fa8;
-  --accent-amber-dark-rgb: 44, 95, 168;
-}
-
-body[data-accent="violet"] {
-  --accent-amber: #a78bfa;
-  --accent-amber-light: #c4b5fd;
-  --accent-amber-rgb: 167, 139, 250;
-  --accent-amber-dark: #6d4fc7;
-  --accent-amber-dark-rgb: 109, 79, 199;
-}
-
-body[data-accent="rose"] {
-  --accent-amber: #f472b6;
-  --accent-amber-light: #f9a8d4;
-  --accent-amber-rgb: 244, 114, 182;
-  --accent-amber-dark: #a83270;
-  --accent-amber-dark-rgb: 168, 50, 112;
-}
-
-body[data-accent="crimson"] {
-  --accent-amber: #ff4d4f;
-  --accent-amber-light: #ff8a8a;
-  --accent-amber-rgb: 255, 77, 79;
-  --accent-amber-dark: #cf1322;
-  --accent-amber-dark-rgb: 207, 19, 34;
-}
-
-body[data-accent="cyan"] {
-  --accent-amber: #22d3ee;
-  --accent-amber-light: #67e8f9;
-  --accent-amber-rgb: 34, 211, 238;
-  --accent-amber-dark: #0e7490;
-  --accent-amber-dark-rgb: 14, 116, 144;
-}
-
-body[data-accent="indigo"] {
-  --accent-amber: #6366f1;
-  --accent-amber-light: #a5b4fc;
-  --accent-amber-rgb: 99, 102, 241;
-  --accent-amber-dark: #3730a3;
-  --accent-amber-dark-rgb: 55, 48, 163;
-}
-
-body[data-accent="mango"] {
-  --accent-amber: #ff9f43;
-  --accent-amber-light: #ffc078;
-  --accent-amber-rgb: 255, 159, 67;
-  --accent-amber-dark: #b35c00;
-  --accent-amber-dark-rgb: 179, 92, 0;
-}
-
-body[data-accent="magenta"] {
-  --accent-amber: #d946ef;
-  --accent-amber-light: #f0abfc;
-  --accent-amber-rgb: 217, 70, 239;
-  --accent-amber-dark: #86198f;
-  --accent-amber-dark-rgb: 134, 25, 143;
-}
-
-body[data-accent="gray"] {
-  --accent-amber: #9ca3af;
-  --accent-amber-light: #d1d5db;
-  --accent-amber-rgb: 156, 163, 175;
-  --accent-amber-dark: #4b5563;
-  --accent-amber-dark-rgb: 75, 85, 99;
-}
-
 * {
   box-sizing: border-box;
   margin: 0;
@@ -306,79 +233,6 @@ body {
   font-weight: 700;
   color: var(--accent-amber-light);
   margin-bottom: 4px;
-}
-
-/* Accent theme picker */
-.theme-swatches {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.theme-swatch {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  min-width: 76px;
-  padding: 9px 8px 8px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid transparent;
-  border-radius: 11px;
-  color: var(--text-muted);
-  font-family: var(--font);
-  font-size: 10.5px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
-}
-
-.theme-swatch:hover {
-  background: rgba(255, 255, 255, 0.07);
-  color: var(--text-primary);
-}
-
-.theme-swatch.active {
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.16);
-  color: var(--text-primary);
-}
-
-.theme-swatch-dot {
-  position: relative;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: var(--swatch);
-  border: 2px solid rgba(255, 255, 255, 0.22);
-  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.35), 0 2px 7px rgba(0, 0, 0, 0.3);
-  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
-}
-
-.theme-swatch:hover .theme-swatch-dot {
-  transform: scale(1.08);
-}
-
-.theme-swatch.active .theme-swatch-dot {
-  border-color: #fff;
-  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.14), inset 0 1px 3px rgba(0, 0, 0, 0.35);
-}
-
-.theme-swatch.active .theme-swatch-dot::after {
-  content: '✓';
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  color: #fff;
-  font-size: 14px;
-  font-weight: 800;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
-}
-
-.theme-swatch:focus-visible {
-  outline: 2px solid var(--accent-amber);
-  outline-offset: 2px;
 }
 
 .status-badge {
@@ -1413,11 +1267,6 @@ body {
   border-color: rgba(var(--accent-amber-rgb), .6);
   box-shadow: 0 2px 10px rgba(var(--accent-amber-rgb), .25), inset 0 -1px 0 rgba(var(--brand-cyan-rgb), .35), inset 0 1px 0 rgba(255, 255, 255, .22);
 }
-.theme-swatch.active .theme-swatch-dot {
-  border-color: #fff;
-  box-shadow: 0 0 0 2px rgba(var(--brand-cyan-rgb), .55), 0 0 16px rgba(var(--brand-amber-rgb), .45), inset 0 1px 3px rgba(0, 0, 0, .35);
-}
-
 /* Status dots */
 .connection-indicator.ok { box-shadow: 0 0 9px #42d6a066, 0 0 0 2px rgba(66, 214, 160, .12); }
 .connection-indicator.checking { background: var(--brand-cyan); box-shadow: 0 0 9px rgba(var(--brand-cyan-rgb), .6); }
@@ -1494,4 +1343,168 @@ input:not([type=checkbox]):focus-visible, select:focus-visible {
     animation-iteration-count: 1 !important;
     transition-duration: .001ms !important;
   }
+}
+
+/* AI HUB — neutral controls, Segmented Plug switches, no colored card strips */
+.header-left h1::after,
+.dashboard-metric::before { display: none !important; }
+
+.brand {
+  border-bottom: 1px solid rgba(255, 255, 255, .06);
+  border-image: none;
+}
+.nav-item.active::before {
+  background: rgba(255, 255, 255, .45);
+  box-shadow: none;
+}
+.acc-card.is-active,
+.acc-card.is-active:hover {
+  border-color: rgba(255, 255, 255, .18);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .28), inset 0 1px 0 rgba(255, 255, 255, .10);
+}
+.nvidia-model-logo, .model-card-logo,
+.service-logo, .acc-avatar, .dashboard-provider-icon {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .10), 0 6px 14px rgba(0, 0, 0, .3);
+}
+.service-logo::after, .acc-avatar::after {
+  border-color: rgba(255, 255, 255, .10);
+}
+
+.glass-card,
+.glass-card:hover,
+.dashboard-metric,
+.dashboard-provider {
+  border-color: rgba(255, 255, 255, .07);
+}
+.glass-card:hover {
+  box-shadow: 0 6px 18px rgba(2, 7, 12, .24);
+}
+
+/* All action buttons: neutral glass, no color fills or glows */
+.sidebar-restart-btn,
+.opencode-action-btn,
+.btn-primary,
+.btn-secondary,
+.seg-btn {
+  background: rgba(255, 255, 255, .045);
+  border-color: rgba(255, 255, 255, .12);
+  color: var(--text-primary);
+  box-shadow: none;
+}
+.sidebar-restart-btn:hover:not(:disabled),
+.opencode-action-btn:hover:not(:disabled),
+.btn-primary:hover:not(:disabled),
+.btn-secondary:hover:not(:disabled),
+.seg-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, .10);
+  border-color: rgba(255, 255, 255, .20);
+  color: #fff;
+  box-shadow: none;
+}
+.seg-btn.active {
+  background: rgba(255, 255, 255, .13);
+  border-color: rgba(255, 255, 255, .24);
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .10);
+}
+
+/* Segmented Plug — the only switch shape used in the UI */
+.switch-input {
+  width: 38px;
+  height: 22px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, .05);
+  border: 1px solid rgba(255, 255, 255, .12);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, .4);
+  transition: background .22s ease, border-color .22s ease, box-shadow .22s ease;
+}
+.switch-input::before {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 14px;
+  border-radius: 4px;
+  background: #e9f0f4;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, .45);
+  transition: transform .22s cubic-bezier(.2, .8, .2, 1), box-shadow .22s ease;
+}
+.switch-input::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 6px;
+  width: 3px;
+  height: 8px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, .22);
+  box-shadow: 21px 0 0 rgba(255, 255, 255, .22);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+.switch-input:checked {
+  background: rgba(255, 255, 255, .11);
+  border-color: rgba(255, 255, 255, .28);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .14), 0 2px 8px rgba(0, 0, 0, .4);
+}
+.switch-input:checked::before {
+  transform: translateX(12px);
+  background: #f5f9fb;
+}
+.switch-input:checked::after {
+  background: rgba(255, 255, 255, .34);
+  box-shadow: 21px 0 0 rgba(255, 255, 255, .34);
+}
+
+/* Compact plug for model cards */
+.nvidia-model-card .nvidia-card-switch,
+.model-card .card-switch {
+  width: 34px;
+  height: 19px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, .05);
+  border-color: rgba(255, 255, 255, .12);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, .4);
+  accent-color: auto;
+}
+.nvidia-model-card .nvidia-card-switch::before,
+.model-card .card-switch::before {
+  top: 2px;
+  left: 3px;
+  width: 16px;
+  height: 12px;
+  border-radius: 3px;
+  transform: none;
+}
+.nvidia-model-card .nvidia-card-switch::after,
+.model-card .card-switch::after {
+  left: 5px;
+  width: 2px;
+  height: 7px;
+  box-shadow: 19px 0 0 rgba(255, 255, 255, .22);
+}
+.nvidia-model-card .nvidia-card-switch:checked,
+.model-card .card-switch:checked {
+  background: rgba(255, 255, 255, .11);
+  border-color: rgba(255, 255, 255, .28);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .14), 0 2px 8px rgba(0, 0, 0, .4);
+}
+.nvidia-model-card .nvidia-card-switch:checked::before,
+.model-card .card-switch:checked::before {
+  transform: translateX(12px);
+}
+.nvidia-model-card .nvidia-card-switch:checked::after,
+.model-card .card-switch:checked::after {
+  background: rgba(255, 255, 255, .34);
+  box-shadow: 19px 0 0 rgba(255, 255, 255, .34);
+}
+
+/* Neutral focus rings */
+.btn-primary:focus-visible, .btn-secondary:focus-visible, .seg-btn:focus-visible,
+.switch-input:focus-visible, .sidebar-restart-btn:focus-visible, .opencode-action-btn:focus-visible,
+input:not([type=checkbox]):focus-visible, select:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, .65);
+  outline-offset: 2px;
+  box-shadow: none;
 }

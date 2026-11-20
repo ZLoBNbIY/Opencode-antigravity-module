@@ -1360,8 +1360,8 @@ function renderGoogleTab() {
     const card = document.createElement("div");
     card.className = `glass-card acc-card ${isAct ? 'is-active' : ''} ${!isEnabled ? 'is-disabled' : ''}`;
     if (isAct) {
-      card.style.borderColor = "var(--glass-border-amber)";
-      card.style.boxShadow = "0 16px 40px rgba(217, 154, 67, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.15)";
+      card.style.borderColor = "rgba(255, 255, 255, 0.18)";
+      card.style.boxShadow = "0 6px 18px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.10)";
     }
     if (!isEnabled) {
       card.style.opacity = "0.75";
@@ -1494,8 +1494,8 @@ function renderOpenAiTab() {
     const card = document.createElement('div');
     card.className = `glass-card acc-card ${isAct ? 'is-active' : ''} ${!isEnabled ? 'is-disabled' : ''}`;
     if (isAct) {
-      card.style.borderColor = "var(--glass-border-amber)";
-      card.style.boxShadow = "0 16px 40px rgba(217, 154, 67, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.15)";
+      card.style.borderColor = "rgba(255, 255, 255, 0.18)";
+      card.style.boxShadow = "0 6px 18px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.10)";
     }
     if (!isEnabled) {
       card.style.opacity = "0.75";
@@ -2282,33 +2282,10 @@ async function disconnectTokenLavka() {
 }
 
 // --- Settings Tab ---
-const ACCENT_THEMES = ["amber", "azure", "violet", "rose", "crimson", "cyan", "indigo", "mango", "magenta", "gray"];
-function applyAccentTheme(theme) {
-  if (!ACCENT_THEMES.includes(theme)) theme = "amber";
-  if (document.body) document.body.dataset.accent = theme;
-  document.querySelectorAll('.theme-swatch').forEach(el => {
-    const active = el.dataset.theme === theme;
-    el.classList.toggle('active', active);
-    el.setAttribute('aria-pressed', String(active));
-  });
-}
-
-async function selectAccentTheme(theme) {
-  applyAccentTheme(theme);
-  if (appState.config) appState.config.accent_theme = theme;
-  if (!window.pywebview?.api?.save_general_settings) return;
-  try {
-    await window.pywebview.api.save_general_settings({ accent_theme: theme });
-  } catch (e) {
-    showToast(`Ошибка сохранения темы: ${e}`);
-  }
-}
-
 let settingsDirty = false;
 function markSettingsDirty() { settingsDirty = true; }
 function renderSettingsTab() {
   const cfg = appState.config || {};
-  applyAccentTheme(cfg.accent_theme);
   if (settingsDirty) return;
   const strat = cfg.account_selection_strategy || "hybrid";
   selectStrategy(strat, false);
@@ -2721,7 +2698,12 @@ async function toggleCandidate(id, enabled) {
 async function activateOpenAiAccount(id) {
   if (!window.pywebview?.api) return;
   try {
-    await window.pywebview.api.activate_openai_account(id);
+    const activated = await window.pywebview.api.activate_openai_account(id);
+    if (activated === false) {
+      showToast("Не удалось переключить ChatGPT в OpenCode");
+      await refreshState();
+      return;
+    }
     showToast("Активный аккаунт ChatGPT переключен");
     await refreshState();
   } catch (e) { showToast(`Ошибка переключения ChatGPT: ${e?.message || e}`); }

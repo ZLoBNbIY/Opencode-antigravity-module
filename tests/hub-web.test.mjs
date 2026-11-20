@@ -436,6 +436,19 @@ test('ChatGPT login waits for completion, suppresses double clicks, and shows fa
   assert.match(elements.get('toasts').children.at(-1).textContent, /Ошибка входа: token exchange failed/);
 });
 
+test('ChatGPT activation reports when OpenCode rejects the switch', async () => {
+  const {elements, context} = frontend(state);
+  let calls = 0;
+  context.window.pywebview = {api: {activate_openai_account: async () => {
+    calls++;
+    return false;
+  }}};
+  vm.runInContext('refreshState = async () => {};', context);
+  await vm.runInContext("activateOpenAiAccount('acc-b')", context);
+  assert.equal(calls, 1);
+  assert.match(elements.get('toasts').children.at(-1).textContent, /Не удалось переключить ChatGPT в OpenCode/);
+});
+
 test('Google login refreshes accounts only after successful completion', async () => {
   const {elements, context} = frontend(state);
   let finish;
@@ -477,27 +490,6 @@ test('Google account patch disclaimer follows live OpenCode patch status', async
   assert.equal(toasts.children.length, 2, 'no extra disclaimer toast when patches work');
   assert.match(toasts.children.at(-1).textContent, /добавлен/);
   assert.doesNotMatch(toasts.children.map(t => t.textContent).join(' '), /Патчи OpenCode не активны/);
-});
-
-test('accent theme selection applies swatches and persists the choice', async () => {
-  const {context} = frontend(state);
-  let saved = null;
-  context.window.pywebview = {api:{save_general_settings: async settings => { saved = settings; return true; }}};
-  const swatches = ['amber', 'azure', 'violet', 'rose', 'crimson', 'cyan', 'indigo', 'mango', 'magenta', 'gray'].map(theme => {
-    const el = context.document.createElement('button');
-    el.dataset.theme = theme;
-    return el;
-  });
-  context.document.querySelectorAll = selector => selector === '.theme-swatch' ? swatches : [];
-
-  await vm.runInContext("selectAccentTheme('azure')", context);
-  assert.equal(saved.accent_theme, 'azure');
-  assert.equal(vm.runInContext('appState.config.accent_theme', context), 'azure');
-  const azure = swatches.find(el => el.dataset.theme === 'azure');
-  assert.equal(azure.classes.has('active'), true);
-  assert.equal(azure.attributes['aria-pressed'], 'true');
-  assert.equal(swatches[0].classes.has('active'), false);
-  assert.equal(swatches.length, 10, 'green theme removed, nine alternatives available');
 });
 
 test('OpenCode restart button is placed in sidebar above status indicator and removed from settings', () => {

@@ -211,7 +211,7 @@ def _proxy_view(cfg: dict) -> dict:
 
 def _config_view(cfg: dict) -> dict:
     allowed = ("dns_mode", "custom_dns", "dot_host", "doh_url", "dns_presets", "proxy_failover",
-               "vless_enabled", "vless_kill_switch", "accent_theme", "account_selection_strategy",
+               "vless_enabled", "vless_kill_switch", "account_selection_strategy",
                "close_to_tray", "providers_visibility", "provider_routes")
     return {**{key: cfg[key] for key in allowed if key in cfg}, **_proxy_view(cfg),
             "vless_url": _pool_id(cfg.get("vless_url") or ""),
@@ -271,7 +271,7 @@ def _backup_config(data: dict) -> dict:
     types = {
         "account_selection_strategy": str, "soft_quota_threshold_percent": int,
         "switch_on_first_rate_limit": bool, "max_account_switches": int,
-        "quota_style_fallback": bool, "close_to_tray": bool, "accent_theme": str,
+        "quota_style_fallback": bool, "close_to_tray": bool,
         "providers_visibility": dict, "provider_routes": dict, "vless_kill_switch": bool,
         "vless_enabled": bool, "dns_mode": str, "custom_dns": list, "dot_host": str,
         "doh_url": str, "dns_presets": list, "proxy": str, "proxy_pool": list,
@@ -1630,11 +1630,6 @@ class HubApi:
                     if not isinstance(settings[key], bool):
                         raise ValueError(f"Неверное значение настройки {key}")
                     cfg[key] = settings[key]
-            accent = settings.get("accent_theme")
-            if accent is not None:
-                if accent not in ("amber", "azure", "violet", "rose", "crimson", "cyan", "indigo", "mango", "magenta", "gray"):
-                    raise ValueError("Неизвестная цветовая тема")
-                cfg["accent_theme"] = accent
             oc = None
             oc_path = _opencode_config_path()
             if "providers_visibility" in settings:
