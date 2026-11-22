@@ -1,6 +1,8 @@
 import json
 import sys
 import tempfile
+import shutil
+from unittest.mock import patch
 import unittest
 from pathlib import Path
 
@@ -73,7 +75,7 @@ class PromptSanitizerPatchTests(unittest.TestCase):
 
             self.assertFalse(result["ok"])
             self.assertEqual(len(result["missing"]), 1)
-            self.assertIn("scripts/patch_plugin.mjs", result["message"])
+            self.assertIn("права записи", result["message"])
             self.assertEqual(server.read_text(encoding="utf-8"), source)
             self.assertFalse(server.with_suffix(".js.hub-prompt.bak").exists())
 
@@ -127,6 +129,7 @@ class PromptSanitizerPatchTests(unittest.TestCase):
             root = Path(directory)
             target = root / "node_modules" / "@cortexkit" / "opencode-antigravity-auth" / "dist"
             target.mkdir(parents=True)
+            (target.parent / "package.json").write_text('{"version":"3.0.0"}', encoding="utf-8")
             for name in ("cli.js", "server.js", "index.js"):
                 (target / name).write_text("stock bundle\n", encoding="utf-8")
 
@@ -142,10 +145,28 @@ class PromptSanitizerPatchTests(unittest.TestCase):
             self.assertFalse(second["ok"])
             self.assertEqual(second["copied"], [])
 
-    def test_local_verified_bundle_contains_identity_fix(self):
-        status = get_identity_fix_status()
-        self.assertEqual(status["state"], "patched")
-        self.assertGreaterEqual(status["patched"], 1)
+    def test_local_bundle_does_not_make_empty_cache_look_patched(self):
+        with tempfile.TemporaryDirectory() as directory:
+            status = get_identity_fix_status(Path(directory))
+        self.assertEqual(status["state"], "missing")
+        self.assertEqual(status["found"], 0)
+
+    def test_frozen_recovery_uses_meipass_and_only_writes_cache(self):
+        from package_smoke import check_plugin_recovery
+        source = Path(__file__).resolve().parent.parent / "plugin"
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = Path(directory)
+            plugin = bundle / "plugin"
+            (plugin / "dist").mkdir(parents=True)
+            shutil.copyfile(source / "package.json", plugin / "package.json")
+            for name in ("server.js", "index.js", "cli.js"):
+                shutil.copyfile(source / "dist" / name, plugin / "dist" / name)
+            original = {path: path.read_bytes() for path in (plugin / "dist").iterdir()}
+            with patch.object(sys, "frozen", True, create=True), \
+                 patch.object(sys, "_MEIPASS", str(bundle), create=True):
+                check_plugin_recovery()
+            self.assertEqual({path: path.read_bytes() for path in original}, original)
+            self.assertFalse(list((plugin / "dist").glob("*.bak")))
 
     def test_sync_local_bundle_does_not_downgrade_newer_installed_version(self):
         with tempfile.TemporaryDirectory() as directory:

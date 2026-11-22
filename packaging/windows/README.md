@@ -48,3 +48,15 @@ download cache for the exact driver revision. CI downloads a fresh copy.
 For a public release, also test installation, first launch and uninstall
 in a clean Windows VM under a standard user account, including the scenario
 without WebView2.
+
+## Troubleshooting a clean installation
+
+- Setup writes a log to `%TEMP%` by default. To choose its location, run
+  `.\AntigravityHub-Setup-x64.exe /LOG="C:\path\hub-setup.log"` in a writable folder.
+- The windowed Hub logs startup and patch results to
+  `%APPDATA%\AntigravityHub\logs\hub.log`. Review logs for personal paths before sharing.
+- The installer does not install OpenCode. The optional OpenCode task creates
+  missing starter configuration without replacing existing user configuration.
+  Open a project in OpenCode with Antigravity configured before using the patch
+  buttons. Hub restores its bundled files only over a matching installed plugin
+  version; it does not downgrade newer plugins.

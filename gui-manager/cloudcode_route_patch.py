@@ -1,21 +1,41 @@
 from pathlib import Path
 import json
+import os
 import re
+import sys
+
+from secure_storage import atomic_write_bytes
 
 
-def patch_auth_plugin_transport(plugin_cache: Path | None = None, *, include_local=True) -> bool:
+MISSING_PLUGIN = (
+    "Плагин Antigravity не найден в кэше OpenCode. Установите OpenCode 2.x, "
+    "добавьте плагин из стартового конфига AI HUB и откройте проект в OpenCode, "
+    "чтобы плагин загрузился. Затем повторите."
+)
+
+
+def _cache_roots(plugin_cache):
+    if plugin_cache is not None:
+        return [Path(plugin_cache)]
+    bases = [Path.home() / ".cache"]
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    if xdg and Path(xdg).is_absolute():
+        bases.insert(0, Path(xdg))
+    return list(dict.fromkeys(base / "opencode" / kind
+                              for base in bases for kind in ("npm", "packages")))
+
+
+def patch_auth_plugin_transport(plugin_cache: Path | None = None, *, include_local=True,
+                                changed_files: list[str] | None = None) -> bool:
     """Use the Hub for explicitly routed Google requests in the Cloud Code transport."""
-    roots = [Path(plugin_cache)] if plugin_cache else [
-        Path.home() / ".cache" / "opencode" / "npm",
-        Path.home() / ".cache" / "opencode" / "packages",
-    ]
+    roots = _cache_roots(plugin_cache)
     candidates = []
     for root in roots:
         if not root.exists():
             continue
         candidates.extend(root.glob("**/@cortexkit/opencode-antigravity-auth/dist/server.js"))
         candidates.extend(root.glob("**/@cortexkit/opencode-antigravity-auth/dist/index.js"))
-    if plugin_cache is None and include_local:
+    if plugin_cache is None and include_local and not getattr(sys, "frozen", False):
         local_plugin = Path(__file__).resolve().parent.parent / "plugin" / "dist"
         for name in ("server.js", "index.js"):
             cand = local_plugin / name
@@ -24,7 +44,7 @@ def patch_auth_plugin_transport(plugin_cache: Path | None = None, *, include_loc
 
     if not candidates:
         return False
-    patched = False
+    patched = 0
     selector = re.compile(r"^function getHttpsProxy\(url\) \{\n(.*?)^\}", re.M | re.S)
     old_guard = '  if (url.protocol !== "https:" || noProxyIncludes(url.hostname))\n    return void 0;\n'
     config_read = re.compile(r'^( *const parsed = JSON\.parse\()(readFileSync\d*\(configPath, "utf-8"\))\);$', re.M)
@@ -94,20 +114,19 @@ def patch_auth_plugin_transport(plugin_cache: Path | None = None, *, include_loc
             if updated != source:
                 backup = path.with_suffix(path.suffix + ".hub-route.bak")
                 if not backup.exists():
-                    backup.write_text(source, encoding="utf-8")
-                path.write_text(updated, encoding="utf-8")
-            patched = True
+                    _write_text_exact(backup, source)
+                _write_text_exact(path, updated)
+                if changed_files is not None:
+                    changed_files.append(str(path))
+            patched += 1
         except OSError:
             continue
-    return patched
+    return patched == len(candidates)
 
 
 def restore_auth_plugin_transport(plugin_cache: Path | None = None) -> None:
     """Restore patched plugin files before a plugin upgrade or Hub removal."""
-    roots = [Path(plugin_cache)] if plugin_cache else [
-        Path.home() / ".cache" / "opencode" / "npm",
-        Path.home() / ".cache" / "opencode" / "packages",
-    ]
+    roots = _cache_roots(plugin_cache)
     for root in roots:
         if not root.exists():
             continue
@@ -166,13 +185,7 @@ PROMPT_FIX_CALL_ANCHOR = '''        if ("system_instruction" in requestPayload) 
 
 def _prompt_fix_candidates(plugin_cache: Path | None = None) -> list[Path]:
     """Find installed Antigravity bundles that OpenCode loads at startup."""
-    if plugin_cache:
-        roots = [Path(plugin_cache)]
-    else:
-        roots = [
-            Path.home() / ".cache" / "opencode" / "npm",
-            Path.home() / ".cache" / "opencode" / "packages",
-        ]
+    roots = _cache_roots(plugin_cache)
     candidates: list[Path] = []
     for root in roots:
         if not root.exists():
@@ -196,13 +209,13 @@ def _read_text_exact(path: Path) -> str:
 
 
 def _write_text_exact(path: Path, text: str) -> None:
-    with open(path, "w", encoding="utf-8", newline="") as handle:
-        handle.write(text)
+    atomic_write_bytes(path, text.encode("utf-8"), private_parent=False)
 
 
 def _local_plugin_dist_dir() -> Path | None:
-    candidate = Path(__file__).resolve().parent.parent / "plugin" / "dist"
-    return candidate if (candidate / "server.js").exists() else None
+    root = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
+    candidate = root / "plugin" / "dist"
+    return candidate if all((candidate / name).is_file() for name in ("server.js", "index.js")) else None
 
 
 def _package_version(plugin_dir: Path) -> tuple[int, int, int] | None:
@@ -212,14 +225,10 @@ def _package_version(plugin_dir: Path) -> tuple[int, int, int] | None:
         data = json.loads(package_json.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    raw = str(data.get("version") or "").strip()
-    parts = []
-    for piece in raw.split(".")[:3]:
-        digits = "".join(ch for ch in piece if ch.isdigit())
-        parts.append(int(digits) if digits else 0)
-    while len(parts) < 3:
-        parts.append(0)
-    return tuple(parts)  # type: ignore[return-value]
+    if not isinstance(data, dict):
+        return None
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", str(data.get("version", "")))
+    return tuple(map(int, match.groups())) if match else None
 
 
 def sync_local_plugin_bundles(plugin_cache: Path | None = None) -> dict:
@@ -229,25 +238,22 @@ def sync_local_plugin_bundles(plugin_cache: Path | None = None) -> dict:
     OpenCode/plugin update the installed bundle may be replaced by a stock
     one, so restore the module's verified bundle first.
 
-    Never downgrade an installed bundle that is newer than the local one:
-    the upstream 3.0.20 bundle may contain fixes the local 3.0.0 snapshot
-    does not. In that case the identity/sanitizer patches are applied to the
-    installed bundle in place by the callers.
+    Only restore the build matching the installed package version. Mounting
+    these JS files over another version can mismatch its dependencies.
     """
     local = _local_plugin_dist_dir()
     if local is None:
         return {"ok": False, "copied": [], "skipped": [], "message": "Локальный бандл плагина не найден."}
     local_version = _package_version(local.parent)
     target_dirs = {path.parent for path in _prompt_fix_candidates(plugin_cache)}
+    if not target_dirs:
+        return {"ok": False, "copied": [], "skipped": [], "message": MISSING_PLUGIN}
     copied: list[str] = []
     skipped: list[str] = []
+    failed: list[str] = []
     for target in target_dirs:
         target_version = _package_version(target.parent)
-        if (
-            local_version is not None
-            and target_version is not None
-            and target_version > local_version
-        ):
+        if target_version is None or local_version is None or target_version != local_version:
             skipped.append(str(target))
             continue
         for name in ("cli.js", "server.js", "index.js"):
@@ -256,26 +262,36 @@ def sync_local_plugin_bundles(plugin_cache: Path | None = None) -> dict:
             if not source.exists() or not destination.exists():
                 continue
             try:
-                if source.read_bytes() == destination.read_bytes():
+                content = source.read_bytes()
+                previous = destination.read_bytes()
+                if content == previous:
                     continue
-                destination.write_bytes(source.read_bytes())
+                if name != "cli.js" and all(marker.encode() in previous for marker in (
+                    PROMPT_FIX_MARKER, PROMPT_FIX_CALL, GEMINI4_FIX_MARKER, IDENTITY_FIX_MARKER,
+                )):
+                    # Retain an applied transport patch on repeat clicks.
+                    continue
+                backup = destination.with_suffix(destination.suffix + ".hub-bundle.bak")
+                if not backup.exists():
+                    atomic_write_bytes(backup, previous, private_parent=False)
+                atomic_write_bytes(destination, content, private_parent=False)
                 copied.append(str(destination))
-            except OSError:
-                continue
+            except OSError as exc:
+                failed.append(f"{name}: {type(exc).__name__}")
     if skipped and not copied:
         message = (
-            f"Установленный плагин новее локального ({local_version} < "
-            f"{_package_version(Path(skipped[0]).parent)}); бандл не перезаписан, "
-            "патчи применены на месте."
+            "Версия установленного плагина отличается от бандла Hub или неизвестна. "
+            "Бандл не перезаписан; возможны только совместимые патчи на месте."
         )
     elif copied:
         message = f"Синхронизировано файлов бандла: {len(copied)}."
     else:
         message = "Бандл плагина уже совпадает с локальным."
     return {
-        "ok": bool(copied or skipped),
+        "ok": bool(copied or skipped) and not failed,
         "copied": copied,
         "skipped": skipped,
+        "failed": failed,
         "message": message,
     }
 
@@ -297,7 +313,7 @@ def patch_prompt_sanitizer(plugin_cache: Path | None = None) -> dict:
             "changed": [],
             "already": [],
             "missing": [],
-            "message": "Плагин Antigravity не найден в кэше OpenCode.",
+            "message": MISSING_PLUGIN,
         }
 
     for path in candidates:
@@ -362,7 +378,7 @@ def patch_prompt_sanitizer(plugin_cache: Path | None = None) -> dict:
         if missing:
             message += " Часть копий не найдена или изменилась."
     else:
-        message = "Не удалось применить фикс: изменилась структура плагина. Запустите scripts/patch_plugin.mjs."
+        message = "Не удалось применить фикс. Проверьте версию плагина и права записи в его кэш."
     return {
         "ok": bool(changed or already),
         "changed": changed,
@@ -372,7 +388,7 @@ def patch_prompt_sanitizer(plugin_cache: Path | None = None) -> dict:
     }
 
 
-def get_prompt_sanitizer_status(plugin_cache: Path | None = None) -> dict:
+def get_prompt_sanitizer_status(plugin_cache: Path | None = None, *, full=False) -> dict:
     """Report whether the 429 fix is present in every installed plugin copy."""
     candidates = _prompt_fix_candidates(plugin_cache)
     if not candidates:
@@ -381,7 +397,7 @@ def get_prompt_sanitizer_status(plugin_cache: Path | None = None) -> dict:
             "found": 0,
             "patched": 0,
             "pending": 0,
-            "message": "Установленная копия плагина Antigravity не найдена.",
+            "message": MISSING_PLUGIN,
         }
     patched = 0
     for path in candidates:
@@ -393,6 +409,11 @@ def get_prompt_sanitizer_status(plugin_cache: Path | None = None) -> dict:
             PROMPT_FIX_MARKER in source
             and PROMPT_FIX_CALL in source
             and GEMINI4_FIX_MARKER in source
+            and (not full or (
+                IDENTITY_FIX_MARKER in source
+                and 'var AGY_CLIENT_KIND = "hub";' in source
+                and "const hubGoogleRoute = parsed.provider_routes?.google;" in source
+            ))
         ):
             patched += 1
     pending = len(candidates) - patched
@@ -402,14 +423,15 @@ def get_prompt_sanitizer_status(plugin_cache: Path | None = None) -> dict:
             "found": len(candidates),
             "patched": patched,
             "pending": 0,
-            "message": "Фикс плагина и идентичности активен во всех найденных копиях.",
+            "message": ("Фикс 429, идентичность и маршрутизация активны во всех найденных копиях."
+                        if full else "Фикс 429 и поддержка Gemini активны во всех найденных копиях."),
         }
     return {
         "state": "pending",
         "found": len(candidates),
         "patched": patched,
         "pending": pending,
-        "message": f"Фикс плагина/идентичности не применён: {pending} из {len(candidates)} копий.",
+        "message": f"Не все компоненты патча активны: {pending} из {len(candidates)} копий.",
     }
 
 
@@ -418,31 +440,8 @@ IDENTITY_FIX_BACKUP_SUFFIX = ".hub-identity.bak"
 
 
 def _identity_candidates(plugin_cache: Path | None = None) -> list[Path]:
-    """Installed plugin bundles plus the local verified bundle."""
-    roots = [Path(plugin_cache)] if plugin_cache else [
-        Path.home() / ".cache" / "opencode" / "npm",
-        Path.home() / ".cache" / "opencode" / "packages",
-    ]
-    candidates: list[Path] = []
-    for root in roots:
-        if not root.exists():
-            continue
-        for name in ("server.js", "index.js"):
-            candidates.extend(root.glob(f"**/@cortexkit/opencode-antigravity-auth/dist/{name}"))
-    local = _local_plugin_dist_dir()
-    if local is not None:
-        for name in ("server.js", "index.js"):
-            candidate = local / name
-            if candidate.exists() and candidate not in candidates:
-                candidates.append(candidate)
-    seen: set[str] = set()
-    unique: list[Path] = []
-    for path in candidates:
-        key = str(path.resolve())
-        if key not in seen:
-            seen.add(key)
-            unique.append(path)
-    return unique
+    """Only report/modify installed copies, never the recovery bundle."""
+    return _prompt_fix_candidates(plugin_cache)
 
 
 def _identity_replacements(eol: str) -> list[tuple[str, str, str, bool]]:
@@ -945,7 +944,7 @@ def patch_antigravity_identity(plugin_cache: Path | None = None) -> dict:
             "changed": [],
             "already": [],
             "missing": [],
-            "message": "Бандл плагина Antigravity не найден.",
+            "message": MISSING_PLUGIN,
         }
     changed: list[str] = []
     already: list[str] = []
@@ -1012,7 +1011,7 @@ def get_identity_fix_status(plugin_cache: Path | None = None) -> dict:
     """Report whether the identity alignment fix is present in all bundles."""
     candidates = _identity_candidates(plugin_cache)
     if not candidates:
-        return {"state": "missing", "found": 0, "patched": 0, "message": "Плагин не найден."}
+        return {"state": "missing", "found": 0, "patched": 0, "message": MISSING_PLUGIN}
     patched = 0
     for path in candidates:
         try:

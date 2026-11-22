@@ -478,6 +478,7 @@ class WebviewBackendTests(unittest.TestCase):
                 "ok": True, "changed": ["server.js"], "already": [], "missing": [],
                 "message": "Патч Antigravity применён."}),
             patch_auth_plugin_transport=Mock(return_value=True),
+            get_prompt_sanitizer_status=Mock(return_value={"state": "patched"}),
         )
         with patch.dict("sys.modules", {"cloudcode_route_patch": patcher}):
             result = self.backend.HubApi().fix_opencode_plugin()
@@ -497,7 +498,7 @@ class WebviewBackendTests(unittest.TestCase):
         with patch.dict("sys.modules", {"cloudcode_route_patch": patcher}):
             status = self.backend.HubApi().get_opencode_plugin_status()
         self.assertEqual(status["state"], "patched")
-        patcher.get_prompt_sanitizer_status.assert_called_once()
+        patcher.get_prompt_sanitizer_status.assert_called_once_with(full=True)
 
     def test_apply_antigravity_patch_delegates_to_patcher(self):
         patcher = SimpleNamespace(

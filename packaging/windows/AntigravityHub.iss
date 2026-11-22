@@ -23,6 +23,7 @@ Compression=lzma2/normal
 SolidCompression=yes
 AppMutex=Local\AntigravityHub.SingleInstance
 CloseApplications=no
+SetupLogging=yes
 WizardStyle=modern
 
 [Languages]
@@ -43,11 +44,11 @@ russian.WebViewFailed=Не удалось установить Microsoft Edge We
 Source: "{#BundleRoot}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#WebViewBootstrap}"; Flags: dontcopy
 Source: "..\..\config-templates\opencode.json"; DestDir: "{code:OpenCodeConfigDir}"; Flags: onlyifdoesntexist uninsneveruninstall; Tasks: opencode; Check: MissingOpenCodeConfig
-Source: "..\..\config-templates\antigravity.json"; DestDir: "{code:OpenCodeConfigDir}"; Flags: onlyifdoesntexist uninsneveruninstall; Tasks: opencode
+Source: "..\..\config-templates\antigravity.json"; DestDir: "{code:OpenCodeConfigDir}"; Flags: onlyifdoesntexist uninsneveruninstall; Tasks: opencode; Check: OpenCodeProfileAvailable
 
 [Icons]
-Name: "{group}\AI HUB"; Filename: "{app}\AntigravityHub.exe"; WorkingDir: "{app}"; IconFilename: "{app}\icon.ico"
-Name: "{autodesktop}\AI HUB"; Filename: "{app}\AntigravityHub.exe"; WorkingDir: "{app}"; IconFilename: "{app}\icon.ico"; Tasks: desktopicon
+Name: "{group}\AI HUB"; Filename: "{app}\AntigravityHub.exe"; WorkingDir: "{app}"; IconFilename: "{app}\_internal\icon.ico"
+Name: "{autodesktop}\AI HUB"; Filename: "{app}\AntigravityHub.exe"; WorkingDir: "{app}"; IconFilename: "{app}\_internal\icon.ico"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\AntigravityHub.exe"; WorkingDir: "{app}"; Description: "{cm:LaunchProgram,AI HUB}"; Flags: nowait postinstall skipifsilent
@@ -76,22 +77,43 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 var ExitCode: Integer;
 begin
   Result := '';
-  if WebViewInstalled then
+  if WebViewInstalled then begin
+    Log('WebView2 Runtime already present.');
     Exit;
+  end;
+  Log('WebView2 Runtime missing; starting bundled Microsoft bootstrapper.');
   ExtractTemporaryFile('MicrosoftEdgeWebview2Setup.exe');
-  if not Exec(ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe'), '/silent /install', '',
-              SW_HIDE, ewWaitUntilTerminated, ExitCode) or not WebViewInstalled then
-    Result := CustomMessage('WebViewFailed');
+  if Exec(ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe'), '/silent /install', '',
+          SW_HIDE, ewWaitUntilTerminated, ExitCode) then
+    Log('WebView2 bootstrapper exit code: ' + IntToStr(ExitCode))
+  else
+    Log('Could not start the WebView2 bootstrapper. Windows error: ' + IntToStr(ExitCode));
+  if WebViewInstalled then
+    Log('WebView2 Runtime detected after bootstrapper.')
+  else
+    Result := CustomMessage('WebViewFailed') + ' (WebView2: ' + IntToStr(ExitCode) + ')';
 end;
 
 function OpenCodeConfigDir(Param: String): String;
+var Profile: String;
 begin
-  Result := ExpandConstant('{userprofile}\.config\opencode');
+  Result := '';
+  Profile := GetEnv('USERPROFILE');
+  if (Length(Profile) >= 3) and (Copy(Profile, 2, 2) = ':\') and DirExists(Profile) then
+    Result := AddBackslash(Profile) + '.config\opencode';
+end;
+
+function OpenCodeProfileAvailable: Boolean;
+begin
+  Result := OpenCodeConfigDir('') <> '';
+  if not Result then
+    Log('Skipping optional OpenCode settings: USERPROFILE is not an existing local directory.');
 end;
 
 function MissingOpenCodeConfig: Boolean;
 var D: String;
 begin
   D := OpenCodeConfigDir('');
-  Result := not FileExists(D + '\opencode.json') and not FileExists(D + '\opencode.jsonc');
+  Result := OpenCodeProfileAvailable and
+    not FileExists(D + '\opencode.json') and not FileExists(D + '\opencode.jsonc');
 end;

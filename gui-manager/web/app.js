@@ -2417,10 +2417,11 @@ async function fixOpenCodePlugin() {
   if (statusEl) statusEl.textContent = 'Применение патча к плагину OpenCode…';
   try {
     const res = await window.pywebview.api.fix_opencode_plugin();
-    const message = res?.message || 'Патч применён';
+    const message = res?.message || 'Не удалось получить результат применения патча.';
     if (statusEl) statusEl.textContent = message;
     showToast(message);
     await refreshPluginFixStatus();
+    await refreshAntigravityPatchStatus();
     void refreshGooglePatchDisclaimer();
     if (res?.ok && res?.changed?.length) {
       if (confirm(`${message}\n\nПерезапустить OpenCode сейчас, чтобы изменения вступили в силу?`)) {
@@ -2450,10 +2451,11 @@ async function applyAntigravityPatch() {
   if (statusEl) statusEl.textContent = 'Применение патча совместимости Antigravity…';
   try {
     const res = await window.pywebview.api.apply_antigravity_patch();
-    const message = res?.message || 'Патч Antigravity применён';
+    const message = res?.message || 'Не удалось получить результат применения патча Antigravity.';
     if (statusEl) statusEl.textContent = message;
     showToast(message);
     await refreshAntigravityPatchStatus();
+    await refreshPluginFixStatus();
     void refreshGooglePatchDisclaimer();
     if (res?.ok && res?.changed?.length) {
       if (confirm(`${message}\n\nПерезапустить OpenCode сейчас, чтобы изменения вступили в силу?`)) {

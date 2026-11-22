@@ -26,6 +26,10 @@ session/
 
 # Local backups (may contain live configs with credentials)
 .backups/
+*.hub-route.bak
+*.hub-prompt.bak
+*.hub-identity.bak
+*.hub-bundle.bak
 *.agb
 antigravity-accounts.json
 claude-accounts.json

@@ -9,6 +9,7 @@ import json
 import time
 import socket
 import threading
+import hub_logging
 import subprocess
 import copy
 import ipaddress
@@ -1781,11 +1782,14 @@ class HubApi:
         import cloudcode_route_patch
         try:
             synced = cloudcode_route_patch.sync_local_plugin_bundles()
-        except Exception:
-            synced = {"ok": False, "copied": [], "message": ""}
+        except Exception as exc:
+            hub_logging.failed("Plugin recovery", exc)
+            synced = {"ok": False, "copied": [], "failed": [type(exc).__name__],
+                      "message": "Не удалось восстановить бандл плагина."}
         try:
             result = cloudcode_route_patch.patch_prompt_sanitizer()
         except Exception as exc:
+            hub_logging.failed("Plugin prompt patch", exc)
             return {
                 "ok": False,
                 "changed": [],
@@ -1796,6 +1800,7 @@ class HubApi:
         try:
             identity = cloudcode_route_patch.patch_antigravity_identity()
         except Exception as exc:
+            hub_logging.failed("Plugin identity patch", exc)
             identity = {"ok": False, "message": f"Ошибка патча идентичности: {exc}"}
         result["identity"] = identity
         if identity.get("changed"):
@@ -1806,19 +1811,33 @@ class HubApi:
                 f"Бандл плагина синхронизирован ({len(result['synced'])} файл(ов)). "
                 + result["message"]
             )
+        route_changed = []
         try:
-            route_patched = bool(cloudcode_route_patch.patch_auth_plugin_transport())
-        except Exception:
+            route_patched = bool(cloudcode_route_patch.patch_auth_plugin_transport(
+                include_local=False, changed_files=route_changed))
+            status = cloudcode_route_patch.get_prompt_sanitizer_status(full=True)
+        except Exception as exc:
+            hub_logging.failed("Plugin route patch or verification", exc)
             route_patched = False
+            status = {"state": "error"}
         result["route_patched"] = route_patched
-        if result.get("ok"):
-            result["message"] += " Маршрут Hub проверен." if route_patched else " Маршрут Hub не изменён."
+        result["changed"] = list(dict.fromkeys(
+            result["changed"] + result["synced"] + identity.get("changed", []) + route_changed))
+        result["ok"] = (status["state"] == "patched" and bool(identity.get("ok"))
+                        and not identity.get("missing") and route_patched and not synced.get("failed"))
+        if result["ok"]:
+            result["message"] += " Маршрут Hub проверен."
+        elif status["state"] != "missing":
+            result["message"] += " Не все компоненты патча подтверждены. " + synced.get("message", "")
+        hub_logging.log.info("Plugin full patch: prompt=%s identity=%s route=%s recovery_errors=%d",
+                             status["state"], bool(identity.get("ok")), route_patched,
+                             len(synced.get("failed", [])))
         return result
 
     def get_opencode_plugin_status(self) -> dict:
         import cloudcode_route_patch
         try:
-            return cloudcode_route_patch.get_prompt_sanitizer_status()
+            return cloudcode_route_patch.get_prompt_sanitizer_status(full=True)
         except Exception as exc:
             return {
                 "state": "error",
@@ -1834,8 +1853,21 @@ class HubApi:
         try:
             result = cloudcode_route_patch.patch_antigravity_identity()
             result["status"] = cloudcode_route_patch.get_identity_fix_status()
+            if result["status"]["state"] == "pending":
+                synced = cloudcode_route_patch.sync_local_plugin_bundles()
+                if synced.get("copied"):
+                    changed = result["changed"] + synced["copied"]
+                    result = cloudcode_route_patch.patch_antigravity_identity()
+                    result["changed"] = list(dict.fromkeys(changed + result["changed"]))
+                    result["status"] = cloudcode_route_patch.get_identity_fix_status()
+                if result["status"]["state"] != "patched":
+                    result["message"] += " " + synced.get("message", "")
+            result["ok"] = result["status"]["state"] == "patched"
+            hub_logging.log.info("Plugin identity patch: state=%s changed=%d",
+                                 result["status"]["state"], len(result["changed"]))
             return result
         except Exception as exc:
+            hub_logging.failed("Standalone Antigravity identity patch", exc)
             return {
                 "ok": False,
                 "changed": [],
@@ -2444,7 +2476,7 @@ def run_webview_app():
         tray.start()
         api._tray_holder = tray
     except Exception as e:
-        print(f"Tray initialization warning: {e}")
+        hub_logging.failed("Tray initialization", e)
 
     def on_window_closing():
         if getattr(api, "_uninstalled", False):
@@ -2533,6 +2565,9 @@ def run_webview_app():
         try:
             import cloudcode_route_patch
             cloudcode_route_patch.patch_auth_plugin_transport(include_local=False)
+        except Exception as exc:
+            hub_logging.failed("Startup plugin route check", exc)
+        try:
             if cfg.get("vless_enabled") and cfg.get("vless_url"):
                 result = api.start_vless()
                 if not result["ok"]:
@@ -2541,7 +2576,7 @@ def run_webview_app():
             if claude_service and claude_service.get_active_account():
                 claude_manager.bridge_service.ensure_running()
         except Exception as exc:
-            print(f"Network startup: {exc}")
+            hub_logging.failed("Network startup", exc)
         while not getattr(api, "_uninstalled", False):
             api.refresh_openai_quotas()
             try:

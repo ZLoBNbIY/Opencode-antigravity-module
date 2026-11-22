@@ -116,16 +116,45 @@ jobs:
         shell: pwsh
         run: |
           $target = Join-Path $env:RUNNER_TEMP 'Installed AI HUB'
-          $p = Start-Process './artifacts/windows/AntigravityHub-Setup-x64.exe' -Wait -PassThru -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOICONS', '/TASKS=""', ('/DIR="' + $target + '"'))
+          $diagnostics = Join-Path $env:RUNNER_TEMP 'hub-install-diagnostics'
+          New-Item -ItemType Directory -Path $diagnostics -Force | Out-Null
+          $profile = Join-Path $env:RUNNER_TEMP 'hub-install-profile'
+          $config = Join-Path $profile '.config\opencode'
+          New-Item -ItemType Directory -Path $config -Force | Out-Null
+          $existing = Join-Path $config 'opencode.jsonc'
+          Set-Content -LiteralPath $existing -Value '{ /* preserve */ }'
+          $hash = (Get-FileHash -LiteralPath $existing).Hash
+          $setupLog = Join-Path $diagnostics 'setup.log'
+          $previousProfile = $env:USERPROFILE
+          try {
+            $env:USERPROFILE = $profile
+            $p = Start-Process './artifacts/windows/AntigravityHub-Setup-x64.exe' -Wait -PassThru -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOICONS', '/TASKS=opencode', ('/DIR="' + $target + '"'), ('/LOG="' + $setupLog + '"'))
+          } finally {
+            $env:USERPROFILE = $previousProfile
+          }
           if ($p.ExitCode -ne 0) { throw "Setup failed: $($p.ExitCode)" }
+          if (-not (Test-Path -LiteralPath (Join-Path $config 'antigravity.json')) -or
+              (Test-Path -LiteralPath (Join-Path $config 'opencode.json')) -or
+              (Get-FileHash -LiteralPath $existing).Hash -ne $hash) {
+            throw 'Optional OpenCode task did not preserve the existing JSONC or create the missing settings'
+          }
           $exe = Join-Path $target 'AntigravityHub.exe'
-          $report = Join-Path $env:RUNNER_TEMP 'installed-hub-test.json'
+          $report = Join-Path $diagnostics 'installed-hub-test.json'
           $app = Start-Process $exe -PassThru -ArgumentList @('--package-self-test', ('"' + $report + '"'))
           if (-not $app.WaitForExit(90000)) { $app.Kill(); throw 'Installed app self-test timed out' }
           if (Test-Path -LiteralPath $report) { Get-Content -LiteralPath $report }
           if ($app.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $report)) { throw 'Installed app self-test failed' }
-          $p = Start-Process (Join-Path $target 'unins000.exe') -Wait -PassThru -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')
+          $uninstallLog = Join-Path $diagnostics 'uninstall.log'
+          $p = Start-Process (Join-Path $target 'unins000.exe') -Wait -PassThru -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ('/LOG="' + $uninstallLog + '"'))
           if ($p.ExitCode -ne 0 -or (Test-Path -LiteralPath $exe)) { throw 'Uninstallation failed' }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: windows-install-diagnostics
+          path: |
+            ${{ runner.temp }}/hub-install-diagnostics/*.log
+            ${{ runner.temp }}/hub-install-diagnostics/*.json
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: AntigravityHub-Setup-x64

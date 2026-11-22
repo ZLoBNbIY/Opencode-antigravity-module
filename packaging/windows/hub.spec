@@ -16,9 +16,11 @@ datas = [
     (str(manager / "icon.ico"), "."),
     (os.environ["HUB_BUILD_VERSION_FILE"], "."),
     (str(repo / "config-templates"), "config-templates"),
-    (str(repo / "plugin" / "dist" / "cli.js"), "plugin/dist"),
     (str(repo / "plugin" / "package.json"), "plugin"),
     (str(repo / "plugin" / "LICENSE"), "plugin"),
+] + [
+    (str(repo / "plugin" / "dist" / name), "plugin/dist")
+    for name in ("cli.js", "server.js", "index.js")
 ] + [
     (str(browser_root / folder_name), f"browsers/{folder_name}")
     for entry in browsers if entry["name"] in required

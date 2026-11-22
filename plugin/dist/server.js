@@ -22053,23 +22053,30 @@ function noProxyIncludes(hostname) {
   });
 }
 function getHttpsProxy(url) {
-  if (url.protocol !== "https:" || noProxyIncludes(url.hostname))
+  if (url.protocol !== "https:")
     return void 0;
   try {
     const configPath = getUserConfigPath();
     if (existsSync5(configPath)) {
-      const parsed = JSON.parse(readFileSync2(configPath, "utf-8"));
+      const parsed = JSON.parse(readFileSync2(configPath, "utf-8").replace(/^\uFEFF/, ""));
+      const hubGoogleRoute = parsed.provider_routes?.google;
+      if (["default", "auto", "direct", "vless", "proxy", "dns"].includes(hubGoogleRoute) &&
+          [".googleapis.com", ".google.com", ".google"].some(suffix => url.hostname.endsWith(suffix))) {
+        return new URL("http://127.0.0.1:10880");
+      }
+      if (noProxyIncludes(url.hostname))
+        return void 0;
       if (parsed.vless_enabled && parsed.vless_url) {
-        const hubRoutePort = 10880;
-        const gateHost = url.hostname === 'daily-cloudcode-pa.googleapis.com' || url.hostname === 'cloudcode-pa.googleapis.com' || url.hostname === 'cloudaicompanion.googleapis.com' || url.hostname === 'generativelanguage.googleapis.com' || url.hostname === 'oauth2.googleapis.com' || url.hostname === 'aiplatform.googleapis.com' || url.hostname.endsWith('.googleapis.com') || url.hostname.endsWith('.google.com') || url.hostname.endsWith('.google');
         const vlessPort = Number(parsed.vless_http_port) > 0 ? Number(parsed.vless_http_port) : 10879;
-        return new URL(`http://127.0.0.1:${gateHost ? hubRoutePort : vlessPort}`);
+        return new URL(`http://127.0.0.1:${vlessPort}`);
       }
       if (parsed.proxy && typeof parsed.proxy === "string" && parsed.proxy.trim()) {
         return new URL(parsed.proxy.trim());
       }
     }
   } catch {}
+  if (noProxyIncludes(url.hostname))
+    return void 0;
   const rawProxy = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.ALL_PROXY || process.env.all_proxy;
   if (!rawProxy)
     return void 0;

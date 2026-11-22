@@ -1098,6 +1098,21 @@ if __name__ == "__main__":
             sys.exit(check_bundle(bundle, Path(sys.argv[2])))
     if not acquire_single_instance():
         sys.exit(0)
-    set_windows_taskbar_identity()
-    import webview_backend
-    webview_backend.run_webview_app()
+    import hub_paths
+    import hub_logging
+
+    hub_logging.configure(hub_paths.LOG_DIR)
+    hub_logging.log.info("Hub startup (packaged=%s)", bool(getattr(sys, "frozen", False)))
+
+    def log_thread_failure(args):
+        hub_logging.failed("Hub background thread", args.exc_value)
+        threading.__excepthook__(args)
+
+    threading.excepthook = log_thread_failure
+    try:
+        set_windows_taskbar_identity()
+        import webview_backend
+        webview_backend.run_webview_app()
+    except Exception as exc:
+        hub_logging.failed("Hub startup", exc)
+        raise
