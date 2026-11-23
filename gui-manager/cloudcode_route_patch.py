@@ -45,7 +45,7 @@ def patch_auth_plugin_transport(plugin_cache: Path | None = None, *, include_loc
     if not candidates:
         return False
     patched = 0
-    selector = re.compile(r"^function getHttpsProxy\(url\) \{\n(.*?)^\}", re.M | re.S)
+    selector = re.compile(r"^function getHttpsProxy\(url\) \{\r?\n(.*?)^\r?\}", re.M | re.S)
     old_guard = '  if (url.protocol !== "https:" || noProxyIncludes(url.hostname))\n    return void 0;\n'
     config_read = re.compile(r'^( *const parsed = JSON\.parse\()(readFileSync\d*\(configPath, "utf-8"\))\);$', re.M)
     legacy_vless = re.compile(
@@ -65,17 +65,18 @@ def patch_auth_plugin_transport(plugin_cache: Path | None = None, *, include_loc
 
     for path in candidates:
         try:
-            source = path.read_text(encoding="utf-8")
-            match = selector.search(source)
+            source = _read_text_exact(path)
+            eol = "\r\n" if "\r\n" in source else "\n"
+            normalized = source.replace("\r\n", "\n")
+            match = selector.search(normalized)
             if not match:
                 continue
-            updated = source
             body = match[1]
             if explicit_route not in body:
-                if not body.startswith(old_guard) or "\n  } catch {}\n  const rawProxy =" not in body:
-                    continue
-                # Keep both standalone fallbacks and their NO_PROXY behavior, but
-                # check the explicit Hub route first. Hub owns even "direct" here.
+                # Both plugin layouts read the config the same way. Insert the
+                # explicit Hub route right after that read; newer bundles keep
+                # the protocol/NO_PROXY guard below the try/catch instead of at
+                # the top, so the old guard is no longer required.
                 body, count = config_read.subn(
                     lambda m: m[1] + m[2] + r'.replace(/^\uFEFF/, ""));' + "\n"
                     + explicit_route.rstrip("\n")
@@ -84,16 +85,20 @@ def patch_auth_plugin_transport(plugin_cache: Path | None = None, *, include_loc
                 )
                 if count != 1:
                     continue
-                body = legacy_vless.sub(r"\2\1return new URL(`http://127.0.0.1:${vlessPort}`);", body)
-                if "hubRoutePort" in body:
-                    continue
-                body = '  if (url.protocol !== "https:")\n    return void 0;\n' + body[len(old_guard):]
-                body = body.replace(
-                    "\n  } catch {}\n  const rawProxy =",
-                    "\n  } catch {}\n  if (noProxyIncludes(url.hostname))\n    return void 0;\n  const rawProxy =",
-                    1,
-                )
-                updated = source[:match.start(1)] + body + source[match.end(1):]
+                old_layout = body.startswith(old_guard)
+                if old_layout:
+                    # Old layout: collapse the legacy gateHost fallback and move
+                    # the protocol guard, preserving standalone NO_PROXY behavior.
+                    body = legacy_vless.sub(r"\2\1return new URL(`http://127.0.0.1:${vlessPort}`);", body)
+                    if "hubRoutePort" in body:
+                        continue
+                    body = '  if (url.protocol !== "https:")\n    return void 0;\n' + body[len(old_guard):]
+                    body = body.replace(
+                        "\n  } catch {}\n  const rawProxy =",
+                        "\n  } catch {}\n  if (noProxyIncludes(url.hostname))\n    return void 0;\n  const rawProxy =",
+                        1,
+                    )
+            updated = normalized[:match.start(1)] + body + normalized[match.end(1):]
 
             # Keep the existing fatal-404 retry fix for supported bundles.
             if "response.status === 404" in updated and "/* no retry on 404 */" not in updated:
@@ -111,18 +116,18 @@ def patch_auth_plugin_transport(plugin_cache: Path | None = None, *, include_loc
                         updated = updated.replace(old_retry, new_retry, 1)
                         break
 
-            if updated != source:
+            if updated != normalized:
+                final = updated.replace("\n", eol) if eol == "\r\n" else updated
                 backup = path.with_suffix(path.suffix + ".hub-route.bak")
                 if not backup.exists():
                     _write_text_exact(backup, source)
-                _write_text_exact(path, updated)
+                _write_text_exact(path, final)
                 if changed_files is not None:
                     changed_files.append(str(path))
             patched += 1
         except OSError:
             continue
     return patched == len(candidates)
-
 
 def restore_auth_plugin_transport(plugin_cache: Path | None = None) -> None:
     """Restore patched plugin files before a plugin upgrade or Hub removal."""
@@ -268,6 +273,7 @@ def sync_local_plugin_bundles(plugin_cache: Path | None = None) -> dict:
                     continue
                 if name != "cli.js" and all(marker.encode() in previous for marker in (
                     PROMPT_FIX_MARKER, PROMPT_FIX_CALL, GEMINI4_FIX_MARKER, IDENTITY_FIX_MARKER,
+                    'const hubGoogleRoute = parsed.provider_routes?.google;',
                 )):
                     # Retain an applied transport patch on repeat clicks.
                     continue
@@ -431,7 +437,7 @@ def get_prompt_sanitizer_status(plugin_cache: Path | None = None, *, full=False)
         "found": len(candidates),
         "patched": patched,
         "pending": pending,
-        "message": f"Не все компоненты патча активны: {pending} из {len(candidates)} копий.",
+        "message": f"Не все компоненты патча активны: {patched} из {len(candidates)} копий.",
     }
 
 
