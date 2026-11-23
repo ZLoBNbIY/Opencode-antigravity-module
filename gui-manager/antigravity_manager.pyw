@@ -198,6 +198,9 @@ DEFAULT_CONFIG = {
     # 3.1.x moved the account store and leaves a schema-2 pointer that older
     # releases refuse to open. Pin a version that understands this layout.
     "plugin_pin_version": "3.1.13",
+    # Extended request cloaking (UA, system prompt, requestType, one retry)
+    # is opt-in. The safe sanitizer/quota fixes are always enabled.
+    "cloaking_v2": False,
     "account_selection_strategy": "hybrid",
     "soft_quota_threshold_percent": 100,
     "switch_on_first_rate_limit": True,

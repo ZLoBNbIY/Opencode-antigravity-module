@@ -91,6 +91,54 @@ def _new_config() -> dict:
         }
 
 
+# 3.0.x identifies its own requests by provider/model; 3.1.x requires the
+# exact OpenCode common-auth placeholder in the x-goog-api-key header.
+GOOGLE_SENTINEL_API_KEY = "antigravity"
+GOOGLE_SENTINEL_API_KEY_V2 = "common-auth-placeholder.google"
+GOOGLE_KEY_PATHS = (
+    ("provider", "google", "options", "apiKey"),
+    ("providers", "google", "settings", "apiKey"),
+)
+
+
+def google_api_key_sentinel(version: str | None = None) -> str:
+    """Return the apiKey marker the installed plugin generation expects."""
+    if version is None:
+        try:
+            import cloudcode_route_patch
+            version = cloudcode_route_patch.get_expected_plugin_version()
+        except Exception:
+            version = None
+    numbers = re.findall(r"\d+", version or "")
+    parts = tuple(int(part) for part in numbers[:3])
+    return GOOGLE_SENTINEL_API_KEY_V2 if len(parts) == 3 and parts >= (3, 1, 0) else GOOGLE_SENTINEL_API_KEY
+
+
+def ensure_google_api_key(config_path: Path | None = None, version: str | None = None) -> tuple[bool, str]:
+    """Restore the sentinel apiKey the Antigravity plugin expects.
+
+    The plugin registers models on the existing ``google`` provider but does
+    not create it. When the key is missing, OpenCode treats the provider as an
+    ordinary API-key provider and Google answers "API key not valid" instead
+    of letting the plugin attach the OAuth bearer token.
+    """
+    try:
+        path = _resolve_config_path(config_path)
+        if not path.exists():
+            return False, f"Файл конфигурации не найден: {path}"
+        source = path.read_bytes().decode("utf-8-sig")
+        sentinel = google_api_key_sentinel(version)
+        updated = source
+        for key_path in GOOGLE_KEY_PATHS:
+            updated = jsonc_config.set_property(updated, key_path, sentinel)
+        if updated == source:
+            return False, "Метка учётных данных Google уже настроена."
+        atomic_write_bytes(path, updated.encode("utf-8"), private_parent=False)
+        return True, "Метка учётных данных Google восстановлена. Перезапустите OpenCode."
+    except (OSError, ValueError) as exc:
+        return False, f"Ошибка восстановления метки Google: {exc}"
+
+
 def ensure_plugin_pin(version: str, config_path: Path | None = None) -> tuple[bool, str]:
     """Pin the Antigravity auth plugin to a Hub-verified version.
 

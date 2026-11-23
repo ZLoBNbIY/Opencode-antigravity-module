@@ -628,7 +628,8 @@ def _plan_quota_breaker_profile(source: str, anchors: tuple[str, str, str]) -> s
             "            let sendAdmission;",
             "          let tokenConsumed = false;",
     ))
-            or any(name in source for name in ("createHubQuotaBreaker", "hubQuotaBreaker", "hubQuotaKey"))):
+            or any(name in _strip_cloaking_block(source)
+                   for name in ("createHubQuotaBreaker", "hubQuotaBreaker", "hubQuotaKey"))):
         return None
     return _apply_exact_edits(source, edits)
 
@@ -665,6 +666,337 @@ def patch_quota_breaker(plugin_cache: Path | None = None) -> dict:
             unsupported.append(str(path))
     return {"ok": bool(changed or already) and not unsupported, "changed": changed,
             "already": already, "unsupported": unsupported}
+
+
+# --- request cloaking: narrow, opt-in-safe identity alignment -----------------
+# The default part only rewrites known fingerprint text and suppresses a false
+# quota strike. The opt-in part changes request semantics and is off by default.
+CLOAKING_MARKER = "/* hub-cloaking:v1 */"
+CLOAKING_END_MARKER = "/* hub-cloaking:end */"
+CLOAKING_BACKUP_SUFFIX = ".hub-cloaking.bak"
+CLOAKING_ENV = "ANTIGRAVITY_HUB_CLOAKING_OPTIN"
+CLOAKING_CONFIG_KEYS = (
+    "google_request_cloaking_extended",
+    "cloaking_v2",
+    "google_request_cloaking_optin",
+)
+
+CLOAKING_JS = r'''/* hub-cloaking:v1 */
+(function () {
+  var optIn = __HUB_CLOAK_OPTIN__;
+  var forced = process.env.ANTIGRAVITY_HUB_CLOAKING_OPTIN;
+  if (forced === "0" || forced === "false") optIn = false;
+  else if (forced === "1" || forced === "true") optIn = true;
+
+  var BARE_MESSAGE = /^Resource has been exhausted \(e\.g\. check quota\)\.?$/;
+  var DEFAULT_SYSTEM = "You are Antigravity Agent, a powerful agentic AI coding assistant designed by the Google engineering team.\nYou are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.\nThe USER will send you requests, which you must always prioritize addressing. User requests are enclosed within <USER_REQUEST> tags.";
+  var EXTRA_PATTERNS = [
+    [/x-anthropic-billing-header:[^\n]*(?:\r?\n)*/gi, ""],
+    [/You are a Claude agent, built on Anthropic's Claude Agent SDK\./g, ""],
+    [/^[ \t]*You are Hermes Agent, built by Nous Research\. Be direct:[^\n]*/gm, "You are an AI assistant."],
+    [/^[ \t]*<!-- End Hermes runtime environment -->[^\n]*(?:\r?\n)?/gm, ""],
+    [/^[ \t]*# Google model operational directives[^\n]*(?:\r?\n)?/gm, ""],
+    [/^[ \t]*If a tool, install, or network call fails and blocks the real path[^\n]*(?:\r?\n)?/gm, ""],
+    [/^[ \t]*When the user asks you to build, run, or verify something[^\n]*(?:\r?\n)?/gm, ""],
+    [/^[ \t]*For help with Hermes Agent itself[^\n]*(?:\r?\n)?/gm, ""],
+    [/^[ \t]*Mid-turn, the user can steer you: Hermes delivers their message[^\n]*(?:\r?\n)?/gm, ""],
+    [/You are Hermes(?: Agent)?(?:,\s*(?:an intelligent AI assistant|an AI assistant|an AI agent))?(?:,?\s*(?:built|created)\s+by\s+Nous Research)?\./gi, "You are an AI assistant."],
+    [/You are a personal assistant running inside OpenClaw\./gi, "You are a personal assistant running inside Antigravity."]
+  ];
+  try {
+    for (var index = 0; index < EXTRA_PATTERNS.length; index += 1)
+      ANTIGRAVITY_BLOCKED_SYSTEM_INSTRUCTION_PATTERNS.push(EXTRA_PATTERNS[index]);
+  } catch (e) {}
+
+  function isBareExhaustion(response) {
+    try {
+      if (!response || response.status !== 429 || typeof response.clone !== "function")
+        return Promise.resolve(false);
+      return response.clone().text().then(function (text) {
+        if (typeof text !== "string" || text.length > 65536) return false;
+        var error = JSON.parse(text).error;
+        return !!error && error.status === "RESOURCE_EXHAUSTED"
+          && BARE_MESSAGE.test(String(error.message || "").trim())
+          && !(Array.isArray(error.details) && error.details.length > 0);
+      }).catch(function () { return false; });
+    } catch (e) { return Promise.resolve(false); }
+  }
+  try {
+    var originalCreateBreaker = createHubQuotaBreaker;
+    createHubQuotaBreaker = function () {
+      var breaker = originalCreateBreaker();
+      var originalObserve = breaker.observe;
+      breaker.observe = async function (key, response, now) {
+        if (await isBareExhaustion(response)) return;
+        return originalObserve.call(this, key, response, now);
+      };
+      return breaker;
+    };
+  } catch (e) {}
+
+  // Native 3.1 does not send these two generation headers; 3.0 still does.
+  try {
+    var originalPairs = buildAgyCliHeaderPairs;
+    buildAgyCliHeaderPairs = function () {
+      var pairs = originalPairs.apply(this, arguments);
+      var target = arguments[0];
+      var isGeneration = typeof target === "string" &&
+        (target.indexOf(":generateContent") !== -1 || target.indexOf(":streamGenerateContent") !== -1);
+      if (!isGeneration || !Array.isArray(pairs)) return pairs;
+      return pairs.filter(function (pair) {
+        return !Array.isArray(pair) ||
+          (pair[0] !== "X-Goog-Api-Client" && pair[0] !== "Client-Metadata");
+      });
+    };
+  } catch (e) {}
+
+  // Keep only a numeric fingerprint: raw request bodies contain prompts.
+  function bodyFingerprint(text) {
+    var hash = 2166136261;
+    for (var i = 0; i < text.length; i += 1) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+  }
+
+  function moveSystemInstruction(bodyText) {
+    try {
+      var body = JSON.parse(bodyText);
+      var request = body && body.request;
+      if (!request || !request.systemInstruction || !Array.isArray(request.contents)) return null;
+      var parts = (request.systemInstruction.parts || []).filter(function (part) {
+        return part && typeof part.text === "string" && part.text.trim();
+      });
+      if (parts.length === 0) return null;
+      var next = JSON.parse(bodyText);
+      delete next.request.systemInstruction;
+      if (!Array.isArray(next.request.contents) || next.request.contents.length === 0)
+        next.request.contents = [{ role: "user", parts: [] }];
+      next.request.contents[0].parts = parts.concat(next.request.contents[0].parts || []);
+      return JSON.stringify(next);
+    } catch (e) { return null; }
+  }
+
+  if (optIn) {
+    try {
+      var originalSanitize = sanitizeAntigravitySystemInstruction;
+      sanitizeAntigravitySystemInstruction = function (payload) {
+        originalSanitize(payload);
+        try {
+          var instruction = payload && payload.systemInstruction;
+          if (!instruction || typeof instruction !== "object" || Array.isArray(instruction) ||
+              !Array.isArray(instruction.parts)) return;
+          var text = instruction.parts.map(function (part) {
+            return part && typeof part.text === "string" ? part.text : "";
+          }).join("\n");
+          if (text.indexOf("You are Antigravity") !== -1 || /conversation title generator/i.test(text)) return;
+          instruction.parts.unshift({ text: DEFAULT_SYSTEM });
+        } catch (e) {}
+      };
+    } catch (e) {}
+
+    try {
+      var originalPrepare = prepareAgyWireRequest;
+      prepareAgyWireRequest = function (wire, request) {
+        var prepared = originalPrepare(wire, request);
+        try {
+          if (prepared && prepared.init && typeof prepared.init.body === "string") {
+            var body = JSON.parse(prepared.init.body);
+            if (body && body.requestType === "agent") {
+              delete body.requestType;
+              prepared.init.body = JSON.stringify(body);
+            }
+          }
+        } catch (e) {}
+        return prepared;
+      };
+    } catch (e) {}
+
+    try {
+      var retried = new Map();
+      var originalCreateExecutor = createRequestExecutor;
+      createRequestExecutor = function (deps) {
+        if (!deps || typeof deps.transport !== "function") return originalCreateExecutor(deps);
+        var originalTransport = deps.transport;
+        deps.transport = async function (url, init, options) {
+          var response = await originalTransport(url, init, options);
+          if (!response || response.status !== 429 || !init || typeof init.body !== "string") return response;
+          var now = Date.now();
+          var fingerprint = bodyFingerprint(init.body);
+          var previous = retried.get(fingerprint);
+          if (previous && now - previous < 60000) return response;
+          if (!(await isBareExhaustion(response))) return response;
+          var moved = moveSystemInstruction(init.body);
+          if (!moved) return response;
+          retried.set(fingerprint, now);
+          if (retried.size > 32) retried.delete(retried.keys().next().value);
+          return originalTransport(url, Object.assign({}, init, { body: moved }), options);
+        };
+        return originalCreateExecutor(deps);
+      };
+    } catch (e) {}
+  }
+})();
+/* hub-cloaking:end */'''
+
+# 3.1 only: constants live inside an __esm closure, so they need literal edits.
+CLOAKING_UA_V2_EDITS = (
+    (
+        "var AGY_CLI_VERSION, AGY_CLI_CHANGE_LIST, ANTIGRAVITY_API_CLIENT, MAX_FINGERPRINT_HISTORY, sessionFingerprint;",
+        "var AGY_CLI_VERSION, AGY_CLI_CHANGE_LIST, AGY_CLIENT_KIND, ANTIGRAVITY_API_CLIENT, MAX_FINGERPRINT_HISTORY, sessionFingerprint;",
+    ),
+    (
+        '    AGY_CLI_VERSION = "1.5.8";\n    AGY_CLI_CHANGE_LIST = "1020628950";',
+        '    AGY_CLI_VERSION = process.env.ANTIGRAVITY_APP_VERSION || "2.33.0";\n'
+        '    AGY_CLI_CHANGE_LIST = process.env.ANTIGRAVITY_APP_CHANGE_LIST || "1023160026";\n'
+        '    AGY_CLIENT_KIND = "hub";',
+    ),
+    (
+        "return `antigravity/cli/${version} (aidev_client; os_type=${osType}; arch=${normalizedArch}${changeList}; auth_method=${authMethod})`;",
+        "return `antigravity/${AGY_CLIENT_KIND}/${version} (aidev_client; os_type=${osType}; arch=${normalizedArch}${changeList})`;",
+    ),
+)
+
+
+def _cloaking_optin_enabled() -> bool:
+    """Config flag (default off) with an environment override in both directions."""
+    forced = os.environ.get(CLOAKING_ENV)
+    if forced is not None:
+        return forced.strip().lower() in ("1", "true", "yes", "on")
+    try:
+        import hub_paths
+        config = hub_paths.read_mirrored_antigravity_config() or {}
+    except Exception:
+        return False
+    for key in CLOAKING_CONFIG_KEYS:
+        if key in config:
+            return config[key] is True
+    return False
+
+
+def _cloaking_block(eol: str, optin: bool) -> str:
+    body = CLOAKING_JS.replace("__HUB_CLOAK_OPTIN__", "true" if optin else "false")
+    return body.replace("\n", eol) + eol
+
+
+def _strip_cloaking_block(source: str) -> str:
+    """Remove a known cloaking block so base-planner preflight sees the original layout."""
+    eol = "\r\n" if "\r\n" in source else "\n"
+    for flag in (False, True):
+        block = _cloaking_block(eol, flag)
+        if source.count(block) == 1:
+            return source.replace(block, "", 1)
+    return source
+
+
+def _cloaking_syntax_ok(text: str) -> bool:
+    import shutil
+    import subprocess
+    import tempfile
+
+    node = shutil.which("node")
+    if not node:
+        return True
+    descriptor, path = tempfile.mkstemp(suffix=".mjs")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+        result = subprocess.run([node, "--check", path], capture_output=True, timeout=30)
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _plan_cloaking(source: str, optin: bool | None = None) -> str | None:
+    """Plan the exact cloaking edit; None means an unknown/ambiguous layout."""
+    if optin is None:
+        optin = _cloaking_optin_enabled()
+    if "\r\n" in source and "\n" in source.replace("\r\n", ""):
+        return None
+    eol = "\r\n" if "\r\n" in source else "\n"
+    block = _cloaking_block(eol, optin)
+    ua_all = [tuple(part.replace("\n", eol) for part in edit)
+              for edit in CLOAKING_UA_V2_EDITS]
+
+    if CLOAKING_MARKER in source:
+        if source.count(CLOAKING_MARKER) != 1 or source.count(CLOAKING_END_MARKER) != 1:
+            return None
+        old_block = old_optin = None
+        for flag in (False, True):
+            item = _cloaking_block(eol, flag)
+            if source.count(item) == 1:
+                old_block, old_optin = item, flag
+                break
+        if old_block is None:
+            return None
+        base = source.replace(old_block, "", 1)
+        # Only undo UA edits when an opt-in block actually applied them: 3.0's
+        # own identity patch already produces the same "hub" UA template.
+        if old_optin:
+            for before, after in reversed(ua_all):
+                if base.count(after) == 1:
+                    base = base.replace(after, before, 1)
+        if CLOAKING_MARKER in base or _route_edits(base) is None:
+            return None
+        # A changed config/env flag is a repairable transition, not an unknown
+        # layout: the inverse must reproduce a recognised base, then we return
+        # the plan for the currently requested flag.
+        return _plan_cloaking(base, optin)
+
+    if any(name in source for name in ("hubQuotaCloak", CLOAKING_MARKER, CLOAKING_END_MARKER)):
+        return None
+    # The bare-exhaustion guard wraps the breaker instance, so it must be
+    # installed only after the quota-breaker patch itself.
+    if QUOTA_BREAKER_MARKER not in source:
+        return None
+    if _route_edits(source) is None or _plan_quota_breaker(source) is None:
+        return None
+    ua = ua_all if optin and _is_v2_profile(source) else []
+    updated = source
+    for before, after in ua:
+        if updated.count(before) != 1 or updated.count(after):
+            return None
+        updated = updated.replace(before, after, 1)
+    return updated + block
+
+
+def patch_cloaking(plugin_cache: Path | None = None) -> dict:
+    """Apply the cloaking layer to installed bundles only, with a backup."""
+    changed, already, unsupported, failed = [], [], [], []
+    for path in _prompt_fix_candidates(plugin_cache):
+        try:
+            source = _read_text_exact(path)
+            updated = _plan_cloaking(source)
+            if updated is None or _plan_cloaking(updated) != updated:
+                unsupported.append(str(path))
+                continue
+            if updated == source:
+                already.append(str(path))
+                continue
+            if not _cloaking_syntax_ok(updated):
+                failed.append(str(path))
+                continue
+            backup = path.with_suffix(path.suffix + CLOAKING_BACKUP_SUFFIX)
+            if not backup.exists():
+                _write_text_exact(backup, source)
+            _write_text_exact(path, updated)
+            changed.append(str(path))
+        except (OSError, UnicodeError):
+            unsupported.append(str(path))
+    return {
+        "ok": bool(changed or already) and not unsupported and not failed,
+        "changed": changed, "already": already, "unsupported": unsupported,
+        "failed": failed,
+        "message": (f"Клоакинг применён: {len(changed)} файл(ов)."
+                    if changed else "Клоакинг уже активен." if already
+                    else "Клоакинг не применён: неизвестная структура бандла."),
+    }
 
 
 def _local_plugin_dist_dir() -> Path | None:
@@ -1677,9 +2009,11 @@ def verify_plugin_health(plugin_cache: Path | None = None) -> dict:
     import subprocess
     candidates = _prompt_fix_candidates(plugin_cache)
     quota = {"state": "missing", "active": 0, "pending": 0, "unsupported": []}
+    cloaking = {"state": "missing", "active": 0, "pending": 0,
+                "unsupported": [], "opt_in": _cloaking_optin_enabled()}
     if not candidates:
         return {"ok": False, "state": "missing", "reasons": [MISSING_PLUGIN],
-                "syntax_checked": False, "quota_breaker": quota}
+                "syntax_checked": False, "quota_breaker": quota, "cloaking": cloaking}
     reasons: list[str] = []
     warnings: list[str] = []
     for path in candidates:
@@ -1688,6 +2022,7 @@ def verify_plugin_health(plugin_cache: Path | None = None) -> dict:
         except (OSError, UnicodeError) as exc:
             reasons.append(f"{path.name}: read error {type(exc).__name__}")
             quota["unsupported"].append(str(path))
+            cloaking["unsupported"].append(str(path))
             continue
         if not _prompt_is_patched(source):
             reasons.append(f"{path.name}: systemInstruction sanitizer missing")
@@ -1698,6 +2033,13 @@ def verify_plugin_health(plugin_cache: Path | None = None) -> dict:
             quota["pending"] += 1
         else:
             quota["active"] += 1
+        cloak = _plan_cloaking(source)
+        if cloak is None:
+            cloaking["unsupported"].append(str(path))
+        elif cloak != source:
+            cloaking["pending"] += 1
+        else:
+            cloaking["active"] += 1
         if _is_v2_profile(source):
             if not _gemini4_v2_is_patched(source):
                 reasons.append(f"{path.name}: Gemini 4 dynamic wire map missing")
@@ -1724,12 +2066,15 @@ def verify_plugin_health(plugin_cache: Path | None = None) -> dict:
                 syntax_checked = False
     quota["state"] = ("unsupported" if quota["unsupported"] else
                       "pending" if quota["pending"] else "active")
+    cloaking["state"] = ("unsupported" if cloaking["unsupported"] else
+                         "pending" if cloaking["pending"] else "active")
     return {
         "ok": not reasons,
         "state": "ok" if not reasons else "unsupported",
         "reasons": reasons,
         "syntax_checked": syntax_checked,
         "quota_breaker": quota,
+        "cloaking": cloaking,
     }
 
 
@@ -1737,6 +2082,7 @@ def self_heal_plugin(plugin_cache: Path | None = None, state_path: Path | None =
     """Re-apply all Hub patches; persist a verified fingerprint on success."""
     health = verify_plugin_health(plugin_cache)
     if (health["ok"] and not health["quota_breaker"]["pending"]
+            and not health["cloaking"]["pending"]
             and check_patch_state(plugin_cache, state_path)["state"] in ("ok", "unknown")):
         state = load_patch_state(plugin_cache, state_path=state_path)
         state["degraded"] = False
@@ -1750,7 +2096,7 @@ def self_heal_plugin(plugin_cache: Path | None = None, state_path: Path | None =
         }
         save_patch_state(state, plugin_cache, state_path=state_path)
         return {"state": "already_healthy", "ok": True, "reasons": [],
-                "quota_breaker": health["quota_breaker"]}
+                "quota_breaker": health["quota_breaker"], "cloaking": health["cloaking"]}
     prompt = patch_prompt_sanitizer(plugin_cache)
     identity = patch_antigravity_identity(plugin_cache)
     gemini4 = patch_gemini4_models(plugin_cache)
@@ -1758,6 +2104,7 @@ def self_heal_plugin(plugin_cache: Path | None = None, state_path: Path | None =
     route = bool(patch_auth_plugin_transport(plugin_cache, include_local=False,
                                              changed_files=route_changed))
     patch_quota_breaker(plugin_cache)
+    patch_cloaking(plugin_cache)
     health = verify_plugin_health(plugin_cache)
     if not health["ok"]:
         state = load_patch_state(plugin_cache, state_path=state_path)
@@ -1771,7 +2118,7 @@ def self_heal_plugin(plugin_cache: Path | None = None, state_path: Path | None =
         return {"state": "unsupported", "ok": False, "reasons": health["reasons"],
                 "prompt": prompt["message"], "identity": identity["message"],
                 "gemini4": gemini4["message"], "route": route,
-                "quota_breaker": health["quota_breaker"]}
+                "quota_breaker": health["quota_breaker"], "cloaking": health["cloaking"]}
     state = load_patch_state(plugin_cache, state_path=state_path)
     state["degraded"] = False
     state["degraded_reason"] = ""
@@ -1784,7 +2131,7 @@ def self_heal_plugin(plugin_cache: Path | None = None, state_path: Path | None =
     }
     save_patch_state(state, plugin_cache, state_path=state_path)
     return {"state": "healed", "ok": True, "reasons": [], "syntax_checked": health["syntax_checked"],
-            "quota_breaker": health["quota_breaker"]}
+            "quota_breaker": health["quota_breaker"], "cloaking": health["cloaking"]}
 
 
 def main():
@@ -1806,6 +2153,8 @@ def main():
         print(json.dumps(self_heal_plugin(), indent=2, ensure_ascii=False))
     elif command == "quota-breaker":
         print(json.dumps(patch_quota_breaker(), indent=2, ensure_ascii=False))
+    elif command == "cloaking":
+        print(json.dumps(patch_cloaking(), indent=2, ensure_ascii=False))
     else:
         print("patched" if patch_auth_plugin_transport() else "no auth plugin found or patch failed")
 

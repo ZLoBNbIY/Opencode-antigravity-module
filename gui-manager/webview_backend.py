@@ -408,7 +408,7 @@ def _backup_config(data: dict) -> dict:
         "account_selection_strategy": str, "soft_quota_threshold_percent": int,
         "switch_on_first_rate_limit": bool, "max_account_switches": int,
         "quota_style_fallback": bool, "close_to_tray": bool, "autostart_on_login": bool,
-        "google_proactive_refresh": bool,
+        "google_proactive_refresh": bool, "cloaking_v2": bool,
         "providers_visibility": dict, "provider_routes": dict, "vless_kill_switch": bool,
         "vless_enabled": bool, "dns_mode": str, "custom_dns": list, "dot_host": str,
         "doh_url": str, "dns_presets": list, "proxy": str, "proxy_pool": list,
@@ -558,6 +558,7 @@ class HubApi:
             pinned_version = cloudcode_route_patch.get_expected_plugin_version()
             if pinned_version:
                 opencode_config.ensure_plugin_pin(pinned_version)
+            opencode_config.ensure_google_api_key()
         except Exception:
             pass
         self._config_lock = threading.RLock()

@@ -1,6 +1,7 @@
 {
   "auto_update": false,
   "plugin_pin_version": "3.1.13",
+  "cloaking_v2": false,
   "account_selection_strategy": "hybrid",
   "soft_quota_threshold_percent": 100,
   "switch_on_first_rate_limit": true,

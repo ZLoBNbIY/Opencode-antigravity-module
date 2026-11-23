@@ -12,7 +12,14 @@
   "provider": {
     "google": {
       "options": {
-        "apiKey": "antigravity"
+        "apiKey": "common-auth-placeholder.google"
+      }
+    }
+  },
+  "providers": {
+    "google": {
+      "settings": {
+        "apiKey": "common-auth-placeholder.google"
       }
     }
   }

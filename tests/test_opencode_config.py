@@ -50,6 +50,31 @@ class OpencodeConfigTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertIn("Некорректная настройка", msg)
 
+    def test_ensure_google_api_key_restores_both_shapes(self):
+        self.config_file.write_text(json.dumps({
+            "$schema": "https://opencode.ai/config.json",
+            "model": "google/antigravity-gemini-3.8-flash",
+            "provider": {"google": {"options": {}}},
+            "plugin": ["@cortexkit/opencode-antigravity-auth@3.1.13"],
+        }), encoding="utf-8")
+        modified, msg = opencode_config.ensure_google_api_key(self.config_file, "3.1.13")
+        self.assertTrue(modified)
+        self.assertIn("перезапустите", msg.lower())
+        data = json.loads(self.config_file.read_text(encoding="utf-8"))
+        self.assertEqual(data["provider"]["google"]["options"]["apiKey"],
+                         "common-auth-placeholder.google")
+        self.assertEqual(data["providers"]["google"]["settings"]["apiKey"],
+                         "common-auth-placeholder.google")
+        self.assertEqual(data["plugin"], ["@cortexkit/opencode-antigravity-auth@3.1.13"])
+        again, _ = opencode_config.ensure_google_api_key(self.config_file, "3.1.13")
+        self.assertFalse(again)
+
+    def test_google_api_key_sentinel_follows_plugin_generation(self):
+        self.assertEqual(opencode_config.google_api_key_sentinel("3.0.0"), "antigravity")
+        self.assertEqual(opencode_config.google_api_key_sentinel("3.1.13"),
+                         "common-auth-placeholder.google")
+        self.assertEqual(opencode_config.google_api_key_sentinel("2.9.1"), "antigravity")
+
     def test_ensure_creates_file_if_missing(self):
         modified, msg = opencode_config.ensure_session_title_config(self.config_file)
         self.assertTrue(modified)
