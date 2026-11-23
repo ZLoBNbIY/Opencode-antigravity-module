@@ -114,6 +114,7 @@ import tokenlavka_manager
 import hub_paths
 import deepseek_api
 import google_proactive_refresh
+import google_connection
 import opencode_usage
 import jsonc_config
 import secure_storage
@@ -535,7 +536,8 @@ class _WebviewBridge:
 
     def __init__(self, api):
         for name in dir(api):
-            if not name.startswith("_") and name not in {"load_config", "save_config", "stop_opencode", "start_opencode"}:
+            if not name.startswith("_") and name not in {"load_config", "save_config", "stop_opencode",
+                                                          "start_opencode", "ensure_google_connection"}:
                 method = getattr(api, name)
                 if callable(method):
                     setattr(self, name, method)
@@ -587,6 +589,7 @@ class HubApi:
         self._closing = threading.Event()
         self._uninstalled = False
         self._login_locks = {name: threading.Lock() for name in ("google", "openai", "claude")}
+        self._google_connect_lock = threading.Lock()
         self._google_refresh = google_proactive_refresh.GoogleProactiveRefresh(
             self._run_google_refresh_cli, self._closing, self._google_refresh_enabled)
 
@@ -646,6 +649,39 @@ class HubApi:
         if self._closing.is_set():
             return None
         return antigravity_manager.run_google_route_cmd([node_exe, *command], timeout=timeout)
+
+    def _schedule_google_connection(self):
+        """Start the isolated daemon worker; never block the calling thread."""
+        if self._uninstalled or self._closing.is_set():
+            return
+        if os.getenv("AI_HUB_GOOGLE_POOL_CONNECTION") == "0":
+            return
+        try:
+            threading.Thread(target=self.ensure_google_connection, daemon=True,
+                             name="hub-google-connect").start()
+        except Exception:
+            hub_logging.log.debug("Google connection: status=%s", google_connection.API_ERROR)
+
+    def ensure_google_connection(self):
+        """Idempotent pool credential check; returns a status, never raises."""
+        if self._uninstalled or self._closing.is_set():
+            return google_connection.SKIP
+        if not self._google_connect_lock.acquire(blocking=False):
+            return google_connection.IN_PROGRESS
+        try:
+            helper = getattr(antigravity_manager, "get_opencode_cli", None)
+            cli = helper() if callable(helper) else None
+            status = google_connection.ensure_google_connection(
+                cli=cli, resolve=False,
+                stop=lambda: self._closing.is_set() or self._uninstalled)
+            if status not in (google_connection.ALREADY_CONNECTED, google_connection.CONNECTED):
+                hub_logging.log.debug("Google connection: status=%s", status)
+            return status
+        except Exception:
+            hub_logging.log.debug("Google connection: status=%s", google_connection.API_ERROR)
+            return google_connection.API_ERROR
+        finally:
+            self._google_connect_lock.release()
 
     def load_config(self) -> dict:
         with self._config_lock:
@@ -1776,6 +1812,10 @@ class HubApi:
             except Exception:
                 notes.append("перезапустить сервис OpenCode не удалось")
 
+            # The pool is non-empty now: retry the connection in an isolated
+            # daemon thread so the UI does not wait for CLI/server calls.
+            self._schedule_google_connection()
+
             message = "Google аккаунт добавлен в пул"
             if notes:
                 message += "; " + ", ".join(notes) + " — перезапустите OpenCode вручную"
@@ -2870,6 +2910,8 @@ def run_webview_app():
                                  heal.get("state"), "; ".join(heal.get("reasons", []))[:300])
         except Exception as exc:
             hub_logging.failed("Startup plugin self-heal", exc)
+        # Primary startup call: isolate CLI/server waiting from network init.
+        api._schedule_google_connection()
         try:
             cfg = api.load_config()
             if api._closing.is_set():

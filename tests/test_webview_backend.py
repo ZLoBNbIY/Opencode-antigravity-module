@@ -228,6 +228,50 @@ class WebviewBackendTests(unittest.TestCase):
         self.assertEqual(result, {'status':'error', 'message':'Не удалось завершить вход в Google.'})
         self.manager.run_silent_cmd.assert_not_called()
 
+    def test_google_connection_runs_in_a_daemon_thread_after_login(self):
+        self.manager.get_node_executable = Mock(return_value="node")
+        self.manager.get_cli_js = Mock(return_value="cli.js")
+        self.manager.repair_legacy_google_account_file = Mock(return_value=None)
+        self.manager.run_silent_cmd = Mock(return_value=SimpleNamespace(returncode=0, stdout="", stderr=""))
+        self.manager.run_google_route_cmd = Mock(return_value=SimpleNamespace(returncode=0, stdout="", stderr=""))
+        threads = []
+
+        class RecordingThread:
+            def __init__(self, target=None, daemon=None, name=None):
+                self.target, self.daemon, self.name = target, daemon, name
+                threads.append(self)
+
+            def start(self):
+                pass
+
+        api = self.backend.HubApi()
+        with patch.object(self.backend.threading, "Thread", RecordingThread), \
+             patch.object(self.backend.os.path, "exists", return_value=True):
+            result = api.add_google_account()
+        self.assertEqual(result["status"], "ok")
+        connect_threads = [t for t in threads if t.name == "hub-google-connect"]
+        self.assertEqual(len(connect_threads), 1)
+        self.assertTrue(connect_threads[0].daemon)
+        self.assertEqual(connect_threads[0].target.__func__,
+                         api.ensure_google_connection.__func__)
+        self.assertIs(connect_threads[0].target.__self__, api)
+
+    def test_google_connection_respects_lock_and_closing_state(self):
+        api = self.backend.HubApi()
+        api._google_connect_lock.acquire()
+        try:
+            self.assertEqual(api.ensure_google_connection(),
+                             self.backend.google_connection.IN_PROGRESS)
+        finally:
+            api._google_connect_lock.release()
+        api._closing.set()
+        self.manager.get_opencode_cli = Mock(side_effect=AssertionError("worker must not run"))
+        self.assertEqual(api.ensure_google_connection(), self.backend.google_connection.SKIP)
+        self.manager.get_opencode_cli.assert_not_called()
+        with patch.object(self.backend.threading, "Thread") as thread:
+            api._schedule_google_connection()
+            thread.assert_not_called()
+
     def test_openai_failure_and_exception_reach_frontend_and_unlock_retry(self):
         self.openai.login_openai_browser = Mock(side_effect=[(False, 'token exchange failed', None),
                                                            RuntimeError('network unavailable'),

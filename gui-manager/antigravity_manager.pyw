@@ -137,17 +137,33 @@ def get_opencode_exe():
     return str(candidates[0])
 
 def get_opencode_cli():
-    """Locates opencode-cli.exe: next to the desktop app, in the Roaming CLI cache, or on PATH."""
-    candidates = [Path(get_opencode_exe()).parent / "resources" / "opencode-cli.exe"]
-    roaming_cli = Path.home() / "AppData" / "Roaming" / "ai.opencode.desktop" / "cli"
-    if roaming_cli.exists():
-        candidates.extend(sorted(roaming_cli.glob("*/opencode-cli.exe"), reverse=True))
+    """Locate opencode-cli.exe without depending on an install folder name.
+
+    Order: PATH, generic ``Programs\\*\\resources`` glob (newest install first),
+    beside the detected desktop app, then the Roaming CLI cache.  A missing
+    executable is never reported as a successful lookup.
+    """
+    candidates = []
     path_cli = shutil.which("opencode-cli") or shutil.which("opencode")
     if path_cli:
         candidates.append(Path(path_cli))
+    programs = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "Programs"
+    if programs.is_dir():
+        installed = [p for p in programs.glob("*/resources/opencode-cli.exe") if p.is_file()]
+        installed.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        candidates.extend(installed)
+    exe = get_opencode_exe()
+    if exe:
+        candidates.append(Path(exe).parent / "resources" / "opencode-cli.exe")
+    roaming_cli = Path.home() / "AppData" / "Roaming" / "ai.opencode.desktop" / "cli"
+    if roaming_cli.exists():
+        candidates.extend(sorted(roaming_cli.glob("*/opencode-cli.exe"), reverse=True))
     for c in candidates:
-        if c.is_file():
-            return str(c)
+        try:
+            if c.is_file():
+                return str(c)
+        except OSError:
+            continue
     return None
 
 def cleanup_opencode_locks():
