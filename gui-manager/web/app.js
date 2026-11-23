@@ -2583,11 +2583,13 @@ async function refreshPluginFixStatus() {
   if (!window.pywebview?.api?.get_opencode_plugin_status) return;
   const badge = document.getElementById('plugin-fix-badge');
   const statusEl = document.getElementById('plugin-fix-status');
+  const warningEl = document.getElementById('plugin-fix-warning');
   try {
     const res = await window.pywebview.api.get_opencode_plugin_status();
     if (!badge) return;
     const state = res?.state || 'error';
     const label = state === 'patched' ? 'Фикс активен'
+      : state === 'unsupported' ? 'Версия не проверена'
       : state === 'pending' ? 'Требуется фикс'
       : 'Плагин не найден';
     const badgeClass = state === 'patched' ? 'badge-available'
@@ -2596,6 +2598,16 @@ async function refreshPluginFixStatus() {
     badge.className = `badge-pill ${badgeClass}`;
     badge.innerHTML = `<span class="dot"></span> ${label}`;
     if (statusEl) statusEl.textContent = res?.message || '';
+    if (warningEl) {
+      const detail = [res?.installed_version && `установлена ${res.installed_version}`,
+        res?.expected_version && `проверена ${res.expected_version}`,
+        res?.reason].filter(Boolean).join(' · ');
+      const show = state === 'unsupported' || res?.degraded;
+      warningEl.style.display = show ? '' : 'none';
+      warningEl.textContent = show
+        ? `Внимание: патч плагина не активен (${detail || 'причина не указана'}). Google-запросы могут получать 429 при живой квоте. Обновите Hub и нажмите «Применить фикс плагина».`
+        : '';
+    }
   } catch {}
 }
 
@@ -2617,7 +2629,7 @@ async function checkOpenCodePatchesApplied() {
 async function refreshGooglePatchDisclaimer() {
   const applied = await checkOpenCodePatchesApplied();
   const el = document.getElementById('google-patch-disclaimer');
-  if (el) el.style.display = applied === false ? '' : 'none';
+  if (el) el.style.display = applied ? 'none' : '';
   return applied;
 }
 

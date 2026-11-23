@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import sys
@@ -70,8 +71,10 @@ class HubPathsTests(unittest.TestCase):
             ):
                 atomic_write_bytes(hub_paths.HUB_CONFIG_FILE, b'{"setting":true}')
                 hub_paths.migrate_legacy_locations()
-                self.assertEqual(hub_paths.OPENCODE_SHARED_ANTIGRAVITY_CONFIG.read_bytes(),
-                                 b'{"setting":true}')
+                self.assertEqual(
+                    json.loads(hub_paths.OPENCODE_SHARED_ANTIGRAVITY_CONFIG.read_text(encoding="utf-8")),
+                    {"setting": True, "auto_update": False},
+                )
                 self.assertEqual(list(hub.iterdir()), [hub_paths.HUB_CONFIG_FILE])
             for path in legacy_files:
                 self.assertEqual(path.read_bytes(), b'{"apiKey":"legacy-sample"}')

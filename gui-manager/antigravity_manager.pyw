@@ -192,6 +192,9 @@ def ordered_generation_dirs(config_dir: Path | None = None) -> list[Path]:
 
 DEFAULT_CONFIG = {
     "$schema": "https://raw.githubusercontent.com/cortexkit/opencode-antigravity-auth/main/schema.json",
+    # Keep the updater off: a plugin self-update replaces the bundles patched
+    # by the Hub and silently reintroduces the Google 429 regression.
+    "auto_update": False,
     "account_selection_strategy": "hybrid",
     "soft_quota_threshold_percent": 100,
     "switch_on_first_rate_limit": True,
@@ -218,6 +221,51 @@ DEFAULT_CONFIG = {
     "autostart_on_login": False,
     "max_rate_limit_wait_seconds": 300,
 }
+
+def _list_opencode_desktop_pids():
+    """PIDs of every running OpenCode desktop process (Windows, locale-safe)."""
+    if sys.platform != "win32":
+        return []
+    result = run_silent_cmd(
+        ["tasklist", "/fi", "imagename eq OpenCode.exe", "/fo", "csv", "/nh"], timeout=10)
+    pids = []
+    for line in (result.stdout or "").splitlines():
+        columns = [column.strip().strip('"') for column in line.split('","')]
+        if len(columns) < 2 or columns[0].lower() != "opencode.exe" or not columns[1].isdigit():
+            continue
+        pid = int(columns[1])
+        if pid != os.getpid():
+            pids.append(pid)
+    return pids
+
+
+def terminate_opencode_desktop():
+    """Close every OpenCode desktop window, including ones the Hub did not start.
+
+    The Hub only tracks processes it launched itself in ``_opencode_process``.
+    A window opened by the user from Explorer (or after an auto-update) has a
+    different parent and would otherwise survive the restart, so the plugin
+    code stays loaded and the restart button appears to do nothing.
+    """
+    if sys.platform != "win32":
+        return {"ok": True, "closed": 0, "failed": 0, "message": "Not a Windows host."}
+    pids = _list_opencode_desktop_pids()
+    if not pids:
+        return {"ok": True, "closed": 0, "failed": 0, "message": "No desktop process."}
+    killed = run_silent_cmd(["taskkill", "/F", "/T", "/IM", "OpenCode.exe"], timeout=20)
+    # Wait for the windows to actually exit: a new Popen can otherwise be
+    # handed to the old single-instance Electron process.
+    deadline = time.monotonic() + 10
+    remaining = pids
+    while remaining and time.monotonic() < deadline:
+        time.sleep(0.3)
+        remaining = _list_opencode_desktop_pids()
+    if remaining:
+        return {"ok": False, "closed": len(pids) - len(remaining), "failed": len(remaining),
+                "message": f"OpenCode processes still running: {remaining}"}
+    return {"ok": True, "closed": len(pids), "failed": 0,
+            "message": f"Closed {len(pids)} process(es). taskkill rc={killed.returncode}"}
+
 
 def run_silent_cmd(cmd, timeout=30, env=None):
     flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0

@@ -41,6 +41,42 @@ RETRY_404 = re.compile(
     r" \|\| response\.status === 404 \|\| response\.status >= 500;"
 )
 
+# --- profile v2: plugin 3.1.x (upstream removed the config-aware proxy helper) ---
+PROXY_V2_ANCHOR = (
+    'function getHttpsProxy(url) {\n'
+    '  if (url.protocol !== "https:" || noProxyIncludes(url.hostname))\n'
+    '    return void 0;\n'
+)
+FORCED_GOOGLE_ROUTE_V2 = (
+    '  if ([".googleapis.com", ".google.com", ".google"].some(suffix => url.hostname.endsWith(suffix)))\n'
+    '    return new URL("http://127.0.0.1:10880");\n'
+)
+HUB_ROUTE_V2_MARKER = 'return new URL("http://127.0.0.1:10880");'
+RETRY_404_V2 = 'const shouldRetryEndpoint = response.status === 404 || response.status >= 500;'
+RETRY_404_V2_FIXED = 'const shouldRetryEndpoint = response.status >= 500; /* no retry on 404 */'
+GEMINI4_FIX_MARKER_V2 = (
+    'getDynamicWireModel("antigravity-gemini-4-hydrogen") || getTieredAntigravityModel({'
+)
+GEMINI4_HELPER_ANCHOR_V2 = 'function getTieredAntigravityModel(routes, tier) {'
+GEMINI4_HELPER_V2 = '''var HUB_DYNAMIC_WIRE_MODEL = {};
+function getDynamicWireModel(id) {
+  try {
+    const mapPath = process.env.ANTIGRAVITY_HUB_WIRE_MAP;
+    if (mapPath && !HUB_DYNAMIC_WIRE_MODEL.__loaded) {
+      HUB_DYNAMIC_WIRE_MODEL = JSON.parse(readFileSync(mapPath, "utf8"));
+      HUB_DYNAMIC_WIRE_MODEL.__loaded = true;
+    }
+  } catch {}
+  return HUB_DYNAMIC_WIRE_MODEL[id];
+}
+'''
+GEMINI4_MODELS_V2 = {
+    "hydrogen": "antigravity-gemini-4-hydrogen",
+    "neon": "antigravity-gemini-4-neon",
+    "carbon": "antigravity-gemini-4-carbon",
+    "argon": "antigravity-gemini-4-argon",
+}
+
 
 def _cache_roots(plugin_cache):
     if plugin_cache is not None:
@@ -53,8 +89,8 @@ def _cache_roots(plugin_cache):
                               for base in bases for kind in ("npm", "packages")))
 
 
-def _route_edits(source: str) -> list[tuple[str, str]] | None:
-    """Plan exact selector/retry edits; None means an unrecognized layout."""
+def _route_edits_v1(source: str) -> list[tuple[str, str]] | None:
+    """Plan exact selector/retry edits for plugin 3.0.x; None means other layout."""
     eol = "\r\n" if "\r\n" in source else "\n"
     normalized = source.replace("\r\n", "\n")
     if eol == "\r\n" and "\n" in source.replace("\r\n", ""):
@@ -101,6 +137,43 @@ def _route_edits(source: str) -> list[tuple[str, str]] | None:
         old = retry[0]
         edits.append((old, old.replace(" || response.status === 404", "") + " /* no retry on 404 */"))
     return [(before.replace("\n", eol), after.replace("\n", eol)) for before, after in edits]
+
+
+def _route_edits_v2(source: str) -> list[tuple[str, str]] | None:
+    """Plan the minimal proxy override for plugin 3.1.x bundles."""
+    eol = "\r\n" if "\r\n" in source else "\n"
+    anchor = PROXY_V2_ANCHOR.replace("\n", eol)
+    forced = FORCED_GOOGLE_ROUTE_V2.replace("\n", eol)
+    route_active = source.count(forced) == 1
+    if source.count(anchor) == 1:
+        patched_anchor = anchor.replace(
+            "function getHttpsProxy(url) {" + eol,
+            "function getHttpsProxy(url) {" + eol + forced, 1)
+    elif route_active:
+        patched_anchor = None
+    else:
+        return None
+    if RETRY_404_V2 in source:
+        retry = (RETRY_404_V2, RETRY_404_V2_FIXED)
+    elif RETRY_404_V2_FIXED in source:
+        retry = None
+    else:
+        return None
+    edits: list[tuple[str, str]] = []
+    if patched_anchor is not None:
+        edits.append((anchor, patched_anchor))
+    if retry is not None:
+        edits.append(retry)
+    return edits
+
+
+def _route_edits(source: str) -> list[tuple[str, str]] | None:
+    """Plan route edits for any supported layout; None means unknown version."""
+    for planner in (_route_edits_v1, _route_edits_v2):
+        edits = planner(source)
+        if edits is not None:
+            return edits
+    return None
 
 
 def _apply_exact_edits(source: str, edits: list[tuple[str, str]]) -> str | None:
@@ -321,6 +394,12 @@ def _local_plugin_dist_dir() -> Path | None:
     return candidate if all((candidate / name).is_file() for name in ("server.js", "index.js")) else None
 
 
+def get_vendored_plugin_version() -> str | None:
+    """Version of the recovery bundle shipped with this Hub."""
+    local = _local_plugin_dist_dir()
+    return _package_version(local.parent) if local is not None else None
+
+
 def _package_version(plugin_dir: Path) -> str | None:
     """Read a plugin package version without importing packaging."""
     package_json = plugin_dir / "package.json"
@@ -505,6 +584,66 @@ def get_prompt_sanitizer_status(plugin_cache: Path | None = None, *, full=False)
         "patched": patched,
         "pending": pending,
         "message": f"Не все компоненты патча активны: {patched} из {len(candidates)} копий.",
+    }
+
+
+def _plan_gemini4_v2(source: str) -> str | None:
+    """Install a runtime wire-model lookup for Gemini 4 in plugin 3.1.x."""
+    eol = "\r\n" if "\r\n" in source else "\n"
+    helper_anchor = GEMINI4_HELPER_ANCHOR_V2.replace("\n", eol)
+    helper = GEMINI4_HELPER_V2.replace("\n", eol)
+    updated = source
+    if GEMINI4_HELPER_V2 not in source.replace("\r\n", "\n"):
+        if source.count(helper_anchor) != 1:
+            return None
+        updated = updated.replace(helper_anchor, helper + helper_anchor, 1)
+    for family, opencode_id in GEMINI4_MODELS_V2.items():
+        old = ("function getGemini%sAntigravityModel(tier) {\n"
+               "  return getTieredAntigravityModel({" % (family.capitalize(),)).replace("\n", eol)
+        new = ('function getGemini%sAntigravityModel(tier) {\n'
+               '  return getDynamicWireModel("%s") || getTieredAntigravityModel({'
+               % (family.capitalize(), opencode_id)).replace("\n", eol)
+        if new in updated:
+            continue
+        if updated.count(old) != 1:
+            return None
+        updated = updated.replace(old, new, 1)
+    return updated
+
+
+def _gemini4_v2_is_patched(source: str) -> bool:
+    return _plan_gemini4_v2(source) == source
+
+
+def patch_gemini4_models(plugin_cache: Path | None = None) -> dict:
+    """Enable dynamic Gemini 4 wire-model mapping in installed bundles."""
+    candidates = _prompt_fix_candidates(plugin_cache)
+    changed: list[str] = []
+    already: list[str] = []
+    missing: list[str] = []
+    for path in candidates:
+        try:
+            source = _read_text_exact(path)
+            patched = _plan_gemini4_v2(source)
+            if patched is None:
+                missing.append(str(path))
+                continue
+            if patched == source:
+                already.append(str(path))
+                continue
+            backup = path.with_suffix(path.suffix + ".hub-gemini4.bak")
+            if not backup.exists():
+                _write_text_exact(backup, source)
+            _write_text_exact(path, patched)
+            changed.append(str(path))
+        except (OSError, UnicodeError):
+            missing.append(str(path))
+    return {
+        "ok": bool(changed or already) and not missing,
+        "changed": changed, "already": already, "missing": missing,
+        "message": (f"Динамический выбор моделей Gemini 4 включён: {len(changed)} файл(ов)."
+                    if changed else "Динамический выбор моделей Gemini 4 уже активен."
+                    if already else "Не удалось включить выбор моделей Gemini 4."),
     }
 
 
@@ -1021,6 +1160,9 @@ def patch_antigravity_identity(plugin_cache: Path | None = None) -> dict:
     for path in candidates:
         try:
             source = _read_text_exact(path)
+            if _is_v2_profile(source):
+                already.append(str(path))
+                continue
             patched, failed = _plan_identity_fix(source)
             if failed:
                 missing.append(f"{path}: {', '.join(failed)}")
@@ -1084,7 +1226,18 @@ def _identity_is_patched(source: str) -> bool:
     return _plan_identity_fix(source)[0] == source
 
 
+def _is_v2_profile(source: str) -> bool:
+    """Distinguish 3.1.x from 3.0.x (which shares the literal 10880 URL)."""
+    normalized = source.replace("\r\n", "\n")
+    return (FORCED_GOOGLE_ROUTE_V2 in normalized or GEMINI4_FIX_MARKER_V2 in normalized
+            or GEMINI4_HELPER_V2 in normalized)
+
+
 def _full_fix_is_patched(source: str) -> bool:
+    """Accept either the legacy 3.0.x profile or the new 3.1.x profile."""
+    if _is_v2_profile(source):
+        return (_gemini4_v2_is_patched(source) and _route_edits_v2(source) == []
+                and _prompt_is_patched(source))
     return GEMINI4_FIX_MARKER in source and _identity_is_patched(source) and _route_edits(source) == []
 
 
@@ -1099,7 +1252,8 @@ def get_identity_fix_status(plugin_cache: Path | None = None) -> dict:
             source = _read_text_exact(path)
         except (OSError, UnicodeError):
             continue
-        if _identity_is_patched(source):
+        if _is_v2_profile(source) or _identity_is_patched(source):
+            # Plugin 3.1.x implements request identity natively.
             patched += 1
     pending = len(candidates) - patched
     if pending == 0:
@@ -1119,6 +1273,188 @@ def get_identity_fix_status(plugin_cache: Path | None = None) -> dict:
     }
 
 
+PATCH_STATE_VERSION = 1
+
+
+def _patch_state_path() -> Path:
+    import hub_paths
+    return hub_paths.HUB_ROOT / "config" / "plugin-patch-state.json"
+
+
+def load_patch_state() -> dict:
+    """Read Hub-owned patch state; a missing or broken file means "unknown"."""
+    try:
+        data = json.loads(_patch_state_path().read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, ValueError):
+        return {"schema": PATCH_STATE_VERSION, "verified_version": None,
+                "verified_sha256": {}, "last_ok": None, "degraded": False,
+                "degraded_reason": "", "unsupported_versions": []}
+    return data if isinstance(data, dict) else {}
+
+
+def save_patch_state(state: dict) -> None:
+    import datetime
+    state = dict(state)
+    state["schema"] = PATCH_STATE_VERSION
+    state["last_ok"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    state.setdefault("unsupported_versions", [])
+    atomic_write_bytes(_patch_state_path(),
+                       (json.dumps(state, indent=2, ensure_ascii=False) + "\n").encode("utf-8"),
+                       private_parent=False)
+
+
+def get_installed_fingerprint(plugin_cache: Path | None = None) -> dict:
+    """Describe every installed bundle OpenCode may load, without modifying it."""
+    from hashlib import sha256
+    copies = []
+    for path in _prompt_fix_candidates(plugin_cache):
+        try:
+            source = _read_text_exact(path)
+            version = _package_version(path.parent.parent)
+            copies.append({
+                "path": str(path),
+                "version": version,
+                "sha256": sha256(source.encode("utf-8")).hexdigest(),
+            })
+        except (OSError, UnicodeError):
+            copies.append({"path": str(path), "version": None, "sha256": None})
+    return {"found": len(copies), "copies": copies}
+
+
+def get_verified_version(plugin_cache: Path | None = None) -> str | None:
+    """Single installed version to record after a successful verification."""
+    versions = get_verified_versions(plugin_cache)
+    return versions[-1] if versions else None
+
+
+def get_verified_versions(plugin_cache: Path | None = None) -> list[str]:
+    """All installed plugin versions; several cached versions may coexist."""
+    versions = {copy.get("version") for copy in get_installed_fingerprint(plugin_cache)["copies"]}
+    versions.discard(None)
+    return sorted(versions)
+
+
+def check_patch_state(plugin_cache: Path | None = None) -> dict:
+    """Compare installed bundles with the last Hub-verified fingerprint."""
+    fingerprint = get_installed_fingerprint(plugin_cache)
+    if not fingerprint["found"]:
+        return {"state": "missing", **fingerprint}
+    state = load_patch_state()
+    expected_versions = state.get("verified_versions") or (
+        [state["verified_version"]] if state.get("verified_version") else [])
+    hashes = state.get("verified_sha256") if isinstance(state.get("verified_sha256"), dict) else {}
+    if not expected_versions:
+        return {"state": "unknown", "expected_version": None, **fingerprint}
+    versions = {copy.get("version") for copy in fingerprint["copies"]}
+    if versions - set(expected_versions):
+        return {"state": "version_changed", "expected_version": expected_versions[-1],
+                "installed_versions": sorted(v or "unknown" for v in versions), **fingerprint}
+    for copy in fingerprint["copies"]:
+        key = f"{copy.get('version') or 'unknown'}:{Path(copy['path']).name}"
+        expected = hashes.get(key)
+        if expected and copy.get("sha256") != expected:
+            return {"state": "structure_changed", "expected_version": expected_versions[-1],
+                    "changed": copy["path"], **fingerprint}
+    return {"state": "ok", "expected_version": expected_versions[-1], **fingerprint}
+
+
+def verify_plugin_health(plugin_cache: Path | None = None) -> dict:
+    """Patched must mean markers are present AND the JS still parses."""
+    import shutil
+    import subprocess
+    candidates = _prompt_fix_candidates(plugin_cache)
+    if not candidates:
+        return {"ok": False, "state": "missing", "reasons": [MISSING_PLUGIN], "syntax_checked": False}
+    reasons: list[str] = []
+    for path in candidates:
+        try:
+            source = _read_text_exact(path)
+        except (OSError, UnicodeError) as exc:
+            reasons.append(f"{path.name}: read error {type(exc).__name__}")
+            continue
+        if not _prompt_is_patched(source):
+            reasons.append(f"{path.name}: systemInstruction sanitizer missing")
+        if _is_v2_profile(source):
+            if not _gemini4_v2_is_patched(source):
+                reasons.append(f"{path.name}: Gemini 4 dynamic wire map missing")
+            if _route_edits_v2(source) != []:
+                reasons.append(f"{path.name}: Hub Google route not active (3.1.x profile)")
+        else:
+            if not _identity_is_patched(source):
+                reasons.append(f"{path.name}: request identity fix missing")
+            if GEMINI4_FIX_MARKER not in source:
+                reasons.append(f"{path.name}: Gemini 4 model fix missing")
+            if _route_edits_v1(source) != []:
+                reasons.append(f"{path.name}: Hub Google route not active")
+    syntax_checked = False
+    node = shutil.which("node")
+    if node:
+        syntax_checked = True
+        for path in candidates:
+            try:
+                result = subprocess.run([node, "--check", str(path)], capture_output=True,
+                                        text=True, timeout=30)
+                if result.returncode != 0:
+                    reasons.append(f"{path.name}: JS syntax error: {result.stderr.strip()[:200]}")
+            except (OSError, subprocess.SubprocessError):
+                syntax_checked = False
+    return {
+        "ok": not reasons,
+        "state": "ok" if not reasons else "unsupported",
+        "reasons": reasons,
+        "syntax_checked": syntax_checked,
+    }
+
+
+def self_heal_plugin(plugin_cache: Path | None = None) -> dict:
+    """Re-apply all Hub patches; persist a verified fingerprint on success."""
+    health = verify_plugin_health(plugin_cache)
+    if health["ok"] and check_patch_state(plugin_cache)["state"] in ("ok", "unknown"):
+        state = load_patch_state()
+        state["degraded"] = False
+        state["degraded_reason"] = ""
+        state["unsupported_versions"] = []
+        state["verified_version"] = get_verified_version(plugin_cache)
+        state["verified_versions"] = get_verified_versions(plugin_cache)
+        state["verified_sha256"] = {
+            f"{copy.get('version') or 'unknown'}:{Path(copy['path']).name}": copy["sha256"]
+            for copy in get_installed_fingerprint(plugin_cache)["copies"]
+        }
+        save_patch_state(state)
+        return {"state": "already_healthy", "ok": True, "reasons": []}
+    prompt = patch_prompt_sanitizer(plugin_cache)
+    identity = patch_antigravity_identity(plugin_cache)
+    gemini4 = patch_gemini4_models(plugin_cache)
+    route_changed: list[str] = []
+    route = bool(patch_auth_plugin_transport(plugin_cache, include_local=False,
+                                             changed_files=route_changed))
+    health = verify_plugin_health(plugin_cache)
+    if not health["ok"]:
+        state = load_patch_state()
+        state["degraded"] = True
+        state["degraded_reason"] = "; ".join(health["reasons"])[:800]
+        for copy in get_installed_fingerprint(plugin_cache)["copies"]:
+            version = copy.get("version")
+            if version and version not in state.get("unsupported_versions", []):
+                state.setdefault("unsupported_versions", []).append(version)
+        save_patch_state(state)
+        return {"state": "unsupported", "ok": False, "reasons": health["reasons"],
+                "prompt": prompt["message"], "identity": identity["message"],
+                "gemini4": gemini4["message"], "route": route}
+    state = load_patch_state()
+    state["degraded"] = False
+    state["degraded_reason"] = ""
+    state["verified_version"] = get_verified_version(plugin_cache)
+    state["verified_versions"] = get_verified_versions(plugin_cache)
+    state["unsupported_versions"] = []
+    state["verified_sha256"] = {
+        f"{copy.get('version') or 'unknown'}:{Path(copy['path']).name}": copy["sha256"]
+        for copy in get_installed_fingerprint(plugin_cache)["copies"]
+    }
+    save_patch_state(state)
+    return {"state": "healed", "ok": True, "reasons": [], "syntax_checked": health["syntax_checked"]}
+
+
 def main():
     import sys
     command = sys.argv[1] if len(sys.argv) > 1 else "route"
@@ -1130,6 +1466,12 @@ def main():
         print(patch_antigravity_identity()["message"])
     elif command == "status":
         print(get_identity_fix_status()["message"])
+    elif command == "state":
+        print(json.dumps(check_patch_state(), indent=2, ensure_ascii=False))
+    elif command == "verify":
+        print(json.dumps(verify_plugin_health(), indent=2, ensure_ascii=False))
+    elif command == "heal":
+        print(json.dumps(self_heal_plugin(), indent=2, ensure_ascii=False))
     else:
         print("patched" if patch_auth_plugin_transport() else "no auth plugin found or patch failed")
 

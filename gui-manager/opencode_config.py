@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -88,6 +89,35 @@ def _new_config() -> dict:
             "plugins": ["@cortexkit/opencode-antigravity-auth@3.0.0"],
             "providers": {"google": {"settings": {"apiKey": "antigravity"}}},
         }
+
+
+def ensure_plugin_pin(version: str, config_path: Path | None = None) -> tuple[bool, str]:
+    """Pin the Antigravity auth plugin to a Hub-verified version.
+
+    The plugin's updater rewrites ``@latest``/explicit pins in opencode.json;
+    pinning the exact version keeps OpenCode loading the bundle the Hub knows
+    how to patch. Only the plugin specifier is touched, so comments and other
+    provider settings survive.
+    """
+    if not re.fullmatch(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}", version or ""):
+        return False, f"Некорректная версия плагина: {version}"
+    try:
+        path = _resolve_config_path(config_path)
+        if not path.exists():
+            return False, f"Файл конфигурации не найден: {path}"
+        raw = path.read_bytes().decode("utf-8")
+        pinned = f"@cortexkit/opencode-antigravity-auth@{version}"
+        pattern = re.compile(r'"@cortexkit/opencode-antigravity-auth(?:@[^"\s]*)?"')
+        matches = list(pattern.finditer(raw))
+        if not matches:
+            return False, "Запись плагина Antigravity не найдена в конфиге OpenCode."
+        content = pattern.sub(lambda _: json.dumps(pinned), raw)
+        if content == raw:
+            return False, f"Плагин уже закреплён на {version}."
+        atomic_write_bytes(path, content.encode("utf-8"), private_parent=False)
+        return True, f"Плагин Antigravity закреплён на версии {version}. Перезапустите OpenCode."
+    except (OSError, ValueError) as exc:
+        return False, f"Ошибка закрепления версии плагина: {exc}"
 
 
 def ensure_session_title_config(config_path: Path | None = None) -> tuple[bool, str]:

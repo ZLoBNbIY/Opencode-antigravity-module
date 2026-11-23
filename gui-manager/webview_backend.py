@@ -551,6 +551,13 @@ class HubApi:
             hub_paths.migrate_legacy_locations()
         except Exception:
             pass
+        try:
+            import cloudcode_route_patch
+            pinned_version = cloudcode_route_patch.get_vendored_plugin_version()
+            if pinned_version:
+                opencode_config.ensure_plugin_pin(pinned_version)
+        except Exception:
+            pass
         self._config_lock = threading.RLock()
         self._quota_lock = threading.Lock()
         self._quota_refreshing = False
@@ -616,6 +623,9 @@ class HubApi:
     def save_config(self, cfg: dict) -> bool:
         try:
             with self._config_lock:
+                # A self-updating plugin replaces the bundles the Hub patches.
+                # Never persist a setting that silently reintroduces the 429 bug.
+                cfg["auto_update"] = False
                 _, sources = self._config_snapshot()
                 _apply_file_updates(self._config_updates(cfg, sources))
             return True
@@ -1859,27 +1869,45 @@ class HubApi:
             result = antigravity_manager.run_silent_cmd(
                 [cli, "service", "restart"], timeout=45, env=opencode_launch_environment())
             if result.returncode != 0:
-                raise RuntimeError("CLI не смог перезапустить фоновый сервер OpenCode.")
+                detail = (result.stderr or result.stdout or "").strip()[:200]
+                raise RuntimeError("CLI не смог перезапустить фоновый сервер OpenCode."
+                                   + (f" {detail}" if detail else ""))
             if not self.start_opencode():
                 raise RuntimeError("Сервер перезапущен, но не удалось открыть окно OpenCode")
+            hub_logging.log.info("OpenCode restart completed (window and service).")
             return True
+        except Exception as exc:
+            hub_logging.failed("Restart OpenCode", exc)
+            raise
         finally:
             self._restart_lock.release()
 
     def stop_opencode(self) -> bool:
-        """Stop only a process launched and still owned by this Hub."""
+        """Stop Hub-owned OpenCode and any window opened outside the Hub."""
+        ok = True
         process = self._opencode_process
-        if process is None:
-            return True
+        if process is not None:
+            try:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5)
+                self._opencode_process = None
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                hub_logging.failed("Stop Hub-owned OpenCode", exc)
+                ok = False
         try:
-            if process.poll() is None:
-                process.terminate()
-                process.wait(timeout=5)
-            self._opencode_process = None
-            return True
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            hub_logging.failed("Stop Hub-owned OpenCode", exc)
-            return False
+            desktop = antigravity_manager.terminate_opencode_desktop()
+            if not desktop.get("ok"):
+                ok = False
+                hub_logging.log.warning("OpenCode desktop close failed: %s",
+                                        desktop.get("message", "")[:300])
+            else:
+                hub_logging.log.info("OpenCode desktop close: %s",
+                                     desktop.get("message", "no process")[:200])
+        except Exception as exc:
+            hub_logging.failed("Stop OpenCode desktop", exc)
+            ok = False
+        return ok
 
     def start_opencode(self) -> bool:
         exe = antigravity_manager.get_opencode_exe()
@@ -1927,6 +1955,13 @@ class HubApi:
         result["identity"] = identity
         if identity.get("changed"):
             result["message"] += " " + identity["message"]
+        try:
+            gemini4 = cloudcode_route_patch.patch_gemini4_models()
+            result["gemini4"] = gemini4
+            if gemini4.get("changed"):
+                result["message"] += " " + gemini4["message"]
+        except Exception as exc:
+            hub_logging.failed("Plugin Gemini 4 patch", exc)
         result["synced"] = synced.get("copied", [])
         if result.get("synced"):
             result["message"] = (
@@ -1945,12 +1980,31 @@ class HubApi:
         result["route_patched"] = route_patched
         result["changed"] = list(dict.fromkeys(
             result["changed"] + result["synced"] + identity.get("changed", []) + route_changed))
+        try:
+            health = cloudcode_route_patch.verify_plugin_health()
+        except Exception:
+            health = {"ok": False, "state": "error", "reasons": ["health check failed"]}
         result["ok"] = (status["state"] == "patched" and bool(identity.get("ok"))
-                        and not identity.get("missing") and route_patched and not synced.get("failed"))
+                        and not identity.get("missing") and route_patched
+                        and not synced.get("failed") and health["ok"])
+        result["health"] = health
         if result["ok"]:
-            result["message"] += " Маршрут Hub проверен."
+            cloudcode_route_patch.save_patch_state({
+                "verified_version": cloudcode_route_patch.get_verified_version(),
+                "verified_versions": cloudcode_route_patch.get_verified_versions(),
+                "verified_sha256": {
+                    f"{copy.get('version') or 'unknown'}:{Path(copy['path']).name}": copy["sha256"]
+                    for copy in cloudcode_route_patch.get_installed_fingerprint()["copies"]
+                },
+                "degraded": False,
+                "degraded_reason": "",
+                "unsupported_versions": [],
+            })
+            result["message"] += " Маршрут Hub и синтаксис бандла проверены."
         elif status["state"] != "missing":
             result["message"] += " Не все компоненты патча подтверждены. " + synced.get("message", "")
+            if health.get("reasons"):
+                result["message"] += " Причина: " + "; ".join(health["reasons"])[:300]
         hub_logging.log.info("Plugin full patch: prompt=%s identity=%s route=%s recovery_errors=%d",
                              status["state"], bool(identity.get("ok")), route_patched,
                              len(synced.get("failed", [])))
@@ -1959,7 +2013,23 @@ class HubApi:
     def get_opencode_plugin_status(self) -> dict:
         import cloudcode_route_patch
         try:
-            return cloudcode_route_patch.get_prompt_sanitizer_status(full=True)
+            status = cloudcode_route_patch.get_prompt_sanitizer_status(full=True)
+            state = cloudcode_route_patch.check_patch_state()
+            patch_state = cloudcode_route_patch.load_patch_state()
+            status["installed_version"] = ", ".join(sorted({
+                copy.get("version") or "unknown" for copy in state.get("copies", [])
+            })) or None
+            status["expected_version"] = patch_state.get("verified_version")
+            status["state_detail"] = state.get("state")
+            status["degraded"] = bool(patch_state.get("degraded"))
+            status["reason"] = patch_state.get("degraded_reason") or ""
+            if state.get("state") in ("version_changed", "structure_changed"):
+                status["degraded"] = True
+                status["reason"] = (status["reason"] or
+                                    f"Обнаружена новая версия или структура плагина: {state['state']}.")
+            if status["degraded"] and status["state"] == "patched":
+                status["state"] = "unsupported"
+            return status
         except Exception as exc:
             return {
                 "state": "error",
@@ -2723,9 +2793,11 @@ def run_webview_app():
     def bg_refresher():
         try:
             import cloudcode_route_patch
-            cloudcode_route_patch.patch_auth_plugin_transport(include_local=False)
+            heal = cloudcode_route_patch.self_heal_plugin()
+            hub_logging.log.info("Plugin startup check: state=%s reasons=%s",
+                                 heal.get("state"), "; ".join(heal.get("reasons", []))[:300])
         except Exception as exc:
-            hub_logging.failed("Startup plugin route check", exc)
+            hub_logging.failed("Startup plugin self-heal", exc)
         try:
             cfg = api.load_config()
             if api._closing.is_set():
@@ -2751,6 +2823,20 @@ def run_webview_app():
                 pass
             if api._closing.wait(300) or api._uninstalled:
                 break
+            # Detect a plugin update that happened while the Hub was running.
+            # A new bundle is silent 429 until it is patched, so check every
+            # refresh cycle (~5 min) and re-apply known fixes automatically.
+            try:
+                import cloudcode_route_patch
+                drift = cloudcode_route_patch.check_patch_state()
+                if drift.get("state") in ("version_changed", "structure_changed"):
+                    healed = cloudcode_route_patch.self_heal_plugin()
+                    hub_logging.log.info(
+                        "Plugin drift check: %s -> %s (%s)",
+                        drift.get("state"), healed.get("state"),
+                        "; ".join(healed.get("reasons", []))[:200])
+            except Exception as exc:
+                hub_logging.failed("Plugin drift check", exc)
             try:
                 node_exe = antigravity_manager.get_node_executable()
                 cli_js = antigravity_manager.get_cli_js()

@@ -7,6 +7,7 @@ and logs into a single isolated directory: %APPDATA%/AntigravityHub (or ~/.confi
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -156,6 +157,59 @@ def sync_shared_antigravity_config():
         print(f"[Hub Paths] Config sync skipped: {type(exc).__name__}")
 
 
+def ensure_auto_update_disabled(paths=None) -> dict:
+    """Pin the antigravity plugin's self-updater off in every config copy.
+
+    The plugin reads ``auto_update`` from antigravity.json (default true in
+    upstream releases). An unattended plugin update replaces the bundles this
+    Hub patches, so the fix silently disappears and Google requests start
+    returning 429 again. Keep the setting explicit in both the central config
+    and the OpenCode mirror. JSONC comments and key order are preserved: the
+    value is patched textually rather than by parsing and reserializing.
+    """
+    targets = list(paths) if paths is not None else [HUB_CONFIG_FILE, OPENCODE_SHARED_ANTIGRAVITY_CONFIG]
+    updated: list[str] = []
+    unchanged: list[str] = []
+    failed: list[str] = []
+    for path in dict.fromkeys(targets):
+        try:
+            if not path.is_file() or path.is_symlink():
+                continue
+            raw = path.read_bytes()
+            text = raw.decode("utf-8-sig")
+            if re.search(r'"auto_update"\s*:\s*false\b', text):
+                unchanged.append(str(path))
+                continue
+            if re.search(r'"auto_update"\s*:', text):
+                patched = re.sub(r'("auto_update"\s*:\s*)(?:true|false)\b', r"\1false", text, count=1)
+            else:
+                open_brace = text.find("{")
+                if open_brace < 0:
+                    failed.append(str(path))
+                    continue
+                patched = (text[:open_brace + 1] + ' "auto_update": false,'
+                           + text[open_brace + 1:])
+            if patched == text:
+                unchanged.append(str(path))
+                continue
+            content = patched.encode("utf-8")
+            if raw.startswith(b"\xef\xbb\xbf"):
+                content = b"\xef\xbb\xbf" + content
+            atomic_write_bytes(path, content, private_parent=False)
+            updated.append(str(path))
+        except (OSError, UnicodeError, ValueError):
+            failed.append(str(path))
+    return {
+        "updated": updated,
+        "unchanged": unchanged,
+        "failed": failed,
+        "ok": not failed,
+        "message": ("Автообновление плагина отключено." if updated else
+                    "Автообновление плагина уже отключено." if unchanged and not failed else
+                    "Не удалось зафиксировать auto_update: false в конфиге."),
+    }
+
+
 def migrate_legacy_locations():
     """Compatibility entry point for startup; only sync shared settings.
 
@@ -164,6 +218,7 @@ def migrate_legacy_locations():
     cache can be rebuilt; legacy executables are not adopted.
     """
     sync_shared_antigravity_config()
+    ensure_auto_update_disabled()
 
 
 # Storage statistics & Cleanup helpers

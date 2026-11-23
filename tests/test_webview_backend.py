@@ -16,6 +16,8 @@ class WebviewBackendTests(unittest.TestCase):
         manager.enrich_google_accounts_with_generation_store = Mock(return_value=[])
         manager.get_active_google_account_index = Mock(return_value=0)
         manager.get_active_google_health_account = Mock(return_value=None)
+        manager.terminate_opencode_desktop = Mock(return_value={
+            "ok": True, "closed": 0, "failed": 0, "message": ""})
         self.manager = manager
         self.vless = SimpleNamespace(find_core_executable=Mock(return_value=None), is_running=Mock(return_value=False),
                                      start_tunnel=Mock(return_value=(True, "ok")),
@@ -231,6 +233,22 @@ class WebviewBackendTests(unittest.TestCase):
         self.assertEqual([c[0] for c in calls.mock_calls], ['stop', 'service', 'start'])
         self.manager.run_silent_cmd.assert_called_once_with(
             ['cli.exe', 'service', 'restart'], timeout=45, env=self.backend.opencode_launch_environment())
+
+    def test_stop_opencode_also_closes_desktop_opened_outside_hub(self):
+        api = self.backend.HubApi()
+        terminate = Mock(return_value={"ok": True, "closed": 1, "failed": 0, "message": "ok"})
+        with patch.object(self.backend.antigravity_manager,
+                          "terminate_opencode_desktop", terminate):
+            self.assertTrue(api.stop_opencode())
+        terminate.assert_called_once_with()
+
+    def test_stop_opencode_reports_failed_external_close(self):
+        api = self.backend.HubApi()
+        terminate = Mock(return_value={"ok": False, "closed": 0, "failed": 1,
+                                       "message": "access denied"})
+        with patch.object(self.backend.antigravity_manager,
+                          "terminate_opencode_desktop", terminate):
+            self.assertFalse(api.stop_opencode())
 
     def test_desktop_launch_does_not_inherit_hub_proxy(self):
         self.manager.get_opencode_exe = Mock(return_value="OpenCode.exe")
@@ -479,6 +497,14 @@ class WebviewBackendTests(unittest.TestCase):
                 "message": "Патч Antigravity применён."}),
             patch_auth_plugin_transport=Mock(return_value=True),
             get_prompt_sanitizer_status=Mock(return_value={"state": "patched"}),
+            patch_gemini4_models=Mock(return_value={
+                "ok": True, "changed": [], "already": [], "missing": [], "message": "ok"}),
+            verify_plugin_health=Mock(return_value={"ok": True, "state": "ok", "reasons": []}),
+            get_verified_version=Mock(return_value="3.0.0"),
+            get_verified_versions=Mock(return_value=["3.0.0"]),
+            get_installed_fingerprint=Mock(return_value={
+                "found": 1, "copies": [{"path": "server.js", "version": "3.0.0", "sha256": "abc"}]}),
+            save_patch_state=Mock(),
         )
         with patch.dict("sys.modules", {"cloudcode_route_patch": patcher}):
             result = self.backend.HubApi().fix_opencode_plugin()
@@ -486,15 +512,22 @@ class WebviewBackendTests(unittest.TestCase):
         self.assertTrue(result["route_patched"])
         self.assertEqual(result["synced"], ["server.js"])
         self.assertEqual(result["identity"]["ok"], True)
-        self.assertIn("Маршрут Hub проверен", result["message"])
+        self.assertIn("Маршрут Hub и синтаксис бандла проверены", result["message"])
         patcher.sync_local_plugin_bundles.assert_called_once()
         patcher.patch_prompt_sanitizer.assert_called_once()
         patcher.patch_antigravity_identity.assert_called_once()
         patcher.patch_auth_plugin_transport.assert_called_once()
+        patcher.patch_gemini4_models.assert_called_once()
 
     def test_get_opencode_plugin_status_delegates_to_patcher(self):
-        patcher = SimpleNamespace(get_prompt_sanitizer_status=Mock(return_value={
-            "state": "patched", "found": 2, "patched": 2, "pending": 0, "message": "ok"}))
+        patcher = SimpleNamespace(
+            get_prompt_sanitizer_status=Mock(return_value={
+                "state": "patched", "found": 2, "patched": 2, "pending": 0, "message": "ok"}),
+            check_patch_state=Mock(return_value={"state": "ok", "copies": [
+                {"version": "3.0.0"}]}),
+            load_patch_state=Mock(return_value={
+                "verified_version": "3.0.0", "degraded": False, "degraded_reason": ""}),
+        )
         with patch.dict("sys.modules", {"cloudcode_route_patch": patcher}):
             status = self.backend.HubApi().get_opencode_plugin_status()
         self.assertEqual(status["state"], "patched")
