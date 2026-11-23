@@ -29,7 +29,6 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
-  user-select: none;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -113,6 +112,7 @@ body {
 }
 
 .nav-item {
+  user-select: none;
   display: flex;
   align-items: center;
   gap: 9px;
@@ -1332,7 +1332,7 @@ body {
 .pill-status, .pill-latency, .toast { -webkit-backdrop-filter: blur(20px); }
 
 /* Unified focus ring */
-.btn-primary:focus-visible, .btn-secondary:focus-visible, .seg-btn:focus-visible,
+.btn-primary:focus-visible, .btn-secondary:focus-visible, .seg-btn:focus-visible, .nav-item:focus-visible,
 .switch-input:focus-visible, .sidebar-restart-btn:focus-visible, .opencode-action-btn:focus-visible,
 input:not([type=checkbox]):focus-visible, select:focus-visible {
   outline: 2px solid var(--brand-cyan);

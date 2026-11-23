@@ -1,10 +1,9 @@
 from pathlib import Path
 import importlib.util
-import subprocess
 import sys
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gui-manager"))
 import hub_restart
@@ -28,13 +27,62 @@ class HubRestartTests(unittest.TestCase):
         self.assertEqual(Path(args[1]).name, "hub_restart.py")
         self.assertEqual(args[2], str(hub_restart.os.getpid()))
 
-    def test_wait_for_running_process_and_exit(self):
-        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(1)"])
-        try:
-            self.assertFalse(hub_restart.wait_for_exit(child.pid, timeout=0))
-            self.assertTrue(hub_restart.wait_for_exit(child.pid, timeout=10))
-        finally:
-            child.wait(timeout=10)
+    def test_wait_for_windows_process_only_opens_a_synchronization_handle(self):
+        kernel = Mock()
+        kernel.OpenProcess.return_value = 10
+        kernel.WaitForSingleObject.side_effect = [258, 0]
+        with patch.object(hub_restart, "os", SimpleNamespace(name="nt", getpid=lambda: 1)), \
+             patch("hub_restart.ctypes.WinDLL", return_value=kernel, create=True):
+            self.assertFalse(hub_restart.wait_for_exit(123, timeout=0))
+            self.assertTrue(hub_restart.wait_for_exit(123))
+        kernel.OpenProcess.assert_called_with(0x00100000, False, 123)
+        kernel.CloseHandle.assert_called_with(10)
+        self.assertEqual(kernel.CloseHandle.call_count, 2)
+
+    def test_windows_probe_only_treats_a_missing_process_as_exited(self):
+        kernel = Mock()
+        kernel.OpenProcess.return_value = None
+        with patch.object(hub_restart, "os", SimpleNamespace(name="nt", getpid=lambda: 1)), \
+             patch("hub_restart.ctypes.WinDLL", return_value=kernel, create=True), \
+             patch("hub_restart.ctypes.get_last_error", side_effect=[5, 87], create=True):
+            self.assertFalse(hub_restart.wait_for_exit(123))
+            self.assertTrue(hub_restart.wait_for_exit(123))
+        kernel.CloseHandle.assert_not_called()
+
+    def test_posix_poll_never_sends_a_signal_and_fails_closed_on_denied_access(self):
+        probe = Mock(side_effect=[None, PermissionError, ProcessLookupError])
+        with patch.object(hub_restart, "os", SimpleNamespace(name="posix", getpid=lambda: 1, kill=probe)):
+            self.assertFalse(hub_restart.wait_for_exit(123, timeout=0))
+            self.assertFalse(hub_restart.wait_for_exit(123))
+            self.assertTrue(hub_restart.wait_for_exit(123))
+        self.assertEqual(probe.call_count, 3)
+        probe.assert_called_with(123, 0)
+
+    @patch("hub_restart.subprocess.run")
+    @patch("hub_restart.subprocess.Popen")
+    def test_source_restart_aborts_on_timeout_without_kill_or_process_discovery(self, popen, run):
+        with patch.object(hub_restart, "wait_for_exit", return_value=False) as wait:
+            self.assertEqual(hub_restart.relaunch_source("123"), 1)
+        wait.assert_called_once_with(123)
+        popen.assert_not_called()
+        run.assert_not_called()
+
+    @patch("hub_restart.subprocess.Popen")
+    def test_source_restart_uses_same_checkout_and_clean_environment(self, popen):
+        with patch.object(hub_restart, "wait_for_exit", return_value=True), \
+             patch("proxy_config.opencode_launch_environment", return_value={"NO_PROXY": "example.test"}):
+            self.assertEqual(hub_restart.relaunch_source("123"), 0)
+        script = Path(hub_restart.__file__).with_name("antigravity_manager.pyw")
+        popen.assert_called_once_with([sys.executable, str(script)], cwd=str(script.parent),
+                                      close_fds=True, env={"NO_PROXY": "example.test"})
+
+    @patch("hub_restart.subprocess.Popen")
+    def test_invalid_pid_does_not_launch(self, popen):
+        for pid in ("not a pid", "0", "-1", "4294967296", str(hub_restart.os.getpid())):
+            with self.subTest(pid=pid):
+                self.assertEqual(hub_restart.relaunch_source(pid), 1)
+                self.assertEqual(hub_restart.relaunch_packaged(pid), 1)
+        popen.assert_not_called()
 
     @patch("hub_restart.subprocess.Popen")
     def test_installed_restart_relaunches_exe_not_python_script(self, popen):

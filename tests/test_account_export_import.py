@@ -21,6 +21,7 @@ class AccountExportImportTests(unittest.TestCase):
         self.config_dir = Path(self.temp_dir.name)
         self.patch_home = patch.object(Path, "home", return_value=self.config_dir.parent)
         self.patch_expanduser = patch("os.path.expanduser", lambda p: str(self.config_dir) if "~/.config/opencode" in p else p)
+        self.enterContext(patch.object(antigravity_manager, "get_opencode_config_dir", return_value=self.config_dir))
         self.patch_home.start()
         self.patch_expanduser.start()
 
@@ -28,6 +29,14 @@ class AccountExportImportTests(unittest.TestCase):
         self.patch_expanduser.stop()
         self.patch_home.stop()
         self.temp_dir.cleanup()
+
+    def test_google_import_preserves_unreadable_legacy_store(self):
+        legacy = self.config_dir / "antigravity-accounts.json"
+        legacy.write_bytes(b"{")
+        self.assertEqual(antigravity_manager.import_google_accounts([
+            {"email": "account@example.com", "refreshToken": "fixture"}
+        ]), 0)
+        self.assertEqual(legacy.read_bytes(), b"{")
 
     def test_google_import_into_generation_store(self):
         # Create a mock generation store directory

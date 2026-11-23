@@ -85,6 +85,8 @@ class OpenAiQuotaTests(unittest.TestCase):
         }
 
         accounts = [active, disabled_acc, standalone_acc, eligible_acc]
+        for item in accounts:
+            item['quota']['status'] = 'ok'
         with patch('openai_manager.set_active_openai_account', return_value=True):
             rotated, msg = openai_manager.check_and_auto_rotate_openai(accounts)
             self.assertTrue(rotated)
@@ -106,6 +108,8 @@ class OpenAiQuotaTests(unittest.TestCase):
                       'primary': {'remaining_percent': 100, 'used_percent': 0},
                       'secondary': {'remaining_percent': 100, 'used_percent': 0}},
         }
+        for item in (active, candidate):
+            item['quota']['status'] = 'ok'
         with patch('openai_manager.set_active_openai_account', return_value=True):
             rotated, _message = openai_manager.check_and_auto_rotate_openai([active, candidate])
         self.assertTrue(rotated)
@@ -132,11 +136,22 @@ class OpenAiQuotaTests(unittest.TestCase):
                       'primary': {'remaining_percent': 100, 'used_percent': 0},
                       'secondary': {'remaining_percent': 100, 'used_percent': 0}},
         }
+        for item in (active, limited, eligible):
+            item['quota']['status'] = 'ok'
         with patch('openai_manager.set_active_openai_account', return_value=True) as activate:
             rotated, _message = openai_manager.check_and_auto_rotate_openai([active, limited, eligible])
         self.assertTrue(rotated)
         activate.assert_called_once_with('acc_3')
         self.assertTrue(eligible['is_active'])
+
+    def test_rotation_needs_fresh_quota_on_both_accounts(self):
+        active = {'id': 'first', 'is_active': True, 'quota': {'status': 'stale', 'limit_reached': True}}
+        candidate = {'id': 'second', 'quota': {'status': 'error'}}
+        with patch('openai_manager.set_active_openai_account') as activate:
+            self.assertFalse(openai_manager.check_and_auto_rotate_openai([active, candidate])[0])
+            active['quota']['status'] = 'ok'
+            self.assertFalse(openai_manager.check_and_auto_rotate_openai([active, candidate])[0])
+            activate.assert_not_called()
 
     def test_refresh_all_saves_quotas_before_rotation_and_returns_notice(self):
         accounts = [{'id': 'acc_1', 'accountId': 'acc_1', 'is_active': True}]

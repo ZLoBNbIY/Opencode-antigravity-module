@@ -47,19 +47,70 @@ Source: "..\..\config-templates\opencode.json"; DestDir: "{code:OpenCodeConfigDi
 Source: "..\..\config-templates\antigravity.json"; DestDir: "{code:OpenCodeConfigDir}"; Flags: onlyifdoesntexist uninsneveruninstall; Tasks: opencode; Check: OpenCodeProfileAvailable
 
 [Icons]
-Name: "{group}\AI HUB"; Filename: "{app}\AntigravityHub.exe"; WorkingDir: "{app}"; IconFilename: "{app}\_internal\icon.ico"
-Name: "{autodesktop}\AI HUB"; Filename: "{app}\AntigravityHub.exe"; WorkingDir: "{app}"; IconFilename: "{app}\_internal\icon.ico"; Tasks: desktopicon
+Name: "{group}\AI HUB"; Filename: "{app}\AntigravityHub.exe"; WorkingDir: "{app}"; IconFilename: "{app}\_internal\icon.ico"; Flags: uninsneveruninstall; Check: CanWritePackageShortcut('{group}\AI HUB.lnk')
+Name: "{autodesktop}\AI HUB"; Filename: "{app}\AntigravityHub.exe"; WorkingDir: "{app}"; IconFilename: "{app}\_internal\icon.ico"; Flags: uninsneveruninstall; Tasks: desktopicon; Check: CanWritePackageShortcut('{autodesktop}\AI HUB.lnk')
 
 [Run]
 Filename: "{app}\AntigravityHub.exe"; WorkingDir: "{app}"; Description: "{cm:LaunchProgram,AI HUB}"; Flags: nowait postinstall skipifsilent
 
-[Registry]
-; Autostart is opt-in from Settings; this only removes our Run value on uninstall.
-Root: HKA; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "AI HUB"; Flags: uninsdeletevalue
-
 [Code]
 const
   EdgeClients = 'Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
+  RunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
+  HubExe = '{app}\AntigravityHub.exe';
+
+function GetFileAttributes(Name: String): LongWord;
+  external 'GetFileAttributesW@kernel32.dll stdcall';
+
+function IsPackageShortcut(Path: String): Boolean;
+var Shell, Link: Variant;
+    Attr: LongWord;
+begin
+  Result := False;
+  Attr := GetFileAttributes(Path);
+  if (Attr = $FFFFFFFF) or ((Attr and $410) <> 0) then
+    Exit; { missing, directory, or reparse point }
+  try
+    Shell := CreateOleObject('WScript.Shell');
+    Link := Shell.CreateShortcut(Path);
+    Result := (CompareText(Link.TargetPath, ExpandConstant(HubExe)) = 0) and
+      (Link.Arguments = '');
+  except
+    Log('Cannot read shortcut; leaving it untouched: ' + Path);
+  end;
+end;
+
+function CanWritePackageShortcut(Name: String): Boolean;
+var Path: String;
+begin
+  Path := ExpandConstant(Name);
+  Result := (GetFileAttributes(Path) = $FFFFFFFF) or IsPackageShortcut(Path);
+  if not Result then
+    Log('Preserving existing shortcut: ' + Path);
+end;
+
+procedure RemovePackageShortcut(Name: String);
+var Path: String;
+begin
+  Path := ExpandConstant(Name);
+  if IsPackageShortcut(Path) then begin
+    if not DeleteFile(Path) then
+      Log('Could not remove package shortcut: ' + Path);
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var Command: String;
+begin
+  if CurUninstallStep <> usUninstall then
+    Exit;
+  { Settings writes the fully quoted frozen executable path with no arguments. }
+  if RegQueryStringValue(HKCU, RunKey, 'AI HUB', Command) and
+    (CompareText(Command, '"' + ExpandConstant(HubExe) + '"') = 0) then
+    RegDeleteValue(HKCU, RunKey, 'AI HUB');
+  RemovePackageShortcut('{autodesktop}\AI HUB.lnk');
+  RemovePackageShortcut('{group}\AI HUB.lnk');
+end;
 
 function HasVersion(Root: Integer): Boolean;
 var V: String;

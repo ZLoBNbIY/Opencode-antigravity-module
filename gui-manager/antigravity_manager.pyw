@@ -16,6 +16,8 @@ import shutil
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from hub_paths import get_opencode_config_dir
+
 # Keep the Windows mutex handle alive for the lifetime of this process.
 _SINGLE_INSTANCE_MUTEX = None
 _google_store_lock = threading.RLock()
@@ -32,16 +34,19 @@ def _atomic_write_json(path: Path, data: dict) -> None:
 
 
 def acquire_single_instance():
-    """Return False when another Antigravity Hub instance already owns the mutex."""
+    """Acquire the Hub mutex once in a normal GUI entry point, before GUI startup."""
     global _SINGLE_INSTANCE_MUTEX
-    if sys.platform != "win32":
+    if sys.platform != "win32" or _SINGLE_INSTANCE_MUTEX is not None:
         return True
     try:
         import ctypes
+        from ctypes import wintypes
 
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
-        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+        kernel32.CreateMutexW.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
         ctypes.set_last_error(0)
         handle = kernel32.CreateMutexW(None, True, "Local\\AntigravityHub.SingleInstance")
         if not handle:
@@ -160,7 +165,7 @@ def cleanup_opencode_locks():
 NODE_EXE = get_node_executable()
 CLI_JS = get_cli_js()
 OPENCODE_EXE = get_opencode_exe()
-CONFIG_DIR = Path(os.path.expanduser(r"~/.config/opencode"))
+CONFIG_DIR = get_opencode_config_dir()
 
 
 def ordered_generation_dirs(config_dir: Path | None = None) -> list[Path]:
@@ -172,7 +177,7 @@ def ordered_generation_dirs(config_dir: Path | None = None) -> list[Path]:
     pointer target, then fall back to newest-by-mtime.  All account readers and
     writers must use this helper instead of ``list(glob(...))[0]``.
     """
-    base = Path(config_dir) if config_dir else CONFIG_DIR
+    base = Path(config_dir) if config_dir else get_opencode_config_dir()
     active = get_active_generation_dir(base)
     dirs = _generation_dirs(base)
     if active is not None and active in dirs:
@@ -249,7 +254,7 @@ def run_google_route_cmd(cmd, timeout=30):
 
 
 def get_active_google_account_index() -> int:
-    config_dir = Path(os.path.expanduser("~/.config/opencode"))
+    config_dir = get_opencode_config_dir()
     gen_dirs = ordered_generation_dirs(config_dir)
     if gen_dirs:
         cfg_file = gen_dirs[0] / "config.json"
@@ -290,7 +295,7 @@ def get_active_google_account_index() -> int:
 
 def set_active_google_account_index(target_index: int) -> bool:
     with _google_store_lock:
-        config_dir = Path(os.path.expanduser("~/.config/opencode"))
+        config_dir = get_opencode_config_dir()
         gen_dirs = ordered_generation_dirs(config_dir)
         changed = False
         if gen_dirs:
@@ -342,7 +347,7 @@ def set_active_google_account_index(target_index: int) -> bool:
 def set_google_account_candidate(target_email_or_id: str, candidate: bool) -> bool:
     """Persists account auto-rotation candidate flag without disabling the account itself."""
     with _google_store_lock:
-        config_dir = Path(os.path.expanduser("~/.config/opencode"))
+        config_dir = get_opencode_config_dir()
         gen_dirs = ordered_generation_dirs(config_dir)
         changed = False
 
@@ -406,7 +411,7 @@ def set_google_account_candidate(target_email_or_id: str, candidate: bool) -> bo
 def set_google_account_enabled(target_email_or_id: str, enabled: bool) -> bool:
     """Persists account enabled/disabled state to commonAuthPool and config."""
     with _google_store_lock:
-        config_dir = Path(os.path.expanduser("~/.config/opencode"))
+        config_dir = get_opencode_config_dir()
         gen_dirs = ordered_generation_dirs(config_dir)
         changed = False
 
@@ -482,7 +487,7 @@ def set_google_account_enabled(target_email_or_id: str, enabled: bool) -> bool:
         return changed
 
 def export_google_accounts() -> list[dict]:
-    config_dir = Path(os.path.expanduser("~/.config/opencode"))
+    config_dir = get_opencode_config_dir()
     gen_dirs = ordered_generation_dirs(config_dir)
     accounts = []
     if gen_dirs:
@@ -529,7 +534,7 @@ def get_active_google_health_account():
     """Match the stored active row by ID; exported rows can omit incomplete accounts."""
     accounts = export_google_accounts()
     index = get_active_google_account_index()
-    generations = ordered_generation_dirs(Path.home() / ".config" / "opencode")
+    generations = ordered_generation_dirs(get_opencode_config_dir())
     if generations and (generations[0] / "config.json").exists():
         config = json.loads((generations[0] / "config.json").read_text(encoding="utf-8"))
         rows = config.get("accounts", [])
@@ -541,7 +546,7 @@ def get_active_google_health_account():
 
 
 def delete_google_account(target_email_or_id: str) -> bool:
-    config_dir = Path(os.path.expanduser("~/.config/opencode"))
+    config_dir = get_opencode_config_dir()
     gen_dirs = ordered_generation_dirs(config_dir)
     deleted = False
 
@@ -633,7 +638,7 @@ def delete_google_account(target_email_or_id: str) -> bool:
     return deleted
 
 def enrich_google_accounts_with_generation_store(accounts: list[dict]) -> list[dict]:
-    config_dir = Path(os.path.expanduser("~/.config/opencode"))
+    config_dir = get_opencode_config_dir()
     gen_dirs = ordered_generation_dirs(config_dir)
     if not gen_dirs:
         return accounts
@@ -735,7 +740,7 @@ def enrich_google_accounts_with_generation_store(accounts: list[dict]) -> list[d
 
 def repair_legacy_google_account_file(config_dir=None) -> str | None:
     """Normalize known legacy credential metadata before the plugin migration."""
-    config_dir = Path(config_dir) if config_dir else Path(os.path.expanduser("~/.config/opencode"))
+    config_dir = Path(config_dir) if config_dir else get_opencode_config_dir()
     legacy_file = config_dir / "antigravity-accounts.json"
     if not legacy_file.exists():
         return None
@@ -868,7 +873,7 @@ def import_google_accounts(accounts_list: list[dict]) -> int:
         return 0
 
     with _google_store_lock:
-        config_dir = Path(os.path.expanduser("~/.config/opencode"))
+        config_dir = get_opencode_config_dir()
         config_dir.mkdir(parents=True, exist_ok=True)
         gen_dir = get_active_generation_dir(config_dir)
 
@@ -1042,9 +1047,11 @@ def import_google_accounts(accounts_list: list[dict]) -> int:
         legacy_data = {"version": 4, "activeIndex": 0, "accounts": []}
         if legacy_file.exists():
             try:
-                legacy_data = json.loads(legacy_file.read_text(encoding="utf-8"))
-            except Exception:
-                pass
+                legacy_data = json.loads(legacy_file.read_text(encoding="utf-8-sig"))
+                if not isinstance(legacy_data, dict) or not isinstance(legacy_data.get("accounts", []), list):
+                    return 0
+            except (OSError, ValueError):
+                return 0
         old_accs = legacy_data.setdefault("accounts", [])
         for item in accounts_list:
             if not isinstance(item, dict):

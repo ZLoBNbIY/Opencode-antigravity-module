@@ -35,6 +35,8 @@ WM_LBUTTONDBLCLK = 0x0203
 WM_RBUTTONUP = 0x0205
 WM_COMMAND = 0x0111
 WM_DESTROY = 0x0002
+WM_CLOSE = 0x0010
+_START_TIMEOUT = 3
 
 TPM_LEFTALIGN = 0x0000
 TPM_RIGHTBUTTON = 0x0002
@@ -54,7 +56,9 @@ IDM_EXIT = 103
 
 # Correct 64-bit compatible Win32 types
 LRESULT = ctypes.c_ssize_t
-WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM) if sys.platform == "win32" else None
+WNDPROC = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)(
+    LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+)
 
 if sys.platform == "win32":
     _user32 = ctypes.windll.user32
@@ -77,6 +81,8 @@ if sys.platform == "win32":
         wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID,
     ]
     _user32.CreateWindowExW.restype = wintypes.HWND
+    _user32.DestroyWindow.argtypes = [wintypes.HWND]
+    _user32.DestroyWindow.restype = wintypes.BOOL
     _user32.UnregisterClassW.argtypes = [wintypes.LPCWSTR, wintypes.HINSTANCE]
     _user32.UnregisterClassW.restype = wintypes.BOOL
     _user32.CreatePopupMenu.argtypes = []
@@ -157,27 +163,74 @@ class WindowsTrayIcon:
         self.is_visible = False
         self._wndproc = None
         self._thread = None
-        self._ready_event = threading.Event()
+        self._startup_done = threading.Event()
+        self._state_lock = threading.Lock()
+        self._stop_requested = False
 
-        if sys.platform == "win32" and icon_path:
+    def _load_icon(self):
+        if self.icon_path:
             try:
                 self.h_icon = ctypes.windll.user32.LoadImageW(
-                    None, icon_path, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE
+                    None, self.icon_path, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE
                 )
                 if self.h_icon:
                     self._owns_icon = True
             except Exception:
                 self.h_icon = None
 
-        if sys.platform == "win32" and not self.h_icon:
+        if not self.h_icon:
             self.h_icon = ctypes.windll.user32.LoadIconW(None, wintypes.LPCWSTR(32512))
 
-    def start(self):
-        self._thread = threading.Thread(target=self._message_loop, daemon=True)
-        self._thread.start()
-        self._ready_event.wait(timeout=3)
+    def start(self) -> bool:
+        """Return True only after Windows has added the tray icon.
+
+        False means the window must remain accessible without the tray. Timed-out
+        startup is cancelled; use a new instance to retry a failed or stopped tray.
+        """
+        if sys.platform != "win32":
+            return False
+        with self._state_lock:
+            if self._stop_requested:
+                return False
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._run, daemon=True)
+                try:
+                    self._thread.start()
+                except RuntimeError:
+                    self._stop_requested = True
+                    self._startup_done.set()
+                    return False
+        self._startup_done.wait(timeout=_START_TIMEOUT)
+        with self._state_lock:
+            if not self._startup_done.is_set():
+                self._stop_requested = True
+            return not self._stop_requested and self.is_visible
+
+    def _run(self):
+        try:
+            self._message_loop()
+        finally:
+            try:
+                with self._state_lock:
+                    hwnd = self.hwnd
+                    self._stop_requested = True
+                    self._delete_icon()
+                    self.hwnd = None
+                if hwnd:
+                    ctypes.windll.user32.DestroyWindow(hwnd)
+                if self._class_name:
+                    ctypes.windll.user32.UnregisterClassW(self._class_name, self._hinst)
+                if self._owns_icon and self.h_icon:
+                    ctypes.windll.user32.DestroyIcon(self.h_icon)
+                self.h_icon = None
+                self._owns_icon = False
+            finally:
+                self._startup_done.set()
 
     def _message_loop(self):
+        self._load_icon()
+        if not self.h_icon:
+            return
         class_name = f"AntigravityTrayWin_{id(self)}"
         hinst = ctypes.windll.kernel32.GetModuleHandleW(None)
 
@@ -191,7 +244,7 @@ class WindowsTrayIcon:
                 elif event_type == WM_RBUTTONUP:
                     self._show_context_menu(hwnd)
                     return 0
-            elif msg == WM_DESTROY:
+            elif msg in (WM_CLOSE, WM_DESTROY):
                 ctypes.windll.user32.PostQuitMessage(0)
                 return 0
             return ctypes.windll.user32.DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -214,7 +267,8 @@ class WindowsTrayIcon:
 
         ctypes.windll.user32.RegisterClassExW.argtypes = [ctypes.POINTER(WNDCLASSEXW)]
         ctypes.windll.user32.RegisterClassExW.restype = wintypes.ATOM
-        ctypes.windll.user32.RegisterClassExW(ctypes.byref(wcex))
+        if not ctypes.windll.user32.RegisterClassExW(ctypes.byref(wcex)):
+            return
         self._class_name = class_name
         self._hinst = hinst
 
@@ -224,22 +278,22 @@ class WindowsTrayIcon:
             None, None, hinst, None
         )
         if not self.hwnd:
-            self._ready_event.set()
             return
+        with self._state_lock:
+            if self._stop_requested:
+                return
 
-        self.add()
-        self._ready_event.set()
+        if not self.add():
+            return
+        with self._state_lock:
+            if self._stop_requested:
+                return
+            self._startup_done.set()
 
         msg = wintypes.MSG()
         while ctypes.windll.user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
             ctypes.windll.user32.TranslateMessage(ctypes.byref(msg))
             ctypes.windll.user32.DispatchMessageW(ctypes.byref(msg))
-
-        if self._class_name and self._hinst:
-            try:
-                ctypes.windll.user32.UnregisterClassW(self._class_name, self._hinst)
-            except Exception:
-                pass
 
     def _show_context_menu(self, hwnd):
         hmenu = ctypes.windll.user32.CreatePopupMenu()
@@ -299,9 +353,7 @@ class WindowsTrayIcon:
         nid.dwInfoFlags = NIIF_WARNING if is_warning else NIIF_INFO
         ctypes.windll.shell32.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(nid))
 
-    def remove(self):
-        if sys.platform != "win32":
-            return
+    def _delete_icon(self):
         if self.hwnd and self.is_visible:
             nid = NOTIFYICONDATAW()
             nid.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
@@ -309,12 +361,14 @@ class WindowsTrayIcon:
             nid.uID = 1001
             ctypes.windll.shell32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(nid))
             self.is_visible = False
-        if self.hwnd:
-            ctypes.windll.user32.PostMessageW(self.hwnd, WM_DESTROY, 0, 0)
-        if self._owns_icon and self.h_icon:
-            try:
-                ctypes.windll.user32.DestroyIcon(self.h_icon)
-            except Exception:
-                pass
-            self.h_icon = None
-            self._owns_icon = False
+
+    def remove(self):
+        if sys.platform != "win32":
+            return
+        with self._state_lock:
+            if self._stop_requested:
+                return
+            self._stop_requested = True
+            if self._startup_done.is_set() and self.hwnd:
+                self._delete_icon()
+                ctypes.windll.user32.PostMessageW(self.hwnd, WM_CLOSE, 0, 0)

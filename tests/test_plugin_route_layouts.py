@@ -59,7 +59,7 @@ class PluginRouteLayoutTests(unittest.TestCase):
             patched = plugin.read_text(encoding="utf-8")
             self.assertIn("const hubGoogleRoute = parsed.provider_routes?.google;", patched)
             self.assertIn('return new URL("http://127.0.0.1:10880");', patched)
-            self.assertIn(str(plugin), changed)
+            self.assertIn(str(plugin.resolve()), changed)
             # Idempotent on a second click.
             changed.clear()
             self.assertTrue(patch_auth_plugin_transport(Path(directory), changed_files=changed))
@@ -103,6 +103,10 @@ class PluginRouteLayoutTests(unittest.TestCase):
             self.assertIn("0 из 1", before["message"])
             (dist / "server.js").write_text(
                 source + 'const hubGoogleRoute = parsed.provider_routes?.google;\n', encoding="utf-8")
+            self.assertEqual(get_prompt_sanitizer_status(Path(directory), full=True)["state"], "pending")
+            shipped = Path(__file__).resolve().parent.parent / "plugin" / "dist" / "server.js"
+            (dist / "server.js").write_bytes(shipped.read_bytes())
+            self.assertTrue(patch_auth_plugin_transport(Path(directory)))
             after = get_prompt_sanitizer_status(Path(directory), full=True)
             self.assertEqual(after["state"], "patched")
             self.assertEqual(after["patched"], 1)

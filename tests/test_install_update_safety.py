@@ -111,6 +111,96 @@ class UpdateSafetyTests(unittest.TestCase):
                 self.assertIn("merge", calls)
 
 
+@unittest.skipUnless(shutil.which("git"), "requires Git")
+class OfflineGitUpdateTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.repo = Path(temp.name)
+        self.git("init", "--initial-branch=V2")
+        self.git("config", "user.name", "Updater Test")
+        self.git("config", "user.email", "fixture@example.invalid")
+        self.git("config", "commit.gpgSign", "false")
+        self.base = self.commit("original")
+        self.git("switch", "-c", "advertised")
+        self.target = self.commit("updated")
+        self.git("switch", "V2")
+
+    def git(self, *args):
+        result = subprocess.run(
+            ["git", *args], cwd=self.repo, env=auto_updater._direct_git_env(),
+            text=True, capture_output=True, check=True, timeout=15,
+        )
+        return result.stdout.strip()
+
+    def commit(self, content):
+        (self.repo / "fixture.txt").write_text(content, encoding="utf-8")
+        self.git("add", "fixture.txt")
+        self.git("commit", "-m", content)
+        return self.git("rev-parse", "HEAD")
+
+    def apply_offline(self):
+        # Stand in for HTTPS discovery and transport only. Real Git checks
+        # the fixture's HEAD, operation state, ancestors, and ff-only merge.
+        git_output = auto_updater._git_output
+
+        def output(repo, *args, **kwargs):
+            if args[0] == "fetch":
+                self.assertEqual(args[-2:], (auto_updater.UPSTREAM_URL, self.target))
+                return git_output(repo, "cat-file", "-e", self.target + "^{commit}")
+            return git_output(repo, *args, **kwargs)
+
+        with patch.object(auto_updater, "_upstream_sha", return_value=self.target), \
+             patch.object(auto_updater, "_git_output", side_effect=output):
+            return auto_updater.apply_update_git(self.repo, expected_commit=self.target)
+
+    def test_real_fast_forward_does_not_write_tracking_refs_or_fetch_head(self):
+        before = self.git("for-each-ref", "refs/remotes", "refs/tags")
+        ok, message = self.apply_offline()
+        self.assertTrue(ok, message)
+        self.assertEqual(self.git("rev-parse", "HEAD"), self.target)
+        self.assertEqual((self.repo / "fixture.txt").read_text(encoding="utf-8"), "updated")
+        self.assertEqual(self.git("for-each-ref", "refs/remotes", "refs/tags"), before)
+        self.assertFalse((self.repo / ".git" / "FETCH_HEAD").exists())
+
+    def test_real_divergence_keeps_local_commit_and_worktree(self):
+        local = self.commit("local edit")
+        ok, message = self.apply_offline()
+        self.assertFalse(ok, message)
+        self.assertIn("разошлась", message)
+        self.assertEqual(self.git("rev-parse", "HEAD"), local)
+        self.assertEqual((self.repo / "fixture.txt").read_text(encoding="utf-8"), "local edit")
+
+    def test_real_untracked_file_and_in_progress_operation_stop_before_transport(self):
+        untracked = self.repo / "do not remove.txt"
+        operation = self.repo / ".git" / "MERGE_HEAD"
+        for path in (untracked, operation):
+            with self.subTest(path=path.name):
+                path.write_text(self.target + "\n", encoding="ascii")
+                with patch.object(auto_updater, "_upstream_sha") as upstream:
+                    ok, message = auto_updater.apply_update_git(self.repo)
+                    self.assertFalse(ok, message)
+                    upstream.assert_not_called()
+                self.assertEqual(path.read_text(encoding="ascii"), self.target + "\n")
+                self.assertEqual(self.git("rev-parse", "HEAD"), self.base)
+                path.unlink()
+
+    def test_real_file_transport_is_denied_and_rewrite_is_rejected(self):
+        self.git("config", "url." + self.repo.as_uri() + ".insteadOf", auto_updater.UPSTREAM_URL)
+        with self.assertRaisesRegex(RuntimeError, "перенаправляет"):
+            auto_updater._upstream_sha(self.repo)
+        with self.assertRaisesRegex(RuntimeError, "transport 'file' not allowed"):
+            auto_updater._git_output(self.repo, "ls-remote", self.repo.as_uri())
+
+    def test_update_advisory_ignores_replacement_refs(self):
+        self.git("switch", "advertised")
+        replacement = self.commit("replacement")
+        self.git("switch", "V2")
+        self.git("replace", self.base, replacement)
+        self.git("merge-base", "--is-ancestor", self.target, "HEAD")
+        self.assertTrue(auto_updater._has_newer_remote_commit(self.repo, self.base, self.target))
+
+
 def find_bash():
     if os.name == "nt":
         git_bash = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "bin" / "bash.exe"
@@ -220,6 +310,116 @@ Publish-NewConfig $Template (Join-Path $Config 'antigravity.json') @('antigravit
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual({p.name: p.read_bytes() for p in config.iterdir()},
                              {"opencode.jsonc": original, "antigravity.json": template.read_bytes()})
+
+
+@unittest.skipUnless(os.name == "nt" and shutil.which("powershell.exe"), "requires Windows PowerShell")
+class PowerShellUninstallSafetyTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.fixture = Path(temp.name)
+
+    def invoke_functions(self, names, commands, script="uninstall.ps1"):
+        harness = self.fixture / "harness.ps1"
+        harness.write_text(
+            r"""
+param($ScriptPath, $Fixture)
+$ErrorActionPreference = 'Stop'
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
+if ($errors) { throw ($errors | Out-String) }
+""" + "$names = @(" + ", ".join(f"'{name}'" for name in names) + ")\n" + r"""
+foreach ($name in $names) {
+    $function = $ast.Find({
+        param($Node)
+        $Node -is [Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -eq $name
+    }, $false)
+    if (-not $function) { throw "Missing $name" }
+    . ([scriptblock]::Create($function.Extent.Text))
+}
+""" + commands,
+            encoding="ascii",
+        )
+        return subprocess.run(
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(harness),
+             str(ROOT / script), str(self.fixture.resolve())],
+            capture_output=True, text=True, errors="replace", timeout=15,
+        )
+
+    def run_removal(self, content, name="opencode.json"):
+        config = self.fixture / name
+        config.write_bytes(content)
+        result = self.invoke_functions(
+            ["Get-SafeFile", "Get-JsonValueEnd", "Get-JsonString", "Test-HubPluginEntry",
+             "Get-HubPluginRemoval", "Remove-HubPlugin"],
+            f"Remove-HubPlugin (Join-Path $Fixture '{name}')\n",
+        )
+        self.assertEqual(sorted(p.name for p in self.fixture.iterdir()), ["harness.ps1", name])
+        return result, config.read_bytes()
+
+    def test_removes_v1_and_v2_by_span_without_changing_user_settings(self):
+        content = (
+            b'\xef\xbb\xbf{\r\n  "n": 9007199254740993, "plugin": ['
+            b'["@cortexkit/opencode-antigravity-auth@latest",{}], "keep-v1"],\r\n'
+            b'  "nested": {"plugin": ["@cortexkit/opencode-antigravity-auth"]},\r\n'
+            b'  "pl\\u0075gins": ["first", {"package":"@cortexkit/opencode-antigravity-auth@3.0.0",'
+            b'"options":{"nested":[1,2]}}, {"package": "./local","options":{"x":1}},'
+            b'"@cortexkit/opencode-antigravity-auth", "@cortexkit/opencode-antigravity-auth-extra"]\r\n}\r\n'
+        )
+        expected = (
+            b'\xef\xbb\xbf{\r\n  "n": 9007199254740993, "plugin": [ "keep-v1"],\r\n'
+            b'  "nested": {"plugin": ["@cortexkit/opencode-antigravity-auth"]},\r\n'
+            b'  "pl\\u0075gins": ["first",  {"package": "./local","options":{"x":1}},'
+            b' "@cortexkit/opencode-antigravity-auth-extra"]\r\n}\r\n'
+        )
+        result, actual = self.run_removal(content)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(actual, expected)
+        result, actual = self.run_removal(actual)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(actual, expected)
+
+    def test_removes_scalar_and_only_array_entry(self):
+        content = (b'{"plugin":"@cortexkit/opencode-antigravity-auth",'
+                   b'"plugins":[{"package":"@cortexkit/opencode-antigravity-auth"}]}')
+        result, actual = self.run_removal(content)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(actual, b'{"plugin":[],"plugins":[]}')
+
+    def test_retains_jsonc_and_ambiguous_json(self):
+        for name, content in (
+            ("opencode.jsonc", b'{"plugins": ["@cortexkit/opencode-antigravity-auth"], // comment\n}'),
+            ("opencode.json", b'{"plugins":[{"package":"other","package":"@cortexkit/opencode-antigravity-auth"}]}'),
+        ):
+            with self.subTest(name=name):
+                result, actual = self.run_removal(content, name)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(actual, content)
+                (self.fixture / name).unlink()
+
+    def test_source_cleanup_requires_exact_shortcut_and_autostart_targets(self):
+        result = self.invoke_functions(["Test-SourceShortcut", "Test-SourceAutostart"], r"""
+$checkout = Join-Path $Fixture 'checkout copy'
+$script = Join-Path $checkout 'gui-manager\antigravity_manager.pyw'
+$launcher = Join-Path $checkout 'gui-manager\start_manager.bat'
+$real = '"C:\Example Python\pythonw.exe" "' + $script + '"'
+if (-not (Test-SourceAutostart $real $checkout)) { throw 'Did not identify source command' }
+foreach ($command in @("$real --extra", '"C:\Other\AntigravityHub.exe"',
+                        '"C:\Other\pythonw.exe" "C:\Other\gui-manager\antigravity_manager.pyw"')) {
+    if (Test-SourceAutostart $command $checkout) { throw "Foreign command matched: $command" }
+}
+$link = [pscustomobject]@{TargetPath=$launcher; Arguments=''}
+if (-not (Test-SourceShortcut $link $checkout)) { throw 'Did not identify source shortcut' }
+$link.Arguments = '--more'
+if (Test-SourceShortcut $link $checkout) { throw 'Shortcut with extra arguments matched' }
+$link.Arguments = ''
+foreach ($target in @("C:\Other\gui-manager\start_manager.bat", "$launcher.extra", "C:\AI HUB\AntigravityHub.exe")) {
+    $link.TargetPath = $target
+    if (Test-SourceShortcut $link $checkout) { throw "Foreign shortcut matched: $target" }
+}
+""")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

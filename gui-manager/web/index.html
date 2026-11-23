@@ -21,12 +21,12 @@
         </div>
       </div>
 
-      <nav class="nav-list">
-        <div class="nav-item active" data-tab="dashboard" onclick="switchTab('dashboard')">
+      <nav class="nav-list" aria-label="Разделы AI HUB" onkeydown="handleSidebarKey(event)">
+        <div class="nav-item active" data-tab="dashboard" role="button" tabindex="0" aria-controls="view-dashboard" aria-current="page" onclick="switchTab('dashboard')">
           <span class="nav-icon">◈</span><div class="nav-text"><span>Dashboard</span><span class="nav-sub">Обзор · Лимиты · Состояние</span></div>
         </div>
 
-        <div class="nav-item" data-tab="google" onclick="switchTab('google')">
+        <div class="nav-item" data-tab="google" role="button" tabindex="0" aria-controls="view-google" onclick="switchTab('google')">
           <span class="nav-icon">🚀</span>
           <div class="nav-text">
             <span>Google Antigravity <span class="connection-indicator idle" id="nav-status-google" role="img" aria-label="Google не подключён"></span></span>
@@ -34,7 +34,7 @@
           </div>
         </div>
 
-        <div class="nav-item" data-tab="openai" onclick="switchTab('openai')">
+        <div class="nav-item" data-tab="openai" role="button" tabindex="0" aria-controls="view-openai" onclick="switchTab('openai')">
           <span class="nav-icon">🟢</span>
           <div class="nav-text">
             <span>ChatGPT <span class="connection-indicator idle" id="nav-status-openai" role="img" aria-label="ChatGPT не подключён"></span></span>
@@ -42,7 +42,7 @@
           </div>
         </div>
 
-        <div class="nav-item" data-tab="claude" onclick="switchTab('claude')">
+        <div class="nav-item" data-tab="claude" role="button" tabindex="0" aria-controls="view-claude" onclick="switchTab('claude')">
           <span class="nav-icon">🟠</span>
           <div class="nav-text">
             <span>Claude <span class="connection-indicator idle" id="nav-status-claude" role="img" aria-label="Claude не подключён"></span></span>
@@ -50,11 +50,11 @@
           </div>
         </div>
 
-        <div class="nav-item" data-tab="xpiki" onclick="switchTab('xpiki')"><span class="nav-icon">⚡</span><div class="nav-text"><span>Claude API · Xpiki <span class="connection-indicator idle" id="nav-status-xpiki" role="img" aria-label="Xpiki не подключён"></span></span><span class="nav-sub">Ключ · Модели · Квота</span></div></div>
+        <div class="nav-item" data-tab="xpiki" role="button" tabindex="0" aria-controls="view-xpiki" onclick="switchTab('xpiki')"><span class="nav-icon">⚡</span><div class="nav-text"><span>Claude API · Xpiki <span class="connection-indicator idle" id="nav-status-xpiki" role="img" aria-label="Xpiki не подключён"></span></span><span class="nav-sub">Ключ · Модели · Квота</span></div></div>
 
-        <div class="nav-item" data-tab="deepseek" onclick="switchTab('deepseek')"><span class="nav-icon">🔷</span><div class="nav-text"><span>DeepSeek API <span class="connection-indicator idle" id="nav-status-deepseek" role="img" aria-label="DeepSeek не подключён"></span></span><span class="nav-sub">Platform API · Баланс</span></div></div>
+        <div class="nav-item" data-tab="deepseek" role="button" tabindex="0" aria-controls="view-deepseek" onclick="switchTab('deepseek')"><span class="nav-icon">🔷</span><div class="nav-text"><span>DeepSeek API <span class="connection-indicator idle" id="nav-status-deepseek" role="img" aria-label="DeepSeek не подключён"></span></span><span class="nav-sub">Platform API · Баланс</span></div></div>
 
-        <div class="nav-item" data-tab="openrouter" onclick="switchTab('openrouter')">
+        <div class="nav-item" data-tab="openrouter" role="button" tabindex="0" aria-controls="view-openrouter" onclick="switchTab('openrouter')">
           <span class="nav-icon">🟣</span>
           <div class="nav-text">
             <span>OpenRouter Free <span class="connection-indicator idle" id="nav-status-openrouter" role="img" aria-label="OpenRouter не подключён"></span></span>
@@ -62,7 +62,7 @@
           </div>
         </div>
 
-        <div class="nav-item" data-tab="tokenlavka" onclick="switchTab('tokenlavka')">
+        <div class="nav-item" data-tab="tokenlavka" role="button" tabindex="0" aria-controls="view-tokenlavka" onclick="switchTab('tokenlavka')">
           <span class="nav-icon">🎟️</span>
           <div class="nav-text">
             <span>TokenLavka <span class="connection-indicator idle" id="nav-status-tokenlavka" role="img" aria-label="TokenLavka не подключён"></span></span>
@@ -70,12 +70,12 @@
           </div>
         </div>
 
-        <div class="nav-item" data-tab="nvidia" onclick="switchTab('nvidia')">
+        <div class="nav-item" data-tab="nvidia" role="button" tabindex="0" aria-controls="view-nvidia" onclick="switchTab('nvidia')">
           <span class="nav-icon">▣</span>
           <div class="nav-text"><span>NVIDIA NIM <span class="connection-indicator idle" id="nav-status-nvidia" role="img" aria-label="NVIDIA NIM не подключён"></span></span><span class="nav-sub">API-ключ · Модели · Маршрут</span></div>
         </div>
 
-        <div class="nav-item" data-tab="network" onclick="switchTab('network')">
+        <div class="nav-item" data-tab="network" role="button" tabindex="0" aria-controls="view-network" onclick="switchTab('network')">
           <span class="nav-icon">🌐</span>
           <div class="nav-text">
             <span>Сеть, DNS и VLESS</span>
@@ -83,11 +83,11 @@
           </div>
         </div>
 
-        <div class="nav-item" data-tab="diagnostics" onclick="switchTab('diagnostics')">
+        <div class="nav-item" data-tab="diagnostics" role="button" tabindex="0" aria-controls="view-diagnostics" onclick="switchTab('diagnostics')">
           <span class="nav-icon">🩺</span><div class="nav-text"><span>Диагностика</span><span class="nav-sub">Домены всех провайдеров</span></div>
         </div>
 
-        <div class="nav-item" data-tab="settings" onclick="switchTab('settings')">
+        <div class="nav-item" data-tab="settings" role="button" tabindex="0" aria-controls="view-settings" onclick="switchTab('settings')">
           <span class="nav-icon">⚙️</span>
           <div class="nav-text">
             <span>Настройки и система</span>
@@ -138,8 +138,9 @@
             <div class="panel-heading"><h2>VLESS-туннель</h2><span class="badge-pill badge-pool" id="vless-status">Проверка…</span></div>
             <p class="help-text" id="vless-active-summary" role="status" style="margin-top:4px;">Активный конфиг: не выбран</p>
 
-            <div class="segmented-group vless-core-row" id="vless-core-row" role="radiogroup" aria-label="Ядро VLESS"></div>
-            <label class="switch-label" style="margin-top: 12px;"><input class="switch-input" type="checkbox" id="vless-kill-switch">Kill Switch для Claude при обрыве VLESS</label>
+            <div class="segmented-group vless-core-row" id="vless-core-row" role="group" aria-label="Ядро VLESS"></div>
+            <label class="switch-label" style="margin-top: 12px;"><input class="switch-input" type="checkbox" id="vless-kill-switch" aria-describedby="vless-kill-switch-help">Kill Switch для Claude (Auto)</label>
+            <p class="help-text" id="vless-kill-switch-help">Если VLESS включён и выбран активный конфиг, Claude в режиме Auto использует только VLESS, без обхода при обрыве. Маршруты, выбранные вручную, не меняются.</p>
             <p class="help-text" id="vless-result" role="status"></p>
 
             <div class="vless-pool-section" style="margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--glass-border);">
@@ -161,11 +162,11 @@
             <div class="panel-heading"><h2>DNS для маршрутов Hub</h2><span class="badge-pill badge-pool" id="dns-status" role="status">● Не проверен</span></div>
             <p class="help-text">Выберите тип DNS и сервер, затем нажмите «Применить DNS». Используется провайдерами с маршрутом «DNS Hub». Доступность серверов проверяется автоматически раз в минуту.</p>
             <label class="field-label">Какой DNS использовать</label><input type="hidden" id="dns-mode" value="system">
-            <div class="segmented-group dns-mode-group" role="radiogroup" aria-label="Тип DNS">
-              <button class="seg-btn" id="dns-mode-standard" role="radio" aria-checked="false" onclick="selectDnsMode('standard')">Обычный</button>
-              <button class="seg-btn" id="dns-mode-doh" role="radio" aria-checked="false" onclick="selectDnsMode('doh')">DoH</button>
-              <button class="seg-btn" id="dns-mode-dot" role="radio" aria-checked="false" onclick="selectDnsMode('dot')">DoT</button>
-              <button class="seg-btn" id="dns-mode-system" role="radio" aria-checked="false" onclick="selectDnsMode('system')">Системный</button>
+            <div class="segmented-group dns-mode-group" role="group" aria-label="Тип DNS">
+              <button class="seg-btn" id="dns-mode-standard" aria-pressed="false" onclick="selectDnsMode('standard')">Обычный</button>
+              <button class="seg-btn" id="dns-mode-doh" aria-pressed="false" onclick="selectDnsMode('doh')">DoH</button>
+              <button class="seg-btn" id="dns-mode-dot" aria-pressed="false" onclick="selectDnsMode('dot')">DoT</button>
+              <button class="seg-btn" id="dns-mode-system" aria-pressed="true" onclick="selectDnsMode('system')">Системный</button>
             </div>
             <label class="field-label" for="dns-preset">DNS-сервер</label><div class="dns-preset-row"><select id="dns-preset" onchange="applyDnsPreset()"><option value="custom">Свой / текущий</option></select><button class="btn-secondary" type="button" onclick="openDnsPresetEditor()">Управлять списком</button></div>
             <div id="dns-standard-fields" class="field-grid">
@@ -190,7 +191,7 @@
             <!-- Rendered dynamically -->
           </div>
           <label class="switch-label" style="margin-top: 4px;">
-            <input type="checkbox" class="switch-input" id="switch-proxy-failover" onchange="networkDirty = true" checked>
+            <input type="checkbox" class="switch-input" id="switch-proxy-failover" checked>
             <span>Автоматическая ротация и переключение на следующий прокси при отказе (Failover)</span>
           </label>
           <p class="help-text" id="http-proxy-status" style="margin-top: 6px;"></p>
@@ -216,7 +217,7 @@
           <div style="display: flex; gap: 10px; align-items: flex-start;">
             <span style="font-size: 18px; line-height: 1.2;">⚠️</span>
             <div>
-              <div class="patch-disclaimer-title">Патчи OpenCode не применены</div>
+              <div class="patch-disclaimer-title" id="google-patch-disclaimer-title">Патчи OpenCode не применены</div>
               <p class="help-text" id="google-patch-disclaimer-text" style="margin: 0 0 10px;">
                 Добавленный Google-аккаунт может не заработать: OpenCode может обновляться сам и сбрасывать патчи. Откройте «Настройки → OpenCode и система» и примените фикс плагина и патч Antigravity.
               </p>
@@ -551,7 +552,7 @@
               <label for="nvidia-key-input" class="help-text">API-ключ с build.nvidia.com</label>
               <div class="openrouter-key-row" style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0">
                 <input type="password" id="nvidia-key-input" placeholder="nvapi-…" autocomplete="off" oninput="resetNvidiaCatalog()"
-                  style="flex:1;min-width:180px;background:rgba(0,0,0,0.3);border:1px solid var(--glass-border);border-radius:10px;padding:10px 14px;color:#fff">
+                   style="flex:1;min-width:180px;background:rgba(0,0,0,0.3);border:1px solid var(--glass-border);border-radius:10px;padding:10px 14px;color:#fff">
                 <button class="btn-primary" id="btn-nvidia-load" onclick="nvidiaAction('load')">Загрузить модели</button>
                 <button class="btn-secondary" id="btn-nvidia-disconnect" onclick="nvidiaAction('disconnect')" disabled>Отключить</button>
               </div>
@@ -720,7 +721,7 @@
             <p>Провайдеры, стратегия ротации, обновления и патчи OpenCode</p>
           </div>
           <div class="header-right">
-            <button class="btn-primary" onclick="saveSettings()">
+            <button class="btn-primary" id="btn-settings-save" onclick="saveSettings()">
               <span>💾</span> Сохранить настройки
             </button>
           </div>
@@ -740,10 +741,10 @@
         </div>
         <div class="glass-card" style="margin-bottom: 16px;">
           <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 6px;">Стратегия выбора аккаунтов</div>
-          <div class="segmented-group" style="max-width: 440px; margin-bottom: 10px;">
-            <button class="seg-btn active" id="strat-hybrid" onclick="selectStrategy('hybrid')">hybrid</button>
-            <button class="seg-btn" id="strat-sticky" onclick="selectStrategy('sticky')">sticky</button>
-            <button class="seg-btn" id="strat-round-robin" onclick="selectStrategy('round-robin')">round-robin</button>
+           <div class="segmented-group" role="group" aria-label="Стратегия выбора аккаунтов" style="max-width: 440px; margin-bottom: 10px;">
+             <button class="seg-btn active" id="strat-hybrid" aria-pressed="true" onclick="selectStrategy('hybrid')">hybrid</button>
+             <button class="seg-btn" id="strat-sticky" aria-pressed="false" onclick="selectStrategy('sticky')">sticky</button>
+             <button class="seg-btn" id="strat-round-robin" aria-pressed="false" onclick="selectStrategy('round-robin')">round-robin</button>
           </div>
           <div id="strat-desc" style="font-size: 12px; color: var(--accent-amber-light);">
             ⭐ Рекомендуется: сохраняет контекст сессии на одном аккаунте, но плавно ротирует при исчерпании лимитов.
@@ -773,14 +774,14 @@
             Экспорт аккаунтов Google, ChatGPT и Claude, ключей Xpiki, OpenRouter, TokenLavka и DeepSeek, маршрутов и настроек сети. Новые копии шифруются паролем (.agb). Старые копии .json и .agb можно импортировать.
           </div>
           <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-            <button class="btn-primary" onclick="exportBackup()">
+            <button class="btn-primary" id="btn-backup-export" onclick="exportBackup()">
               <span>📥</span> Экспорт резервной копии
             </button>
-            <button class="btn-secondary" onclick="importBackup()">
+            <button class="btn-secondary" id="btn-backup-import" onclick="importBackup()">
               <span>📤</span> Импортировать из файла
             </button>
           </div>
-          <p class="help-text" id="backup-status-text" style="margin-top: 8px;"></p>
+           <p class="help-text" id="backup-status-text" role="status" style="margin-top: 8px;"></p>
         </div>
 
         <div class="glass-card" style="margin-bottom: 16px;">
@@ -905,7 +906,7 @@
 </div>
 
 <!-- Toast Container -->
-<div class="toast-container" id="toasts"></div>
+<div class="toast-container" id="toasts" role="log" aria-live="polite" aria-relevant="additions"></div>
 
 <div class="modal-backdrop" id="dns-preset-modal" hidden onclick="if(event.target===this)closeDnsPresetEditor()">
   <div class="modal-panel dns-preset-modal" role="dialog" aria-modal="true" aria-labelledby="dns-preset-title">

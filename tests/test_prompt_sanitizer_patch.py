@@ -142,7 +142,7 @@ class PromptSanitizerPatchTests(unittest.TestCase):
                 (local_dist / "server.js").read_bytes(),
             )
             second = sync_local_plugin_bundles(root)
-            self.assertFalse(second["ok"])
+            self.assertTrue(second["ok"])
             self.assertEqual(second["copied"], [])
 
     def test_local_bundle_does_not_make_empty_cache_look_patched(self):
@@ -183,7 +183,7 @@ class PromptSanitizerPatchTests(unittest.TestCase):
 
             result = sync_local_plugin_bundles(root)
 
-            self.assertTrue(result["ok"])
+            self.assertFalse(result["ok"])
             self.assertEqual(result["copied"], [])
             self.assertEqual(len(result["skipped"]), 1)
             self.assertIn("не перезаписан", result["message"])

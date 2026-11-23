@@ -350,9 +350,15 @@ class CoreProcessTests(ScopedMocksTestCase):
         ok, message = self.start()
         self.assertTrue(ok, message)
         self.assertTrue(self.svc.is_running())
+        self.assertEqual(self.svc.exit_generation(), 1)
+        self.assertTrue(self.start()[0])
+        self.assertEqual(self.svc.exit_generation(), 1)
         self.assertEqual(self.popen.call_args.args[0][0], str(self.exe.resolve()))
         self.ownership.assert_called_with(4242, (self.HTTP, self.SOCKS))
         self.assertTrue(self.svc.stop_tunnel()[0])
+        self.assertEqual(self.svc.exit_generation(), 2)
+        self.assertTrue(self.svc.stop_tunnel()[0])
+        self.assertEqual(self.svc.exit_generation(), 2)
         self.child.terminate.assert_called_once_with()
         self.child.kill.assert_not_called()
         self.run.assert_not_called()
@@ -368,6 +374,7 @@ class CoreProcessTests(ScopedMocksTestCase):
         self.assertFalse(ok)
         self.assertIn(str(self.HTTP), message)
         self.assertTrue(self.svc.stop_tunnel()[0])
+        self.assertEqual(self.svc.exit_generation(), 0)
         self.popen.assert_not_called()
         self.run.assert_not_called()
 
@@ -376,8 +383,19 @@ class CoreProcessTests(ScopedMocksTestCase):
         self.ownership.return_value = set()
         self.assertFalse(self.start()[0])
         self.assertFalse(self.svc.is_running())
+        self.assertEqual(self.svc.exit_generation(), 0)
         self.child.terminate.assert_called_once_with()
         self.run.assert_not_called()
+
+    def test_failed_stop_does_not_change_generation_of_running_tunnel(self):
+        self.assertTrue(self.start()[0])
+        self.child.terminate.side_effect = OSError
+        self.assertFalse(self.svc.stop_tunnel()[0])
+        self.assertTrue(self.svc.is_running())
+        self.assertEqual(self.svc.exit_generation(), 1)
+        self.child.poll.return_value = 1
+        self.assertTrue(self.svc.stop_tunnel()[0])
+        self.assertEqual(self.svc.exit_generation(), 2)
 
     def test_xray_requires_both_listeners_but_sing_box_requires_only_mixed_port(self):
         self.ownership.side_effect = None

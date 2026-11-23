@@ -131,6 +131,97 @@ class AutoRouterTests(unittest.TestCase):
         for url in ("http://localhost:10880", "http://127.0.0.1:51180", "http://[::1]:10880"):
             self.assertEqual(configured_routes({"proxy": url}), [])
 
+    def test_proxy_only_pool_obeys_order_and_retries_per_candidate(self):
+        primary, backup = "http://proxy-one.example:8080", "http://user:fixture@proxy-two.example:8080"
+        hub = {"proxy_pool": [{"url": primary}, backup], "proxy": primary}
+        probe = Mock(side_effect=lambda upstream, host, hub: {
+            "host": host, "ok": True, "latency_ms": 30 if upstream == primary else 1,
+        })
+        connection = Mock()
+        connector = Mock(side_effect=[OSError("primary temporarily down"), connection, connection, connection])
+        now = [0]
+        router = AutoRouter(connector, probe=probe, clock=lambda: now[0])
+        state = self.ready(router, hub=hub)
+        self.assertEqual(state["selected"], "proxy")
+        self.assertEqual(len(state["rows"]), 1)
+        self.assertNotIn("fixture@", json.dumps(state))
+        self.assertEqual(router.selected_upstream("openai", hub, self.oc), primary)
+        self.assertEqual(router.connect("openai", "chatgpt.com", 443, hub, self.oc), (connection, backup))
+        self.assertEqual([call.args[0] for call in connector.call_args_list], [primary, backup])
+        self.assertEqual(router.selected_upstream("openai", hub, self.oc), backup)
+        self.assertEqual(router.connect("openai", "auth.openai.com", 443, hub, self.oc)[1], primary)
+        self.assertEqual(router.connect("openai", "chatgpt.com", 443, hub, self.oc)[1], backup)
+        now[0] = 10
+        self.ready(router, hub=hub)
+        self.assertEqual(router.selected_upstream("openai", hub, self.oc), primary)
+
+    def test_unavailable_proxy_is_skipped_and_pool_changes_invalidate_cached_order(self):
+        primary, backup = "http://proxy-one.example:8080", "http://proxy-two.example:8080"
+        hub = {"proxy_pool": [primary, backup]}
+        probe = Mock(side_effect=lambda upstream, host, hub: {
+            "host": host, "ok": upstream == backup, "latency_ms": 25,
+        })
+        connector = Mock()
+        router = AutoRouter(connector, probe=probe)
+        self.assertEqual(self.ready(router, hub=hub)["selected"], "proxy")
+        self.assertEqual(router.connect("openai", "chatgpt.com", 443, hub, self.oc)[1], backup)
+        connector.assert_called_once_with(backup, "chatgpt.com", 443, hub_config=hub, timeout=20)
+        for changed in ({**hub, "proxy_pool": [backup, primary]}, {**hub, "proxy_failover": False}):
+            self.assertEqual(router.state("openai", changed, self.oc)["status"], "pending")
+        disabled = {**hub, "proxy_failover": False}
+        probe.reset_mock()
+        self.assertEqual(self.ready(router, hub=disabled)["status"], "unavailable")
+        probe.assert_called_once_with(primary, "chatgpt.com", disabled)
+        with self.assertRaises(AutoRouteUnavailable):
+            router.connect("openai", "chatgpt.com", 443, disabled, self.oc)
+
+    def test_claude_auto_kill_switch_never_probes_or_connects_non_vless_routes(self):
+        vless = "http://127.0.0.1:10879"
+        probe = Mock(side_effect=lambda upstream, host, hub: {
+            "host": host, "ok": True, "latency_ms": 30 if upstream == vless else 1,
+        })
+        connector = Mock(side_effect=OSError("VLESS disconnected"))
+        router = AutoRouter(connector, probe=probe)
+        for mode in ("default", "auto"):
+            with self.subTest(mode=mode):
+                hub = dict(self.hub, provider_routes={"claude-pro": mode})
+                state = self.ready(router, "claude-pro", hub=hub)
+                self.assertEqual([row["mode"] for row in state["rows"]], ["vless"])
+                self.assertEqual(state["selected"], "vless")
+        probe.assert_called_once()
+        self.assertEqual(probe.call_args.args[:2], (vless, "claude.ai"))
+        with self.assertRaises(AutoRouteUnavailable):
+            router.connect("claude-pro", "claude.ai", 443, self.hub, self.oc)
+        connector.assert_called_once_with(vless, "claude.ai", 443, hub_config=self.hub, timeout=20)
+        self.assertEqual(router.state("claude-pro", self.hub, self.oc)["status"], "unavailable")
+        with self.assertRaises(AutoRouteUnavailable):
+            router.selected_upstream("claude-pro", self.hub, self.oc, host="claude.ai")
+
+        disabled = {**self.hub, "vless_kill_switch": False}
+        self.assertEqual(router.state("claude-pro", disabled, self.oc)["status"], "pending")
+        self.assertEqual(self.ready(router, "claude-pro", hub=disabled)["selected"], "dns")
+        self.assertEqual(self.ready(router, "openai")["selected"], "dns")
+        no_active_tunnel = {**self.hub, "vless_url": ""}
+        self.assertEqual(self.ready(router, "claude-pro", hub=no_active_tunnel)["selected"], "dns")
+
+    def test_claude_auto_rejects_cached_vless_selection_when_managed_listener_is_not_ready(self):
+        connector = Mock()
+        ready = Mock(return_value=True)
+        revision = Mock(return_value=1)
+        probe = Mock(side_effect=lambda upstream, host, hub: {"host": host, "ok": True, "latency_ms": 1})
+        router = AutoRouter(connector, probe=probe, vless_ready=ready, vless_revision=revision)
+        self.assertEqual(self.ready(router, "claude-pro")["selected"], "vless")
+        ready.return_value = False
+        self.assertEqual(router.state("claude-pro", self.hub, self.oc)["status"], "unavailable")
+        with self.assertRaises(AutoRouteUnavailable):
+            router.connect("claude-pro", "claude.ai", 443, self.hub, self.oc)
+        connector.assert_not_called()
+        ready.return_value = True
+        revision.return_value = 2
+        self.assertEqual(router.state("claude-pro", self.hub, self.oc)["status"], "pending")
+        self.assertEqual(self.ready(router, "claude-pro")["selected"], "vless")
+        self.assertEqual(probe.call_count, 2)
+
     def test_partial_route_is_not_used_for_its_failed_host(self):
         def probe(upstream, host, hub):
             return {"host": host, "ok": host.startswith('daily-') if upstream == 'dns://hub' else not host.startswith('daily-'),

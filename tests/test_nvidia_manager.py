@@ -1,5 +1,6 @@
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -20,6 +21,13 @@ class NvidiaManagerTests(unittest.TestCase):
         self.config.parent.mkdir()
         self.secret = root / "hub" / "opencode-secrets" / "nvidia-nim.key"
         self.enterContext(patch.multiple(nvidia_manager, CONFIG_DIR=self.config.parent, KEY_FILE=self.secret))
+        if os.name == "nt":
+            # Exercise file/JSONC behavior without setting any real ACLs.
+            def open_fake_private_file(path):
+                return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_BINARY, 0o600)
+
+            self.enterContext(patch.object(nvidia_manager.secure_storage, "_open_windows_private_file",
+                                           side_effect=open_fake_private_file))
         self.model_id = "nvidia/nemotron-3-ultra-550b-a55b"
 
     @patch("nvidia_manager._opener")
@@ -94,12 +102,48 @@ class NvidiaManagerTests(unittest.TestCase):
         nvidia_manager.configure("nvapi-first", [self.model_id])
         atomic_write = nvidia_manager.secure_storage.atomic_write
 
-        def fail_config(path, text):
+        def fail_config(path, text, **kwargs):
             if path.parent == self.config.parent:
                 raise OSError("simulated config write failure")
-            atomic_write(path, text)
+            atomic_write(path, text, **kwargs)
 
         with patch.object(nvidia_manager.secure_storage, "atomic_write", side_effect=fail_config):
             with self.assertRaises(OSError):
                 nvidia_manager.configure("nvapi-second", [self.model_id])
         self.assertEqual(nvidia_manager.load_key(), "nvapi-first")
+
+    def test_configure_requests_windows_acl_and_preserves_config_bom_and_line_endings(self):
+        original = b'\xef\xbb\xbf{\r\n  // Keep this line\r\n  "model": "keep/default"\r\n}\r\n'
+        self.config.write_bytes(original)
+        with patch.object(nvidia_manager.secure_storage, "atomic_write_bytes",
+                          wraps=nvidia_manager.secure_storage.atomic_write_bytes) as write:
+            nvidia_manager.configure("nvapi-test", [self.model_id])
+        self.assertEqual(write.call_args_list[0].kwargs, {"private_windows": True})
+        self.assertEqual(write.call_args_list[1].kwargs["private_parent"], False)
+        self.assertTrue(self.config.read_bytes().startswith(b'\xef\xbb\xbf{\r\n  // Keep this line\r\n'))
+
+    def test_unreadable_config_does_not_write_or_remove_key(self):
+        nvidia_manager.configure("nvapi-first", [self.model_id])
+        self.config.write_bytes(b"\xff")
+        with self.assertRaises(ValueError):
+            nvidia_manager.configure("nvapi-second", [self.model_id])
+        with self.assertRaises(ValueError):
+            nvidia_manager.disconnect()
+        self.assertEqual(self.secret.read_bytes(), b"nvapi-first")
+        self.assertEqual(self.config.read_bytes(), b"\xff")
+
+    def test_invalid_key_is_not_reported_as_connected(self):
+        nvidia_manager.configure("nvapi-first", [self.model_id])
+        self.secret.write_bytes(b"\xff")
+        with self.assertRaisesRegex(ValueError, "повреждён"):
+            nvidia_manager.state()
+        self.assertEqual(self.secret.read_bytes(), b"\xff")
+
+    def test_disconnect_does_not_delete_key_for_foreign_config(self):
+        self.config.write_text("{}", encoding="utf-8")
+        nvidia_manager.configure("nvapi-first", [self.model_id])
+        original = b'{"providers":{"nvidia-nim":{"settings":{"baseURL":"https://example.com"}}}}'
+        self.config.write_bytes(original)
+        nvidia_manager.disconnect()
+        self.assertEqual(self.config.read_bytes(), original)
+        self.assertEqual(self.secret.read_bytes(), b"nvapi-first")

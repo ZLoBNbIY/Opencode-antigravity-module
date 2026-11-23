@@ -20,9 +20,10 @@ SECRET_PURPOSE = "openrouter-api-key"
 try:
     import hub_paths
     SECRET_FILE = hub_paths.OPENROUTER_SECRET_FILE
+    CONFIG_DIR = hub_paths.OPENCODE_CONFIG_DIR
 except Exception:
     SECRET_FILE = Path.home() / ".local" / "share" / "antigravity-hub" / "openrouter.json"
-CONFIG_DIR = Path.home() / ".config" / "opencode"
+    CONFIG_DIR = Path.home() / ".config" / "opencode"
 
 
 def _openrouter_opener():
@@ -33,6 +34,8 @@ def _openrouter_opener():
 
 
 def _is_free(value):
+    if isinstance(value, bool):
+        return False
     try:
         return float(value) == 0
     except (TypeError, ValueError):
@@ -69,27 +72,37 @@ def fetch_free_models(api_key, timeout=20):
     except (json.JSONDecodeError, UnicodeDecodeError):
         raise ValueError("OpenRouter вернул некорректный ответ каталога моделей.") from None
 
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        raise ValueError("OpenRouter вернул некорректный ответ каталога моделей.")
     models = []
-    for item in payload.get("data", []):
+    seen = set()
+    for item in payload["data"]:
+        if not isinstance(item, dict):
+            continue
         model_id = item.get("id")
-        if not isinstance(model_id, str):
+        if not isinstance(model_id, str) or not model_id.strip() or model_id in seen:
             continue
-        pricing = item.get("pricing") or {}
-        if not (_is_free(pricing.get("prompt")) and _is_free(pricing.get("completion"))):
+        pricing = item.get("pricing")
+        if not isinstance(pricing, dict) or not (_is_free(pricing.get("prompt")) and _is_free(pricing.get("completion"))):
             continue
-        modalities = (item.get("architecture") or {}).get("modality")
-        if modalities:
-            parts = str(modalities).lower().split("->", 1)
-            if len(parts) != 2 or "text" not in parts[0] or parts[1] != "text":
+        architecture = item.get("architecture")
+        if architecture is not None and not isinstance(architecture, dict):
+            continue
+        modalities = (architecture or {}).get("modality")
+        if modalities is not None:
+            parts = modalities.lower().split("->", 1) if isinstance(modalities, str) else []
+            if len(parts) != 2 or "text" not in parts[0].split("+") or parts[1] != "text":
                 continue
         limit = item.get("context_length")
-        top_provider = item.get("top_provider") or {}
-        output = top_provider.get("max_completion_tokens")
+        top_provider = item.get("top_provider")
+        output = top_provider.get("max_completion_tokens") if isinstance(top_provider, dict) else None
+        name = item.get("name")
+        seen.add(model_id)
         models.append({
             "id": model_id,
-            "name": item.get("name") or model_id,
-            "context": limit if isinstance(limit, int) and limit > 0 else 32768,
-            "output": output if isinstance(output, int) and output > 0 else 8192,
+            "name": name if isinstance(name, str) and name else model_id,
+            "context": limit if type(limit) is int and limit > 0 else 32768,
+            "output": output if type(output) is int and output > 0 else 8192,
         })
     return sorted(models, key=lambda model: model["id"].lower())
 
@@ -97,6 +110,11 @@ def fetch_free_models(api_key, timeout=20):
 def save_api_key(api_key):
     record = secure_storage.protect_secret(SECRET_PURPOSE, {"apiKey": api_key})
     secure_storage.atomic_write(SECRET_FILE, json.dumps(record))
+    _disconnect_marker().unlink(missing_ok=True)
+
+
+def _disconnect_marker():
+    return SECRET_FILE.with_suffix(".disconnected")
 
 
 def _stored_key():
@@ -120,13 +138,15 @@ def _opencode_candidate():
         config_path = CONFIG_DIR / "opencode.json"
     try:
         return opencode_credentials.read_key(
-            OPENCODE_INTEGRATIONS, config_path=config_path, name_hint="openrouter")
+            OPENCODE_INTEGRATIONS, config_path=config_path, name_hint="openrouter", exact_config=True)
     except Exception:
         return "", 0
 
 
 def load_api_key():
     """Adopt the newest key: whichever side (Hub or OpenCode) changed last wins."""
+    if _disconnect_marker().exists():
+        return ""
     key, updated = _stored_key()
     candidate, candidate_at = _opencode_candidate()
     if candidate and candidate != key and candidate_at > updated:
@@ -227,14 +247,8 @@ def disconnect():
     cli = openai_manager.find_opencode_cli()
     if not cli:
         raise ValueError("Не найден OpenCode CLI. Ключ Hub оставлен без изменений.")
-    for provider_id in (PROVIDER_ID, "openrouter"):
-        try:
-            result = subprocess.run([cli, "auth", "logout", provider_id], capture_output=True, timeout=15)
-        except (subprocess.TimeoutExpired, OSError):
-            raise ValueError("OpenCode CLI не ответил при удалении учётных данных. Ключ Hub оставлен без изменений.") from None
-        if result.returncode != 0:
-            raise ValueError("OpenCode не удалил сохранённые учётные данные. Ключ Hub оставлен без изменений.")
     config_path = jsonc_config.config_path(CONFIG_DIR)
+    original = updated = None
     if config_path.exists():
         original = config_path.read_text(encoding="utf-8-sig")
         data = jsonc_config.parse_config(original)
@@ -247,6 +261,19 @@ def disconnect():
             updated = jsonc_config.set_property(
                 updated, ("disabled_providers",), [item for item in disabled if item != "openrouter"],
             )
+    if updated != original:
+        secure_storage.atomic_write(config_path, updated)
+    try:
+        result = subprocess.run([cli, "auth", "logout", PROVIDER_ID], capture_output=True, timeout=15)
+        if result.returncode != 0:
+            raise OSError("OpenCode не удалил учётные данные OpenRouter Free")
+    except (subprocess.TimeoutExpired, OSError):
         if updated != original:
-            secure_storage.atomic_write(config_path, updated)
+            secure_storage.atomic_write(config_path, original)
+        raise ValueError("OpenCode не удалил учётные данные OpenRouter Free. Ключ Hub оставлен без изменений.") from None
+    finally:
+        opencode_credentials.invalidate()
+    # Native OpenRouter credentials remain in OpenCode; don't auto-adopt them
+    # back into Hub after an explicit disconnect.
+    secure_storage.atomic_write(_disconnect_marker(), "disconnected\n")
     SECRET_FILE.unlink(missing_ok=True)

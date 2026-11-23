@@ -11,8 +11,22 @@ function frontend(state) {
     constructor() { this.children = []; this.style = {}; this.value = ''; this.dataset = {}; this.attributes = {}; this.classes = new Set(); this.classList = {toggle:(name, value) => value ? this.classes.add(name) : this.classes.delete(name)}; }
     set innerHTML(value) { this.content = value; this.children = []; }
     get innerHTML() { return this.content || ''; }
-    appendChild(child) { this.children.push(child); }
-    append(...children) { this.children.push(...children); }
+    appendChild(child) { this.insertBefore(child, null); }
+    append(...children) { children.forEach(child => this.appendChild(child)); }
+    insertBefore(child, next) {
+      if (child === next) return;
+      child.remove?.();
+      const index = next ? this.children.indexOf(next) : this.children.length;
+      this.children.splice(index, 0, child);
+      child.parent = this;
+    }
+    remove() {
+      if (!this.parent) return;
+      const i = this.parent.children.indexOf(this);
+      if (i >= 0) this.parent.children.splice(i, 1);
+      this.parent = null;
+    }
+    removeAttribute(key) { delete this.attributes[key]; }
     setAttribute(key, value) { this.attributes[key] = value; }
     addEventListener() {}
     querySelector() { return null; }
@@ -44,6 +58,44 @@ const state = {
     tokenlavka:{hasKey:false,connected:false,selectedModels:[],models:[{id:'gpt-6-luna',name:'GPT-6 Luna',context:512000,output:65536}],baseUrl:'https://tokenlavka.com/v1',
       balance:{status:'ok',issued:1000,spent:600,balance:400,reserved:0,remaining_percent:40,used_percent:60,checked_at:1794309000,error:null}}},
 };
+
+test('a refresh queued after a mutation waits for the follow-up snapshot', async () => {
+  const {context} = frontend(state);
+  const pending = [];
+  context.window.pywebview = {api:{get_state:() => new Promise(resolve => pending.push(resolve))}};
+  const first = vm.runInContext('refreshState()', context);
+  await Promise.resolve();
+  const next = vm.runInContext('refreshState()', context);
+  assert.equal(vm.runInContext('refreshState()', context), next);
+  pending.shift()(structuredClone(state));
+  await first;
+  await Promise.resolve();
+  assert.equal(pending.length, 1);
+  const updated = structuredClone(state);
+  updated.appVersion = 'v2.99.0';
+  pending.shift()(updated);
+  await next;
+  assert.equal(vm.runInContext('appState.appVersion', context), 'v2.99.0');
+});
+
+test('encrypted backup sends only the native selection token and refreshes on partial success', async () => {
+  const {elements, context} = frontend(state);
+  const calls = [];
+  let refreshes = 0;
+  context.window.pywebview = {api:{
+    import_backup:async (...args) => {
+      calls.push(args);
+      return args.length ? {ok:false,partial:true,message:'Частичный импорт'} :
+        {requires_password:true,import_token:'selection-token'};
+    },
+    get_state:async () => { refreshes++; return structuredClone(state); },
+  }};
+  vm.runInContext("requestBackupPassword = async () => 'test-password'", context);
+  await vm.runInContext('importBackup()', context);
+  assert.deepEqual(calls, [[], ['selection-token', 'test-password']]);
+  assert.equal(refreshes, 1);
+  assert.equal(elements.get('backup-status-text').textContent, 'Частичный импорт');
+});
 
 test('network markup escapes diagnostic values and omits saved connection secrets', () => {
   const fixture = structuredClone(state);
@@ -156,7 +208,7 @@ test('DoH and DoT are explicit choices with the matching address fields', () => 
   assert.equal(elements.get('dns-mode').value, 'doh');
   assert.equal(elements.get('dns-doh-fields').style.display, 'block');
   assert.equal(elements.get('dns-standard-fields').style.display, 'none');
-  assert.equal(elements.get('dns-mode-doh').attributes['aria-checked'], 'true');
+  assert.equal(elements.get('dns-mode-doh').attributes['aria-pressed'], 'true');
   assert.match(elements.get('dns-selection-summary').textContent, /Применить DNS/);
   vm.runInContext("selectDnsMode('dot')", context);
   assert.equal(elements.get('dns-dot-fields').style.display, 'block');
@@ -518,7 +570,7 @@ test('OpenCode restart button is placed in sidebar above status indicator and re
   assert.doesNotMatch(settingsMatch[0], /onclick="restartOpenCode\(\)"/);
 });
 
-test('DeepSeek usage chart escapes currency in innerHTML and failover toggle marks networkDirty', () => {
+test('DeepSeek usage chart escapes currency and failover remains a checkbox', () => {
   const fixture = structuredClone(state);
   fixture.providers.deepseek.usage = {
     status: 'ok',
@@ -530,7 +582,7 @@ test('DeepSeek usage chart escapes currency in innerHTML and failover toggle mar
   const usageHtml = elements.get('deepseek-usage').innerHTML;
   assert.doesNotMatch(usageHtml, /<img src=x/);
   assert.match(usageHtml, /&lt;img src=x onerror=alert\(1\)&gt;/);
-  assert.match(markup, /id="switch-proxy-failover"[^>]*onchange="networkDirty = true"/);
+  assert.match(markup, /type="checkbox"[^>]*id="switch-proxy-failover"/);
   const css = fs.readFileSync(new URL('../gui-manager/web/style.css', import.meta.url), 'utf8');
   const statusBadgeRule = css.match(/\.status-badge\s*\{[^}]*\}/);
   assert.ok(statusBadgeRule && /justify-content:\s*center/.test(statusBadgeRule[0]), '.status-badge should center its content');

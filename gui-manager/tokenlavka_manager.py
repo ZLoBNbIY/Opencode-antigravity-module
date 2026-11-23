@@ -6,6 +6,7 @@ The provider descriptor written to ``opencode.json`` follows the official
 OpenCode guide: ``@ai-sdk/openai-compatible`` + ``https://tokenlavka.com/v1``.
 """
 import json
+import math
 from pathlib import Path
 import subprocess
 import time
@@ -30,10 +31,11 @@ try:
     import hub_paths
     SECRET_FILE = hub_paths.TOKENLAVKA_SECRET_FILE
     BALANCE_CONFIG_FILE = hub_paths.TOKENLAVKA_CONFIG_FILE
+    CONFIG_DIR = hub_paths.OPENCODE_CONFIG_DIR
 except Exception:
     SECRET_FILE = Path.home() / ".local" / "share" / "antigravity-hub" / "tokenlavka.json"
     BALANCE_CONFIG_FILE = Path.home() / ".local" / "share" / "antigravity-hub" / "tokenlavka-state.json"
-CONFIG_DIR = Path.home() / ".config" / "opencode"
+    CONFIG_DIR = Path.home() / ".config" / "opencode"
 
 # Exact IDs from https://tokenlavka.com/help ("Доступные модели").
 # Every model on the gateway currently shares the same window and response cap.
@@ -82,8 +84,13 @@ def _opener():
 
 
 def save_api_key(api_key):
+    previous, _ = _stored_key()
     record = secure_storage.protect_secret(SECRET_PURPOSE, {"apiKey": api_key})
     secure_storage.atomic_write(SECRET_FILE, json.dumps(record))
+    cfg = load_config()
+    if previous != api_key or cfg.get("auto_import_disabled"):
+        cfg.update(cached_balance={}, auto_import_disabled=False)
+        save_config(cfg)
 
 
 def _stored_key():
@@ -107,13 +114,15 @@ def _opencode_candidate():
         config_path = CONFIG_DIR / "opencode.json"
     try:
         return opencode_credentials.read_key(
-            OPENCODE_INTEGRATIONS, config_path=config_path, name_hint="tokenlavka")
+            OPENCODE_INTEGRATIONS, config_path=config_path, name_hint="tokenlavka", exact_config=True)
     except Exception:
         return "", 0
 
 
 def load_api_key():
     """Adopt the newest key: whichever side (Hub or OpenCode) changed last wins."""
+    if load_config().get("auto_import_disabled"):
+        return ""
     key, updated = _stored_key()
     candidate, candidate_at = _opencode_candidate()
     if candidate and candidate != key and candidate_at > updated:
@@ -137,7 +146,7 @@ def load_api_key():
 # ---------------------------------------------------------------------------
 
 def _default_config() -> Dict[str, Any]:
-    return {"connected": False, "cached_balance": {}}
+    return {"connected": False, "cached_balance": {}, "auto_import_disabled": False}
 
 
 def load_config() -> Dict[str, Any]:
@@ -184,13 +193,18 @@ def parse_balance_payload(payload: Any) -> Dict[str, Any]:
         raise ValueError("TokenLavka не вернула данные о ключе")
 
     def amount(value: Any) -> Optional[float]:
+        if isinstance(value, bool):
+            return None
         try:
-            return round(float(value), 2)
-        except (TypeError, ValueError):
+            number = float(value)
+            return round(number, 2) if math.isfinite(number) else None
+        except (TypeError, ValueError, OverflowError):
             return None
 
     issued = amount(key.get("total_added"))
     balance = amount(key.get("balance"))
+    if balance is None:
+        raise ValueError("TokenLavka не вернула баланс ключа")
     spent = amount(key.get("spent"))
     if spent is None and issued is not None and balance is not None:
         spent = round(max(0.0, issued - balance), 2)
@@ -249,7 +263,7 @@ def fetch_balance(api_key: Optional[str] = None, timeout: int = 15) -> Dict[str,
         else:
             error = f"TokenLavka вернула HTTP {exc.code} при запросе баланса"
     except Exception as exc:
-        error = f"Ошибка сети TokenLavka: {str(exc)[:120]}"
+        error = "TokenLavka вернула некорректный баланс" if isinstance(exc, ValueError) else "Не удалось обновить баланс TokenLavka"
 
     cfg = load_config()
     cached = cfg.get("cached_balance")
@@ -257,9 +271,10 @@ def fetch_balance(api_key: Optional[str] = None, timeout: int = 15) -> Dict[str,
         stale = dict(cached)
         stale["status"] = "stale"
         stale["error"] = error
-        return stale
-    result = empty_balance("error")
-    result["error"] = error
+        result = stale
+    else:
+        result = empty_balance("error")
+        result["error"] = error
     cfg["cached_balance"] = result
     save_config(cfg)
     return result
@@ -281,29 +296,37 @@ def refresh_balance_silent() -> Dict[str, Any]:
 
 def test_connection(api_key, timeout=20):
     """Validate the key against GET /v1/models. Returns (ok, message)."""
+    ok, message, _status = probe_connection(api_key, timeout)
+    return ok, message
+
+
+def probe_connection(api_key, timeout=20):
+    """Validate the catalog response and preserve the reason for health checks."""
     clean = str(api_key or "").strip()
     if not clean.startswith("sk-") or any(c in clean for c in "\r\n\x00"):
-        return False, "Ключ tokenlavka должен начинаться с sk-"
+        return False, "Ключ tokenlavka должен начинаться с sk-", "invalid_key"
     request = urllib.request.Request(
         MODELS_URL,
         headers={"Authorization": f"Bearer {clean}", "User-Agent": "Antigravity-Hub"},
     )
     try:
         with _opener().open(request, timeout=timeout) as response:
-            json.loads(response.read().decode("utf-8"))
-        return True, "Ключ tokenlavka принят"
+            payload = json.loads(response.read().decode("utf-8"))
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            raise ValueError()
+        return True, "Ключ tokenlavka принят", "active"
     except urllib.error.HTTPError as error:
         if error.code == 401:
-            return False, "TokenLavka отклонила ключ (401). Проверьте, что он скопирован целиком."
+            return False, "TokenLavka отклонила ключ (401). Проверьте, что он скопирован целиком.", "auth_failed"
         if error.code == 402:
-            return False, "TokenLavka: insufficient balance (402). Пополните ключ."
+            return False, "TokenLavka: insufficient balance (402). Пополните ключ.", "insufficient_balance"
         if error.code == 429:
-            return False, "TokenLavka: слишком частые запросы (429). Повторите через несколько секунд."
-        return False, f"TokenLavka вернула HTTP {error.code}"
+            return False, "TokenLavka: слишком частые запросы (429). Повторите через несколько секунд.", "rate_limited"
+        return False, f"TokenLavka вернула HTTP {error.code}", f"http_{error.code}"
     except (urllib.error.URLError, TimeoutError, OSError):
-        return False, "Не удалось подключиться к TokenLavka. Проверьте интернет и маршрут."
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return False, "TokenLavka вернула некорректный ответ каталога моделей."
+        return False, "Не удалось подключиться к TokenLavka. Проверьте интернет и маршрут.", "network_error"
+    except ValueError:
+        return False, "TokenLavka вернула некорректный ответ каталога моделей.", "invalid_response"
 
 
 def sync_opencode_credential(api_key):
@@ -391,30 +414,30 @@ def disconnect():
     cli = openai_manager.find_opencode_cli()
     if not cli:
         raise ValueError("Не найден OpenCode CLI. Ключ Hub оставлен без изменений.")
-    try:
-        result = subprocess.run([cli, "auth", "logout", PROVIDER_ID], capture_output=True, timeout=15)
-    except (subprocess.TimeoutExpired, OSError):
-        raise ValueError("OpenCode CLI не ответил при удалении учётных данных. Ключ Hub оставлен без изменений.") from None
-    if result.returncode != 0:
-        raise ValueError("OpenCode не удалил сохранённые учётные данные. Ключ Hub оставлен без изменений.")
     config_path = jsonc_config.config_path(CONFIG_DIR)
+    original = updated = None
     if config_path.exists():
         original = config_path.read_text(encoding="utf-8-sig")
-        try:
-            data = jsonc_config.parse_config(original)
-            providers = data.get("provider", {})
-            if PROVIDER_ID in providers:
-                updated = jsonc_config.set_property(
-                    original, ("provider", PROVIDER_ID, "models"), {}
-                )
-                secure_storage.atomic_write(config_path, updated)
-        except Exception:
-            pass
-    SECRET_FILE.unlink(missing_ok=True)
+        updated = original
+        providers = jsonc_config.parse_config(original).get("provider", {})
+        if isinstance(providers, dict) and isinstance(providers.get(PROVIDER_ID), dict):
+            updated = jsonc_config.set_property(original, ("provider", PROVIDER_ID, "models"), {})
+    if updated != original:
+        secure_storage.atomic_write(config_path, updated)
+    try:
+        result = subprocess.run([cli, "auth", "logout", PROVIDER_ID], capture_output=True, timeout=15)
+        if result.returncode != 0:
+            raise OSError("OpenCode не удалил учётные данные TokenLavka")
+    except (subprocess.TimeoutExpired, OSError):
+        if updated != original:
+            secure_storage.atomic_write(config_path, original)
+        raise ValueError("OpenCode не удалил учётные данные TokenLavka. Ключ Hub оставлен без изменений.") from None
+    finally:
+        opencode_credentials.invalidate()
     cfg = load_config()
-    cfg["connected"] = False
-    cfg["cached_balance"] = {}
+    cfg.update(connected=False, cached_balance={}, auto_import_disabled=True)
     save_config(cfg)
+    SECRET_FILE.unlink(missing_ok=True)
 
 
 def provider_state():

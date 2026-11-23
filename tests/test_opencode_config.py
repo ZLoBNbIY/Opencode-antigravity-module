@@ -56,9 +56,9 @@ class OpencodeConfigTests(unittest.TestCase):
         self.assertTrue(self.config_file.exists())
 
         data = json.loads(self.config_file.read_text(encoding="utf-8"))
-        self.assertEqual(data["small_model"], "opencode/big-pickle")
+        self.assertNotIn("small_model", data)
         self.assertEqual(data["agents"]["title"]["model"], "opencode/big-pickle")
-        self.assertEqual(data["agent"]["title"]["model"], "opencode/big-pickle")
+        self.assertNotIn("agent", data)
 
     def test_ensure_fixes_existing_config_and_preserves_other_settings(self):
         data = {
@@ -75,8 +75,8 @@ class OpencodeConfigTests(unittest.TestCase):
 
         updated = json.loads(self.config_file.read_text(encoding="utf-8"))
         self.assertEqual(updated["small_model"], "opencode/big-pickle")
-        self.assertEqual(updated["agents"]["title"]["model"], "opencode/big-pickle")
-        self.assertEqual(updated["agent"]["title"]["model"], "opencode/big-pickle")
+        self.assertNotIn("agents", updated)
+        self.assertNotIn("agent", updated)
         # Preserved other settings
         self.assertEqual(updated["model"], "google/antigravity-gemini-3.8-flash")
         self.assertIn("provider", updated)
@@ -115,8 +115,8 @@ class OpencodeConfigTests(unittest.TestCase):
         updated_text = jsonc_file.read_text(encoding="utf-8")
         self.assertIn("// keep this comment", updated_text)
         parsed = opencode_config._parse_config_text(updated_text)
-        self.assertEqual(parsed["small_model"], "opencode/big-pickle")
-        self.assertEqual(parsed["agent"]["title"]["model"], "opencode/big-pickle")
+        self.assertNotIn("small_model", parsed)
+        self.assertNotIn("agent", parsed)
         self.assertEqual(parsed["agents"]["title"]["model"], "opencode/big-pickle")
 
     def test_jsonc_set_property_distinguishes_bool_from_int_and_handles_bom(self):

@@ -210,7 +210,7 @@ class ClaudeAccountManager:
             raise ValueError("Invalid Claude account store")
         return accounts, protected
 
-    def load_accounts(self) -> List[Dict[str, Any]]:
+    def load_accounts(self, *, strict=False) -> List[Dict[str, Any]]:
         with self._lock:
             source = CLAUDE_ACCOUNTS_FILE
             if not source.exists():
@@ -220,11 +220,29 @@ class ClaudeAccountManager:
             try:
                 accounts, protected = self._read_account_file(source)
             except Exception:
+                if strict:
+                    raise OSError("Не удалось прочитать хранилище аккаунтов Claude.") from None
                 print("[Claude Manager] Unable to read account store")
                 return []
-            if not protected or source != CLAUDE_ACCOUNTS_FILE:
+            if not strict and (not protected or source != CLAUDE_ACCOUNTS_FILE):
                 self.save_accounts(accounts)
             return accounts
+
+    def import_backup_accounts(self, rows: List[Dict[str, Any]]) -> int:
+        with self._lock:
+            accounts = self.load_accounts(strict=True)
+            emails = {a["email"].strip().casefold() for a in accounts if isinstance(a.get("email"), str)}
+            count = 0
+            for row in rows:
+                email = row["email"].strip()
+                if email.casefold() in emails:
+                    continue
+                accounts.append({**row, "email": email, "active": not accounts})
+                emails.add(email.casefold())
+                count += 1
+            if count and not self.save_accounts(accounts):
+                raise OSError("Не удалось сохранить хранилище аккаунтов Claude.")
+            return count
 
     def save_accounts(self, accounts: List[Dict[str, Any]]) -> bool:
         with self._lock:

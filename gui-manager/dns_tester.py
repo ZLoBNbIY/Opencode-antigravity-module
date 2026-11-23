@@ -108,8 +108,11 @@ def test_standard_dns(ip_address, timeout=4, domain=None) -> dict:
         family = socket.AF_INET6 if addr_info.version == 6 else socket.AF_INET
         sock = socket.socket(family, socket.SOCK_DGRAM)
         sock.settimeout(timeout)
-        sock.sendto(query, (ip, 53))
-        data, _ = sock.recvfrom(4096)
+        # A connected UDP socket only receives datagrams from this resolver's
+        # address and port; the transaction ID still has to match below.
+        sock.connect((ip, 53))
+        sock.send(query)
+        data = sock.recv(4096)
         elapsed = round((time.perf_counter() - t0) * 1000)
         resolved_ip = _parse_a_record_ip(data, expected_txid=txid)
         if not resolved_ip:
@@ -158,8 +161,8 @@ def test_doh_endpoint(url, timeout=5, domain=None) -> dict:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ctx))
         with opener.open(req, timeout=timeout) as resp:
             elapsed = round((time.perf_counter() - t0) * 1000)
-            data = resp.read()
-            resolved_ip = _parse_a_record_ip(data)
+            data = resp.read(65536)
+            resolved_ip = _parse_a_record_ip(data, expected_txid=txid) if len(data) < 65536 else None
             if not resolved_ip:
                 return {"ok": False, "latency_ms": elapsed, "message": "DoH не вернул A-запись"}
             return {

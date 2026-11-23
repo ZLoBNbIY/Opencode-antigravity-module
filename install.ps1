@@ -102,6 +102,73 @@ function Publish-NewConfig([string]$Source, [string]$Destination, [string[]]$Exi
     }
 }
 
+function Register-SourceUninstaller([string]$Source, [string]$Checkout) {
+    $dir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\AI HUB'
+    $destination = Join-Path $dir 'uninstall.ps1'
+    $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AntigravityHub'
+    $powershell = (Get-Command powershell.exe -CommandType Application).Source
+    $command = '"' + $powershell + '" -NoProfile -ExecutionPolicy Bypass -File "' + $destination + '"'
+
+    # Do not follow user-created links or replace a file or transaction that
+    # we cannot attribute to a previous source install of this checkout.
+    for ($part = $destination; $part; $part = [IO.Path]::GetDirectoryName($part)) {
+        try { $item = Get-Item -LiteralPath $part -Force }
+        catch [System.Management.Automation.ItemNotFoundException] { continue }
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            $item.PSIsContainer -eq ($part -ieq $destination)) {
+            throw "Unexpected path for source uninstaller; left untouched: $part"
+        }
+    }
+    $sourceHash = (Get-FileHash -LiteralPath $Source).Hash
+    if (Test-Path -LiteralPath $key) {
+        $entry = Get-ItemProperty -LiteralPath $key
+        if ($entry.DisplayName -cne 'AI HUB' -or $entry.Publisher -cne 'AI HUB' -or
+            $entry.UninstallString -ine $command -or $entry.SourceCheckout -ine $Checkout -or
+            $entry.UninstallerHash -cnotmatch '^[0-9A-F]{64}$') {
+            Write-Warning 'Existing Windows uninstall registration was left untouched. Run uninstall.ps1 directly from this checkout.'
+            return
+        }
+        $previousHash = $entry.UninstallerHash
+    }
+    if (Test-Path -LiteralPath $destination) {
+        $actual = (Get-FileHash -LiteralPath $destination).Hash
+        if ($actual -cne $sourceHash -and (!$previousHash -or $actual -cne $previousHash)) {
+            Write-Warning "Existing $destination was left untouched. Run uninstall.ps1 directly from this checkout."
+            return
+        }
+    }
+    [void][IO.Directory]::CreateDirectory($dir)
+    if (!(Test-Path -LiteralPath $destination)) {
+        [IO.File]::Copy($Source, $destination, $false)
+    } elseif ($actual -cne $sourceHash) {
+        $temp = Join-Path $dir ('.hub-install-' + [guid]::NewGuid() + '.tmp')
+        [IO.File]::Copy($Source, $temp, $false)
+        try {
+            if ((Get-FileHash -LiteralPath $destination).Hash -cne $previousHash) {
+                throw 'The installed source uninstaller changed; it was left untouched.'
+            }
+            [IO.File]::Replace($temp, $destination, [NullString]::Value)
+        } finally {
+            if ([IO.File]::Exists($temp)) { [IO.File]::Delete($temp) }
+        }
+    }
+    New-Item -Path $key -ErrorAction SilentlyContinue | Out-Null
+    foreach ($property in @{
+        DisplayName = 'AI HUB'; DisplayVersion = '2.0'; Publisher = 'AI HUB'
+        UninstallString = $command; SourceCheckout = $Checkout; UninstallerHash = $sourceHash
+    }.GetEnumerator()) {
+        New-ItemProperty -LiteralPath $key -Name $property.Key -Value $property.Value -PropertyType String -Force | Out-Null
+    }
+    foreach ($property in @('NoModify', 'NoRepair')) {
+        New-ItemProperty -LiteralPath $key -Name $property -Value 1 -PropertyType DWord -Force | Out-Null
+    }
+    Write-Host 'Registered the AI HUB source checkout in Windows Installed Apps.'
+}
+
+function Test-SourceShortcut($Shortcut, [string]$Launcher) {
+    return ($Shortcut.TargetPath -ieq $Launcher -and -not $Shortcut.Arguments)
+}
+
 try {
     if (-not $PSScriptRoot -or -not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'gui-manager\antigravity_manager.pyw') -PathType Leaf)) {
         throw 'Online bootstrap is disabled. Review a local copy of the V2 repository, then run install.ps1 or install.bat from that copy.'
@@ -188,45 +255,30 @@ try {
         Write-Host 'GUI dependency installation completed.'
     }
 
-    $uninstallDir = Join-Path $env:LOCALAPPDATA 'Programs\AI HUB'
-    [void][IO.Directory]::CreateDirectory($uninstallDir)
-    $installedUninstaller = Join-Path $uninstallDir 'uninstall.ps1'
-    Copy-Item -LiteralPath $uninstallScript -Destination $installedUninstaller -Force
-    $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AntigravityHub'
-    New-Item -Path $uninstallKey -Force | Out-Null
-    $windowsPowerShell = (Get-Command powershell.exe -CommandType Application).Source
-    $uninstallCommand = '"' + $windowsPowerShell + '" -NoProfile -ExecutionPolicy Bypass -File "' + $installedUninstaller + '"'
-    New-ItemProperty -Path $uninstallKey -Name DisplayName -Value 'AI HUB' -PropertyType String -Force | Out-Null
-    New-ItemProperty -Path $uninstallKey -Name DisplayVersion -Value '2.0' -PropertyType String -Force | Out-Null
-    New-ItemProperty -Path $uninstallKey -Name Publisher -Value 'AI HUB' -PropertyType String -Force | Out-Null
-    New-ItemProperty -Path $uninstallKey -Name UninstallString -Value $uninstallCommand -PropertyType String -Force | Out-Null
-    New-ItemProperty -Path $uninstallKey -Name NoModify -Value 1 -PropertyType DWord -Force | Out-Null
-    New-ItemProperty -Path $uninstallKey -Name NoRepair -Value 1 -PropertyType DWord -Force | Out-Null
-    Write-Host 'Registered AI HUB in Windows Installed Apps.'
+    Register-SourceUninstaller $uninstallScript $scriptDir
 
     if (-not $NoShortcut) {
         $desktopPath = [Environment]::GetFolderPath('Desktop')
         if (-not $desktopPath) { throw 'Could not locate the Desktop to create the shortcut.' }
         $shell = New-Object -ComObject WScript.Shell
 
-        # Delete before recreating: Explorer keeps the icon it cached when the
-        # .lnk was first created, so overwriting the file can keep the old icon.
-        # Also remove the pre-rebrand shortcut so no stale copy is left behind.
-        foreach ($oldShortcut in @('Antigravity Hub.lnk', 'AI HUB.lnk')) {
-            $oldShortcutPath = Join-Path $desktopPath $oldShortcut
-            if (Test-Path -LiteralPath $oldShortcutPath) {
-                Remove-Item -LiteralPath $oldShortcutPath -Force
-            }
+        $shortcutPath = Join-Path $desktopPath 'AI HUB.lnk'
+        try { $existing = Get-Item -LiteralPath $shortcutPath -Force }
+        catch [System.Management.Automation.ItemNotFoundException] { $existing = $null }
+        if ($existing -and ($existing.PSIsContainer -or
+            ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            -not (Test-SourceShortcut ($shell.CreateShortcut($shortcutPath)) $launcherBat))) {
+            Write-Warning "Existing desktop shortcut was left untouched: $shortcutPath"
+        } else {
+            $shortcut = $shell.CreateShortcut($shortcutPath)
+            $shortcut.TargetPath = $launcherBat
+            $shortcut.WorkingDirectory = $scriptDir
+            $shortcut.Description = 'AI HUB'
+            $shortcut.IconLocation = "$iconPath,0"
+            $shortcut.Save()
+            Invoke-ShellIconRefresh
+            Write-Host 'Created/refreshed the AI HUB desktop shortcut with the current application icon.'
         }
-
-        $shortcut = $shell.CreateShortcut((Join-Path $desktopPath 'AI HUB.lnk'))
-        $shortcut.TargetPath = $launcherBat
-        $shortcut.WorkingDirectory = $scriptDir
-        $shortcut.Description = 'AI HUB'
-        $shortcut.IconLocation = "$iconPath,0"
-        $shortcut.Save()
-        Invoke-ShellIconRefresh
-        Write-Host 'Created/refreshed the AI HUB desktop shortcut with the current application icon.'
     }
 
     Write-Host 'Installer steps completed. Existing configs, if any, were not updated or validated.'

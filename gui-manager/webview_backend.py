@@ -9,7 +9,6 @@ import json
 import time
 import socket
 import threading
-import hub_logging
 import subprocess
 import copy
 import ipaddress
@@ -26,6 +25,8 @@ from pathlib import Path
 CURRENT_DIR = Path(__file__).resolve().parent
 if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
+
+import hub_logging
 
 
 def _app_version() -> str:
@@ -64,20 +65,28 @@ def _apply_autostart(enabled: bool) -> None:
     except ImportError:
         return
     command = _autostart_command()
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_RUN_KEY, 0,
-                        winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE) as key:
+    access = winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE
+    try:
+        registry_key = (winreg.CreateKeyEx if enabled else winreg.OpenKey)(
+            winreg.HKEY_CURRENT_USER, AUTOSTART_RUN_KEY, 0, access)
+    except FileNotFoundError:
+        if not enabled:
+            return
+        raise
+    with registry_key as key:
+        try:
+            existing, _ = winreg.QueryValueEx(key, AUTOSTART_VALUE_NAME)
+        except FileNotFoundError:
+            existing = None
+        if existing is not None and existing != command:
+            if enabled:
+                raise ValueError("Автозапуск уже настроен другой копией AI HUB")
+            return
         if enabled:
-            try:
-                existing, _ = winreg.QueryValueEx(key, AUTOSTART_VALUE_NAME)
-            except FileNotFoundError:
-                existing = None
-            if existing != command:
+            if existing is None:
                 winreg.SetValueEx(key, AUTOSTART_VALUE_NAME, 0, winreg.REG_SZ, command)
-        else:
-            try:
-                winreg.DeleteValue(key, AUTOSTART_VALUE_NAME)
-            except FileNotFoundError:
-                pass
+        elif existing is not None:
+            winreg.DeleteValue(key, AUTOSTART_VALUE_NAME)
 
 
 import antigravity_manager
@@ -108,7 +117,7 @@ import opencode_usage
 import jsonc_config
 import secure_storage
 
-CONFIG_DIR = Path(os.path.expanduser("~/.config/opencode"))
+CONFIG_DIR = hub_paths.OPENCODE_CONFIG_DIR
 ANTIGRAVITY_CONFIG_FILE = CONFIG_DIR / "antigravity.json"
 OPENCODE_CONFIG_FILE = CONFIG_DIR / "opencode.json"
 LOG_DIR = hub_paths.LOG_DIR
@@ -187,27 +196,54 @@ def _normalize_vless_pool(value) -> list[dict]:
 
 
 def _opencode_config_path() -> Path:
-    if OPENCODE_CONFIG_FILE.exists():
-        return OPENCODE_CONFIG_FILE
-    jsonc_candidate = CONFIG_DIR / "opencode.jsonc"
-    if jsonc_candidate.exists():
-        return jsonc_candidate
-    return OPENCODE_CONFIG_FILE
+    return jsonc_config.config_path(OPENCODE_CONFIG_FILE.parent)
+
+
+def _read_if_present(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def _apply_file_updates(updates, after=None):
+    """Replace individual files atomically; compensate on a later failure."""
+    written = []
+    try:
+        for path, old, new, private_parent in updates:
+            if _read_if_present(path) != old:
+                raise OSError("Файл настроек изменён другой программой. Повторите сохранение.")
+            if old != new:
+                secure_storage.atomic_write_bytes(path, new, private_parent=private_parent)
+                written.append((path, old, new, private_parent))
+        if after is not None:
+            after()
+    except Exception:
+        rollback_failed = False
+        for path, old, new, private_parent in reversed(written):
+            try:
+                if _read_if_present(path) != new:
+                    rollback_failed = True
+                elif old is None:
+                    path.unlink()
+                else:
+                    secure_storage.atomic_write_bytes(path, old, private_parent=private_parent)
+            except OSError as exc:
+                rollback_failed = True
+                hub_logging.failed("Settings rollback", exc)
+        if rollback_failed:
+            raise OSError("Сохранение не завершено, часть настроек не удалось откатить.") from None
+        raise
 
 
 def _read_opencode_config() -> dict:
-    path = _opencode_config_path()
-    if not path.exists():
-        return {}
     try:
-        import jsonc_config
-        return jsonc_config.parse_config(path.read_text(encoding="utf-8-sig"))
-    except Exception:
-        try:
-            data = json.loads(path.read_text(encoding="utf-8-sig"))
-            return data if isinstance(data, dict) else {}
-        except Exception:
-            return {}
+        raw = _read_if_present(_opencode_config_path())
+        return jsonc_config.parse_config(raw.decode("utf-8-sig")) if raw is not None else {}
+    except (OSError, ValueError):
+        # Read-only views can still display the Hub; mutating methods parse the
+        # current source strictly instead of using this fallback.
+        return {}
 
 
 def _is_hub_local_proxy(parsed) -> bool:
@@ -272,7 +308,7 @@ def _validate_backup(data: dict) -> None:
         check(type(version) is int and version in (1, 2), "schemaVersion")
     check(any(key in data for key in ("google_accounts", "accounts", "openai_accounts",
               "claude_accounts", "xpiki", "deepseek", "openrouter", "tokenlavka", "config")),
-          "schemaVersion")
+           "содержимое")
     for name in ("google_accounts", "accounts", "openai_accounts", "claude_accounts"):
         if name not in data:
             continue
@@ -309,6 +345,61 @@ def _validate_backup(data: dict) -> None:
               f"{name}.cached_balance")
         check("connected" not in obj or type(obj["connected"]) is bool, f"{name}.connected")
     check("config" not in data or isinstance(data["config"], dict), "config")
+
+
+def _backup_account_rows(data, name):
+    """Restore identity and credentials, not arbitrary account-store metadata."""
+    rows = data.get(name) or (data.get("accounts") if name == "google_accounts" else None) or []
+    schemas = {
+        "google_accounts": {
+            str: ("id", "email", "refresh", "refreshToken", "access", "accessToken", "projectId", "label"),
+            int: ("expires", "addedAt"), bool: ("enabled",),
+        },
+        "openai_accounts": {
+            str: ("id", "accountId", "email", "name", "refresh", "access", "refreshToken", "accessToken"),
+            int: ("expires", "expiresAt", "added_at", "last_used"),
+            bool: ("enabled", "candidate", "is_active"),
+        },
+        "claude_accounts": {
+            str: ("email", "name", "session_key", "sessionKey", "org_id", "token_type", "base_url", "plan"),
+            int: ("added_at",), bool: ("active",),
+        },
+    }
+    result = []
+    for row in rows:
+        if name == "google_accounts" and isinstance(row.get("metadata"), dict):
+            row = {**row["metadata"], **row}
+        clean = {}
+        for kind, keys in schemas[name].items():
+            for key in keys:
+                value = row.get(key)
+                if value is None:
+                    continue
+                limit = 65536 if key in {"access", "refresh", "accessToken", "refreshToken", "session_key", "sessionKey"} else 4096
+                if type(value) is not kind or (kind is str and len(value) > limit):
+                    raise ValueError(f"Некорректное поле резервной копии: {name}.{key}")
+                clean[key] = value
+        if name == "google_accounts":
+            if not (clean.get("email") and (clean.get("refreshToken") or clean.get("refresh"))):
+                raise ValueError("В резервной копии есть неполный аккаунт Google.")
+        elif name == "openai_accounts":
+            if not any(clean.get(key) for key in ("id", "accountId", "email")):
+                raise ValueError("В резервной копии есть аккаунт OpenAI без идентификатора.")
+            for alias, key in (("refreshToken", "refresh"), ("accessToken", "access"), ("expiresAt", "expires")):
+                if alias in clean:
+                    clean.setdefault(key, clean.pop(alias))
+        else:
+            if "sessionKey" in clean:
+                clean.setdefault("session_key", clean.pop("sessionKey"))
+            if not (clean.get("email", "").strip() and clean.get("session_key", "").strip()):
+                raise ValueError("В резервной копии есть неполный аккаунт Claude.")
+            if clean.get("base_url"):
+                parsed = urlparse(clean["base_url"])
+                if parsed.scheme != "https" or not parsed.hostname or parsed.username is not None:
+                    raise ValueError("Некорректный адрес API в аккаунте Claude.")
+                _ = parsed.port
+        result.append(clean)
+    return result
 
 
 def _backup_config(data: dict) -> dict:
@@ -410,24 +501,30 @@ def _remove_hub_opencode_settings(text: str) -> str:
     def is_plugin(entry):
         if isinstance(entry, list) and entry:
             entry = entry[0]
+        if isinstance(entry, dict):
+            entry = entry.get("package")
         return isinstance(entry, str) and (entry == package or entry.startswith(package + "@"))
 
-    plugins = cfg.get("plugin")
-    if isinstance(plugins, list):
-        keep = [entry for entry in plugins if not is_plugin(entry)]
-        if len(keep) == len(plugins):
-            return text
-        text = (jsonc_config.set_property(text, ("plugin",), keep) if keep else
-                jsonc_config.remove_property(text, ("plugin",)))
-    elif is_plugin(plugins):
-        text = jsonc_config.remove_property(text, ("plugin",))
-    else:
-        return text
-    providers = cfg.get("provider")
-    google = providers.get("google") if isinstance(providers, dict) else None
-    options = google.get("options") if isinstance(google, dict) else None
-    if isinstance(options, dict) and options.get("apiKey") == "antigravity":
-        text = jsonc_config.remove_property(text, ("provider", "google", "options", "apiKey"))
+    owned = False
+    for field in ("plugin", "plugins"):
+        plugins = cfg.get(field)
+        if isinstance(plugins, list):
+            keep = [entry for entry in plugins if not is_plugin(entry)]
+            if len(keep) == len(plugins):
+                continue
+            text = (jsonc_config.set_property(text, (field,), keep) if keep else
+                    jsonc_config.remove_property(text, (field,)))
+            owned = True
+        elif is_plugin(plugins):
+            text = jsonc_config.remove_property(text, (field,))
+            owned = True
+    if owned:
+        for section, settings in (("provider", "options"), ("providers", "settings")):
+            providers = cfg.get(section)
+            google = providers.get("google") if isinstance(providers, dict) else None
+            options = google.get(settings) if isinstance(google, dict) else None
+            if isinstance(options, dict) and options.get("apiKey") == "antigravity":
+                text = jsonc_config.remove_property(text, (section, "google", settings, "apiKey"))
     return text
 
 
@@ -436,7 +533,7 @@ class _WebviewBridge:
 
     def __init__(self, api):
         for name in dir(api):
-            if not name.startswith("_") and name not in {"load_config", "save_config"}:
+            if not name.startswith("_") and name not in {"load_config", "save_config", "stop_opencode", "start_opencode"}:
                 method = getattr(api, name)
                 if callable(method):
                     setattr(self, name, method)
@@ -471,31 +568,59 @@ class HubApi:
         self._vless_exit = VlessExitStatus()
         self._restart_lock = threading.Lock()
         self._hub_restart_lock = threading.Lock()
+        self._backup_lock = threading.Lock()
+        self._update_lock = threading.Lock()
+        self._shutdown_lock = threading.Lock()
+        self._pending_backup = None
+        self._update_offer = None
+        self._opencode_process = None
+        self._closing = threading.Event()
         self._uninstalled = False
         self._login_locks = {name: threading.Lock() for name in ("google", "openai", "claude")}
 
     def load_config(self) -> dict:
-        # The OpenCode mirror can be edited outside Hub. Honor whichever copy
-        # was most recently changed, then save both copies atomically.
-        candidates = [p for p in (HUB_CONFIG_FILE, ANTIGRAVITY_CONFIG_FILE) if p.exists()]
-        target = max(candidates, key=lambda p: p.stat().st_mtime_ns) if candidates else HUB_CONFIG_FILE
-        if target.exists():
+        with self._config_lock:
+            cfg, _ = self._config_snapshot()
+            return cfg
+
+    def _config_snapshot(self):
+        cfg = copy.deepcopy(antigravity_manager.DEFAULT_CONFIG)
+        sources = {}
+        candidates = []
+        for path in (HUB_CONFIG_FILE, ANTIGRAVITY_CONFIG_FILE):
             try:
-                return {**copy.deepcopy(antigravity_manager.DEFAULT_CONFIG),
-                        **json.loads(target.read_text(encoding="utf-8-sig"))}
-            except Exception:
-                pass
-        return copy.deepcopy(antigravity_manager.DEFAULT_CONFIG)
+                with path.open("rb") as stream:
+                    modified = os.fstat(stream.fileno()).st_mtime_ns
+                    raw = stream.read()
+            except FileNotFoundError:
+                sources[path] = None
+                continue
+            except OSError as exc:
+                hub_logging.failed("Read Hub settings", exc)
+                raise OSError(f"Не удалось прочитать настройки Hub: {path}") from None
+            try:
+                data = jsonc_config.parse_config(raw.decode("utf-8-sig"), jsonc=False)
+            except ValueError as exc:
+                hub_logging.failed("Parse Hub settings", exc)
+                raise ValueError(f"Файл настроек Hub повреждён и оставлен без изменений: {path}") from None
+            candidates.append((modified, data))
+            sources[path] = raw
+        if candidates:
+            cfg.update(max(candidates, key=lambda item: item[0])[1])
+        return cfg, sources
+
+    def _config_updates(self, cfg, sources):
+        payload = json.dumps(cfg, indent=2, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        return [(path, raw, payload, path == HUB_CONFIG_FILE) for path, raw in sources.items()]
 
     def save_config(self, cfg: dict) -> bool:
         try:
             with self._config_lock:
-                payload = json.dumps(cfg, indent=2, ensure_ascii=False).encode("utf-8")
-                secure_storage.atomic_write_bytes(HUB_CONFIG_FILE, payload)
-                secure_storage.atomic_write_bytes(ANTIGRAVITY_CONFIG_FILE, payload, private_parent=False)
+                _, sources = self._config_snapshot()
+                _apply_file_updates(self._config_updates(cfg, sources))
             return True
-        except Exception as e:
-            print(f"Error saving config: {e}")
+        except Exception as exc:
+            hub_logging.failed("Save Hub settings", exc)
             return False
 
     def is_opencode_running(self) -> bool:
@@ -1346,8 +1471,9 @@ class HubApi:
             try:
                 models = deepseek_api.fetch_models(final_key, origin)
             except Exception as exc:
+                hub_logging.failed("DeepSeek catalog", exc)
                 models = [dict(m) for m in deepseek_api.FALLBACK_MODELS]
-                notes.append(f"каталог моделей не загружен ({exc})")
+                notes.append("каталог моделей не загружен")
             cfg = deepseek_api.load_config()
             cfg["models"] = models
             deepseek_api.save_config(cfg)
@@ -1357,11 +1483,13 @@ class HubApi:
                 selected = deepseek_api.configure_opencode_models(
                     [m["id"] for m in models], final_key, origin)
             except Exception as exc:
-                notes.append(f"не удалось добавить провайдера в OpenCode ({exc})")
+                hub_logging.failed("DeepSeek configuration", exc)
+                notes.append("не удалось добавить провайдера в OpenCode")
             try:
                 deepseek_api.sync_opencode_credential(final_key)
             except Exception as exc:
-                notes.append(f"ключ не импортирован в OpenCode CLI ({exc})")
+                hub_logging.failed("DeepSeek credential sync", exc)
+                notes.append("ключ не импортирован в OpenCode CLI")
 
             balance = deepseek_api.fetch_balance(final_key, origin)
             if balance.get("status") not in ("ok", "stale"):
@@ -1524,24 +1652,29 @@ class HubApi:
     def add_google_account(self) -> dict:
         if not self._login_locks["google"].acquire(blocking=False):
             return {"status": "error", "message": "Вход в Google уже выполняется"}
+        failure_message = "Не удалось завершить вход в Google."
         try:
             node_exe = antigravity_manager.get_node_executable()
             cli_js = antigravity_manager.get_cli_js()
             if not os.path.exists(cli_js):
+                failure_message = "Файл CLI не найден."
                 raise RuntimeError("Файл CLI не найден")
             repair_error = antigravity_manager.repair_legacy_google_account_file()
             if repair_error:
-                raise RuntimeError(repair_error)
+                failure_message = "Не удалось прочитать хранилище Google."
+                raise RuntimeError("Google account store")
             result = antigravity_manager.run_google_route_cmd([node_exe, cli_js, "login"], timeout=300)
             if result.returncode:
-                raise RuntimeError(result.stderr or result.stdout or "Не удалось завершить вход в Google")
+                raise RuntimeError("Google login CLI")
             repair_error = antigravity_manager.repair_legacy_google_account_file()
             if repair_error:
-                raise RuntimeError(repair_error)
+                failure_message = "Не удалось прочитать хранилище Google."
+                raise RuntimeError("Google account store")
             result = antigravity_manager.run_silent_cmd(
                 [node_exe, cli_js, "migrate", "--offline", "--yes"], timeout=30)
             if result.returncode:
-                raise RuntimeError("Миграция аккаунта не завершилась: " + (result.stderr or result.stdout))
+                failure_message = "Миграция аккаунта Google не завершилась."
+                raise RuntimeError("Google migration CLI")
 
             # A freshly logged-in row exists in config.json, but its state.json
             # metadata (email/refresh) is written lazily. export_google_accounts()
@@ -1578,7 +1711,8 @@ class HubApi:
                 message += "; квоты обновлены, сервис OpenCode перезапущен"
             return {"status": "ok", "message": message}
         except Exception as exc:
-            return {"status": "error", "message": str(exc)}
+            hub_logging.failed("Google login", exc)
+            return {"status": "error", "message": failure_message}
         finally:
             self._login_locks["google"].release()
 
@@ -1673,21 +1807,25 @@ class HubApi:
 
     def save_general_settings(self, settings: dict) -> bool:
         with self._config_lock:
-            cfg = self.load_config()
-            previous = copy.deepcopy(cfg)
+            cfg, sources = self._config_snapshot()
             for key in ("switch_on_first_rate_limit", "close_to_tray", "autostart_on_login"):
                 if key in settings:
                     if not isinstance(settings[key], bool):
                         raise ValueError(f"Неверное значение настройки {key}")
                     cfg[key] = settings[key]
-            oc = None
-            oc_path = _opencode_config_path()
+            oc_updates = []
             if "providers_visibility" in settings:
                 visibility = settings["providers_visibility"]
                 if not isinstance(visibility, dict) or any(key not in PROVIDER_SETTING_IDS or not isinstance(value, bool)
                                                           for key, value in visibility.items()):
                     raise ValueError("Неверные настройки провайдеров")
-                oc = _read_opencode_config()
+                oc_path = _opencode_config_path()
+                raw = _read_if_present(oc_path)
+                original = raw.decode("utf-8") if raw is not None else "{}\n"
+                try:
+                    oc = jsonc_config.parse_config(original)
+                except ValueError:
+                    raise ValueError("Конфигурация OpenCode повреждена и оставлена без изменений.") from None
                 disabled = oc.get("disabled_providers", [])
                 if not isinstance(disabled, list):
                     raise ValueError("disabled_providers должен быть списком")
@@ -1697,33 +1835,11 @@ class HubApi:
                     disabled = [item for item in disabled if item != provider_id]
                     if not enabled:
                         disabled.append(provider_id)
-                oc["disabled_providers"] = disabled
+                updated = jsonc_config.set_property(original, ("disabled_providers",), disabled)
+                oc_updates.append((oc_path, raw, updated.encode("utf-8"), False))
                 cfg["providers_visibility"] = {**cfg.get("providers_visibility", {}), **visibility}
-            if not self.save_config(cfg):
-                return False
-            if oc is not None:
-                try:
-                    import jsonc_config
-                    if oc_path.exists():
-                        original = oc_path.read_text(encoding="utf-8-sig")
-                        if oc_path.suffix.lower() == ".jsonc" or "//" in original or "/*" in original:
-                            content = jsonc_config.set_property(original, ("disabled_providers",), oc["disabled_providers"])
-                        else:
-                            content = json.dumps(oc, indent=2, ensure_ascii=False)
-                    else:
-                        content = json.dumps(oc, indent=2, ensure_ascii=False)
-                    pending = oc_path.with_suffix(oc_path.suffix + ".hub.tmp")
-                    pending.write_text(content, encoding="utf-8")
-                    pending.replace(oc_path)
-                except Exception:
-                    self.save_config(previous)
-                    raise
-            if "autostart_on_login" in settings:
-                try:
-                    _apply_autostart(cfg["autostart_on_login"])
-                except Exception:
-                    self.save_config(previous)
-                    raise
+            registry_update = (lambda: _apply_autostart(cfg["autostart_on_login"])) if "autostart_on_login" in settings else None
+            _apply_file_updates([*self._config_updates(cfg, sources), *oc_updates], after=registry_update)
             return True
 
     def restart_opencode(self) -> bool:
@@ -1743,8 +1859,7 @@ class HubApi:
             result = antigravity_manager.run_silent_cmd(
                 [cli, "service", "restart"], timeout=45, env=opencode_launch_environment())
             if result.returncode != 0:
-                raise RuntimeError("Не удалось перезапустить фоновый сервер OpenCode: " +
-                                   (result.stderr or result.stdout or "неизвестная ошибка"))
+                raise RuntimeError("CLI не смог перезапустить фоновый сервер OpenCode.")
             if not self.start_opencode():
                 raise RuntimeError("Сервер перезапущен, но не удалось открыть окно OpenCode")
             return True
@@ -1752,19 +1867,26 @@ class HubApi:
             self._restart_lock.release()
 
     def stop_opencode(self) -> bool:
-        if sys.platform != "win32":
-            return False
-        try:
-            subprocess.run(["taskkill", "/f", "/im", "opencode.exe"], capture_output=True, timeout=5, creationflags=0x08000000)
+        """Stop only a process launched and still owned by this Hub."""
+        process = self._opencode_process
+        if process is None:
             return True
-        except Exception:
+        try:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+            self._opencode_process = None
+            return True
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            hub_logging.failed("Stop Hub-owned OpenCode", exc)
             return False
 
     def start_opencode(self) -> bool:
         exe = antigravity_manager.get_opencode_exe()
         if os.path.exists(exe):
             try:
-                subprocess.Popen([exe], cwd=os.path.dirname(exe), env=opencode_launch_environment())
+                self._opencode_process = subprocess.Popen([exe], cwd=os.path.dirname(exe),
+                                                         env=opencode_launch_environment())
                 return True
             except Exception:
                 pass
@@ -1917,7 +2039,17 @@ class HubApi:
             return {"ok": False, "message": "Для удаления установленного Hub используйте «Установленные приложения» Windows. Настройки и аккаунты будут сохранены."}
         if confirmation != "DELETE":
             return {"ok": False, "message": "Для удаления введите DELETE"}
-        self._uninstalled = True
+        try:
+            if not self._window_holder or not self._window_holder.create_confirmation_dialog(
+                    "Удаление данных AI HUB",
+                    "Удалить локальные настройки и аккаунты этой копии AI HUB?"):
+                return {"ok": False, "cancelled": True, "message": "Удаление отменено"}
+        except Exception as exc:
+            hub_logging.failed("Confirm uninstall", exc)
+            return {"ok": False, "message": "Не удалось подтвердить удаление в окне Windows."}
+        return self._uninstall_local_data()
+
+    def _uninstall_local_data(self) -> dict:
         errors, preserved = [], []
         appdata = os.environ.get("APPDATA")
         home = Path.home()
@@ -1977,6 +2109,8 @@ class HubApi:
 
         with self._config_lock, self._core_lock:
             attempt("туннель VLESS", stop_tunnel)
+            if errors:
+                return {"ok": False, "message": "Не удалось остановить туннель VLESS. Данные сохранены."}
             attempt("конфигурация OpenCode", edit_opencode)
             if use_root:
                 if (nvidia_manager.KEY_FILE == default_root / "opencode-secrets" / "nvidia-nim.key"
@@ -1996,6 +2130,7 @@ class HubApi:
                         attempt(name, lambda name=name: unlink(default_root / name))
             else:
                 preserved.append("нестандартный каталог данных Hub")
+            self._uninstalled = not errors
 
         retained = "Хранилища плагина, профили браузеров, история и файлы вне списка сохранены."
         if preserved:
@@ -2064,7 +2199,7 @@ class HubApi:
             backup_data = {
                 "schemaVersion": 2,
                 "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "app_version": "v2.0.0",
+                "app_version": _app_version(),
                 "google_accounts": google_accs,
                 "openai_accounts": openai_accs,
                 "claude_accounts": claude_accs,
@@ -2113,91 +2248,122 @@ class HubApi:
         except Exception as e:
             return {"ok": False, "message": f"Ошибка экспорта: {e}"}
 
-    def import_backup(self, source_path: str = None, password: str = None) -> dict:
+    def import_backup(self, import_token: str = None, password: str = None) -> dict:
+        """Only a native file selection can authorize an import."""
+        if not self._backup_lock.acquire(blocking=False):
+            return {"ok": False, "message": "Импорт уже выполняется."}
         try:
             import crypto_backup
-            if not source_path and self._window_holder:
+            if import_token is not None:
+                pending, self._pending_backup = self._pending_backup, None
+                if (pending is None or not isinstance(import_token, str) or not import_token.isascii()
+                        or not hmac.compare_digest(pending[0], import_token)
+                        or time.monotonic() >= pending[1]):
+                    return {"ok": False, "message": "Снова выберите файл резервной копии."}
+                raw = pending[2]
+                try:
+                    data = crypto_backup.decrypt_backup(raw, password)
+                except Exception as exc:
+                    hub_logging.failed("Unlock backup", exc)
+                    return {"ok": False, "message": "Не удалось расшифровать копию. Проверьте пароль."}
+            else:
+                self._pending_backup = None
+                if password is not None or self._window_holder is None:
+                    return {"ok": False, "message": "Выберите файл через окно AI HUB."}
                 import webview
                 dialog_res = self._window_holder.create_file_dialog(
                     webview.FileDialog.OPEN,
-                    file_types=("Antigravity Backup (*.json;*.agb)", "All files (*.*)")
+                    file_types=("Antigravity Backup (*.json;*.agb)",),
                 )
                 if not dialog_res:
                     return {"ok": False, "cancelled": True, "message": "Импорт отменён"}
                 source_path = dialog_res[0] if isinstance(dialog_res, (list, tuple)) else dialog_res
-
-            if not source_path or not isinstance(source_path, str):
-                return {"ok": False, "message": "Файл резервной копии не найден"}
-            source = Path(source_path)
-            if not source.is_file():
-                return {"ok": False, "message": "Файл резервной копии не найден"}
-
-            with source.open("rb") as stream:
-                raw = stream.read(crypto_backup.MAX_BACKUP_BYTES + 1)
-            if len(raw) > crypto_backup.MAX_BACKUP_BYTES:
-                raise ValueError("Резервная копия превышает 16 МиБ")
-
-            if crypto_backup.is_encrypted_backup(raw):
-                if not password:
+                source = Path(source_path)
+                if source.suffix.lower() not in (".json", ".agb") or not source.is_file():
+                    return {"ok": False, "message": "Выберите файл резервной копии .agb или .json."}
+                with source.open("rb") as stream:
+                    raw = stream.read(crypto_backup.MAX_BACKUP_BYTES + 1)
+                if len(raw) > crypto_backup.MAX_BACKUP_BYTES:
+                    return {"ok": False, "message": "Резервная копия превышает 16 МиБ"}
+                if crypto_backup.is_encrypted_backup(raw):
+                    token = secrets.token_urlsafe(32)
+                    self._pending_backup = (token, time.monotonic() + 180, raw)
                     return {
                         "ok": False,
                         "requires_password": True,
-                        "source_path": str(source),
+                        "import_token": token,
                         "message": "Файл резервной копии зашифрован. Введите пароль для расшифровки."
                     }
-                try:
-                    data = crypto_backup.decrypt_backup(raw, password)
-                except Exception as dec_err:
-                    return {"ok": False, "message": f"Ошибка расшифровки: {dec_err}"}
-            else:
                 data = crypto_backup.load_backup_json(raw)
+            return self._restore_backup_data(data)
+        except Exception as exc:
+            hub_logging.failed("Read backup", exc)
+            return {"ok": False, "message": "Не удалось прочитать резервную копию."}
+        finally:
+            self._backup_lock.release()
+
+    def _restore_backup_data(self, data: dict) -> dict:
+        warnings = []
+        completed = []
+        counts = {"google": 0, "openai": 0, "claude": 0}
+        stage = None
+
+        def require(result):
+            if result is False:
+                raise OSError("write failed")
+            return result
+
+        def optional(label, action):
+            try:
+                require(action())
+            except Exception as exc:
+                hub_logging.failed(f"Restore backup: {label}", exc)
+                warnings.append(label)
+
+        try:
             _validate_backup(data)
-            current_cfg = self.load_config() if "config" in data else None
-            if current_cfg is not None:
-                previous_vless_url = current_cfg.get("vless_url")
-                current_cfg.update(_backup_config(data["config"]))
-                if vless_service.is_running() and current_cfg.get("vless_url") != previous_vless_url:
+            g_list = _backup_account_rows(data, "google_accounts")
+            o_list = _backup_account_rows(data, "openai_accounts")
+            c_list = _backup_account_rows(data, "claude_accounts")
+            backup_cfg = _backup_config(data["config"]) if "config" in data else None
+            if backup_cfg is not None:
+                cfg = self.load_config()
+                if (vless_service.is_running() and
+                        backup_cfg.get("vless_url", cfg.get("vless_url")) != cfg.get("vless_url")):
                     raise ValueError("Остановите туннель перед восстановлением активной VLESS-ссылки")
 
-            imported_g = 0
-            imported_o = 0
-            imported_c = 0
-
-            # 1. Google accounts
-            g_list = data.get("google_accounts") or data.get("accounts") or []
-            if isinstance(g_list, list) and g_list:
-                imported_g = self._import_google_accounts_list(g_list)
-
-            # 2. OpenAI accounts
-            o_list = data.get("openai_accounts") or []
-            if isinstance(o_list, list) and o_list:
-                imported_o = openai_manager.import_openai_accounts(o_list)
-
-            # 3. Claude accounts
-            c_list = data.get("claude_accounts") or []
-            if isinstance(c_list, list) and c_list and claude_service:
-                existing = claude_service.load_accounts()
-                existing_emails = {a.get("email") for a in existing if isinstance(a, dict) and a.get("email")}
-                for ca in c_list:
-                    if not isinstance(ca, dict):
-                        continue
-                    ca_email = ca.get("email")
-                    if not isinstance(ca_email, str) or not ca_email.strip():
-                        continue
-                    if ca_email not in existing_emails:
-                        existing.append(ca)
-                        existing_emails.add(ca_email)
-                        imported_c += 1
-                claude_service.save_accounts(existing)
-                if imported_c and hasattr(claude_service, "configure_opencode_provider"):
+            if backup_cfg is not None or any(data.get(name, {}).get("api_key")
+                                              for name in ("xpiki", "deepseek", "openrouter", "tokenlavka")) or c_list:
+                raw = _read_if_present(_opencode_config_path())
+                if raw is not None:
                     try:
-                        claude_service.configure_opencode_provider()
-                    except Exception:
-                        pass
+                        jsonc_config.parse_config(raw.decode("utf-8-sig"))
+                    except ValueError:
+                        raise ValueError("Сначала исправьте конфигурацию OpenCode.") from None
+            if c_list and not claude_service:
+                raise ValueError("Хранилище Claude недоступно.")
+            if g_list:
+                stage = "аккаунты Google"
+                counts["google"] = self._import_google_accounts_list(g_list)
+                if counts["google"] != len(g_list):
+                    warnings.append(stage)
+                else:
+                    completed.append(stage)
+            if o_list:
+                stage = "аккаунты OpenAI"
+                counts["openai"] = openai_manager.import_openai_accounts(o_list, strict=True)
+                completed.append(stage)
+            if c_list:
+                stage = "аккаунты Claude"
+                counts["claude"] = claude_service.import_backup_accounts(c_list)
+                if counts["claude"]:
+                    optional("настройка Claude в OpenCode", claude_service.configure_opencode_provider)
+                completed.append(stage)
 
             # 4. Xpiki
             xpiki_data = data.get("xpiki")
             if isinstance(xpiki_data, dict) and isinstance(xpiki_data.get("api_key"), str) and xpiki_data["api_key"].strip():
+                stage = "Xpiki"
                 raw_base = str(xpiki_data.get("base_url") or xpiki_manager.DEFAULT_BASE_URL).strip()
                 parsed_xpiki = urlparse(raw_base)
                 if parsed_xpiki.scheme != "https" or not parsed_xpiki.hostname or parsed_xpiki.username or parsed_xpiki.password:
@@ -2214,50 +2380,45 @@ class HubApi:
                     enabled_models=enabled_models or list(xpiki_manager.XPIKI_MODELS),
                     connected=True,
                 )
-                xpiki_manager.save_xpiki_config(x_cfg)
-                xpiki_manager.configure_opencode(
-                    x_cfg["api_key"], x_cfg["base_url"], x_cfg["enabled_models"]
+                require(xpiki_manager.save_xpiki_config(x_cfg))
+                optional("настройка Xpiki в OpenCode", lambda: xpiki_manager.configure_opencode(
+                    x_cfg["api_key"], x_cfg["base_url"], x_cfg["enabled_models"])
                 )
+                completed.append(stage)
 
             # 5. OpenRouter
             or_data = data.get("openrouter")
             if isinstance(or_data, dict) and isinstance(or_data.get("api_key"), str) and or_data["api_key"].strip():
+                stage = "OpenRouter"
                 or_key = or_data["api_key"].strip()
-                openrouter_manager.save_api_key(or_key)
-                try:
-                    openrouter_manager.sync_opencode_credential(or_key)
-                except Exception:
-                    pass
+                require(openrouter_manager.save_api_key(or_key))
+                optional("ключ OpenRouter в OpenCode", lambda: openrouter_manager.sync_opencode_credential(or_key))
                 if isinstance(or_data.get("selected_models"), list):
                     models = [{"id": str(mid), "name": str(mid)} for mid in or_data["selected_models"] if isinstance(mid, str)]
                     if models:
-                        openrouter_manager.configure_models(models)
+                        optional("модели OpenRouter", lambda: openrouter_manager.configure_models(models))
+                completed.append(stage)
 
             # 6. TokenLavka
             tl_data = data.get("tokenlavka")
             if isinstance(tl_data, dict) and isinstance(tl_data.get("api_key"), str) and tl_data["api_key"].strip():
+                stage = "TokenLavka"
                 tl_key = tl_data["api_key"].strip()
-                tokenlavka_manager.save_api_key(tl_key)
-                try:
-                    tokenlavka_manager.sync_opencode_credential(tl_key)
-                except Exception:
-                    pass
+                require(tokenlavka_manager.save_api_key(tl_key))
+                optional("ключ TokenLavka в OpenCode", lambda: tokenlavka_manager.sync_opencode_credential(tl_key))
                 if isinstance(tl_data.get("selected_models"), list):
                     valid_tl = [mid for mid in tl_data["selected_models"]
                                 if isinstance(mid, str) and mid in tokenlavka_manager.TOKENLAVKA_MODELS]
                     if valid_tl:
-                        tokenlavka_manager.configure_models(valid_tl, tl_key)
-                cached = tl_data.get("cached_balance")
-                if isinstance(cached, dict):
-                    cfg = tokenlavka_manager.load_config()
-                    cfg["cached_balance"] = cached
-                    tokenlavka_manager.save_config(cfg)
+                        optional("модели TokenLavka", lambda: tokenlavka_manager.configure_models(valid_tl, tl_key))
+                completed.append(stage)
 
             # 6b. DeepSeek API
             ds_data = data.get("deepseek")
             if isinstance(ds_data, dict) and isinstance(ds_data.get("api_key"), str) and ds_data["api_key"].strip():
+                stage = "DeepSeek"
                 ds_key = ds_data["api_key"].strip()
-                deepseek_api.save_api_key(ds_key)
+                require(deepseek_api.save_api_key(ds_key))
                 ds_cfg = deepseek_api.load_config()
                 raw_ds_url = str(ds_data.get("base_url") or deepseek_api.DEFAULT_BASE_URL).strip()
                 p_ds = urlparse(raw_ds_url)
@@ -2267,46 +2428,46 @@ class HubApi:
                 try:
                     models = deepseek_api.fetch_models(ds_key, ds_cfg["base_url"])
                     ds_cfg["models"] = models
-                except Exception:
+                except Exception as exc:
+                    hub_logging.failed("Restore backup: DeepSeek catalog", exc)
+                    warnings.append("каталог DeepSeek")
                     models = []
-                deepseek_api.save_config(ds_cfg)
+                require(deepseek_api.save_config(ds_cfg))
                 if models:
-                    try:
-                        deepseek_api.configure_opencode_models([m["id"] for m in models], ds_key, ds_cfg["base_url"])
-                    except Exception:
-                        pass
-                try:
-                    deepseek_api.sync_opencode_credential(ds_key)
-                except Exception:
-                    pass
+                    optional("модели DeepSeek", lambda: deepseek_api.configure_opencode_models(
+                        [m["id"] for m in models], ds_key, ds_cfg["base_url"]))
+                optional("ключ DeepSeek в OpenCode", lambda: deepseek_api.sync_opencode_credential(ds_key))
+                completed.append(stage)
 
             # 7. Apply the configuration validated before any imports above.
-            if current_cfg is not None:
-                if not self.save_config(current_cfg):
-                    raise OSError("Не удалось сохранить настройки Hub")
-                self._sync_routes(current_cfg)
-                vis = current_cfg.get("providers_visibility")
-                if isinstance(vis, dict):
-                    clean_vis = {k: v for k, v in vis.items() if k in PROVIDER_SETTING_IDS and isinstance(v, bool)}
-                    if clean_vis:
-                        try:
-                            self.save_general_settings({"providers_visibility": clean_vis})
-                        except Exception:
-                            pass
-
-            summary = []
-            if imported_g: summary.append(f"Google: {imported_g}")
-            if imported_o: summary.append(f"OpenAI: {imported_o}")
-            if imported_c: summary.append(f"Claude: {imported_c}")
-            summary_str = ", ".join(summary) if summary else "настройки провайдеров и сети"
-
-            return {
-                "ok": True,
-                "message": f"Импорт завершён успешно! Восстановлено: {summary_str}",
-                "counts": {"google": imported_g, "openai": imported_o, "claude": imported_c}
-            }
-        except Exception as e:
-            return {"ok": False, "message": f"Ошибка импорта: {e}"}
+            if backup_cfg is not None:
+                stage = "настройки Hub и сети"
+                with self._config_lock:
+                    current_cfg = self.load_config()
+                    if (vless_service.is_running() and backup_cfg.get("vless_url", current_cfg.get("vless_url"))
+                            != current_cfg.get("vless_url")):
+                        raise ValueError("Активная ссылка VLESS изменилась во время импорта.")
+                    # Import must not turn a different copy's autostart on or off.
+                    current_cfg.update({key: value for key, value in backup_cfg.items() if key != "autostart_on_login"})
+                    require(self.save_config(current_cfg))
+                    optional("синхронизация маршрутов", lambda: self._sync_routes(current_cfg))
+                    if "providers_visibility" in backup_cfg:
+                        optional("видимость провайдеров", lambda: self.save_general_settings(
+                            {"providers_visibility": backup_cfg["providers_visibility"]}))
+                completed.append(stage)
+        except Exception as exc:
+            hub_logging.failed("Restore backup", exc)
+            if stage is None:
+                # Only report messages produced by our schema validation.
+                detail = str(exc) if type(exc) is ValueError and not exc.__cause__ else ""
+                return {"ok": False, "message": f"Импорт не начат. {detail}".strip(), "counts": counts}
+            warnings.append(stage)
+        if warnings:
+            return {"ok": False, "partial": True, "counts": counts, "completed": completed,
+                    "warnings": warnings, "message": "Импорт завершён не полностью. Проверьте: " + ", ".join(warnings) + "."}
+        return {"ok": True, "counts": counts, "completed": completed,
+                "message": "Импорт завершён. Восстановлено: " + ", ".join(completed) + "." if completed else
+                "В копии нет данных для восстановления."}
 
     def _import_google_accounts_list(self, accounts_list: list) -> int:
         """Imports Google accounts into the active generation store or legacy store."""
@@ -2322,7 +2483,14 @@ class HubApi:
                     "message": "Для обновления установленного Hub скачайте новый Setup.exe со страницы GitHub Releases."}
         try:
             repo_dir = CURRENT_DIR.parent
-            info = auto_updater.check_for_updates(repo_dir)
+            with self._update_lock:
+                self._update_offer = None
+                info = auto_updater.check_for_updates(repo_dir)
+                if info.get("has_update"):
+                    commit = info.get("remote_commit")
+                    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+                        return {"status": "error", "message": "Не удалось подтвердить идентификатор обновления."}
+                    self._update_offer = (commit, time.monotonic() + 300)
             if info.get("error") and not info.get("remote_sha"):
                 return {"status": "error", "message": f"Ошибка проверки: {info['error']}"}
             if info.get("has_update"):
@@ -2339,8 +2507,9 @@ class HubApi:
                 "remote_sha": info.get("remote_sha", "")[:7] or info.get("local_sha", "")[:7],
                 "message": f"Установлена последняя версия ({info.get('local_sha', '')[:7]})",
             }
-        except Exception as e:
-            return {"status": "error", "message": f"Проверка обновлений: {e}"}
+        except Exception as exc:
+            hub_logging.failed("Check for updates", exc)
+            return {"status": "error", "message": "Не удалось проверить обновления."}
 
     def apply_update(self, expected_commit: str = "") -> dict:
         if getattr(sys, "frozen", False):
@@ -2348,11 +2517,16 @@ class HubApi:
         try:
             if not isinstance(expected_commit, str) or not re.fullmatch(r"[0-9a-f]{40}", expected_commit):
                 return {"ok": False, "message": "Сначала проверьте обновление и подтвердите коммит."}
-            repo_dir = CURRENT_DIR.parent
-            ok, msg = auto_updater.apply_update_git(repo_dir, expected_commit=expected_commit)
+            with self._update_lock:
+                offer = self._update_offer
+                if offer is None or offer[0] != expected_commit or time.monotonic() >= offer[1]:
+                    return {"ok": False, "message": "Сначала снова проверьте обновление."}
+                self._update_offer = None
+                ok, msg = auto_updater.apply_update_git(CURRENT_DIR.parent, expected_commit=expected_commit)
             return {"ok": ok, "message": msg}
-        except Exception as e:
-            return {"ok": False, "message": f"Ошибка установки обновления: {e}"}
+        except Exception as exc:
+            hub_logging.failed("Apply update", exc)
+            return {"ok": False, "message": "Не удалось установить обновление."}
 
     def restart_hub(self) -> dict:
         """Stop all Hub child processes/servers, exit cleanly, and relaunch Hub."""
@@ -2367,40 +2541,41 @@ class HubApi:
 
         def _shutdown_and_exit():
             time.sleep(0.15)
-            try:
-                vless_service.stop_tunnel()
-            except Exception:
-                pass
-            try:
-                srv = getattr(provider_proxy, "_server", None)
-                if srv is not None:
-                    srv.shutdown()
-                    srv.server_close()
-            except Exception:
-                pass
-            try:
-                if claude_service is not None:
-                    import claude_manager
-                    bsrv = getattr(claude_manager.bridge_service, "_server", None)
-                    if bsrv is not None:
-                        bsrv.shutdown()
-                        bsrv.server_close()
-            except Exception:
-                pass
-            try:
-                if self._tray_holder is not None:
-                    self._tray_holder.remove()
-            except Exception:
-                pass
+            self._closing.set()
             try:
                 if self._window_holder is not None:
                     self._window_holder.destroy()
-            except Exception:
-                pass
-            os._exit(0)
+            except Exception as exc:
+                self._closing.clear()
+                self._hub_restart_lock.release()
+                hub_logging.failed("Close window for restart", exc)
 
         threading.Thread(target=_shutdown_and_exit, daemon=True, name="hub-restart-exit").start()
         return {"ok": True, "message": "Перезапуск AI HUB..."}
+
+    def _shutdown_runtime(self):
+        self._closing.set()
+        with self._shutdown_lock:
+            try:
+                with self._core_lock:
+                    if not vless_service.stop_tunnel()[0]:
+                        hub_logging.log.warning("VLESS did not stop")
+            except Exception as exc:
+                hub_logging.failed("Stop VLESS", exc)
+            bridge = getattr(globals().get("claude_manager"), "bridge_service", None)
+            for owner in (provider_proxy, bridge):
+                server = getattr(owner, "_server", None)
+                if server is not None:
+                    try:
+                        server.shutdown()
+                        server.server_close()
+                    except Exception as exc:
+                        hub_logging.failed("Stop local server", exc)
+            if self._tray_holder is not None:
+                try:
+                    self._tray_holder.remove()
+                except Exception as exc:
+                    hub_logging.failed("Remove tray icon", exc)
 
 
 def run_webview_app():
@@ -2450,20 +2625,15 @@ def run_webview_app():
             pass
 
     def on_tray_exit():
-        try:
-            if tray:
-                tray.remove()
-        except Exception:
-            pass
-        try:
-            vless_service.stop_tunnel()
-        except Exception:
-            pass
-        try:
-            window.destroy()
-        except Exception:
-            pass
-        os._exit(0)
+        def close_window():
+            api._closing.set()
+            try:
+                window.destroy()
+            except Exception as exc:
+                api._closing.clear()
+                hub_logging.failed("Close window from tray", exc)
+
+        threading.Thread(target=close_window, daemon=True, name="hub-tray-close").start()
 
     try:
         tray = win_tray.WindowsTrayIcon(
@@ -2473,48 +2643,38 @@ def run_webview_app():
             on_refresh=on_tray_refresh,
             on_exit=on_tray_exit,
         )
-        tray.start()
+        if not tray.start():
+            raise RuntimeError("Tray icon was not registered")
         api._tray_holder = tray
     except Exception as e:
         hub_logging.failed("Tray initialization", e)
+        tray = None
 
     def on_window_closing():
-        if getattr(api, "_uninstalled", False):
-            try:
-                if tray:
-                    tray.remove()
-            except Exception:
-                pass
-            try:
-                vless_service.stop_tunnel()
-            except Exception:
-                pass
+        if api._uninstalled or api._closing.is_set():
             return True
-        cfg = api.load_config()
-        close_to_tray = cfg.get("close_to_tray", True)
-        if close_to_tray:
+        try:
+            close_to_tray = api.load_config().get("close_to_tray", True)
+        except (OSError, ValueError):
+            close_to_tray = False
+        if tray and close_to_tray:
             try:
                 window.hide()
-                if tray and not balloon_shown[0]:
+            except Exception as exc:
+                hub_logging.failed("Hide window", exc)
+            else:
+                if not balloon_shown[0]:
                     balloon_shown[0] = True
-                    tray.show_balloon(
-                        "AI HUB свёрнут",
-                        "Приложение работает в трее. Кликните левой кнопкой для открытия или правой для меню.",
-                    )
-            except Exception:
-                pass
-            return False
-        else:
-            try:
-                if tray:
-                    tray.remove()
-            except Exception:
-                pass
-            try:
-                vless_service.stop_tunnel()
-            except Exception:
-                pass
-            return True
+                    try:
+                        tray.show_balloon(
+                            "AI HUB свёрнут",
+                            "Приложение работает в трее. Кликните левой кнопкой для открытия или правой для меню.",
+                        )
+                    except Exception as exc:
+                        hub_logging.failed("Tray notification", exc)
+                return False
+        api._closing.set()
+        return True
 
     window.events.closing += on_window_closing
 
@@ -2561,13 +2721,15 @@ def run_webview_app():
 
     # Run background token refresh thread
     def bg_refresher():
-        cfg = api.load_config()
         try:
             import cloudcode_route_patch
             cloudcode_route_patch.patch_auth_plugin_transport(include_local=False)
         except Exception as exc:
             hub_logging.failed("Startup plugin route check", exc)
         try:
+            cfg = api.load_config()
+            if api._closing.is_set():
+                return
             if cfg.get("vless_enabled") and cfg.get("vless_url"):
                 result = api.start_vless()
                 if not result["ok"]:
@@ -2577,7 +2739,7 @@ def run_webview_app():
                 claude_manager.bridge_service.ensure_running()
         except Exception as exc:
             hub_logging.failed("Network startup", exc)
-        while not getattr(api, "_uninstalled", False):
+        while not api._uninstalled and not api._closing.is_set():
             api.refresh_openai_quotas()
             try:
                 api.refresh_deepseek_balance()
@@ -2587,8 +2749,7 @@ def run_webview_app():
                 api.refresh_tokenlavka_balance()
             except Exception:
                 pass
-            time.sleep(300)
-            if getattr(api, "_uninstalled", False):
+            if api._closing.wait(300) or api._uninstalled:
                 break
             try:
                 node_exe = antigravity_manager.get_node_executable()
@@ -2603,8 +2764,12 @@ def run_webview_app():
 
     threading.Thread(target=bg_refresher, daemon=True).start()
 
-    webview.start(icon=icon_str, gui="edgechromium" if getattr(sys, "frozen", False) else None)
+    try:
+        webview.start(icon=icon_str, gui="edgechromium" if getattr(sys, "frozen", False) else None)
+    finally:
+        api._shutdown_runtime()
 
 
 if __name__ == "__main__":
-    run_webview_app()
+    if antigravity_manager.acquire_single_instance():
+        run_webview_app()

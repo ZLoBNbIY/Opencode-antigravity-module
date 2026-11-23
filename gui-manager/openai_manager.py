@@ -5,6 +5,7 @@ OpenAI / ChatGPT Account and Quota Manager for AI HUB
 import os
 import sys
 import json
+import math
 import time
 import base64
 import secrets
@@ -21,6 +22,7 @@ from contextlib import closing
 from html import escape
 
 import secure_storage
+import opencode_credentials
 from provider_proxy import _BoundedHandler
 
 OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -31,6 +33,7 @@ OPENAI_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 CONFIG_DIR = Path(os.path.expanduser("~/.config/opencode"))
 try:
     import hub_paths
+    CONFIG_DIR = hub_paths.OPENCODE_CONFIG_DIR
     OPENAI_ACCOUNTS_FILE = hub_paths.OPENAI_ACCOUNTS_FILE
 except Exception:
     OPENAI_ACCOUNTS_FILE = CONFIG_DIR / "openai-accounts.json"
@@ -38,8 +41,16 @@ AUTH_FILES = [
     Path(os.path.expanduser("~/.local/share/opencode/auth.json")),
     Path(os.path.expanduser("~/.opencode/auth.json")),
 ]
-OPENCODE_DB_FILE = Path(os.path.expanduser("~/.local/share/opencode/opencode.db"))
+# Optional explicit override, also used by callers with isolated stores.
+OPENCODE_DB_FILE: Path | None = None
 _accounts_lock = threading.RLock()
+
+
+def _opencode_database_path() -> Path | None:
+    if OPENCODE_DB_FILE is not None:
+        path = Path(OPENCODE_DB_FILE)
+        return path if path.exists() else None
+    return opencode_credentials.database_path()
 
 
 def find_opencode_cli() -> str | None:
@@ -110,11 +121,12 @@ def _read_opencode_credential_rows(
     confuse that with a legitimately empty credential store.  Pass
     ``integration_id=None`` to inspect every integration for ID collisions.
     """
-    if not OPENCODE_DB_FILE.exists():
+    db = _opencode_database_path()
+    if db is None:
         return []
     try:
         with closing(sqlite3.connect(
-            f"{OPENCODE_DB_FILE.resolve().as_uri()}?mode=ro", uri=True, timeout=2
+            f"{db.resolve().as_uri()}?mode=ro", uri=True, timeout=2
         )) as conn:
             table = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='credential'"
@@ -305,7 +317,7 @@ def sync_opencode_cli_openai(account: dict | None) -> bool:
     which publishes ``Credential.Event.Switched`` to the running server.
     """
     cli = find_opencode_cli()
-    db_exists = OPENCODE_DB_FILE.exists()
+    db_exists = _opencode_database_path() is not None
     if not cli:
         # A database-backed OpenCode installation needs its CLI for the switch
         # event.  Legacy installations are migrated through auth.json instead.
@@ -466,7 +478,7 @@ def get_active_auth_openai() -> dict | None:
     # OpenCode v2 migrates auth.json once and then treats opencode.db as the
     # canonical credential store.  Reading the legacy file first can resurrect
     # a stale token and pair it with the wrong chatgpt-account-id.
-    db_exists = OPENCODE_DB_FILE.exists()
+    db_exists = _opencode_database_path() is not None
     rows = _read_opencode_credential_rows()
     if rows is None:
         # A canonical store that cannot be read must not be shadowed by a stale
@@ -538,7 +550,7 @@ def write_active_auth_openai(account: dict | None) -> bool:
     """Synchronize the selected Hub account and acknowledge the active credential."""
     with _accounts_lock:
         try:
-            db_exists = OPENCODE_DB_FILE.exists()
+            db_exists = _opencode_database_path() is not None
             if not sync_opencode_cli_openai(account):
                 return False
             # Keep plaintext compatibility files only for legacy OpenCode.  Once
@@ -561,17 +573,21 @@ def _read_openai_account_file(path):
     return accounts, protected
 
 
-def load_openai_accounts() -> list[dict]:
+def load_openai_accounts(*, strict: bool = False) -> list[dict]:
+    """Strict reads raise on a damaged Hub account store and never write it."""
     with _accounts_lock:
         accounts = []
-        if OPENAI_ACCOUNTS_FILE.exists():
-            try:
-                accounts, protected = _read_openai_account_file(OPENAI_ACCOUNTS_FILE)
-                if not protected:
-                    save_openai_accounts(accounts)
-            except Exception as e:
-                print(f"[OpenAI Manager] Error reading account store ({type(e).__name__})")
-                return []
+        try:
+            accounts, protected = _read_openai_account_file(OPENAI_ACCOUNTS_FILE)
+            if not strict and not protected:
+                save_openai_accounts(accounts)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            if strict:
+                raise OSError("Не удалось прочитать хранилище аккаунтов OpenAI; импорт не начат.") from None
+            print(f"[OpenAI Manager] Error reading account store ({type(e).__name__})")
+            return []
 
         # Seed an empty Hub pool from the active OpenCode credential.
         active_auth = get_active_auth_openai()
@@ -592,17 +608,26 @@ def load_openai_accounts() -> list[dict]:
                 "quota": None,
             }
             accounts.append(imported_acc)
-            save_openai_accounts(accounts)
+            if not strict:
+                save_openai_accounts(accounts)
 
         # Sync is_active with the active OpenCode credential.
-        active_account_id = active_auth.get("accountId") if active_auth else None
+        active = None
+        if active_auth:
+            credential_id = active_auth.get("credentialId")
+            if credential_id and _is_hub_managed_credential_id(credential_id):
+                active = next((a for a in accounts if get_openai_cred_id(a) == credential_id), None)
+            if active is None:
+                for field in ("accountId", "email"):
+                    value = str(active_auth.get(field) or "").casefold()
+                    matches = [a for a in accounts if value and str(a.get(field) or "").casefold() == value]
+                    if len(matches) == 1:
+                        active = matches[0]
+                        break
+        if active is None and (not active_auth or not active_auth.get("accountId")):
+            active = next((a for a in accounts if a.get("is_active")), accounts[0] if accounts else None)
         for acc in accounts:
-            if active_account_id and acc.get("accountId") == active_account_id:
-                acc["is_active"] = True
-            elif not active_account_id and accounts and acc is accounts[0]:
-                acc["is_active"] = True
-            else:
-                acc["is_active"] = False
+            acc["is_active"] = acc is active
 
         return accounts
 
@@ -610,7 +635,6 @@ def load_openai_accounts() -> list[dict]:
 def save_openai_accounts(accounts: list[dict]) -> bool:
     with _accounts_lock:
         try:
-            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
             if OPENAI_ACCOUNTS_FILE.exists():
                 _read_openai_account_file(OPENAI_ACCOUNTS_FILE)
             record = secure_storage.protect_payload("openai-accounts", {"accounts": accounts})
@@ -644,28 +668,48 @@ def _find_openai_account(accounts: list[dict], identifier: str) -> dict | None:
     return None
 
 
-def import_openai_accounts(imported_list: list[dict]) -> int:
+def import_openai_accounts(imported_list: list[dict], *, strict: bool = False) -> int:
     """
     Imports and merges a list of OpenAI accounts into the local store.
     Proactively refreshes access tokens and writes active auth to OpenCode.
-    Returns the count of successfully imported/merged accounts.
+    Returns the count of successfully imported/merged accounts. Strict mode
+    rejects invalid input before writing and raises on failed or partial writes.
     """
     if not imported_list:
         return 0
+
+    def fail(message):
+        if strict:
+            raise OSError(message)
+        return 0
+
     with _accounts_lock:
-        accounts = load_openai_accounts()
+        # Even compatibility callers must not treat an unreadable store as empty.
+        try:
+            accounts = load_openai_accounts(strict=True)
+        except OSError:
+            if strict:
+                raise
+            return 0
         previous_active = next((acc for acc in accounts if acc.get("is_active")), None)
+        previous_auth = dict(previous_active) if previous_active else None
+        original_flags = {id(acc): bool(acc.get("is_active")) for acc in accounts}
         desired_active = previous_active
         count = 0
         for new_acc in imported_list:
-            if not isinstance(new_acc, dict):
+            if not isinstance(new_acc, dict) or not _openai_account_identity(new_acc):
+                if strict:
+                    raise ValueError("В импорте OpenAI найден аккаунт без идентификатора.")
                 continue
-            acc_id = new_acc.get("accountId") or new_acc.get("id")
+            account_id = new_acc.get("accountId")
+            local_id = new_acc.get("id")
             email = new_acc.get("email")
-            if not acc_id and not email:
-                continue
             idx = next(
-                (i for i, a in enumerate(accounts) if (acc_id and a.get("accountId") == acc_id) or (email and a.get("email") == email)),
+                (i for i, a in enumerate(accounts)
+                 if (account_id and a.get("accountId") == account_id)
+                 or (local_id and a.get("id") == local_id)
+                 or (email and a.get("email") == email
+                     and not (account_id and a.get("accountId") and a["accountId"] != account_id))),
                 None
             )
             if idx is not None:
@@ -680,11 +724,10 @@ def import_openai_accounts(imported_list: list[dict]) -> int:
                 desired_active = merged
             count += 1
 
-        if not accounts:
+        if not count:
             return 0
 
         active_acc = desired_active if any(acc is desired_active for acc in accounts) else accounts[0]
-        original_flags = {id(acc): bool(acc.get("is_active")) for acc in accounts}
 
         # Proactively refresh tokens for accounts where token is missing, expired,
         # or near expiry.  Suppress the active-account side effect until the
@@ -709,23 +752,24 @@ def import_openai_accounts(imported_list: list[dict]) -> int:
         if not save_openai_accounts(accounts):
             for acc in accounts:
                 acc["is_active"] = original_flags.get(id(acc), False)
-            return 0
+            return fail("Не удалось сохранить импортируемые аккаунты OpenAI.")
 
         if not write_active_auth_openai(active_acc):
             for acc in accounts:
                 acc["is_active"] = original_flags.get(id(acc), False)
-            save_openai_accounts(accounts)
-            return 0
+            restored = save_openai_accounts(accounts)
+            return fail("Аккаунты OpenAI сохранены, но не удалось активировать аккаунт в OpenCode."
+                        + ("" if restored else " Не удалось восстановить прежнее локальное состояние."))
 
         for acc in accounts:
             acc["is_active"] = acc is active_acc
         if not save_openai_accounts(accounts):
-            if previous_active and previous_active is not active_acc:
-                write_active_auth_openai(previous_active)
+            restored_auth = write_active_auth_openai(previous_auth)
             for acc in accounts:
                 acc["is_active"] = original_flags.get(id(acc), False)
-            save_openai_accounts(accounts)
-            return 0
+            restored_store = save_openai_accounts(accounts)
+            return fail("Аккаунты OpenAI импортированы, но не удалось сохранить выбор активного аккаунта."
+                        + ("" if restored_auth and restored_store else " Прежнее состояние восстановлено не полностью."))
 
     return count
 
@@ -759,7 +803,7 @@ def set_active_openai_account(account_id: str) -> bool:
 
 def remove_opencode_credentials_openai(account: dict) -> bool:
     """Remove only the OpenCode credentials that belong to one Hub account."""
-    if not OPENCODE_DB_FILE.exists():
+    if _opencode_database_path() is None:
         return True
     rows = _read_opencode_credential_rows()
     if rows is None:
@@ -912,8 +956,11 @@ def refresh_openai_token(account: dict) -> tuple[bool, dict]:
 def fetch_openai_usage(account: dict, _retried: bool = False) -> dict:
     # If token expires within 2 minutes, refresh it first
     now_ms = int(time.time() * 1000)
-    if account.get("expires", 0) - now_ms < 120000:
-        refresh_openai_token(account)
+    if not _retried and account.get("expires", 0) - now_ms < 120000:
+        try:
+            refresh_openai_token(account)
+        except Exception as exc:
+            print(f"[OpenAI Manager] Token refresh failed ({type(exc).__name__})")
 
     access_token = account.get("access", "")
     account_id = account.get("accountId", "")
@@ -928,59 +975,59 @@ def fetch_openai_usage(account: dict, _retried: bool = False) -> dict:
         },
     )
 
-    opener = _get_http_opener(timeout=12)
-
     try:
+        opener = _get_http_opener(timeout=12)
         with opener.open(req, timeout=12) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
             return _parse_usage_payload(payload, account)
     except urllib.error.HTTPError as he:
         if he.code == 401 and not _retried:
             # Token might have been revoked/expired - retry once with refresh
-            ok, updated_acc = refresh_openai_token(account)
+            try:
+                ok, updated_acc = refresh_openai_token(account)
+            except Exception:
+                ok = False
             if ok:
                 return fetch_openai_usage(updated_acc, _retried=True)
         print(f"[OpenAI Manager] Usage HTTP error {he.code}")
     except Exception as e:
         print(f"[OpenAI Manager] Usage fetch failed ({type(e).__name__})")
 
-    # Return cached or default fallback
+    return _stale_openai_usage(account)
+
+
+def _stale_openai_usage(account: dict) -> dict:
     cached = account.get("quota") or {}
-    if cached.get("status") in ("ok", "stale"):
+    if isinstance(cached, dict) and cached.get("status") in ("ok", "stale"):
         return {**cached, "status": "stale"}
     return {"status": "error", "primary": {}, "secondary": {}}
 
 
 def _parse_usage_payload(payload: dict, account: dict) -> dict:
+    if not isinstance(payload, dict) or not isinstance(payload.get("rate_limit"), dict):
+        raise ValueError("Некорректный ответ о квоте OpenAI")
     if payload.get("email"):
         account["email"] = payload["email"]
     if payload.get("plan_type"):
         account["plan_type"] = payload["plan_type"]
 
-    rate_limit = payload.get("rate_limit", {})
-    w1 = rate_limit.get("primary_window") or {}
-    w2 = rate_limit.get("secondary_window") or {}
+    rate_limit = payload["rate_limit"]
+    w1 = rate_limit.get("primary_window")
+    w2 = rate_limit.get("secondary_window")
 
-    # Identify 5h window (<= 86400s) and weekly window (> 86400s) dynamically
-    w1_secs = w1.get("limit_window_seconds") or 0
-    w2_secs = w2.get("limit_window_seconds") or 0
-    if w1_secs > w2_secs and w2_secs > 0:
-        win_5h = w2
-        win_weekly = w1
-    elif w1_secs > 0:
-        win_5h = w1
-        win_weekly = w2
-    else:
-        win_5h = w1
-        win_weekly = w2
+    def seconds(value):
+        number = _quota_number(value)
+        return int(number) if number is not None and number >= 0 else 0
 
     def parse_window(win: dict) -> dict:
-        if not win or win.get("used_percent") is None:
+        if not isinstance(win, dict):
             return {}
-        used_pct = float(win.get("used_percent", 0.0))
-        rem_pct = max(0.0, min(100.0, 100.0 - used_pct))
-        reset_after = win.get("reset_after_seconds", 0)
-        reset_at = win.get("reset_at", 0)
+        used_pct = _quota_number(win.get("used_percent"))
+        if used_pct is None or not 0 <= used_pct <= 100:
+            return {}
+        rem_pct = 100.0 - used_pct
+        reset_after = seconds(win.get("reset_after_seconds"))
+        reset_at = seconds(win.get("reset_at"))
 
         reset_label = "сейчас"
         if reset_after > 0:
@@ -996,22 +1043,31 @@ def _parse_usage_payload(payload: dict, account: dict) -> dict:
                 reset_label = f"через {mins}м"
 
         return {
-            "used_percent": round(used_pct, 1),
-            "remaining_percent": round(rem_pct, 1),
+            "used_percent": used_pct,
+            "remaining_percent": rem_pct,
             "reset_after_seconds": reset_after,
             "reset_at": reset_at,
             "reset_label": reset_label,
-            "limit_window_seconds": win.get("limit_window_seconds", 0),
+            "limit_window_seconds": seconds(win.get("limit_window_seconds")),
         }
 
-    parsed_5h = parse_window(win_5h)
-    parsed_weekly = parse_window(win_weekly)
+    primary, secondary = parse_window(w1), parse_window(w2)
+    parsed_5h, parsed_weekly = primary, secondary
+    if primary.get("limit_window_seconds", 0) > 86400 and secondary.get("limit_window_seconds", 0) <= 86400:
+        parsed_5h, parsed_weekly = secondary, primary
+    elif not primary and 0 < secondary.get("limit_window_seconds", 0) <= 86400:
+        parsed_5h, parsed_weekly = secondary, primary
+
+    allowed = rate_limit.get("allowed")
+    limit_reached = rate_limit.get("limit_reached")
+    if not (primary or secondary or isinstance(allowed, bool) or isinstance(limit_reached, bool)):
+        return _stale_openai_usage(account)
 
     quota_data = {
         "status": "ok",
         "plan_type": payload.get("plan_type", account.get("plan_type", "plus")),
-        "allowed": rate_limit.get("allowed", True),
-        "limit_reached": rate_limit.get("limit_reached", False),
+        "allowed": allowed if isinstance(allowed, bool) else None,
+        "limit_reached": limit_reached if isinstance(limit_reached, bool) else None,
         "primary": parsed_5h,
         "secondary": parsed_weekly,
         "window_5h": parsed_5h,
@@ -1024,34 +1080,34 @@ def _parse_usage_payload(payload: dict, account: dict) -> dict:
     return quota_data
 
 
+def _quota_number(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _quota_windows(quota: dict):
+    return [quota[key] if isinstance(quota.get(key), dict) else {} for key in ("primary", "secondary")]
+
+
 def _openai_quota_exhausted(quota: dict) -> bool:
     """Return whether a ChatGPT quota payload forbids further requests."""
     if not isinstance(quota, dict):
         return False
 
-    primary = quota.get("primary") if isinstance(quota.get("primary"), dict) else {}
-    secondary = quota.get("secondary") if isinstance(quota.get("secondary"), dict) else {}
-
     def exhausted(window: dict) -> bool:
-        remaining = window.get("remaining_percent")
-        used = window.get("used_percent")
-        try:
-            if remaining is not None and float(remaining) <= 0:
-                return True
-        except (TypeError, ValueError):
-            pass
-        try:
-            if used is not None and float(used) >= 100:
-                return True
-        except (TypeError, ValueError):
-            pass
-        return False
+        remaining = _quota_number(window.get("remaining_percent"))
+        used = _quota_number(window.get("used_percent"))
+        return remaining == 0 or used == 100
 
     return (
         quota.get("limit_reached") is True
         or quota.get("allowed") is False
-        or exhausted(primary)
-        or exhausted(secondary)
+        or any(exhausted(window) for window in _quota_windows(quota))
     )
 
 
@@ -1069,7 +1125,7 @@ def check_and_auto_rotate_openai(accounts: list[dict]) -> tuple[bool, str]:
         return False, ""
 
     quota = active_acc.get("quota") or {}
-    if not _openai_quota_exhausted(quota):
+    if not isinstance(quota, dict) or quota.get("status") != "ok" or not _openai_quota_exhausted(quota):
         return False, ""
 
     # Find enabled candidates with remaining quota in both windows. A candidate
@@ -1078,31 +1134,27 @@ def check_and_auto_rotate_openai(accounts: list[dict]) -> tuple[bool, str]:
     for account in accounts:
         if account is active_acc:
             continue
-        if account.get("accountId") == active_acc.get("accountId") or account.get("id") == active_acc.get("id"):
+        identity = _openai_account_identity(account)
+        if not identity or identity == _openai_account_identity(active_acc):
             continue
         if account.get("enabled", True) is False or account.get("candidate", True) is False:
             continue
         candidate_quota = account.get("quota") or {}
-        if _openai_quota_exhausted(candidate_quota):
+        if (not isinstance(candidate_quota, dict) or candidate_quota.get("status") != "ok"
+                or _openai_quota_exhausted(candidate_quota)):
             continue
-        primary = candidate_quota.get("primary") if isinstance(candidate_quota.get("primary"), dict) else {}
-        secondary = candidate_quota.get("secondary") if isinstance(candidate_quota.get("secondary"), dict) else {}
-        try:
-            primary_remaining = float(primary.get("remaining_percent", 100))
-            secondary_remaining = float(secondary.get("remaining_percent", 100))
-        except (TypeError, ValueError):
-            continue
-        if primary_remaining > 0 and secondary_remaining > 0:
+        remaining = [_quota_number(w.get("remaining_percent")) for w in _quota_windows(candidate_quota)]
+        if candidate_quota.get("allowed") is True or all(r is not None and 0 < r <= 100 for r in remaining):
             candidates.append(account)
 
     if not candidates:
-        return False, "Все аккаунты OpenAI исчерпали доступную квоту."
+        return False, "Нет доступных аккаунтов OpenAI с подтверждённой квотой."
 
     next_acc = candidates[0]
-    if not set_active_openai_account(next_acc.get("accountId") or next_acc.get("id")):
+    if not set_active_openai_account(next_acc.get("id") or next_acc.get("accountId") or next_acc.get("email")):
         return False, "Не удалось активировать следующий аккаунт OpenAI."
     for a in accounts:
-        a["is_active"] = (a.get("accountId") == next_acc.get("accountId"))
+        a["is_active"] = a is next_acc
 
     return True, f"Лимит {active_acc.get('email')} исчерпан. Автоматически переключен на {next_acc.get('email')} на лету (без перезапуска)."
 
@@ -1115,6 +1167,7 @@ def refresh_all_openai_accounts() -> tuple[list[dict], str | None]:
             acc["last_used"] = int(time.time())
         except Exception as e:
             print(f"[OpenAI Manager] Quota refresh failed ({type(e).__name__})")
+            acc["quota"] = _stale_openai_usage(acc)
     if not save_openai_accounts(accounts):
         raise OSError("Не удалось сохранить лимиты ChatGPT")
 

@@ -35,6 +35,15 @@ jobs:
         run: |
           set -euo pipefail
           tag="$(python3 packaging/windows/release_version.py)"
+          refs="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$tag" \
+            --jq ".[] | select(.ref == \"refs/tags/$tag\") | .ref")"
+          if [[ -n "$refs" ]]; then
+            target="$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq '.sha')"
+            if [[ "$target" != "$GITHUB_SHA" ]]; then
+              echo "::error::Tag $tag points to a different commit. Re-run all jobs to calculate a new version."
+              exit 1
+            fi
+          fi
           release="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
             --jq ".[] | select(.tag_name == \"$tag\") | .draft")"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -79,6 +88,22 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 35
     steps:
+      - name: Check the planned tag is still available
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          refs="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$TAG" \
+            --jq ".[] | select(.ref == \"refs/tags/$TAG\") | .ref")"
+          if [[ -n "$refs" ]]; then
+            target="$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq '.sha')"
+            if [[ "$target" != "$GITHUB_SHA" ]]; then
+              echo "::error::Tag $TAG points to a different commit. Re-run all jobs to calculate a new version."
+              exit 1
+            fi
+          fi
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false

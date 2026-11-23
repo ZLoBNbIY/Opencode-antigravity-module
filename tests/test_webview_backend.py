@@ -164,7 +164,7 @@ class WebviewBackendTests(unittest.TestCase):
             return_value=SimpleNamespace(returncode=1, stdout="", stderr="login failed"))
         with patch.object(self.backend.os.path, "exists", return_value=True):
             result = self.backend.HubApi().add_google_account()
-        self.assertEqual(result, {'status':'error', 'message':'login failed'})
+        self.assertEqual(result, {'status':'error', 'message':'Не удалось завершить вход в Google.'})
         self.manager.run_silent_cmd.assert_not_called()
 
     def test_openai_failure_and_exception_reach_frontend_and_unlock_retry(self):
@@ -250,7 +250,7 @@ class WebviewBackendTests(unittest.TestCase):
         with patch.object(self.backend.os.path, 'exists', return_value=True), \
              patch.object(api, 'stop_opencode', return_value=True), \
              patch.object(api, 'start_opencode', return_value=True) as start:
-            with self.assertRaisesRegex(RuntimeError, 'service failed'):
+            with self.assertRaisesRegex(RuntimeError, 'CLI не смог'):
                 api.restart_opencode()
             start.assert_not_called()
             self.manager.run_silent_cmd.return_value.returncode = 0
@@ -567,6 +567,38 @@ class WebviewBackendTests(unittest.TestCase):
         apply_autostart.assert_called_once_with(True)
         self.assertTrue(api.load_config()["autostart_on_login"])
 
+    def test_save_visibility_preserves_invalid_config_and_hub_settings(self):
+        api = self.backend.HubApi()
+        self.assertTrue(api.save_config({"close_to_tray": True}))
+        oc = self.backend.OPENCODE_CONFIG_FILE
+        original = b'{"model":"example/model",'
+        oc.write_bytes(original)
+        with self.assertRaisesRegex(ValueError, "OpenCode"):
+            api.save_general_settings({"close_to_tray": False, "providers_visibility": {"openai": False}})
+        self.assertEqual(oc.read_bytes(), original)
+        self.assertTrue(api.load_config()["close_to_tray"])
+
+    def test_autostart_error_rolls_back_all_settings_files(self):
+        api = self.backend.HubApi()
+        self.assertTrue(api.save_config({"close_to_tray": True}))
+        paths = (self.backend.HUB_CONFIG_FILE, self.backend.ANTIGRAVITY_CONFIG_FILE,
+                 self.backend.OPENCODE_CONFIG_FILE)
+        paths[-1].write_bytes(b'\xef\xbb\xbf{\r\n  "model":"example/model"\r\n}\r\n')
+        previous = [path.read_bytes() for path in paths]
+        with patch.object(self.backend, "_apply_autostart", side_effect=OSError("registry")):
+            with self.assertRaisesRegex(OSError, "registry"):
+                api.save_general_settings({"close_to_tray": False, "autostart_on_login": True,
+                                           "providers_visibility": {"openai": False}})
+        self.assertEqual([path.read_bytes() for path in paths], previous)
+
+    def test_corrupt_hub_config_is_not_replaced(self):
+        api = self.backend.HubApi()
+        central = self.backend.HUB_CONFIG_FILE
+        central.write_bytes(b"{")
+        self.assertFalse(api.save_config({"close_to_tray": True}))
+        self.assertEqual(central.read_bytes(), b"{")
+        self.assertFalse(self.backend.ANTIGRAVITY_CONFIG_FILE.exists())
+
     def test_save_network_settings_persists_proxy_pool_failover_and_typed_proxy(self):
         api = self.backend.HubApi()
         api.save_network_settings({
@@ -628,14 +660,14 @@ class WebviewBackendTests(unittest.TestCase):
                 "dns_mode": "doh",
             }
         }), encoding="utf-8")
-        imp = api.import_backup(str(malicious))
+        imp = self._import_fixture(api, malicious)
         self.assertFalse(imp["ok"])
         saved = api.load_config()
         self.assertEqual(saved["vless_core_path"], "C:/safe/xray.exe")
         self.assertNotIn("doh_url", saved)
         self.assertNotIn("proxy", saved)
         malicious.write_text('{"config":{"vless_core_path":"C:/evil/payload.exe"}}', encoding="utf-8")
-        self.assertTrue(api.import_backup(str(malicious))["ok"])
+        self.assertTrue(self._import_fixture(api, malicious)["ok"])
         self.assertEqual(api.load_config()["vless_core_path"], "C:/safe/xray.exe")
 
     def test_full_backup_export_import_roundtrip_all_providers_and_missing_cli(self):
@@ -644,7 +676,7 @@ class WebviewBackendTests(unittest.TestCase):
         self.openai.load_openai_accounts.return_value = [{"id": "oa-1", "email": "o@example.com", "refresh": "o-ref"}]
         self.openai.import_openai_accounts = Mock(return_value=1)
         self.claude.load_accounts.return_value = [{"email": "c@example.com", "session_key": "sk-ant-1"}]
-        self.claude.save_accounts = Mock()
+        self.claude.import_backup_accounts = Mock(return_value=1)
         self.claude.configure_opencode_provider = Mock()
         self.xpiki.load_xpiki_config.return_value = {
             "api_key": "sk-xpiki", "base_url": "https://api.xpiki.com/v1",
@@ -681,7 +713,7 @@ class WebviewBackendTests(unittest.TestCase):
         self.assertEqual(exp["counts"], {"google": 1, "openai": 1, "claude": 1})
 
         # First import without password asks for password
-        prompt_res = api.import_backup(exp["path"])
+        prompt_res = self._import_fixture(api, target)
         self.assertFalse(prompt_res["ok"])
         self.assertTrue(prompt_res["requires_password"])
 
@@ -690,8 +722,9 @@ class WebviewBackendTests(unittest.TestCase):
         self.backend.ANTIGRAVITY_CONFIG_FILE.unlink(missing_ok=True)
         self.backend.HUB_CONFIG_FILE.unlink(missing_ok=True)
 
-        imp = api.import_backup(exp["path"], password="pw")
-        self.assertTrue(imp["ok"], imp.get("message"))
+        imp = api.import_backup(prompt_res["import_token"], password="pw")
+        self.assertFalse(imp["ok"], imp.get("message"))
+        self.assertTrue(imp["partial"], imp.get("message"))
         self.assertEqual(imp["counts"], {"google": 1, "openai": 1, "claude": 1})
         self.claude.configure_opencode_provider.assert_called_once()
         self.openrouter.configure_models.assert_called_once_with([{"id": "free/m1", "name": "free/m1"}])
@@ -700,6 +733,35 @@ class WebviewBackendTests(unittest.TestCase):
         self.deepseek.save_config.assert_called_once()
         oc_after = json.loads(self.backend.OPENCODE_CONFIG_FILE.read_text(encoding="utf-8"))
         self.assertIn("openai", oc_after.get("disabled_providers", []))
+        self.assertFalse(api.import_backup(prompt_res["import_token"], password="pw")["ok"])
+
+    def _import_fixture(self, api, path):
+        api._window_holder = SimpleNamespace(create_file_dialog=Mock(return_value=[str(path)]))
+        with patch.dict("sys.modules", {"webview": SimpleNamespace(FileDialog=SimpleNamespace(OPEN=1))}):
+            return api.import_backup()
+
+    def test_backup_bridge_cannot_use_a_path_from_javascript(self):
+        api = self.backend.HubApi(SimpleNamespace(create_file_dialog=Mock()))
+        file = Path(self.temp.name) / "backup.json"
+        file.write_text('{"config":{"close_to_tray":true}}', encoding="utf-8")
+        response = self.backend._WebviewBridge(api).import_backup(str(file))
+        self.assertFalse(response["ok"])
+        api._window_holder.create_file_dialog.assert_not_called()
+        self.assertFalse(self.backend.HUB_CONFIG_FILE.exists())
+
+    def test_update_accepts_only_the_unconsumed_checked_commit(self):
+        api = self.backend.HubApi()
+        offered = "a" * 40
+        check = Mock(return_value={"has_update": True, "remote_sha": offered, "remote_commit": offered})
+        apply = Mock(return_value=(True, "updated"))
+        with patch.object(self.backend.auto_updater, "check_for_updates", check, create=True), \
+             patch.object(self.backend.auto_updater, "apply_update_git", apply, create=True):
+            self.assertFalse(api.apply_update(offered)["ok"])
+            self.assertEqual(api.check_updates()["remote_commit"], offered)
+            self.assertFalse(api.apply_update("b" * 40)["ok"])
+            self.assertTrue(api.apply_update(offered)["ok"])
+            self.assertFalse(api.apply_update(offered)["ok"])
+            apply.assert_called_once_with(self.backend.CURRENT_DIR.parent, expected_commit=offered)
 
     def test_export_bridge_requires_password_and_native_save_dialog(self):
         api = self.backend.HubApi(SimpleNamespace(create_file_dialog=Mock(return_value=None)))
@@ -719,11 +781,11 @@ class WebviewBackendTests(unittest.TestCase):
         self.manager.import_google_accounts = Mock()
         target = Path(self.temp.name) / "invalid.json"
         target.write_text('{"accounts":[{"refreshToken":"test"}],"config":{"proxy_pool":[{}]}}')
-        self.assertFalse(api.import_backup(str(target))["ok"])
+        self.assertFalse(self._import_fixture(api, target)["ok"])
         self.manager.import_google_accounts.assert_not_called()
         target.write_bytes(b" " * 65)
         with patch.object(crypto_backup, "MAX_BACKUP_BYTES", 64):
-            res = api.import_backup(str(target))
+            res = self._import_fixture(api, target)
         self.assertFalse(res["ok"])
         self.assertIn("16", res["message"])
 
@@ -740,7 +802,7 @@ class WebviewBackendTests(unittest.TestCase):
         self.assertTrue(api.delete_proxy_pool(proxy_id)["ok"])
 
     def test_uninstall_preserves_custom_root_and_edits_only_owned_fields(self):
-        api = self.backend.HubApi()
+        api = self.backend.HubApi(SimpleNamespace(create_confirmation_dialog=Mock(return_value=True)))
         custom = Path(self.temp.name) / "custom"
         custom.mkdir()
         sentinel = custom / "sentinel.txt"
@@ -753,6 +815,7 @@ class WebviewBackendTests(unittest.TestCase):
           // Keep this
           "plugin": ["@cortexkit/opencode-antigravity-auth@latest",
                      "@cortexkit/opencode-antigravity-auth-extra"],
+          "plugins": [{"package":"@cortexkit/opencode-antigravity-auth@3.0.0"}, {"package":"./keep"}],
           "provider": {"google":{"options":{"apiKey":"antigravity","custom":true},"models":{"g":{}}}},
           "agent":{"title":{"model":"opencode/big-pickle"}}
         }'''
@@ -760,11 +823,12 @@ class WebviewBackendTests(unittest.TestCase):
         self.assertIn("// Keep this", updated)
         parsed = self.backend.jsonc_config.parse_config(updated)
         self.assertEqual(parsed["plugin"], ["@cortexkit/opencode-antigravity-auth-extra"])
+        self.assertEqual(parsed["plugins"], [{"package":"./keep"}])
         self.assertEqual(parsed["provider"]["google"], {"options":{"custom": True}, "models":{"g": {}}})
         self.assertEqual(parsed["agent"]["title"]["model"], "opencode/big-pickle")
 
     def test_uninstall_allowlist_and_failures_in_disposable_root(self):
-        api = self.backend.HubApi()
+        api = self.backend.HubApi(SimpleNamespace(create_confirmation_dialog=Mock(return_value=True)))
         temp = Path(self.temp.name)
         root = temp / "AppData" / "Roaming" / "AntigravityHub"
         config_dir = temp / ".config" / "opencode"
@@ -837,19 +901,19 @@ class WebviewBackendTests(unittest.TestCase):
 
         with patch("hub_restart.schedule_restart") as sched, \
              patch.object(self.backend.threading, "Thread", FakeThread), \
-             patch.object(self.backend.time, "sleep"), \
-             patch.object(self.backend.os, "_exit") as exit_mock:
+             patch.object(self.backend.time, "sleep"):
             res = api.restart_hub()
             self.assertTrue(res["ok"])
             sched.assert_called_once()
             self.assertEqual(len(spawned), 1)
             spawned[0]()
+            self.assertTrue(api._closing.is_set())
+            api._window_holder.destroy.assert_called_once()
+            api._shutdown_runtime()
             self.vless.stop_tunnel.assert_called_once()
             fake_srv.shutdown.assert_called_once()
             fake_srv.server_close.assert_called_once()
             api._tray_holder.remove.assert_called_once()
-            api._window_holder.destroy.assert_called_once()
-            exit_mock.assert_called_once_with(0)
 
 
     def test_configure_deepseek_api_registers_provider_in_opencode(self):

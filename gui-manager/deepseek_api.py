@@ -6,7 +6,9 @@ balance rather than the 5h/weekly window quotas used by Google or ChatGPT.
 """
 
 import json
+import math
 import os
+import subprocess
 import time
 import urllib.error
 import urllib.parse
@@ -44,7 +46,8 @@ FALLBACK_MODELS: List[Dict[str, Any]] = [
 
 def _default_config() -> Dict[str, Any]:
     return {"base_url": DEFAULT_BASE_URL, "connected": False, "cached_balance": {},
-            "auto_import_disabled": False, "models": [], "selected_models": []}
+            "auto_import_disabled": False, "models": [], "selected_models": [],
+            "provider_id": "", "managed_models": {}}
 
 
 def load_config() -> Dict[str, Any]:
@@ -98,25 +101,29 @@ def save_api_key(key: Any) -> bool:
     key = clean_key(key)
     if not is_valid_key(key):
         raise ValueError("Укажите корректный API-ключ DeepSeek (sk-...)")
-    atomic_write(SECRET_FILE, json.dumps(protect_secret("deepseek-api-key", {"apiKey": key})))
     cfg = load_config()
+    if _stored_key()[0] != key:
+        cfg["cached_balance"] = {}
+    atomic_write(SECRET_FILE, json.dumps(protect_secret("deepseek-api-key", {"apiKey": key})))
     cfg["connected"] = True
     # An explicit key always re-enables adoption from OpenCode/env on next start.
     cfg["auto_import_disabled"] = False
-    save_config(cfg)
+    if not save_config(cfg):
+        raise OSError("Не удалось сохранить настройки DeepSeek")
     return True
 
 
 def clear_api_key() -> bool:
+    global _auto_import_pending
+    cfg = load_config()
+    cfg.update(connected=False, cached_balance={}, auto_import_disabled=True)
+    if not save_config(cfg):
+        return False
+    _auto_import_pending = False
     try:
         SECRET_FILE.unlink(missing_ok=True)
     except OSError:
-        pass
-    cfg = load_config()
-    cfg["connected"] = False
-    cfg["cached_balance"] = {}
-    cfg["auto_import_disabled"] = True
-    save_config(cfg)
+        return False
     return True
 
 
@@ -181,19 +188,18 @@ def load_api_key() -> str:
     global _auto_import_pending
     stored, stored_ms = _stored_key()
     disabled = bool(load_config().get("auto_import_disabled"))
-    if stored:
-        if not disabled:
-            candidate, candidate_ms = _opencode_candidate()
-            if is_valid_key(candidate) and candidate != stored and candidate_ms > stored_ms:
-                try:
-                    save_api_key(candidate)
-                    _auto_import_pending = True
-                    return candidate
-                except Exception:
-                    pass
-        return stored
     if disabled:
         return ""
+    if stored:
+        candidate, candidate_ms = _opencode_candidate()
+        if is_valid_key(candidate) and candidate != stored and candidate_ms > stored_ms:
+            try:
+                save_api_key(candidate)
+                _auto_import_pending = True
+                return candidate
+            except Exception:
+                pass
+        return stored
     imported = _key_from_environment() or _opencode_candidate()[0]
     if imported and is_valid_key(imported):
         try:
@@ -201,6 +207,7 @@ def load_api_key() -> str:
             _auto_import_pending = True
         except Exception:
             pass
+            return ""
         return imported
     return ""
 
@@ -257,9 +264,12 @@ def parse_balance_payload(payload: Any) -> Dict[str, Any]:
         raise ValueError("Некорректный ответ DeepSeek")
 
     def amount(value: Any) -> Optional[float]:
+        if isinstance(value, bool):
+            return None
         try:
-            return round(float(value), 4)
-        except (TypeError, ValueError):
+            number = float(value)
+            return round(number, 4) if math.isfinite(number) else None
+        except (TypeError, ValueError, OverflowError):
             return None
 
     infos = payload.get("balance_infos")
@@ -270,9 +280,12 @@ def parse_balance_payload(payload: Any) -> Dict[str, Any]:
     for info in infos:
         if not isinstance(info, dict):
             continue
+        total = amount(info.get("total_balance"))
+        if total is None:
+            continue
         balances.append({
             "currency": info.get("currency") or "CNY",
-            "total_balance": amount(info.get("total_balance")),
+            "total_balance": total,
             "granted_balance": amount(info.get("granted_balance")),
             "topped_up_balance": amount(info.get("topped_up_balance")),
         })
@@ -336,7 +349,7 @@ def fetch_balance(api_key: Optional[str] = None, base_url: Optional[str] = None,
         else:
             error = f"Ошибка DeepSeek: HTTP {exc.code}"
     except Exception as exc:
-        error = f"Ошибка сети DeepSeek: {str(exc)[:120]}"
+        error = "DeepSeek вернул некорректный баланс" if isinstance(exc, ValueError) else "Не удалось обновить баланс DeepSeek"
 
     cfg = load_config()
     cached = cfg.get("cached_balance")
@@ -344,9 +357,10 @@ def fetch_balance(api_key: Optional[str] = None, base_url: Optional[str] = None,
         stale = dict(cached)
         stale["status"] = "stale"
         stale["error"] = error
-        return stale
-    result = empty_balance("error")
-    result["error"] = error
+        result = stale
+    else:
+        result = empty_balance("error")
+        result["error"] = error
     cfg["cached_balance"] = result
     save_config(cfg)
     return result
@@ -369,8 +383,8 @@ def refresh_balance_silent() -> Dict[str, Any]:
 def provider_state() -> Dict[str, Any]:
     """Non-secret state for the web frontend."""
     global _auto_import_pending
-    cfg = load_config()
     key = load_api_key()
+    cfg = load_config()
     if _auto_import_pending:
         _auto_import_pending = False
         try:
@@ -505,26 +519,44 @@ def fetch_models(api_key: Optional[str] = None, base_url: Optional[str] = None,
     items = payload.get("data") if isinstance(payload, dict) else payload
     models: List[Dict[str, Any]] = []
     seen = set()
-    for item in items if isinstance(items, list) else []:
+    if not isinstance(items, list):
+        raise ValueError("DeepSeek вернул некорректный каталог моделей")
+    for item in items:
         model = _normalize_model(item)
         if model and model["id"] not in seen:
             seen.add(model["id"])
             models.append(model)
-    if not models:
-        models = [dict(model) for model in FALLBACK_MODELS]
+    if items and not models:
+        raise ValueError("DeepSeek вернул некорректный каталог моделей")
     models.sort(key=lambda model: model["id"].lower())
     return models
 
 
 def selected_models(config: Optional[dict] = None) -> List[str]:
-    """Selected model IDs currently registered in opencode.json(c)."""
+    """Hub-selected models still present in OpenCode, not user-owned extras."""
     try:
         data = config if isinstance(config, dict) else _read_opencode_config()[2]
     except Exception:
         return []
-    provider = (data.get("provider") or {}).get(find_provider_id(data), {})
+    cfg = load_config()
+    providers = data.get("provider")
+    provider = providers.get(cfg.get("provider_id") or find_provider_id(data)) if isinstance(providers, dict) else None
     models = provider.get("models") if isinstance(provider, dict) else None
-    return list(models) if isinstance(models, dict) else []
+    return [mid for mid in cfg["selected_models"] if mid in models] if isinstance(models, dict) else []
+
+
+def _remove_managed_models(text: str, data: dict, cfg: dict, *, keep=()) -> str:
+    """Only remove an entry that still equals what the Hub installed."""
+    provider_id = cfg.get("provider_id") or find_provider_id(data)
+    providers = data.get("provider")
+    provider = providers.get(provider_id) if isinstance(providers, dict) else None
+    models = provider.get("models") if isinstance(provider, dict) else None
+    managed = cfg.get("managed_models")
+    if isinstance(models, dict) and isinstance(managed, dict):
+        for mid, descriptor in managed.items():
+            if mid not in keep and mid in models and models[mid] == descriptor:
+                text = jsonc_config.remove_property(text, ("provider", provider_id, "models", mid))
+    return text
 
 
 def configure_opencode_models(model_ids: Optional[List[str]] = None,
@@ -535,56 +567,67 @@ def configure_opencode_models(model_ids: Optional[List[str]] = None,
     if not key:
         raise ValueError("Сначала сохраните API-ключ DeepSeek")
     origin = api_origin(base_url)
-    catalog = [model for model in (load_config().get("models") or FALLBACK_MODELS)
-               if isinstance(model, dict) and model.get("id")]
+    cfg = load_config()
+    catalog = [model for item in (cfg.get("models") or FALLBACK_MODELS)
+               if (model := _normalize_model(item))]
     if not catalog:
         catalog = [dict(model) for model in FALLBACK_MODELS]
     available = {model["id"]: model for model in catalog}
-    wanted = [str(mid) for mid in (model_ids or []) if str(mid) in available]
-    if not wanted:
-        wanted = list(available.keys())
+    wanted = list(available) if model_ids is None else list(dict.fromkeys(str(mid) for mid in model_ids))
+    if any(mid not in available for mid in wanted):
+        raise ValueError("Выберите модели из каталога DeepSeek")
 
     path, original, data = _read_opencode_config()
-    provider_id = find_provider_id(data)
     providers = data.get("provider")
     if providers is not None and not isinstance(providers, dict):
         raise ValueError("Поле provider в конфигурации OpenCode должно быть объектом.")
+    provider_id = cfg.get("provider_id")
+    if not provider_id or provider_id not in (providers or {}):
+        provider_id = find_provider_id(data)
     existing = (providers or {}).get(provider_id)
+    if existing is not None and not isinstance(existing, dict):
+        raise ValueError("Конфигурация провайдера DeepSeek имеет неподдерживаемый формат.")
     existing_models = existing.get("models") if isinstance(existing, dict) else None
-
-    merged: Dict[str, Any] = dict(existing_models) if isinstance(existing_models, dict) else {}
+    if existing_models is not None and not isinstance(existing_models, dict):
+        raise ValueError("Поле models провайдера DeepSeek должно быть объектом.")
+    existing_models = existing_models or {}
+    previous = cfg.get("managed_models") if provider_id == cfg.get("provider_id") else {}
+    previous = previous if isinstance(previous, dict) else {}
+    managed = {}
+    updated = _remove_managed_models(original, data, cfg, keep=wanted)
     for model_id in wanted:
+        if model_id in existing_models:
+            if model_id in previous and existing_models[model_id] == previous[model_id]:
+                managed[model_id] = previous[model_id]
+            continue
         meta = available[model_id]
-        merged[model_id] = {
+        managed[model_id] = {
             "name": meta.get("name") or model_id,
             "limit": {"context": meta["context"], "output": meta["output"]},
         }
-
-    if isinstance(existing, dict):
-        # Keep the user's own provider settings; only refresh the model list.
-        updated = jsonc_config.set_property(original, ("provider", provider_id, "models"), merged)
-    elif _uses_builtin_provider(provider_id):
-        # OpenCode already knows this provider; only attach the model list so
-        # its built-in descriptor (npm package, base URL) stays untouched.
-        updated = jsonc_config.set_property(original, ("provider", provider_id, "models"), merged)
-    else:
-        updated = jsonc_config.set_property(original, ("provider", provider_id), {
-            "npm": "@ai-sdk/openai-compatible",
-            "name": PROVIDER_NAME,
-            "options": {"baseURL": origin},
-            "models": merged,
+    if wanted and existing is None and not _uses_builtin_provider(provider_id):
+        updated = jsonc_config.set_property(updated, ("provider", provider_id), {
+            "npm": "@ai-sdk/openai-compatible", "name": PROVIDER_NAME,
+            "options": {"baseURL": origin}, "models": managed,
         })
-    if "$schema" not in data:
+    else:
+        for mid, descriptor in managed.items():
+            if mid not in existing_models:
+                updated = jsonc_config.set_property(updated, ("provider", provider_id, "models", mid), descriptor)
+    if wanted and "$schema" not in data:
         updated = jsonc_config.set_property(updated, ("$schema",), "https://opencode.ai/config.json")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(path, updated)
+    if updated != original:
+        atomic_write(path, updated)
 
-    cfg = load_config()
     cfg["models"] = catalog
     cfg["selected_models"] = wanted
     cfg["provider_id"] = provider_id
+    cfg["managed_models"] = managed
     cfg["base_url"] = origin
-    save_config(cfg)
+    if not save_config(cfg):
+        if updated != original:
+            atomic_write(path, original)
+        raise OSError("Не удалось сохранить выбранные модели DeepSeek")
     return wanted
 
 
@@ -596,7 +639,7 @@ def sync_opencode_credential(api_key: Optional[str] = None, provider_id: Optiona
     cli = openai_manager.find_opencode_cli()
     if not cli:
         raise ValueError("Не найден OpenCode CLI. Запустите OpenCode и повторите подключение.")
-    target = provider_id or find_provider_id()
+    target = provider_id or load_config().get("provider_id") or find_provider_id()
     existing_id = ""
     try:
         existing_id = opencode_credentials.credential_id(target)
@@ -612,7 +655,6 @@ def sync_opencode_credential(api_key: Optional[str] = None, provider_id: Optiona
         "value": {"type": "key", "key": key},
     }]
     try:
-        import subprocess
         result = subprocess.run(
             [cli, "auth", "import"],
             input=json.dumps(credential), capture_output=True, text=True,
@@ -629,30 +671,30 @@ def sync_opencode_credential(api_key: Optional[str] = None, provider_id: Optiona
 
 
 def disconnect_opencode() -> bool:
-    """Remove the DeepSeek models from OpenCode and drop stored credentials."""
-    removed = False
+    """Remove Hub model entries and sign out the registered integration."""
+    cfg = load_config()
     try:
         path, original, data = _read_opencode_config()
-        providers = data.get("provider")
-        if isinstance(providers, dict):
-            updated = original
-            for provider_id in {find_provider_id(data), PROVIDER_ID, "deepseek"}:
-                provider = providers.get(provider_id)
-                if isinstance(provider, dict) and isinstance(provider.get("models"), dict):
-                    updated = jsonc_config.set_property(updated, ("provider", provider_id, "models"), {})
-                    removed = True
-            if updated != original:
-                atomic_write(path, updated)
-    except Exception as exc:
-        print(f"[DeepSeek API] Failed to update opencode.json: {exc}")
-
-    cli = openai_manager.find_opencode_cli()
-    if cli:
-        import subprocess
-        for provider_id in _OPENCODE_INTEGRATIONS:
+        target = cfg.get("provider_id") or find_provider_id(data)
+        cli = openai_manager.find_opencode_cli()
+        if not cli and opencode_credentials.has_credential(target):
+            return False
+        updated = _remove_managed_models(original, data, cfg)
+        if updated != original:
+            atomic_write(path, updated)
+        if cli:
             try:
-                subprocess.run([cli, "auth", "logout", provider_id], capture_output=True, timeout=15)
-            except Exception:
-                pass
-        opencode_credentials.invalidate()
-    return removed
+                result = subprocess.run([cli, "auth", "logout", target], capture_output=True, timeout=15)
+                if result.returncode != 0:
+                    raise OSError("Ключ DeepSeek не удалён из OpenCode")
+            except (OSError, subprocess.TimeoutExpired):
+                if updated != original:
+                    atomic_write(path, original)
+                return False
+            finally:
+                opencode_credentials.invalidate()
+        cfg.update(selected_models=[], managed_models={}, provider_id="")
+        return save_config(cfg)
+    except Exception as exc:
+        print(f"[DeepSeek API] Disconnect failed ({type(exc).__name__})")
+        return False

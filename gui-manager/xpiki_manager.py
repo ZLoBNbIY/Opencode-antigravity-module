@@ -10,6 +10,8 @@ import os
 import sys
 import json
 import socket
+import time
+from decimal import Decimal, InvalidOperation
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -17,10 +19,12 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 
 import secure_storage
+import jsonc_config
 
 CONFIG_DIR = Path.home() / ".config" / "opencode"
 try:
     import hub_paths
+    CONFIG_DIR = hub_paths.OPENCODE_CONFIG_DIR
     XPIKI_CONFIG_FILE = hub_paths.XPIKI_CONFIG_FILE
 except Exception:
     XPIKI_CONFIG_FILE = CONFIG_DIR / "xpiki.json"
@@ -104,7 +108,11 @@ def load_xpiki_config() -> Dict[str, Any]:
 
 def save_xpiki_config(data: Dict[str, Any]) -> bool:
     try:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        if XPIKI_CONFIG_FILE.exists() and data.get("cached_quota"):
+            raw = json.loads(XPIKI_CONFIG_FILE.read_text(encoding="utf-8"))
+            previous = secure_storage.unprotect_payload(raw, "xpiki-config") if "protection" in raw else raw
+            if _quota_scope(previous) != _quota_scope(data):
+                data = {**data, "cached_quota": {}}
         record = secure_storage.protect_payload("xpiki-config", data)
         secure_storage.atomic_write(
             XPIKI_CONFIG_FILE,
@@ -124,17 +132,35 @@ def _validate_xpiki_base_url(base_url: str) -> str:
     return clean
 
 
+def _quota_scope(config):
+    return (config.get("api_key") or "", (config.get("base_url") or DEFAULT_BASE_URL).rstrip("/"))
+
+
+def _connection_http_error(code):
+    details = {
+        401: ("auth_failed", "Ошибка 401: Неверный API-ключ Xpiki."),
+        402: ("insufficient_balance", "Ошибка 402: Баланс Xpiki исчерпан."),
+        403: ("forbidden", "Ошибка 403: Доступ запрещен (проверьте VPN и баланс токенов)."),
+        429: ("rate_limited", "Ошибка 429: Слишком много запросов к Xpiki."),
+    }
+    status, message = details.get(code, (f"http_{code}", f"Сервер вернул HTTP {code}"))
+    return False, message, {"status": status}
+
+
 def test_xpiki_connection(api_key: str, base_url: str = DEFAULT_BASE_URL, timeout: int = 12) -> Tuple[bool, str, Dict[str, Any]]:
     """Tests connection to the Claude API gateway using Anthropic protocol."""
     api_key = str(api_key or "").strip()
     if not api_key or any(c in api_key for c in "\r\n\x00"):
-        return False, "Укажите API-ключ Claude (sk-...)", {}
+        return False, "Укажите API-ключ Claude (sk-...)", {"status": "invalid_key"}
     try:
         base_url = _validate_xpiki_base_url(base_url)
     except ValueError as exc:
-        return False, str(exc), {}
+        return False, str(exc), {"status": "invalid_url"}
 
-    opener = get_http_opener(timeout=timeout)
+    try:
+        opener = get_http_opener(timeout=timeout)
+    except Exception:
+        return False, "Не удалось подготовить маршрут Xpiki", {"status": "route_error"}
     headers = {
         "User-Agent": USER_AGENT,
         "x-api-key": api_key,
@@ -148,16 +174,16 @@ def test_xpiki_connection(api_key: str, base_url: str = DEFAULT_BASE_URL, timeou
         req = urllib.request.Request(f"{base_url}/models", headers=headers)
         with opener.open(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
+            if not isinstance(data, dict) or not isinstance(data.get("data"), list):
+                raise ValueError()
             return True, "Подключение успешно установлено (каталог моделей доступен)!", data
     except urllib.error.HTTPError as e:
-        if e.code == 401:
-            return False, f"Ошибка 401: Неверный API-ключ для {base_url}.", {}
-        if e.code == 403:
-            return False, "Ошибка 403: Доступ запрещен (проверьте VPN и баланс токенов).", {}
         if e.code not in (404, 405):
-            return False, f"Сервер вернул HTTP {e.code}: {e.reason}", {}
+            return _connection_http_error(e.code)
+    except ValueError:
+        return False, "Xpiki вернула некорректный каталог моделей", {"status": "invalid_response"}
     except Exception:
-        pass
+        return False, "Не удалось подключиться к Xpiki", {"status": "network_error"}
 
     # 2. Try lightweight ping to /messages only when /models is unsupported
     try:
@@ -173,21 +199,20 @@ def test_xpiki_connection(api_key: str, base_url: str = DEFAULT_BASE_URL, timeou
         )
         with opener.open(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
+            if not isinstance(data, dict) or not isinstance(data.get("content"), list) or not data["content"]:
+                raise ValueError()
             return True, "Подключение успешно установлено (сообщения обрабатываются)!", data
     except urllib.error.HTTPError as e:
-        if e.code == 401:
-            return False, f"Ошибка 401: Неверный API-ключ для {base_url}.", {}
-        if e.code == 403:
-            return False, "Ошибка 403: Доступ запрещен (проверьте VPN и баланс токенов).", {}
-        return False, f"Сервер вернул HTTP {e.code}: {e.reason}", {}
-    except Exception as e:
-        return False, f"Не удалось подключиться к {base_url}: {e}", {}
+        return _connection_http_error(e.code)
+    except ValueError:
+        return False, "Xpiki вернула некорректный ответ", {"status": "invalid_response"}
+    except Exception:
+        return False, "Не удалось подключиться к Xpiki", {"status": "network_error"}
 
 
 def configure_opencode(api_key: str, base_url: str = DEFAULT_BASE_URL,
                        enabled_models: Optional[List[str]] = None, *, previous_key: str = "") -> bool:
     """Configures the xpiki provider in ~/.config/opencode/opencode.json(c)."""
-    import jsonc_config
     api_key = str(api_key or "").strip()
     base_url = (base_url or DEFAULT_BASE_URL).strip().rstrip("/")
     if enabled_models is None:
@@ -226,13 +251,14 @@ def configure_opencode(api_key: str, base_url: str = DEFAULT_BASE_URL,
                      and opts.get("apiKey") == previous_key)
             updated = jsonc_config.remove_property(original, ("provider", "xpiki")) if owned else original
 
-        if updated != original or not cfg_path.exists():
+        if updated != original:
             secure_storage.atomic_write(cfg_path, updated)
-        try:
-            import opencode_config
-            opencode_config.ensure_session_title_config(cfg_path)
-        except Exception:
-            pass
+        if api_key:
+            try:
+                import opencode_config
+                opencode_config.ensure_session_title_config(cfg_path)
+            except Exception:
+                pass
         return True
     except Exception as e:
         print(f"[Xpiki] Failed to configure opencode.json: {e}")
@@ -242,12 +268,18 @@ def configure_opencode(api_key: str, base_url: str = DEFAULT_BASE_URL,
 def disconnect_xpiki() -> bool:
     """Removes Xpiki from OpenCode provider configuration and clears stored key."""
     cfg = load_xpiki_config()
-    if not configure_opencode("", previous_key=cfg.get("api_key", "")):
-        return False
-    cfg["connected"] = False
-    cfg["api_key"] = ""
-    cfg["cached_quota"] = {}
-    return save_xpiki_config(cfg)
+    try:
+        path = jsonc_config.config_path(CONFIG_DIR)
+        original = path.read_bytes() if path.exists() else None
+        if not configure_opencode("", previous_key=cfg.get("api_key", "")):
+            return False
+        if save_xpiki_config({**cfg, "connected": False, "api_key": "", "cached_quota": {}}):
+            return True
+        if original is not None and path.read_bytes() != original:
+            secure_storage.atomic_write_bytes(path, original)
+    except OSError:
+        pass
+    return False
 
 
 def fetch_xpiki_quota(api_key: str, base_url: str = DEFAULT_BASE_URL, timeout: int = 12) -> Dict[str, Any]:
@@ -257,7 +289,7 @@ def fetch_xpiki_quota(api_key: str, base_url: str = DEFAULT_BASE_URL, timeout: i
     A failed request must not be presented as a real 100M quota: the account's
     actual limit is returned by the server and can differ per key/tariff.
     """
-    api_key = api_key.strip()
+    api_key = (api_key or "").strip()
     base_url = (base_url or DEFAULT_BASE_URL).strip().rstrip("/")
     empty = {
         "status": "no_key" if not api_key else "error",
@@ -272,10 +304,6 @@ def fetch_xpiki_quota(api_key: str, base_url: str = DEFAULT_BASE_URL, timeout: i
     if not api_key:
         return empty
 
-    opener = get_http_opener(timeout=timeout)
-    parsed = urllib.parse.urlparse(base_url)
-    origin = f"{parsed.scheme or 'https'}://{parsed.netloc or 'api.xpiki.com'}"
-    endpoint = f"{origin}/api/public/key-status"
     headers = {
         "User-Agent": USER_AGENT,
         "Authorization": f"Bearer {api_key}",
@@ -283,22 +311,28 @@ def fetch_xpiki_quota(api_key: str, base_url: str = DEFAULT_BASE_URL, timeout: i
     }
 
     try:
+        parsed = urllib.parse.urlparse(_validate_xpiki_base_url(base_url))
+        endpoint = f"https://{parsed.netloc}/api/public/key-status"
+        opener = get_http_opener(timeout=timeout)
         # Match the request made by https://api.xpiki.com/key.  In particular,
         # it is a body-less POST, not the old JSON {} request.
         req = urllib.request.Request(endpoint, method="POST", headers=headers)
         with opener.open(req, timeout=timeout) as resp:
             raw = json.loads(resp.read().decode("utf-8"))
-        if not isinstance(raw, dict) or raw.get("code") != 0 or not isinstance(raw.get("data"), dict):
-            raise ValueError(raw.get("message", "Некорректный ответ Xpiki") if isinstance(raw, dict) else "Некорректный ответ Xpiki")
+        if not isinstance(raw, dict) or type(raw.get("code")) is not int or raw["code"] != 0 or not isinstance(raw.get("data"), dict):
+            raise ValueError()
 
         d = raw["data"]
-        def _safe_int(val, default=0):
+        def _safe_int(val):
             try:
-                return int(float(val)) if val is not None else default
-            except (TypeError, ValueError):
-                return default
-        total = _safe_int(d.get("quota_limit"), 0)
-        used = _safe_int(d.get("quota_used"), 0)
+                number = Decimal(str(val))
+                return int(number) if number.is_finite() and 0 <= number <= 2**63 - 1 and number == number.to_integral_value() else None
+            except InvalidOperation:
+                return None
+        total = _safe_int(d.get("quota_limit"))
+        used = _safe_int(d.get("quota_used"))
+        if total is None or used is None:
+            raise ValueError()
         remaining = max(0, total - used)
         quota_info = {
             "status": "ok",
@@ -306,37 +340,29 @@ def fetch_xpiki_quota(api_key: str, base_url: str = DEFAULT_BASE_URL, timeout: i
             "quota_used": used,
             "remaining_tokens": remaining,
             "remaining_percent": round((remaining / total) * 100, 1) if total > 0 else 0.0,
-            "effective_rpm": _safe_int(d.get("effective_rpm"), None),
-            "effective_tpm": _safe_int(d.get("effective_tpm"), None),
-            "expires_at": d.get("expires_at") or "",
+            "effective_rpm": _safe_int(d.get("effective_rpm")),
+            "effective_tpm": _safe_int(d.get("effective_tpm")),
+            "expires_at": d["expires_at"] if isinstance(d.get("expires_at"), str) else "",
+            "checked_at": int(time.time()),
         }
         cfg = load_xpiki_config()
-        cfg["cached_quota"] = quota_info
-        save_xpiki_config(cfg)
+        if _quota_scope(cfg) == (api_key, base_url):
+            save_xpiki_config({**cfg, "cached_quota": quota_info})
         return quota_info
     except urllib.error.HTTPError as e:
-        detail = f"HTTP {e.code}"
-        try:
-            body = e.read().decode("utf-8")
-            payload = json.loads(body)
-            if isinstance(payload, dict) and payload.get("message"):
-                detail = f"HTTP {e.code}: {payload['message']}"
-        except Exception:
-            pass
-        print(f"[Xpiki] Key status check error: {detail}")
-        empty["error"] = detail
+        empty["error"] = f"HTTP {e.code}"
     except Exception as e:
-        print(f"[Xpiki] Key status check error: {e}")
-        empty["error"] = str(e)
+        empty["error"] = "Xpiki вернула некорректную квоту" if isinstance(e, ValueError) else "Не удалось обновить квоту Xpiki"
 
     cfg = load_xpiki_config()
+    if _quota_scope(cfg) != (api_key, base_url):
+        return empty
     cached = cfg.get("cached_quota")
-    if isinstance(cached, dict) and cached.get("status") == "ok":
-        stale = dict(cached)
-        stale["status"] = "stale"
-        stale["error"] = empty.get("error", "Не удалось обновить квоту")
-        return stale
-    return empty
+    result = {**cached, "status": "stale", "error": empty["error"]} if (
+        isinstance(cached, dict) and cached.get("status") in ("ok", "stale")
+    ) else empty
+    save_xpiki_config({**cfg, "cached_quota": result})
+    return result
 
 
 def refresh_xpiki_quota_silent() -> Dict[str, Any]:
@@ -346,4 +372,4 @@ def refresh_xpiki_quota_silent() -> Dict[str, Any]:
     url = cfg.get("base_url") or DEFAULT_BASE_URL
     if key and cfg.get("connected"):
         return fetch_xpiki_quota(key, url)
-    return cfg.get("cached_quota") or {}
+    return {}

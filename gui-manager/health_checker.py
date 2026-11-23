@@ -192,12 +192,12 @@ def test_openai_account_health(account: dict, timeout=10) -> dict:
         with opener.open(req, timeout=timeout) as resp:
             elapsed_ms = round((time.perf_counter() - start_t) * 1000)
             data = json.loads(resp.read().decode("utf-8"))
-            plan_type = (data.get("plan_type") or account.get("plan_type") or "plus").upper()
-            rate_limit = data.get("rate_limit", {})
-            allowed = rate_limit.get("allowed", True)
-            limit_reached = rate_limit.get("limit_reached", False)
+            quota = openai_manager._parse_usage_payload(data, dict(account, quota=None))
+            if quota.get("status") != "ok":
+                raise ValueError()
+            plan_type = str(quota.get("plan_type") or "plus").upper()
 
-            if limit_reached or not allowed:
+            if openai_manager._openai_quota_exhausted(quota):
                 return {
                     "ok": True,
                     "status": "rate_limited",
@@ -237,12 +237,15 @@ def test_openai_account_health(account: dict, timeout=10) -> dict:
                 "message": f"Ошибка {e.code} ({elapsed_ms} мс)",
                 "latency_ms": elapsed_ms,
             }
-    except Exception as e:
+    except ValueError:
+        return {"ok": False, "status": "invalid_response", "message": "OpenAI вернул некорректные данные о квоте",
+                "latency_ms": round((time.perf_counter() - start_t) * 1000)}
+    except Exception:
         elapsed_ms = round((time.perf_counter() - start_t) * 1000)
         return {
             "ok": False,
             "status": "network_error",
-            "message": f"Ошибка сети: {str(e)[:100]}",
+            "message": "Не удалось получить данные о квоте OpenAI",
             "latency_ms": elapsed_ms,
         }
 
@@ -317,6 +320,7 @@ def test_openai_model_generation(
         with opener.open(req, timeout=timeout) as resp:
             elapsed_ms = round((time.perf_counter() - t0) * 1000)
             collected_text = []
+            completed = False
             for _ in range(500):
                 line = resp.readline()
                 if not line:
@@ -325,24 +329,35 @@ def test_openai_model_generation(
                 if line_str.startswith("data:"):
                     data_str = line_str[5:].strip()
                     if data_str == "[DONE]":
+                        completed = bool(collected_text)
                         break
                     try:
                         chunk = json.loads(data_str)
                         c_type = chunk.get("type")
                         if c_type == "response.output_text.delta":
                             delta = chunk.get("delta", "")
-                            if delta:
+                            if isinstance(delta, str) and delta:
                                 collected_text.append(delta)
                         elif c_type == "response.output_text.done":
                             done_txt = chunk.get("text", "")
-                            if done_txt and not collected_text:
+                            if isinstance(done_txt, str) and done_txt and not collected_text:
                                 collected_text.append(done_txt)
                         elif c_type == "response.completed":
+                            completed = True
                             break
+                        elif c_type in ("error", "response.failed", "response.incomplete"):
+                            response = chunk.get("response")
+                            error = response.get("error") if isinstance(response, dict) else chunk
+                            status = _openai_generation_error_status(error)
+                            return {"ok": False, "status": status, "message": f"OpenAI не завершил генерацию {model}",
+                                    "latency_ms": elapsed_ms, "model": model}
                     except Exception:
                         pass
 
             text = "".join(collected_text).strip()
+            if not completed or not text:
+                return {"ok": False, "status": "invalid_response", "message": f"Неполный ответ генерации {model}",
+                        "latency_ms": elapsed_ms, "model": model}
             msg = f"Генерация {model} успешна ({elapsed_ms} мс)"
             if text:
                 msg += f": «{text[:60]}»"
@@ -356,9 +371,10 @@ def test_openai_model_generation(
             }
     except urllib.error.HTTPError as e:
         elapsed_ms = round((time.perf_counter() - t0) * 1000)
-        err_body = ""
+        error = None
         try:
-            err_body = e.read().decode("utf-8", errors="ignore")
+            payload = json.loads(e.read(8192))
+            error = payload.get("error") if isinstance(payload, dict) else None
         except Exception:
             pass
 
@@ -376,28 +392,38 @@ def test_openai_model_generation(
                 "message": f"Квота модели {model} исчерпана (429 Rate Limit, {elapsed_ms} мс)",
                 "latency_ms": elapsed_ms,
             }
-        elif e.code == 403:
+        elif e.code in (400, 403) and _openai_generation_error_status(error) == "geo_blocked":
             return {
                 "ok": False,
                 "status": "geo_blocked",
-                "message": f"OpenAI отклонил запрос (403): регион заблокирован или требуется сменить маршрут VLESS/прокси ({elapsed_ms} мс)",
+                "message": f"OpenAI отклонил запрос: регион не поддерживается ({elapsed_ms} мс)",
                 "latency_ms": elapsed_ms,
             }
         else:
             return {
                 "ok": False,
-                "status": f"http_{e.code}",
-                "message": f"Ошибка OpenAI {e.code}: {err_body[:120]} ({elapsed_ms} мс)",
+                "status": "forbidden" if e.code == 403 else f"http_{e.code}",
+                "message": f"Ошибка OpenAI {e.code} ({elapsed_ms} мс)",
                 "latency_ms": elapsed_ms,
             }
-    except Exception as exc:
+    except Exception:
         elapsed_ms = round((time.perf_counter() - t0) * 1000)
         return {
             "ok": False,
             "status": "network_error",
-            "message": f"Ошибка сети при генерации OpenAI: {str(exc)[:100]} ({elapsed_ms} мс)",
+            "message": f"Ошибка сети при генерации OpenAI ({elapsed_ms} мс)",
             "latency_ms": elapsed_ms,
         }
+
+
+def _openai_generation_error_status(error):
+    if isinstance(error, dict):
+        code = error.get("code")
+        if code in ("unsupported_country_region_territory", "region_not_supported"):
+            return "geo_blocked"
+        if code in ("rate_limit_exceeded", "usage_limit_reached", "insufficient_quota"):
+            return "rate_limited"
+    return "generation_failed"
 
 
 ANTIGRAVITY_MODEL_INTERNAL_MAP = {
@@ -746,8 +772,8 @@ def test_provider_deep_probe(provider: str, timeout: int = 15) -> dict:
         if not api_key:
             return {"ok": False, "status": "no_key", "message": "API-ключ TokenLavka не задан"}
         t0 = time.perf_counter()
-        ok, message = tokenlavka_manager.test_connection(api_key, timeout=timeout)
-        return {"ok": ok, "status": "active" if ok else "error", "message": message,
+        ok, message, status = tokenlavka_manager.probe_connection(api_key, timeout=timeout)
+        return {"ok": ok, "status": status, "message": message,
                 "latency_ms": round((time.perf_counter() - t0) * 1000)}
 
     if provider == "google":
@@ -821,8 +847,8 @@ def test_provider_deep_probe(provider: str, timeout: int = 15) -> dict:
         if not api_key:
             return {"ok": False, "status": "no_key", "message": "API-ключ Claude (Xpiki) не задан"}
         base_url = cfg.get("base_url") or xpiki_manager.DEFAULT_BASE_URL
-        ok, msg, _ = xpiki_manager.test_xpiki_connection(api_key, base_url, timeout=timeout)
-        return {"ok": ok, "status": "active" if ok else "error", "message": msg}
+        ok, msg, data = xpiki_manager.test_xpiki_connection(api_key, base_url, timeout=timeout)
+        return {"ok": ok, "status": "active" if ok else data.get("status", "error"), "message": msg}
 
     elif provider == "openrouter-free":
         import openrouter_manager
@@ -834,7 +860,7 @@ def test_provider_deep_probe(provider: str, timeout: int = 15) -> dict:
         except Exception as exc:
             return {"ok": False, "status": "route_error", "message": f"Ошибка маршрута OpenRouter: {type(exc).__name__}"}
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy} if proxy else {}))
-        req = urllib.request.Request("https://openrouter.ai/api/v1/auth/key", headers={
+        req = urllib.request.Request(openrouter_manager.API_KEY_URL, headers={
             "Authorization": f"Bearer {api_key}",
             "User-Agent": "AntigravityHub-DeepProbe/1.0"
         })
@@ -843,14 +869,21 @@ def test_provider_deep_probe(provider: str, timeout: int = 15) -> dict:
             with opener.open(req, timeout=timeout) as resp:
                 elapsed = round((time.perf_counter() - t0) * 1000)
                 data = json.loads(resp.read().decode())
-                label = data.get("data", {}).get("label") or "Ключ активен"
-                return {"ok": True, "status": "active", "message": f"OpenRouter: {label} ({elapsed} мс)", "latency_ms": elapsed}
+                if not isinstance(data, dict) or not isinstance(data.get("data"), dict):
+                    raise ValueError()
+                return {"ok": True, "status": "active", "message": f"Ключ OpenRouter активен ({elapsed} мс)", "latency_ms": elapsed}
         except urllib.error.HTTPError as e:
+            if e.code == 401:
+                return {"ok": False, "status": "auth_failed", "message": "OpenRouter отклонил ключ (401)"}
             if e.code == 403:
                 return {"ok": False, "status": "forbidden", "message": "HTTP 403: Доступ запрещен (региональная блокировка OpenRouter или лимит ключа)"}
-            return {"ok": False, "status": f"http_{e.code}", "message": f"OpenRouter вернул HTTP {e.code}: {e.reason}"}
-        except Exception as e:
-            return {"ok": False, "status": "network_error", "message": f"Ошибка соединения с OpenRouter: {str(e)[:100]}"}
+            if e.code == 429:
+                return {"ok": False, "status": "rate_limited", "message": "OpenRouter ограничил частоту запросов (429)"}
+            return {"ok": False, "status": f"http_{e.code}", "message": f"OpenRouter вернул HTTP {e.code}"}
+        except ValueError:
+            return {"ok": False, "status": "invalid_response", "message": "OpenRouter вернул некорректные данные о ключе"}
+        except Exception:
+            return {"ok": False, "status": "network_error", "message": "Ошибка соединения с OpenRouter"}
 
     return {"ok": False, "status": "unknown_provider", "message": "Неизвестный провайдер"}
 

@@ -23,30 +23,34 @@ DEFAULT_HOSTS = {
 }
 REFRESH_SECONDS = 60
 PROBE_SECONDS = 6
+RETRY_SECONDS = 10
+PROBE_WORKERS = 8
 
 
 class AutoRouteUnavailable(OSError):
     pass
 
 
-def configured_routes(hub):
+def configured_routes(hub, provider=None):
     """Only explicitly configured transports; direct connections are opt-in manual routes."""
+    from provider_proxy import _get_candidate_proxies, _vless_upstream
+
     routes = []
     if hub.get("vless_enabled") and hub.get("vless_url"):
-        routes.append(("vless", f"http://127.0.0.1:{hub.get('vless_http_port') or 10879}"))
+        routes.append(("vless", _vless_upstream(hub)))
+        modes = hub.get("provider_routes")
+        mode = modes.get(provider, "default") if isinstance(modes, dict) else "default"
+        # The UI switch protects only Claude Auto; explicitly selected modes
+        # are handled independently by the dispatcher.
+        if provider == "claude-pro" and mode in ("default", "auto") and hub.get("vless_kill_switch") is not False:
+            return routes
     if hub.get("dns_mode") in ("standard", "dot", "doh"):
         routes.append(("dns", "dns://hub"))
-    proxy = str(hub.get("proxy") or "").strip()
-    try:
-        parsed = urlparse(proxy)
-        proxy_port = parsed.port
-    except ValueError:
-        return routes
-    if parsed.scheme in ("http", "https") and parsed.hostname:
-        local = parsed.hostname.lower() in ("127.0.0.1", "localhost", "::1")
-        own_port = local and proxy_port in (10880, 51180)
-        if not own_port and proxy not in [upstream for _, upstream in routes]:
-            routes.append(("proxy", proxy))
+    existing = {upstream for _, upstream in routes}
+    proxies = _get_candidate_proxies(hub)
+    if not hub.get("proxy_failover", True):
+        proxies = proxies[:1]
+    routes.extend(("proxy", url) for url in proxies if url not in existing)
     return routes
 
 
@@ -83,16 +87,21 @@ def probe_hosts(provider, opencode):
 
 
 class AutoRouter:
-    def __init__(self, connector, probe=None, clock=time.monotonic):
+    def __init__(self, connector, probe=None, clock=time.monotonic, *, vless_ready=None, vless_revision=None):
         self._connector = connector
         self._probe = probe or self._probe_https
         self._clock = clock
+        self._vless_ready = vless_ready
+        self._vless_revision = vless_revision
         self._lock = threading.RLock()
         self._entries = {}
 
     def _key(self, provider, hub, opencode):
-        keys = ("vless_enabled", "vless_url", "vless_http_port", "dns_mode", "custom_dns", "dot_host", "doh_url", "proxy")
-        data = [{key: hub.get(key) for key in keys}, probe_hosts(provider, opencode)]
+        keys = ("vless_enabled", "vless_url", "vless_http_port", "dns_mode", "custom_dns", "dot_host", "doh_url")
+        routes = configured_routes(hub, provider)
+        revision = self._vless_revision() if self._vless_revision and any(mode == "vless" for mode, _ in routes) else None
+        data = [{key: hub.get(key) for key in keys}, routes, revision,
+                bool(hub.get("proxy_failover", True)), probe_hosts(provider, opencode)]
         return provider, hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
     def _probe_https(self, upstream, host, hub):
@@ -136,16 +145,48 @@ class AutoRouter:
                 checks.append(self._probe(upstream, host, hub))
             except Exception as exc:
                 checks.append({"host": host, "ok": False, "latency_ms": None, "error": type(exc).__name__})
+        return self._summarize(mode, checks)
+
+    @staticmethod
+    def _summarize(mode, checks):
         successful = [check for check in checks if check.get("ok")]
         latencies = [check["latency_ms"] for check in successful if check.get("latency_ms") is not None]
         return {"mode": mode, "available": bool(successful), "passed": len(successful),
                 "total": len(checks), "latency_ms": statistics.median(latencies) if latencies else None,
                 "checks": checks}
 
-    @staticmethod
-    def _rank(rows):
-        return sorted((row for row in rows if row["available"]),
-                      key=lambda row: (-row["passed"], row["latency_ms"] if row["latency_ms"] is not None else float("inf")))
+    def _rank(self, entry, host=None):
+        """Rank transports by measurements, keeping candidate priority within a transport."""
+        by_mode = {}
+        now = self._clock()
+        failures = entry["failed_hosts"]
+        for upstream, row in entry["rows"]:
+            if row["available"] and row["mode"] == "vless" and self._vless_ready and not self._vless_ready(upstream):
+                if host is not None:
+                    continue
+                row = self._summarize("vless", [dict(check, ok=False, latency_ms=None, error="VlessUnavailable")
+                                                for check in row["checks"]])
+            if host is not None and failures.get((upstream, host), 0) > now:
+                continue
+            checks = row["checks"]
+            if host is None:
+                checks = [dict(check, ok=False, latency_ms=None, error="ConnectionFailed")
+                          if failures.get((upstream, check["host"]), 0) > now else check
+                          for check in checks]
+                row = self._summarize(row["mode"], checks)
+            elif any(check["host"] == host and not check.get("ok") for check in checks):
+                # A partial result can still serve the hosts that passed.
+                continue
+            by_mode.setdefault(row["mode"], []).append((upstream, row))
+
+        groups = [[item for item in group if item[1]["available"]] for group in by_mode.values()]
+
+        def score(group):
+            row = group[0][1]
+            return -row["passed"], row["latency_ms"] if row["latency_ms"] is not None else float("inf")
+
+        ranked = [item for group in sorted(filter(None, groups), key=score) for item in group]
+        return ranked, by_mode
 
     def refresh(self, provider, hub, opencode, force=False):
         key = self._key(provider, hub, opencode)
@@ -154,7 +195,7 @@ class AutoRouter:
             if entry and (entry["running"] or (not force and self._clock() < entry["expires"])):
                 return entry["event"]
             if entry is None:
-                entry = {"running": False, "rows": [], "selected": None, "checkedAt": None,
+                entry = {"running": False, "rows": [], "checkedAt": None,
                          "expires": 0, "event": threading.Event(), "failed_hosts": {}}
                 self._entries[key] = entry
             entry["running"] = True
@@ -171,21 +212,22 @@ class AutoRouter:
 
     def _refresh(self, entry, provider, hub, opencode):
         try:
-            routes = configured_routes(hub)
+            routes = configured_routes(hub, provider)
             hosts = probe_hosts(provider, opencode)
             rows = []
             if routes and hosts:
-                with ThreadPoolExecutor(max_workers=len(routes)) as pool:
-                    futures = [pool.submit(self._measure, mode, upstream, hosts, hub) for mode, upstream in routes]
-                    rows = [future.result() for future in futures]
-            ranked = self._rank(rows)
+                with ThreadPoolExecutor(max_workers=min(PROBE_WORKERS, len(routes))) as pool:
+                    futures = [(upstream, pool.submit(self._measure, mode, upstream, hosts, hub))
+                               for mode, upstream in routes]
+                    rows = [(upstream, future.result()) for upstream, future in futures]
             with self._lock:
                 entry["failed_hosts"] = {key: until for key, until in entry["failed_hosts"].items() if until > self._clock()}
-                entry.update(rows=rows, selected=ranked[0]["mode"] if ranked else None,
-                             checkedAt=time.time(), expires=self._clock() + (REFRESH_SECONDS if ranked else 10))
+                entry.update(rows=rows, checkedAt=time.time())
+                ranked, _ = self._rank(entry)
+                entry["expires"] = self._clock() + (REFRESH_SECONDS if ranked else RETRY_SECONDS)
         except Exception:
             with self._lock:
-                entry["expires"] = self._clock() + 10
+                entry["expires"] = self._clock() + RETRY_SECONDS
         finally:
             with self._lock:
                 entry["running"] = False
@@ -196,67 +238,80 @@ class AutoRouter:
             entry = self._entries.get(self._key(provider, hub, opencode))
             if entry is None:
                 return {"selected": None, "running": False, "rows": [], "checkedAt": None,
-                        "status": "pending" if configured_routes(hub) else "not-configured"}
-            return {"selected": entry["selected"], "running": entry["running"],
-                    "rows": copy.deepcopy(entry["rows"]), "checkedAt": entry["checkedAt"],
-                    "status": "ready" if entry["selected"] else "checking" if entry["running"]
-                    else "unavailable" if configured_routes(hub) else "not-configured"}
+                         "status": "pending" if configured_routes(hub, provider) else "not-configured"}
+            ranked, by_mode = self._rank(entry)
+            selected = ranked[0][1]["mode"] if ranked else None
+            # Keep one credential-free UI row per transport, even when Auto has
+            # measured several proxy candidates.
+            rows = [next((row for _, row in group if row["available"]), group[0][1])
+                    for group in by_mode.values()]
+            return {"selected": selected, "running": entry["running"],
+                    "rows": copy.deepcopy(rows), "checkedAt": entry["checkedAt"],
+                    "status": "ready" if selected else "checking" if entry["running"]
+                    else "unavailable" if configured_routes(hub, provider) else "not-configured"}
 
-    def selected_upstream(self, provider, hub, opencode):
-        state = self.state(provider, hub, opencode)
-        routes = dict(configured_routes(hub))
-        if state["selected"] in routes:
-            return routes[state["selected"]]
-        raise AutoRouteUnavailable("Auto: маршрут ещё не выбран или все настроенные маршруты недоступны")
-
-    def connect(self, provider, host, port, hub, opencode):
-        routes = dict(configured_routes(hub))
-        if not routes:
-            raise AutoRouteUnavailable("Auto: настройте VLESS, DNS или HTTP-прокси")
-        ready = self.refresh(provider, hub, opencode)
-        state = self.state(provider, hub, opencode)
-        if not state["selected"]:
-            if not ready.wait(PROBE_SECONDS * max(1, len(probe_hosts(provider, opencode))) + 2):
-                raise AutoRouteUnavailable("Auto: проверка маршрутов ещё выполняется")
+    def selected_upstream(self, provider, hub, opencode, *, host=None):
+        if host is not None:
+            host = host.lower().rstrip(".")
         key = self._key(provider, hub, opencode)
         with self._lock:
             entry = self._entries.get(key)
-            ranked = self._rank(entry["rows"]) if entry else []
-            # A partial provider result must not send a request to a host
-            # that this particular route already failed to reach over HTTPS.
-            ranked = [row for row in ranked if not any(check.get("host") == host and not check.get("ok")
-                                                       for check in row["checks"])]
-            ranked = [row for row in ranked if entry["failed_hosts"].get((row["mode"], host), 0) <= self._clock()]
-        if not ranked:
+            if entry:
+                ranked, _ = self._rank(entry, host)
+                if ranked:
+                    return ranked[0][0]
+        raise AutoRouteUnavailable("Auto: маршрут ещё не выбран или все настроенные маршруты недоступны")
+
+    def connect(self, provider, host, port, hub, opencode):
+        if not configured_routes(hub, provider):
+            raise AutoRouteUnavailable("Auto: настройте VLESS, DNS или HTTP-прокси")
+        route_host = host.lower().rstrip(".")
+        ready = self.refresh(provider, hub, opencode)
+        key = self._key(provider, hub, opencode)
+
+        def candidates():
+            with self._lock:
+                entry = self._entries.get(key)
+                ranked, _ = self._rank(entry, route_host) if entry else ([], {})
+                return entry, [upstream for upstream, _ in ranked]
+
+        entry, upstreams = candidates()
+        if not upstreams:
+            if not ready.wait(PROBE_SECONDS * max(1, len(probe_hosts(provider, opencode))) + 2):
+                raise AutoRouteUnavailable("Auto: проверка маршрутов ещё выполняется")
+            entry, upstreams = candidates()
+        if not upstreams:
             raise AutoRouteUnavailable("Auto: все настроенные маршруты недоступны")
         # Retry only before opening the tunnel to the client. No HTTP request
         # body or generation is ever replayed after a connection has opened.
-        for row in ranked:
-            mode = row["mode"]
+        for upstream in upstreams:
             try:
-                conn = self._connector(routes[mode], host, port, hub_config=hub, timeout=20)
-                with self._lock:
-                    if entry and host in probe_hosts(provider, opencode) and any(
-                            result["mode"] == mode and result["available"] for result in entry["rows"]):
-                        entry["selected"] = mode
-                return conn, routes[mode]
+                return self._connector(upstream, host, port, hub_config=hub, timeout=20), upstream
             except Exception:
                 with self._lock:
                     if entry:
-                        entry["failed_hosts"][(mode, host)] = self._clock() + 10
-                        if host in probe_hosts(provider, opencode):
-                            for result in entry["rows"]:
-                                if result["mode"] == mode:
-                                    result.update(available=False, passed=0)
-                            alternatives = self._rank(entry["rows"])
-                            entry["selected"] = alternatives[0]["mode"] if alternatives else None
-                        entry["expires"] = min(entry["expires"], self._clock() + 10)
+                        retry_at = self._clock() + RETRY_SECONDS
+                        entry["failed_hosts"][(upstream, route_host)] = retry_at
+                        entry["expires"] = min(entry["expires"], retry_at)
         raise AutoRouteUnavailable("Auto: не удалось подключиться ни по одному проверенному маршруту")
 
 
 def _connector(*args, **kwargs):
     import provider_proxy
+    hub = kwargs["hub_config"]
+    if hub.get("vless_enabled") and hub.get("vless_url") and args[0] == provider_proxy._vless_upstream(hub):
+        return provider_proxy._connect_vless(*args, **kwargs)
     return provider_proxy._connect_upstream(*args, **kwargs)
 
 
-router = AutoRouter(_connector)
+def _vless_ready(upstream):
+    import provider_proxy
+    return provider_proxy._managed_vless_ready(upstream)
+
+
+def _vless_revision():
+    from vless_manager import vless_service
+    return vless_service.exit_generation()
+
+
+router = AutoRouter(_connector, vless_ready=_vless_ready, vless_revision=_vless_revision)

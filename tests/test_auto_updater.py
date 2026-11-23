@@ -27,7 +27,9 @@ class AutoUpdaterTests(unittest.TestCase):
         result = subprocess.CompletedProcess(["git"], 0, "", "")
         with patch.object(auto_updater.subprocess, "run", return_value=result) as run:
             self.assertTrue(auto_updater._git_commit_contains(Path("repo"), "remote-sha"))
-        self.assertEqual(run.call_args.args[0], ["git", "merge-base", "--is-ancestor", "remote-sha", "HEAD"])
+        command = run.call_args.args[0]
+        self.assertIn("--no-replace-objects", command)
+        self.assertEqual(command[-4:], ["merge-base", "--is-ancestor", "remote-sha", "HEAD"])
 
     def test_fetch_failure_stops_before_merge(self):
         with patch.object(auto_updater, "_clean_v2_head", return_value="a" * 40), \

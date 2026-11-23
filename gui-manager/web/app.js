@@ -27,33 +27,59 @@ function providerEnabled(tab) {
   return !item || appState.config?.providers_visibility?.[item.key] !== false;
 }
 function applyProviderVisibility() {
-  document.querySelectorAll('.nav-item').forEach(el => { el.style.display = providerEnabled(el.dataset.tab) ? '' : 'none'; });
+  const nav = [...document.querySelectorAll('.nav-item')];
+  const focused = nav.find(el => el === document.activeElement);
+  nav.forEach(el => { el.style.display = providerEnabled(el.dataset.tab) ? '' : 'none'; });
   document.querySelectorAll('[data-provider-card]').forEach(el => { el.style.display = providerEnabled(el.dataset.providerCard) ? '' : 'none'; });
   if (!providerEnabled(activeTab)) switchTab('dashboard');
+  if (focused && !providerEnabled(focused.dataset.tab)) nav.find(el => el.dataset.tab === activeTab)?.focus();
 }
 
 function switchTab(tabId) {
   if (tabId === 'system') tabId = 'settings';
+  if (!document.getElementById(`view-${tabId}`)) return;
   if (!providerEnabled(tabId)) tabId = 'dashboard';
   const changed = activeTab !== tabId;
+  const focusWasInView = changed && document.getElementById(`view-${activeTab}`)?.contains?.(document.activeElement);
   activeTab = tabId;
   document.querySelectorAll('.nav-item').forEach(el => {
-    el.classList.toggle('active', el.dataset.tab === tabId);
+    const selected = el.dataset.tab === tabId;
+    el.classList.toggle('active', selected);
+    el.setAttribute('aria-current', selected ? 'page' : 'false');
+    if (selected && focusWasInView) el.focus();
   });
   document.querySelectorAll('.view-tab').forEach(el => {
     el.style.display = (el.id === `view-${tabId}`) ? 'block' : 'none';
   });
   if (changed) document.getElementById('main-scroll').scrollTop = 0;
-  if (tabId === 'settings') {
+  if (changed && tabId === 'settings') {
     void refreshPluginFixStatus();
     void refreshAntigravityPatchStatus();
+    void refreshStorageStats();
   }
-  if (tabId === 'google') void refreshGooglePatchDisclaimer();
-  if (tabId === 'nvidia' && window.pywebview?.api) {
-    const list = document.getElementById('nvidia-models-list');
-    if (!list?.querySelector('.nvidia-model-card')) nvidiaAutoLoadAttempted = false;
+  if (changed && tabId === 'google') void refreshGooglePatchDisclaimer();
+  if (changed && tabId === 'nvidia') {
+    nvidiaAutoLoadAttempted = false;
     maybeAutoLoadNvidiaCatalog();
   }
+}
+
+function handleSidebarKey(event) {
+  const item = event.target.closest('.nav-item');
+  if (!item) return;
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault();
+    if (!event.repeat) switchTab(item.dataset.tab);
+    return;
+  }
+  const steps = {ArrowUp:-1, ArrowDown:1};
+  if (!(event.key in steps) && !['Home', 'End'].includes(event.key)) return;
+  const visible = [...document.querySelectorAll('.nav-item')].filter(el => providerEnabled(el.dataset.tab));
+  const index = visible.indexOf(item);
+  if (index < 0) return;
+  event.preventDefault();
+  visible[event.key === 'Home' ? 0 : event.key === 'End' ? visible.length - 1
+    : (index + steps[event.key] + visible.length) % visible.length].focus();
 }
 
 function showDiagnostics(tab) {
@@ -85,49 +111,112 @@ function showToast(msg) {
 // ============================================================================
 // DATA FETCHING & RENDERING
 // ============================================================================
-let stateRefreshing = false;
-let stateRefreshQueued = false;
+let stateRefreshing = null;
+let stateRefreshQueued = null;
 let lastOpenAiNotice = null;
 let networkFormInitialized = false;
-let networkDirty = false;
 let nvidiaAutoLoadAttempted = false;
 
 function html(value) {
   return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
 }
 
-async function refreshState() {
-  if (!window.pywebview?.api) return;
+function refreshState() {
+  if (!window.pywebview?.api?.get_state) return Promise.resolve();
   if (stateRefreshing) {
-    stateRefreshQueued = true;
+    // A mutation may have completed after the active request took its snapshot.
+    // Everyone arriving during this fetch waits for the same follow-up fetch.
+    if (!stateRefreshQueued) {
+      let resolve;
+      const promise = new Promise(done => { resolve = done; });
+      stateRefreshQueued = {promise, resolve};
+    }
+    return stateRefreshQueued.promise;
+  }
+  stateRefreshing = Promise.resolve().then(fetchAndRenderState).finally(() => {
+    stateRefreshing = null;
+    const next = stateRefreshQueued;
+    stateRefreshQueued = null;
+    if (next) refreshState().then(next.resolve);
+  });
+  return stateRefreshing;
+}
+
+function setText(element, text) {
+  if (element.textContent !== text) element.textContent = text;
+}
+
+const renderedMarkup = new WeakMap();
+function setMarkup(element, markup) {
+  if (renderedMarkup.get(element) === markup) return false;
+  const focused = document.activeElement;
+  const focusKey = element.contains?.(focused) && focused?.dataset.focusKey;
+  element.innerHTML = markup;
+  renderedMarkup.set(element, markup);
+  if (focusKey) [...element.querySelectorAll('[data-focus-key]')].find(el => el.dataset.focusKey === focusKey)?.focus();
+  return true;
+}
+
+// Never detach unchanged children on a poll. If a changed card contained
+// focus, restore the same action (or another action when it disappeared).
+const renderedLists = new WeakMap();
+function renderList(container, rows, empty = '') {
+  let oldRows = renderedLists.get(container);
+  if (!rows.length) {
+    renderedLists.delete(container);
+    setMarkup(container, empty);
     return;
   }
-  stateRefreshing = true;
+  if (!oldRows) {
+    container.innerHTML = '';
+    renderedMarkup.delete(container);
+    oldRows = new Map();
+  }
+  const focused = document.activeElement;
+  let restore;
+  const next = new Map(rows.map(([key, element]) => {
+    const old = oldRows.get(key);
+    if (!old || old.className === element.className && old.innerHTML === element.innerHTML) {
+      return [key, old || element];
+    }
+    if (old === focused || old.contains?.(focused)) {
+      const action = focused.dataset.action;
+      restore = () => (old === focused ? element :
+        [...element.querySelectorAll('button:not(:disabled), input:not(:disabled)')]
+          .find(el => el.dataset.action === action) || element.querySelector('button:not(:disabled), input:not(:disabled)'))?.focus();
+    }
+    return [key, element];
+  }));
+  for (const [key, old] of oldRows) if (next.get(key) !== old) old.remove();
+  [...next.values()].forEach((element, index) => {
+    const current = container.children[index];
+    if (!current) container.appendChild(element);
+    else if (current !== element) container.insertBefore(element, current);
+  });
+  if (restore) restore();
+  else if (focused && document.activeElement !== focused && container.contains?.(focused)) focused.focus();
+  renderedLists.set(container, next);
+}
+
+async function fetchAndRenderState() {
+  const statusLeft = document.getElementById('status-left');
   try {
     const data = await window.pywebview.api.get_state();
-    if (!data) return;
+    if (!data) throw new Error('Нет данных от Hub');
     appState = data;
     lastStateUpdatedAt = Date.now();
     if (data.openaiNotice && data.openaiNotice !== lastOpenAiNotice) {
-      lastOpenAiNotice = data.openaiNotice;
       showToast(data.openaiNotice);
     }
-    const statusLeft = document.getElementById('status-left');
-    if (statusLeft) statusLeft.textContent = 'Готов к работе';
+    lastOpenAiNotice = data.openaiNotice;
+    if (statusLeft) setText(statusLeft, 'Готов к работе');
     renderAll();
     void refreshEnabledDiagnostics();
     void refreshDnsChecks();
     void refreshProxyChecks();
   } catch (e) {
     console.error("Failed to refresh state:", e);
-    const statusLeft = document.getElementById('status-left');
-    if (statusLeft) statusLeft.textContent = 'Ошибка загрузки: ' + e;
-  } finally {
-    stateRefreshing = false;
-    if (stateRefreshQueued) {
-      stateRefreshQueued = false;
-      void refreshState();
-    }
+    if (statusLeft) setText(statusLeft, 'Ошибка загрузки: ' + e);
   }
 }
 
@@ -161,11 +250,11 @@ function renderSidebar() {
   const opencodeBadge = document.getElementById('sidebar-opencode-status');
   if (opencodeBadge) {
     if (appState.opencodeRunning) {
-      opencodeBadge.innerHTML = `<span class="dot" style="color:var(--accent-emerald);"></span><span>OpenCode: Окно открыто</span>`;
+      setMarkup(opencodeBadge, `<span class="dot" style="color:var(--accent-emerald);"></span><span>OpenCode: Окно открыто</span>`);
       opencodeBadge.style.color = "var(--accent-emerald)";
       opencodeBadge.style.background = "rgba(66, 214, 160, 0.10)";
     } else {
-      opencodeBadge.innerHTML = `<span class="dot" style="color:var(--accent-red);"></span><span>OpenCode: Остановлен</span>`;
+      setMarkup(opencodeBadge, `<span class="dot" style="color:var(--accent-red);"></span><span>OpenCode: Остановлен</span>`);
       opencodeBadge.style.color = "var(--accent-red)";
       opencodeBadge.style.background = "rgba(248, 113, 113, 0.10)";
     }
@@ -224,14 +313,13 @@ function renderAutoComparison(provider, tab) {
   const state = autoRouteState(provider);
   const automatic = ['default','auto'].includes(appState.routes?.[provider] || 'default');
   const container = document.getElementById(`auto-routes-${tab}`);
-  container.innerHTML = '';
-  for (const row of state.rows || []) {
+  const rows = (state.rows || []).map(row => {
     const div = document.createElement('div');
     div.className = 'auto-route-row';
     div.innerHTML = `<span>${html(routeNames[row.mode])}</span><span class="${row.available ? 'status-good' : 'quota-unknown'}">${row.available ? `${html(row.passed)}/${html(row.total)} · ${html(row.latency_ms ?? '—')} мс` : 'Недоступен'}</span>${state.selected === row.mode ? `<strong>${automatic ? 'Выбран Auto' : 'Рекомендуется'}</strong>` : ''}`;
-    container.appendChild(div);
-  }
-  if (!state.rows?.length) container.textContent = state.status === 'not-configured' ? 'Нет настроенных маршрутов для сравнения' : state.running ? 'Проверяем HTTPS без API-ключей…' : 'Нажмите «Сравнить маршруты» или выберите Auto';
+    return [row.mode, div];
+  });
+  renderList(container, rows, state.status === 'not-configured' ? 'Нет настроенных маршрутов для сравнения' : state.running ? 'Проверяем HTTPS без API-ключей…' : 'Нажмите «Сравнить маршруты» или выберите Auto');
   const button = document.getElementById(`auto-check-${tab}`);
   button.disabled = !!state.running;
   button.textContent = state.running ? 'Сравнение…' : 'Сравнить маршруты';
@@ -256,7 +344,7 @@ function renderNetworkTab() {
     updateSegmentedGroup(`seg-group-${provider}`, mode,
       options.map(val => ({val, label:routeLabel(val, key)})));
     document.getElementById(`card-route-${provider}`).textContent = routeDescription(mode, key);
-    const autoBtn = document.getElementById(`seg-group-${provider}`)?.querySelector?.('[data-val="auto"]');
+    const autoBtn = document.getElementById(`seg-group-${provider}`)?.children[0];
     if (autoBtn) autoBtn.title = 'Авто: сравнить VLESS, DNS и HTTP-прокси по HTTPS и выбрать лучший. ' +
       (isAuto && autoRouteState(key).selected ? `Сейчас выбран: ${routeNames[autoRouteState(key).selected]}.` : '');
     renderAutoComparison(key, provider);
@@ -269,18 +357,12 @@ function renderNetworkTab() {
   badge.className = `badge-pill ${net.vlessRunning ? 'badge-available' : 'badge-pool'}`;
   const coreRow = document.getElementById('vless-core-row');
   if (coreRow) {
-    coreRow.innerHTML = '';
-    for (const kind of ['sing-box', 'xray']) {
+    for (const [index, kind] of ['sing-box', 'xray'].entries()) {
       const core = net.cores?.[kind] || {};
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = `seg-btn ${core.selected ? 'active' : ''}`;
-      btn.dataset.core = kind;
-      btn.textContent = kind === 'xray' ? 'Xray' : 'Sing-box';
+      const btn = segmentButton(coreRow, index, kind, kind === 'xray' ? 'Xray' : 'Sing-box', !!core.selected);
       btn.title = core.selected ? 'Активное ядро'
         : core.installed ? 'Выбрать это ядро' : 'Ядро не установлено — нажмите, чтобы скачать';
       btn.onclick = () => selectVlessCore(kind, !!core.installed);
-      coreRow.appendChild(btn);
     }
   }
   const proxyPool = appState.config?.proxy_pool || (appState.config?.proxy ? [appState.config.proxy] : []);
@@ -413,12 +495,7 @@ function renderProxyPool() {
   const container = document.getElementById('proxy-pool-container');
   if (!container) return;
   const pool = (appState.config?.proxy_pool || (appState.config?.proxy ? [appState.config.proxy] : [])).filter(Boolean);
-  container.innerHTML = '';
-  if (!pool.length) {
-    container.innerHTML = '<div style="color:var(--text-muted); font-size:11px; padding:6px 0;">Прокси ещё не добавлены. Введите URL выше и нажмите «＋ Добавить».</div>';
-    return;
-  }
-  pool.forEach((proxyUrl, idx) => {
+  const rows = pool.map((proxyUrl, idx) => {
     const check = proxyChecks.get(proxyUrl);
     const statusText = check ? (check.ok ? `● ${check.latency_ms} мс` : '● Ошибка') : '● Проверка…';
     const statusClass = check ? (check.ok ? 'badge-available' : 'badge-error') : 'badge-checking';
@@ -433,16 +510,17 @@ function renderProxyPool() {
       <div style="display:flex; gap:6px;">
         <button class="btn-secondary" data-action="up" title="Повысить приоритет" ${idx === 0 ? 'disabled' : ''}>↑</button>
         <button class="btn-secondary" data-action="down" title="Понизить приоритет" ${idx === pool.length - 1 ? 'disabled' : ''}>↓</button>
-        <button class="btn-secondary" data-action="test">🩺</button>
-        <button class="btn-secondary" style="color:var(--accent-red);" data-action="delete">🗑</button>
+        <button class="btn-secondary" data-action="test" aria-label="Проверить прокси">🩺</button>
+        <button class="btn-secondary" style="color:var(--accent-red);" data-action="delete" aria-label="Удалить прокси">🗑</button>
       </div>
     `;
     row.querySelector('[data-action="test"]')?.addEventListener('click', () => testProxyItem(proxyUrl));
     row.querySelector('[data-action="delete"]')?.addEventListener('click', () => removeProxyItem(idx));
     row.querySelector('[data-action="up"]')?.addEventListener('click', () => moveProxyItem(idx, idx - 1));
     row.querySelector('[data-action="down"]')?.addEventListener('click', () => moveProxyItem(idx, idx + 1));
-    container.appendChild(row);
+    return [proxyUrl, row];
   });
+  renderList(container, rows, '<div style="color:var(--text-muted); font-size:11px; padding:6px 0;">Прокси ещё не добавлены. Введите URL выше и нажмите «＋ Добавить».</div>');
 }
 
 async function addProxyToPool() {
@@ -552,7 +630,6 @@ function scheduleDnsChecks() {
   dnsAutoTimer = setTimeout(() => { dnsAutoTimer = null; void refreshDnsChecks(); }, 800);
 }
 function onDnsInput() {
-  networkDirty = true;
   document.getElementById('dns-result').textContent = '';
   renderDnsStatus();
   scheduleDnsChecks();
@@ -560,7 +637,6 @@ function onDnsInput() {
 function selectDnsMode(mode) {
   if (!(mode in dnsModeLabels)) return;
   document.getElementById('dns-mode').value = mode;
-  networkDirty = true;
   document.getElementById('dns-result').textContent = '';
   updateDnsFields();
 }
@@ -569,7 +645,7 @@ function updateDnsFields() {
   for (const key of Object.keys(dnsModeLabels)) {
     const button = document.getElementById(`dns-mode-${key}`);
     button.classList.toggle('active', mode === key);
-    button.setAttribute('aria-checked', String(mode === key));
+    button.setAttribute('aria-pressed', String(mode === key));
   }
   for (const key of ['standard', 'dot', 'doh']) document.getElementById(`dns-${key}-fields`).style.display = mode === key ? (key === 'standard' ? 'grid' : 'block') : 'none';
   document.getElementById('dns-preset').disabled = mode === 'system';
@@ -606,7 +682,6 @@ function renderDnsStatus() {
   const savedValues = mode === 'standard' ? (cfg.custom_dns || ['143.20.64.55','31.58.216.201']) : mode === 'dot' ? [cfg.dot_host || 'dns.bezmezhau.com'] : mode === 'doh' ? [cfg.doh_url || 'https://dns.bezmezhau.com/dns-query'] : [];
   const changed = mode !== (cfg.dns_mode || 'system') || targets.some((t,i)=>t.value !== (savedValues[i] || ''));
   document.getElementById('dns-selection-summary').textContent = `Выбрано: ${dnsModeLabels[mode]}. ${changed ? 'Нажмите «Применить DNS», чтобы использовать этот вариант.' : 'Этот вариант уже сохранён.'}`;
-  renderDashboard();
 }
 async function saveDnsSettings() {
   const button = document.getElementById('btn-dns-apply');
@@ -631,7 +706,6 @@ function applyDnsPreset() {
     const values = [preset.standard?.[0] || '', preset.standard?.[1] || '', preset.dot || '', preset.doh || ''];
     ['dns-primary','dns-secondary','dns-dot','dns-doh'].forEach((id,i) => document.getElementById(id).value = values[i]);
   }
-  networkDirty = true;
   document.getElementById('dns-result').textContent = '';
   renderDnsStatus();
   scheduleDnsChecks();
@@ -711,7 +785,6 @@ async function saveNetworkSettings() {
     });
     if (!result.ok) throw new Error(result.message);
     if (primaryProxy) document.getElementById('network-proxy').value = '';
-    networkDirty = false;
     document.getElementById('network-save-result').textContent = result.message;
     await refreshState();
     return true;
@@ -735,12 +808,7 @@ function renderVlessPool() {
   const active = String(cfg.vless_url || '').trim();
   const badge = document.getElementById('vless-pool-count');
   if (badge) badge.textContent = `${pool.length} конфиг${pool.length === 1 ? '' : 'ов'}`;
-  container.innerHTML = '';
-  if (!pool.length) {
-    container.innerHTML = '<div style="color:var(--text-muted); font-size:11px; padding:6px 0;">Пул пуст. Вставьте vless:// ссылку выше и нажмите «＋ Добавить».</div>';
-    return;
-  }
-  pool.forEach((entry, idx) => {
+  const rows = pool.map((entry, idx) => {
     const isActive = entry.id === active;
     const statusOk = entry.status === 'ok';
     const statusBadge = statusOk ? 'badge-available' : entry.status === 'error' ? 'badge-error' : 'badge-pool';
@@ -761,11 +829,12 @@ function renderVlessPool() {
         <button class="btn-secondary" style="color:var(--accent-red);" data-action="delete" title="Удалить из пула">🗑</button>
       </div>
     `;
-    row.querySelector('[data-action="activate"]')?.addEventListener('click', () => activateVlessItem(idx));
-    row.querySelector('[data-action="test"]')?.addEventListener('click', () => testVlessItem(idx));
-    row.querySelector('[data-action="delete"]')?.addEventListener('click', () => removeVlessItem(idx));
-    container.appendChild(row);
+    row.querySelector('[data-action="activate"]')?.addEventListener('click', () => activateVlessItem(entry.id));
+    row.querySelector('[data-action="test"]')?.addEventListener('click', () => testVlessItem(entry.id));
+    row.querySelector('[data-action="delete"]')?.addEventListener('click', () => removeVlessItem(entry.id));
+    return [entry.id, row];
   });
+  renderList(container, rows, '<div style="color:var(--text-muted); font-size:11px; padding:6px 0;">Пул пуст. Вставьте vless:// ссылку выше и нажмите «＋ Добавить».</div>');
 }
 function vlessPoolStatus(text) {
   const el = document.getElementById('vless-pool-status');
@@ -784,14 +853,11 @@ async function addVlessConfig() {
       if (input) input.value = '';
       await refreshState();
       // Probe the new config right away so its exit IP/country is visible.
-      const idx = (appState.config?.vless_pool || []).findIndex(entry => entry.id === res.id);
-      if (idx >= 0) await testVlessItem(idx);
+      if (res.id) await testVlessItem(res.id);
     }
   } catch (e) { vlessPoolStatus(String(e)); }
 }
-async function removeVlessItem(idx) {
-  const pool = Array.isArray(appState.config?.vless_pool) ? appState.config.vless_pool : [];
-  const url = pool[idx]?.id;
+async function removeVlessItem(url) {
   if (!url || !window.pywebview?.api?.delete_vless_config) return;
   vlessPoolStatus('Удаление конфига…');
   try {
@@ -800,9 +866,7 @@ async function removeVlessItem(idx) {
     if (res.ok) await refreshState();
   } catch (e) { vlessPoolStatus(String(e)); }
 }
-async function activateVlessItem(idx) {
-  const pool = Array.isArray(appState.config?.vless_pool) ? appState.config.vless_pool : [];
-  const url = pool[idx]?.id;
+async function activateVlessItem(url) {
   if (!url || !window.pywebview?.api?.activate_vless_config) return;
   vlessPoolStatus('Переключение на выбранный конфиг…');
   try {
@@ -811,9 +875,7 @@ async function activateVlessItem(idx) {
     if (res.ok) await refreshState();
   } catch (e) { vlessPoolStatus(String(e)); }
 }
-async function testVlessItem(idx) {
-  const pool = Array.isArray(appState.config?.vless_pool) ? appState.config.vless_pool : [];
-  const url = pool[idx]?.id;
+async function testVlessItem(url) {
   if (!url || !window.pywebview?.api?.test_vless_config) return;
   vlessPoolStatus('Проверка выходного IP и страны…');
   try {
@@ -902,6 +964,7 @@ async function refreshDnsChecks(force = false) {
   });
   renderDnsStatus();
   await Promise.all(jobs);
+  renderDashboard();
   if (signature === JSON.stringify(selectedDnsAddresses())) {
     document.getElementById('dns-result').textContent = targets.map(target => {
       const result = dnsChecks.get(`${target.mode}:${target.value}`);
@@ -914,21 +977,30 @@ async function testDns() {
   await refreshDnsChecks(true);
 }
 
+function segmentButton(group, index, value, label, selected) {
+  let button = group.children[index];
+  if (!button) {
+    button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'seg-btn';
+    button.dataset.val = value;
+    group.appendChild(button);
+  }
+  button.className = selected ? 'seg-btn active' : 'seg-btn';
+  button.setAttribute('aria-pressed', String(selected));
+  setText(button, label);
+  return button;
+}
+
 function updateSegmentedGroup(groupId, currentVal, options) {
   const group = document.getElementById(groupId);
   if (!group) return;
-  group.innerHTML = "";
-  options.forEach(opt => {
-    const btn = document.createElement("button");
-    btn.className = `seg-btn ${opt.val === currentVal ? "active" : ""}`;
-    btn.dataset.val = opt.val;
-    btn.textContent = opt.label;
-    if (opt.val === 'auto') btn.title = 'Сравнить настроенные VLESS, DNS и HTTP-прокси. Выбрать доступный маршрут с наименьшей задержкой. При отказе соединения — переключиться на другой проверенный маршрут.';
-    btn.onclick = () => {
-      const provider = groupId.replace("seg-group-", "");
-      setProviderRoute(provider, opt.val);
-    };
-    group.appendChild(btn);
+  group.setAttribute('role', 'group');
+  group.setAttribute('aria-label', 'Маршрут подключения');
+  const provider = groupId.replace('seg-group-', '');
+  options.forEach((opt, index) => {
+    const btn = segmentButton(group, index, opt.val, opt.label, opt.val === currentVal);
+    btn.onclick = () => setProviderRoute(provider, opt.val);
   });
 }
 
@@ -1026,21 +1098,20 @@ function renderProviderDiagnostics() {
     button.disabled = running || !enabled;
     button.textContent = !enabled ? 'Провайдер отключён' : running ? 'Проверка…' : 'Проверить домены';
     const tbody = document.getElementById(`diag-tbody-${tab}`);
-    tbody.innerHTML = '';
-    for (const item of rows) {
+    renderList(tbody, rows.map((item, index) => {
       const status = running ? 'checking' : item.status;
       const label = status === 'ok' ? 'TCP доступен' : status === 'error' ? `Ошибка: ${item.error || 'нет соединения'}` : running ? 'Проверка' : 'Не проверялся';
       const tr = document.createElement('tr');
       tr.innerHTML = `<td class="domain-cell">${html(item.domain)}</td><td class="diagnostic-state"><span class="connection-indicator ${html(status)}" role="img" title="${html(label)}" aria-label="${html(label)}"></span></td><td>${item.latency_ms == null ? '—' : html(item.latency_ms) + ' мс'}</td><td>${html(item.route || routeLabel(appState.routes?.[provider] || 'default', provider))}</td><td>${html(item.ip || '—')}</td>`;
-      tbody.appendChild(tr);
-    }
+      return [index, tr];
+    }));
     const count = state.rows?.length || 0;
     const available = (state.rows || []).filter(row => row.status === 'ok').length;
     const summary = running ? 'checking' : diagnosticErrors.has(tab) ? 'error' : !count ? 'idle' : available === count ? 'ok' : available ? 'warning' : 'error';
     const text = running ? 'Проверка…' : diagnosticErrors.has(tab) ? 'Ошибка проверки' : !count ? 'Не проверено' : available ? `Домены: ${available}/${count}` : 'Нет соединения';
     const badge = document.getElementById(`provider-status-${tab}`);
     badge.className = `badge-pill provider-status ${summary === 'ok' ? 'badge-available' : summary === 'error' ? 'badge-error' : ['warning','checking'].includes(summary) ? 'badge-checking' : 'badge-pool'}`;
-    badge.innerHTML = `<span class="connection-indicator ${summary}"></span><span>${html(text)}</span>`;
+    setMarkup(badge, `<span class="connection-indicator ${summary}"></span><span>${html(text)}</span>`);
     badge.setAttribute('aria-label', text);
     badge.title = diagnosticErrors.get(tab) || (count ? `TCP доступен для ${available} из ${count} доменов. Подробности во вкладке провайдера.` : 'Автоматическая проверка доменов');
     const diagBadge = document.getElementById(`diag-badge-${tab}`);
@@ -1185,14 +1256,14 @@ function renderDashboard() {
     {title:'Аккаунты и ключи',value:String(totalAccounts),note:'Сохранённые доступы включённых провайдеров',tone:'neutral',icon:'◎'},
     {title:'Домены доступны',value:rows.length ? `${passed} / ${rows.length}` : '—',note:running ? 'Проверки выполняются…' : rows.length ? 'Результат TCP-проверки маршрутов' : 'Ожидаем результаты автопроверки',tone:domainTone,icon:'↗'}
   ];
-  document.getElementById('dashboard-metrics').innerHTML = metrics.map(metric=>`<div class="glass-card dashboard-metric"><div class="dashboard-metric-title"><span>${html(metric.title)}</span><span>${metric.icon}</span></div><strong class="dashboard-tone-${metric.tone}">${html(metric.value)}</strong><p>${html(metric.note)}</p></div>`).join('');
+  setMarkup(document.getElementById('dashboard-metrics'), metrics.map(metric=>`<div class="glass-card dashboard-metric"><div class="dashboard-metric-title"><span>${html(metric.title)}</span><span>${metric.icon}</span></div><strong class="dashboard-tone-${metric.tone}">${html(metric.value)}</strong><p>${html(metric.note)}</p></div>`).join(''));
   document.getElementById('dashboard-updated').textContent = lastStateUpdatedAt ? `Сводка: ${dashboardTime(lastStateUpdatedAt)} · 10 с` : 'Обновление каждые 10 с';
   const checkButton = document.getElementById('dashboard-check');
   checkButton.disabled = running || !tabs.length;
   checkButton.textContent = running ? 'Проверка…' : 'Проверить домены';
   const alerts = [];
   const providerGrid = document.getElementById('dashboard-providers');
-  providerGrid.innerHTML = '';
+  const cards = [];
   for (const tab of tabs) {
     const info = dashboardProviderInfo[tab];
     const access = dashboardAccess(tab);
@@ -1246,7 +1317,7 @@ function renderDashboard() {
         <strong>${valid ? `${amount(q.total_balance)} ${html(q.currency || '')}` : 'Нет данных'}</strong>
         <small>${valid ? `Бонусы ${amount(q.granted_balance)} · пополнено ${amount(q.topped_up_balance)}${q.status === 'stale' ? ' · сохранённые данные' : ''}` : 'Обновите баланс во вкладке DeepSeek'}</small>
       </div>`;
-      if (low) alerts.push({priority:1,tab,text:`DeepSeek: баланс почти исчерпан (${amount(q.total_balance)} ${html(q.currency || '')})`});
+      if (low) alerts.push({priority:1,tab,text:`DeepSeek: баланс почти исчерпан (${amount(q.total_balance)} ${q.currency || ''})`});
     }
     if (tab === 'openrouter') limits = `<div class="dashboard-token-balance"><span>Моделей в OpenCode</span><strong>${cfg.selectedModels?.length || 0}</strong><small>Выбор каталога во вкладке OpenRouter</small></div>`;
     if (tab === 'tokenlavka') {
@@ -1272,7 +1343,7 @@ function renderDashboard() {
     card.className = 'glass-card dashboard-provider';
     card.innerHTML = `<div class="dashboard-provider-heading"><span class="dashboard-provider-icon" style="color:${info.color}">${info.icon}</span><h3>${html(info.name)}</h3><span class="badge-pill ${badge}"><span class="connection-indicator ${domainState}"></span>${html(domainText)}</span></div><div class="dashboard-access"><span>${access.connected ? 'Активный доступ' : 'Подключение не настроено'}</span><strong>${html(access.label)}</strong></div><div class="dashboard-provider-limits">${limits}</div>${quota.length ? `<p class="dashboard-quota-note">${html(quotaNote)}</p>` : ''}<div class="dashboard-provider-route"><span>Маршрут</span><strong>${html(routeLabel(route,providerTabs[tab]))}</strong></div><button class="btn-secondary dashboard-provider-open">Открыть ${['xpiki', 'openrouter', 'deepseek', 'tokenlavka'].includes(tab) ? 'провайдера' : 'аккаунты'} →</button>`;
     card.querySelector('button')?.addEventListener('click',()=>switchTab(tab));
-    providerGrid.appendChild(card);
+    cards.push([tab, card]);
     if (!access.connected) alerts.push({priority:3,tab,text:`${info.name}: ${access.count ? 'активный доступ не подключён' : 'добавьте аккаунт или ключ'}`});
     for (const item of quota) {
       const value = dashboardPercent(item.value);
@@ -1282,27 +1353,25 @@ function renderDashboard() {
     const auto = autoRouteState(providerTabs[tab]);
     if (['default','auto'].includes(route) && !auto.running && ['unavailable','not-configured'].includes(auto.status)) alerts.push({priority:1,tab,text:`${info.name}: Auto не нашёл доступный маршрут`});
   }
-  if (!tabs.length) providerGrid.innerHTML = '<div class="glass-card dashboard-empty"><h3>Провайдеры выключены</h3><p class="help-text">Включите нужные провайдеры в разделе «Настройки и система».</p></div>';
+  renderList(providerGrid, cards, '<div class="glass-card dashboard-empty"><h3>Провайдеры выключены</h3><p class="help-text">Включите нужные провайдеры в разделе «Настройки и система».</p></div>');
   const dns = dashboardDns();
   const net = appState.network || {};
   const vlessExit = dashboardVlessExit(net);
   const proxy = appState.config?.proxy ? proxyLabel(appState.config.proxy) : 'Не настроен';
   const proxyStat = dashboardProxyStatus();
-  document.getElementById('dashboard-network').innerHTML = `<div class="dashboard-network-row"><div><strong>VLESS</strong><span>${html(vlessExit)}</span></div><span class="badge-pill ${net.vlessRunning ? 'badge-available' : 'badge-pool'}">● ${net.vlessRunning ? 'Работает' : 'Остановлен'}</span></div><div class="dashboard-network-row"><div><strong>${html(dnsModeLabels[dns.mode] || 'DNS')}</strong><span>${html(dns.server)}</span></div><span class="badge-pill ${dns.status === 'ok' ? 'badge-available' : dns.status === 'error' ? 'badge-error' : dns.status === 'checking' ? 'badge-checking' : 'badge-pool'}">● ${html(dns.label)}</span></div><div class="dashboard-network-row"><div><strong>HTTP(S)-прокси</strong><span>${html(proxy)}</span></div><span class="badge-pill ${proxyStat.badge}">● ${html(proxyStat.label)}</span></div><p class="dashboard-quota-note">Auto сравнивает настроенные маршруты по HTTPS. Прямое подключение исключено.</p>`;
+  setMarkup(document.getElementById('dashboard-network'), `<div class="dashboard-network-row"><div><strong>VLESS</strong><span>${html(vlessExit)}</span></div><span class="badge-pill ${net.vlessRunning ? 'badge-available' : 'badge-pool'}">● ${net.vlessRunning ? 'Работает' : 'Остановлен'}</span></div><div class="dashboard-network-row"><div><strong>${html(dnsModeLabels[dns.mode] || 'DNS')}</strong><span>${html(dns.server)}</span></div><span class="badge-pill ${dns.status === 'ok' ? 'badge-available' : dns.status === 'error' ? 'badge-error' : dns.status === 'checking' ? 'badge-checking' : 'badge-pool'}">● ${html(dns.label)}</span></div><div class="dashboard-network-row"><div><strong>HTTP(S)-прокси</strong><span>${html(proxy)}</span></div><span class="badge-pill ${proxyStat.badge}">● ${html(proxyStat.label)}</span></div><p class="dashboard-quota-note">Auto сравнивает настроенные маршруты по HTTPS. Прямое подключение исключено.</p>`);
   const usesVless = tabs.some(tab=>appState.routes?.[providerTabs[tab]] === 'vless' || (['default','auto'].includes(appState.routes?.[providerTabs[tab]] || 'default') && autoRouteState(providerTabs[tab]).selected === 'vless'));
   if (!net.vlessRunning && (usesVless || appState.config?.vless_enabled)) alerts.push({priority:0,network:true,text:'VLESS нужен для выбранного маршрута, но туннель остановлен'});
   if (dns.status === 'error') alerts.push({priority:2,network:true,text:'Сохранённый DNS-сервер не прошёл проверку доступности'});
   const attention = document.getElementById('dashboard-attention');
-  attention.innerHTML = '';
   alerts.sort((a,b)=>a.priority-b.priority);
-  for (const alert of alerts) {
+  renderList(attention, alerts.map(alert => {
     const row = document.createElement('button');
     row.className = 'dashboard-alert';
     row.innerHTML = `<span class="dashboard-alert-dot ${alert.priority === 0 ? 'critical' : ''}"></span><span>${html(alert.text)}</span><span>→</span>`;
     row.addEventListener('click',()=>alert.network ? switchTab('network') : alert.diagnostics ? showDiagnostics(alert.tab) : switchTab(alert.tab));
-    attention.appendChild(row);
-  }
-  if (!alerts.length) attention.innerHTML = `<div class="dashboard-clear"><span>✓</span><strong>${running || !rows.length ? 'Собираем результаты проверок' : 'Нет обнаруженных проблем'}</strong><p>${tabs.length ? 'Статусы и лимиты обновляются автоматически.' : 'Обзор появится после включения провайдеров.'}</p></div>`;
+    return [JSON.stringify([alert.tab, alert.network, alert.diagnostics, alert.text]), row];
+  }), `<div class="dashboard-clear"><span>✓</span><strong>${running || !rows.length ? 'Собираем результаты проверок' : 'Нет обнаруженных проблем'}</strong><p>${tabs.length ? 'Статусы и лимиты обновляются автоматически.' : 'Обзор появится после включения провайдеров.'}</p></div>`);
 }
 
 // --- Google Tab (Accounts & Quotas) ---
@@ -1314,7 +1383,7 @@ function renderGoogleTab() {
 
 
   if (accounts.length === 0) {
-    container.innerHTML = `
+    renderList(container, [], `
       <div class="glass-card" style="text-align: center; padding: 40px;">
         <div style="font-size: 36px; margin-bottom: 12px;">📭</div>
         <div style="font-size: 16px; font-weight: 700; color: #fff;">Нет подключенных аккаунтов Google</div>
@@ -1323,7 +1392,7 @@ function renderGoogleTab() {
         </div>
         <button class="btn-primary" onclick="addGoogleAccount()">＋ Добавить аккаунт</button>
       </div>
-    `;
+    `);
     return;
   }
 
@@ -1334,8 +1403,7 @@ function renderGoogleTab() {
     return bIsActive - aIsActive;
   });
 
-  container.innerHTML = "";
-  sorted.forEach(acc => {
+  renderList(container, sorted.map(acc => {
     const isAct = acc.is_active === true;
     const isEnabled = acc.enabled !== false;
     const isCandidate = acc.candidate !== false;
@@ -1408,7 +1476,7 @@ function renderGoogleTab() {
         <div class="acc-actions">
           ${!isAct && isEnabled ? `<button class="btn-primary" data-action="activate">⭐ Сделать активным</button>` : ''}
           <button class="btn-secondary" data-action="test">🩺 Проверить</button>
-          <button class="btn-secondary" style="color:var(--accent-red);" data-action="delete">🗑</button>
+          <button class="btn-secondary" style="color:var(--accent-red);" data-action="delete" aria-label="Удалить аккаунт">🗑</button>
         </div>
         <div class="acc-switches" style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
           <label class="switch-label">
@@ -1422,13 +1490,16 @@ function renderGoogleTab() {
         </div>
       </div>
     `;
-    card.querySelector('[data-action="activate"]')?.addEventListener('click', () => activateGoogleAccount(acc.index - 1));
+    card.querySelector('[data-action="activate"]')?.addEventListener('click', () => {
+      const current = appState.accounts.find(item => (item.id || item.email) === (acc.id || acc.email));
+      if (current) void activateGoogleAccount(current.index - 1);
+    });
     card.querySelector('[data-action="test"]')?.addEventListener('click', () => testGoogleAccount(acc.id || acc.email));
     card.querySelector('[data-action="delete"]')?.addEventListener('click', () => deleteGoogleAccount(acc.id || acc.email));
     card.querySelector('[data-action="toggle-enabled"]')?.addEventListener('change', event => toggleGoogleEnabled(acc.id || acc.email, event.target.checked));
     card.querySelector('[data-action="candidate"]')?.addEventListener('change', event => toggleCandidate(acc.id || acc.email, event.target.checked));
-    container.appendChild(card);
-  });
+    return [acc.id || acc.email || acc.index, card];
+  }));
 
 
 }
@@ -1467,7 +1538,7 @@ function renderOpenAiTab() {
   document.getElementById('openai-refresh-status').textContent = appState.openaiError || appState.openaiNotice || (appState.openaiRefreshing ? 'Запрашиваем лимиты ChatGPT в фоне…' : 'Лимиты обновляются каждые 5 минут.');
 
   if (accs.length === 0) {
-    container.innerHTML = `
+    renderList(container, [], `
       <div class="glass-card" style="text-align: center; padding: 40px;">
         <div style="font-size: 36px; margin-bottom: 12px;">📭</div>
         <div style="font-size: 16px; font-weight: 700; color: #fff;">Нет подключенных аккаунтов ChatGPT</div>
@@ -1476,16 +1547,11 @@ function renderOpenAiTab() {
         </div>
         <button class="btn-primary" onclick="addOpenAiAccount()">＋ Добавить ChatGPT</button>
       </div>
-    `;
+    `);
     return;
   }
 
-  const refresh = document.getElementById('btn-openai-refresh');
-  refresh.disabled = !!appState.openaiRefreshing;
-  refresh.textContent = appState.openaiRefreshing ? 'Обновление…' : 'Обновить лимиты';
-  document.getElementById('openai-refresh-status').textContent = appState.openaiError || appState.openaiNotice || (appState.openaiRefreshing ? 'Запрашиваем лимиты ChatGPT в фоне…' : 'Лимиты обновляются автоматически каждые 5 минут.');
-  container.innerHTML = '';
-  accs.forEach(acc => {
+  renderList(container, accs.map((acc, index) => {
     const isAct = acc.is_active === true;
     const isEnabled = acc.enabled !== false;
     const isCandidate = acc.candidate !== false;
@@ -1546,7 +1612,7 @@ function renderOpenAiTab() {
         <div class="acc-actions">
           ${!isAct && isEnabled ? `<button class="btn-primary" data-action="activate">⭐ Сделать активным</button>` : ''}
           <button class="btn-secondary" data-action="test">⚡ Проверить</button>
-          <button class="btn-secondary" style="color:var(--accent-red);" data-action="delete">🗑</button>
+          <button class="btn-secondary" style="color:var(--accent-red);" data-action="delete" aria-label="Удалить аккаунт">🗑</button>
         </div>
         <div class="acc-switches" style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
           <label class="switch-label">
@@ -1566,8 +1632,8 @@ function renderOpenAiTab() {
     card.querySelector('[data-action="delete"]')?.addEventListener('click', () => deleteOpenAiAccount(accId));
     card.querySelector('[data-action="toggle-enabled"]')?.addEventListener('change', event => toggleOpenAiEnabled(accId, event.target.checked));
     card.querySelector('[data-action="candidate"]')?.addEventListener('change', event => toggleOpenAiCandidate(accId, event.target.checked));
-    container.appendChild(card);
-  });
+    return [accId || index, card];
+  }));
 }
 
 async function refreshOpenAiQuotas() {
@@ -1585,7 +1651,7 @@ function renderClaudeTab() {
   const accs = appState.claudeAccounts || [];
 
   if (accs.length === 0) {
-    container.innerHTML = `
+    renderList(container, [], `
       <div class="glass-card" style="text-align: center; padding: 40px;">
         <div style="font-size: 36px; margin-bottom: 12px;">📭</div>
         <div style="font-size: 16px; font-weight: 700; color: #fff;">Нет подключенных сессий Claude</div>
@@ -1594,12 +1660,11 @@ function renderClaudeTab() {
         </div>
         <button class="btn-primary" onclick="addClaudeAccount()">＋ Добавить Claude</button>
       </div>
-    `;
+    `);
     return;
   }
 
-  container.innerHTML = "";
-  accs.forEach(acc => {
+  renderList(container, accs.map((acc, index) => {
     const card = document.createElement("div");
     card.className = `glass-card acc-card ${acc.is_active ? 'is-active' : ''}`;
     card.innerHTML = `
@@ -1614,8 +1679,8 @@ function renderClaudeTab() {
         <span class="badge-pill ${acc.is_active ? 'badge-available' : 'badge-pool'}"><span class="dot"></span> ${acc.is_active ? 'Активен' : 'В пуле'}</span>
       </div>
     `;
-    container.appendChild(card);
-  });
+    return [acc.id || index, card];
+  }));
 }
 
 let xpikiFormInitialized = false;
@@ -1725,7 +1790,8 @@ function renderDeepSeekTab() {
   const valid = ['ok','stale'].includes(balance.status);
   const amount = value => value != null && Number.isFinite(Number(value))
     ? Number(value).toLocaleString('ru-RU', {maximumFractionDigits: 2}) : 'Нет данных';
-  const currency = html(balance.currency || '');
+  const rawCurrency = balance.currency || '';
+  const currency = html(rawCurrency);
   // DeepSeek returns one balance per currency in an unstable order; keep the
   // funded currencies visible even when one of them is zero.
   const otherBalances = valid && Array.isArray(balance.balances)
@@ -1746,10 +1812,10 @@ function renderDeepSeekTab() {
     activeStatus.className = `detail-val ${cfg.connected ? 'status-good' : ''}`;
   }
   const activeBalance = document.getElementById('active-count-deepseek');
-  if (activeBalance) activeBalance.textContent = valid ? `${amount(balance.total_balance)} ${currency}`.trim() : 'Нет данных';
+  if (activeBalance) activeBalance.textContent = valid ? `${amount(balance.total_balance)} ${rawCurrency}`.trim() : 'Нет данных';
   const box = document.getElementById('deepseek-balance');
   if (box) {
-    box.innerHTML = `
+    setMarkup(box, `
       <h2>Баланс DeepSeek API</h2>
       <div class="quota-summary">
         <div class="help-text">Общий остаток<strong class="dashboard-tone-${statusTone}">${valid ? `${amount(balance.total_balance)} ${currency}` : 'Нет данных'}</strong></div>
@@ -1759,7 +1825,7 @@ function renderDeepSeekTab() {
       <p class="help-text" style="margin-top:12px;">Статус: <strong class="dashboard-tone-${statusTone}">${html(statusText)}</strong>${balance.checked_at ? ` · обновлён ${dashboardTime(balance.checked_at * 1000)}` : ''}${balance.status === 'stale' ? ' · сохранённые данные' : ''}</p>
       ${otherBalances.length ? `<p class="help-text">Также на счету: ${otherBalances.join(' · ')}</p>` : ''}
       ${balance.error ? `<p class="help-text" style="color:var(--accent-red);">${html(balance.error)}</p>` : ''}
-    `;
+    `);
   }
   renderDeepSeekUsage(cfg.usage);
 }
@@ -1778,31 +1844,33 @@ function usageTokens(value) {
   return number.toLocaleString('ru-RU');
 }
 function setDeepseekUsagePeriod(days) {
+  if (![7, 14, 30].includes(days)) return;
   deepseekUsageDays = days;
-  renderDeepSeekTab();
+  renderDeepSeekUsage(appState.providers?.deepseek?.usage);
 }
 function renderDeepSeekUsage(usage) {
   const box = document.getElementById('deepseek-usage');
   if (!box) return;
   const periods = [7, 14, 30];
-  const periodButtons = period => `<div class="segmented-group usage-period">${periods.map(days =>
-    `<button type="button" class="seg-btn ${days === period ? 'active' : ''}" onclick="setDeepseekUsagePeriod(${days})">${days} дн.</button>`).join('')}</div>`;
+  const periodButtons = period => `<div class="segmented-group usage-period" role="group" aria-label="Период расхода">${periods.map(days =>
+    `<button type="button" class="seg-btn ${days === period ? 'active' : ''}" aria-pressed="${String(days === period)}" data-focus-key="${days}" onclick="setDeepseekUsagePeriod(${days})">${days} дн.</button>`).join('')}</div>`;
   if (!usage) {
-    box.innerHTML = `<h2>Расход токенов и денег</h2><p class="help-text">Нет данных о расходе DeepSeek в базе OpenCode.</p>`;
+    setMarkup(box, `<h2>Расход токенов и денег</h2><p class="help-text">Нет данных о расходе DeepSeek в базе OpenCode.</p>`);
     return;
   }
   if (usage.status !== 'ok') {
-    box.innerHTML = `<h2>Расход токенов и денег</h2><p class="help-text">${html(usage.error || 'Нет данных о расходе DeepSeek в базе OpenCode')}</p>`;
+    setMarkup(box, `<h2>Расход токенов и денег</h2><p class="help-text">${html(usage.error || 'Нет данных о расходе DeepSeek в базе OpenCode')}</p>`);
     return;
   }
   const all = Array.isArray(usage.days) ? usage.days : [];
   const period = deepseekUsageDays;
   const days = all.slice(-period);
   if (!days.length) {
-    box.innerHTML = `<h2>Расход токенов и денег</h2><p class="help-text">Нет данных о расходе DeepSeek в базе OpenCode.</p>`;
+    setMarkup(box, `<h2>Расход токенов и денег</h2><p class="help-text">Нет данных о расходе DeepSeek в базе OpenCode.</p>`);
     return;
   }
-  const currency = html(usage.currency || 'CNY');
+  const rawCurrency = usage.currency || 'CNY';
+  const currency = html(rawCurrency);
   const sum = key => days.reduce((total, day) => total + (Number(day[key]) || 0), 0);
   const totalCost = sum('cost');
   const totalTokens = sum('tokens_total');
@@ -1821,7 +1889,7 @@ function renderDeepSeekUsage(usage) {
     const tokenPercent = percent(day.tokens_total, maxTokens);
     const tip = [
       dateLabel(day.date),
-      `расход ${usageMoney(day.cost, usage.currency)}${day.cost_usd ? ` (${usageMoney(day.cost_usd, 'USD')} по учёту OpenCode)` : ''}`,
+      `расход ${usageMoney(day.cost, rawCurrency)}${day.cost_usd ? ` (${usageMoney(day.cost_usd, 'USD')} по учёту OpenCode)` : ''}`,
       `токены ${usageTokens(day.tokens_total)}`,
       `вход ${usageTokens(day.tokens_input)} · кэш ${usageTokens(day.tokens_cache_read)}`,
       `выход ${usageTokens(day.tokens_output)} · reasoning ${usageTokens(day.tokens_reasoning)}`,
@@ -1835,24 +1903,24 @@ function renderDeepSeekUsage(usage) {
       <span class="usage-day">${index % labelEvery === 0 ? html(dateLabel(day.date)) : ''}</span>
     </div>`;
   }).join('');
-  box.innerHTML = `
+  setMarkup(box, `
     <div class="usage-head">
       <h2>Расход токенов и денег</h2>
       ${periodButtons(period)}
     </div>
     <div class="usage-summary">
-      <div><span>Деньги</span><strong>${html(usageMoney(totalCost, usage.currency))}</strong></div>
+      <div><span>Деньги</span><strong>${html(usageMoney(totalCost, rawCurrency))}</strong></div>
       <div><span>Токены</span><strong>${usageTokens(totalTokens)}</strong></div>
       <div><span>Запросов</span><strong>${totalMessages.toLocaleString('ru-RU')}</strong></div>
     </div>
     <div class="usage-chart">${columns}</div>
     <div class="usage-legend">
-      <span><i class="usage-dot usage-dot-money"></i>Деньги, ${currency} (макс. ${html(usageMoney(maxCost, usage.currency))})</span>
+      <span><i class="usage-dot usage-dot-money"></i>Деньги, ${currency} (макс. ${html(usageMoney(maxCost, rawCurrency))})</span>
       <span><i class="usage-dot usage-dot-tokens"></i>Токены (макс. ${usageTokens(maxTokens)})</span>
       <span class="usage-source">По официальному тарифу DeepSeek в ${currency} · токены из базы ${html(usage.source || 'OpenCode')} · пиковые часы ×2</span>
     </div>
     ${unpriced > 0 ? `<p class="help-text usage-warning">Без тарифа DeepSeek: ${unpriced.toLocaleString('ru-RU')} сообщений — их стоимость в деньги не включена.</p>` : ''}
-  `;
+  `);
 }
 
 async function configureDeepSeekApi() {
@@ -1936,15 +2004,15 @@ async function disconnectDeepSeekApi() {
 }
 
 let nvidiaBusy = false;
+let nvidiaCatalogRevision = 0;
+let nvidiaCatalogLoaded = false;
+const nvidiaCatalogHint = 'Загрузка каталога не подтверждает, что ключ имеет доступ к генерации.';
 
 function maybeAutoLoadNvidiaCatalog() {
-  if (nvidiaBusy || nvidiaAutoLoadAttempted || !window.pywebview?.api) return;
+  if (activeTab !== 'nvidia' || nvidiaBusy || nvidiaCatalogLoaded || nvidiaAutoLoadAttempted || !window.pywebview?.api?.load_nvidia_models) return;
   const cfg = appState.providers?.nvidia || {};
   const input = document.getElementById('nvidia-key-input');
   if (!cfg.hasKey || (input && input.value.trim())) return;
-  const list = document.getElementById('nvidia-models-list');
-  if (list && list.querySelector('.nvidia-model-card')) return;
-  nvidiaAutoLoadAttempted = true;
   void nvidiaAction('load');
 }
 
@@ -2027,8 +2095,8 @@ function renderModelCards(list, models, selectedIds, options = {}) {
     if (options.suffix === 'context' && context) meta = `контекст ${context}`;
     else if (options.suffix === 'provider') meta = options.providerLabel || '';
     return `<label class="model-card${checked ? ' is-selected' : ''}" style="--vendor-color:${html(vendor.color)};--vendor-rgb:${html(vendor.rgb)}" title="${html(id)}">
-      <input type="checkbox" class="switch-input card-switch" value="${html(id)}"${checked ? ' checked' : ''}>
-      <span class="model-card-logo">${html(vendor.glyph)}</span>
+      <input type="checkbox" class="switch-input card-switch" aria-label="${html(name)}" value="${html(id)}"${checked ? ' checked' : ''}>
+      <span class="model-card-logo" aria-hidden="true">${html(vendor.glyph)}</span>
       <span class="model-card-info">
         <span class="model-card-name">${html(name)}</span>
         <span class="model-card-id">${html(id)}</span>
@@ -2054,7 +2122,6 @@ function renderNvidiaState() {
   const input = document.getElementById('nvidia-key-input');
   const selected = selectedNvidiaModels();
   input.placeholder = cfg.hasKey ? 'Ключ сохранён · оставьте поле пустым' : 'nvapi-…';
-  input.disabled = nvidiaBusy;
   document.getElementById('nvidia-configured').textContent = cfg.error ||
     (cfg.hasKey ? `Ключ сохранён · моделей в OpenCode: ${count}` : 'Ключ не сохранён');
   document.getElementById('btn-nvidia-load').disabled = nvidiaBusy;
@@ -2067,7 +2134,7 @@ function renderNvidiaState() {
     const state = connected ? 'ok' : 'idle';
     const label = connected ? 'Подключён' : cfg.hasKey ? 'Ключ сохранён · нет моделей' : 'Не подключён';
     badge.className = `badge-pill ${connected ? 'badge-available' : 'badge-pool'}`;
-    badge.innerHTML = `<span class="connection-indicator ${state}"></span> ${html(label)}`;
+    setMarkup(badge, `<span class="connection-indicator ${state}"></span> ${html(label)}`);
   }
   const access = document.getElementById('nvidia-access-status');
   if (access) {
@@ -2083,32 +2150,46 @@ function renderNvidiaState() {
     box.disabled = nvidiaBusy;
     box.closest('.nvidia-model-card')?.classList.toggle('is-selected', !!box.checked);
   });
-  maybeAutoLoadNvidiaCatalog();
 }
 
-function resetNvidiaCatalog() {
+function clearNvidiaCatalog() {
+  nvidiaCatalogLoaded = false;
   document.getElementById('nvidia-models-list').innerHTML = '';
   const badge = document.getElementById('nvidia-catalog-count');
   if (badge) { badge.textContent = 'Каталог не загружен'; badge.className = 'badge-pill badge-pool'; }
   renderNvidiaState();
 }
 
+function resetNvidiaCatalog() {
+  nvidiaCatalogRevision++;
+  nvidiaAutoLoadAttempted = false;
+  clearNvidiaCatalog();
+  setText(document.getElementById('nvidia-status'), nvidiaCatalogHint);
+  maybeAutoLoadNvidiaCatalog();
+}
+
 async function nvidiaAction(action) {
-  if (nvidiaBusy) return;
+  const api = window.pywebview?.api;
+  if (!api || nvidiaBusy) return;
   if (action === 'disconnect' && !confirm('Удалить ключ NVIDIA NIM и отключить модели в обеих копиях Hub?')) return;
   const input = document.getElementById('nvidia-key-input');
   const status = document.getElementById('nvidia-status');
+  const revision = nvidiaCatalogRevision;
+  const key = input.value;
+  const isCurrent = () => revision === nvidiaCatalogRevision && input.value === key;
+  const selections = selectedNvidiaModels();
+  if ((action === 'probe' && selections.length !== 1) || (action === 'apply' && !selections.length)) return;
+  if (action === 'load') nvidiaAutoLoadAttempted = true;
   nvidiaBusy = true;
   renderNvidiaState();
   status.textContent = 'Выполняется…';
   try {
-    const api = window.pywebview.api;
     if (action === 'load') {
-      resetNvidiaCatalog();
-      const models = await api.load_nvidia_models(input.value);
-      input.value = '';
+      const models = await api.load_nvidia_models(key.trim());
+      if (!isCurrent()) return;
       const list = document.getElementById('nvidia-models-list');
-      const configured = new Set(appState.providers?.nvidia?.selectedModels || []);
+      const configured = new Set(nvidiaCatalogLoaded ? selections : appState.providers?.nvidia?.selectedModels || []);
+      nvidiaCatalogLoaded = true;
       if (!models.length) {
         list.innerHTML = '<p class="help-text">Каталог NVIDIA NIM вернул только нечатные модели (embeddings, rerank, safety). Попробуйте другой ключ или обновите каталог позже.</p>';
       } else {
@@ -2116,8 +2197,8 @@ async function nvidiaAction(action) {
           const vendor = nvidiaVendor(model);
           const checked = configured.has(model);
           return `<label class="nvidia-model-card${checked ? ' is-selected' : ''}" style="--nvidia-vendor:${html(vendor.color)}" title="${html(model)}">
-            <input type="checkbox" class="switch-input nvidia-card-switch" value="${html(model)}"${checked ? ' checked' : ''}>
-            <span class="nvidia-model-logo">${html(vendor.glyph)}</span>
+            <input type="checkbox" class="switch-input nvidia-card-switch" aria-label="${html(model)}" value="${html(model)}"${checked ? ' checked' : ''}>
+            <span class="nvidia-model-logo" aria-hidden="true">${html(vendor.glyph)}</span>
             <span class="nvidia-model-info">
               <span class="nvidia-model-name">${html(nvidiaModelName(model))}</span>
               <span class="nvidia-model-id">${html(model)}</span>
@@ -2131,28 +2212,33 @@ async function nvidiaAction(action) {
       if (badge) { badge.textContent = `В каталоге: ${models.length}`; badge.className = 'badge-pill badge-available'; }
       status.textContent = `Загружено моделей: ${models.length}. Для проверки доступа запустите генерацию.`;
     } else if (action === 'probe') {
-      const [model] = selectedNvidiaModels();
-      await api.probe_nvidia_model(model);
-      status.textContent = `${model}: NVIDIA вернула результат генерации.`;
+      const [model] = selections;
+      if (await api.probe_nvidia_model(model) === false) throw new Error('Проверка генерации не удалась');
+      if (isCurrent()) status.textContent = `${model}: NVIDIA вернула результат генерации.`;
     } else {
       const next = action === 'apply'
-        ? await api.apply_nvidia_models(selectedNvidiaModels())
+        ? await api.apply_nvidia_models(selections)
         : await api.disconnect_nvidia();
       (appState.providers ||= {}).nvidia = next;
       if (action === 'disconnect') {
-        input.value = '';
-        resetNvidiaCatalog();
+        if (isCurrent()) input.value = '';
+        clearNvidiaCatalog();
       }
-      status.textContent = action === 'apply'
+      if (action === 'disconnect' || isCurrent()) status.textContent = action === 'apply'
         ? `Добавлено моделей: ${next.selectedModels.length}. Выберите NVIDIA NIM в OpenCode Desktop.`
         : 'NVIDIA NIM отключён.';
+      if (action === 'apply' && isCurrent()) input.value = '';
       await refreshState();
     }
   } catch (e) {
-    status.textContent = e.message || String(e);
+    if (isCurrent()) {
+      if (action === 'load') clearNvidiaCatalog();
+      status.textContent = e?.message || String(e);
+    }
   } finally {
     nvidiaBusy = false;
     renderNvidiaState();
+    maybeAutoLoadNvidiaCatalog();
   }
 }
 
@@ -2863,9 +2949,9 @@ async function importBackup() {
         showToast('Импорт отменён: не указан пароль');
         return;
       }
-      res = await window.pywebview.api.import_backup(res.source_path, pwd);
+      res = await window.pywebview.api.import_backup(res.import_token, pwd);
     }
-    if (res && res.ok) {
+    if (res && (res.ok || res.partial)) {
       if (statusEl) statusEl.textContent = res.message;
       showToast(res.message);
       networkFormInitialized = false;
@@ -2875,7 +2961,6 @@ async function importBackup() {
       const tlList = document.getElementById('tokenlavka-models-list');
       if (tlList) delete tlList.dataset.ready;
       await refreshState();
-      alert(`${res.message}\n\nПрофили и настройки успешно перенесены!`);
     } else if (res && res.cancelled) {
       if (statusEl) statusEl.textContent = 'Импорт отменён';
     } else {
@@ -2891,13 +2976,17 @@ async function importBackup() {
 // ============================================================================
 // INITIALIZATION
 // ============================================================================
-window.addEventListener('pywebviewready', () => {
+let hubInitialized = false;
+function initializeHub() {
+  if (hubInitialized || !window.pywebview?.api) return;
+  hubInitialized = true;
   console.log("PyWebView bridge ready");
-  document.getElementById('network-settings').addEventListener('input', () => { networkDirty = true; renderDnsStatus(); });
-  document.getElementById('network-proxy').addEventListener('input', () => { networkDirty = true; });
+  document.getElementById('network-settings')?.addEventListener('input', renderDnsStatus);
   refreshState();
   void refreshPluginFixStatus();
   void refreshAntigravityPatchStatus();
   // Auto refresh loop every 10 seconds
   setInterval(refreshState, 10000);
-});
+}
+window.addEventListener('pywebviewready', initializeHub);
+initializeHub();

@@ -102,6 +102,7 @@ class ActiveAccountSelectionTests(unittest.TestCase):
         method = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
                       and n.name == "get_active_google_health_account")
         namespace = {"Path": Path, "json": json,
+                     "get_opencode_config_dir": lambda: Path.home() / ".config" / "opencode",
                      "export_google_accounts": lambda: [{"id": "second", "email": "active@example.test"}],
                      "get_active_google_account_index": lambda: 1,
                      "ordered_generation_dirs": antigravity_manager.ordered_generation_dirs}

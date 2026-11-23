@@ -6,13 +6,13 @@ and logs into a single isolated directory: %APPDATA%/AntigravityHub (or ~/.confi
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import sys
 from pathlib import Path
 from typing import Dict, Any
-from secure_storage import atomic_write_bytes
+from jsonc_config import parse_config
+from secure_storage import atomic_write_bytes, regular_file_stat
 
 
 def get_hub_data_dir() -> Path:
@@ -31,6 +31,19 @@ def get_hub_data_dir() -> Path:
 
     base.mkdir(parents=True, exist_ok=True)
     return base
+
+
+def get_opencode_config_dir() -> Path:
+    """Resolve the active directory without creating or migrating anything.
+
+    Keep ~/.config/opencode as the default on Windows as well as POSIX.
+    Roaming AppData's old plugin account storage is not a config override.
+    """
+    override = Path(os.environ.get("OPENCODE_CONFIG_DIR", ""))
+    if override.is_absolute():
+        return override
+    xdg = Path(os.environ.get("XDG_CONFIG_HOME", ""))
+    return (xdg if xdg.is_absolute() else Path.home() / ".config") / "opencode"
 
 
 HUB_ROOT = get_hub_data_dir()
@@ -62,66 +75,94 @@ VLESS_RUNTIME_DIR = VLESS_DIR
 CLAUDE_PROFILE_DIR = BROWSER_DIR / "claude_profile"
 
 # Shared OpenCode config directory (only what OpenCode itself needs)
-OPENCODE_CONFIG_DIR = Path.home() / ".config" / "opencode"
+OPENCODE_CONFIG_DIR = get_opencode_config_dir()
 OPENCODE_CONFIG_FILE = OPENCODE_CONFIG_DIR / "opencode.json"
 OPENCODE_SHARED_ANTIGRAVITY_CONFIG = OPENCODE_CONFIG_DIR / "antigravity.json"
 
 
-def sync_shared_antigravity_config():
-    """Keeps ~/.config/opencode/antigravity.json in sync with Hub central config."""
+def _file_stamp(info):
+    # On Windows stat and fstat can expose different creation/change times.
+    return info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns if os.name != "nt" else None, info.st_size
+
+
+def _path_stamp(path):
     try:
-        paths = (HUB_CONFIG_FILE, OPENCODE_SHARED_ANTIGRAVITY_CONFIG)
-        candidates = sorted((p for p in paths if p.is_file()),
-                            key=lambda p: p.stat().st_mtime_ns, reverse=True)
-        for source in candidates:
-            content = source.read_bytes()
-            try:
-                if not isinstance(json.loads(content.decode("utf-8-sig")), dict):
-                    continue
-            except (UnicodeError, ValueError):
-                continue
-            target = next(p for p in paths if p != source)
-            if not target.is_file() or target.read_bytes() != content:
-                atomic_write_bytes(target, content, private_parent=target == HUB_CONFIG_FILE)
+        regular_file_stat(path)
+        return _file_stamp(path.stat())
+    except FileNotFoundError:
+        return None
+
+
+def _read_mirror(path):
+    stamp = _path_stamp(path)
+    if stamp is None:
+        return None
+    with path.open("rb") as stream:
+        if _file_stamp(os.fstat(stream.fileno())) != stamp:
+            raise OSError("Config changed before it could be read")
+        content = stream.read()
+        if _file_stamp(os.fstat(stream.fileno())) != stamp:
+            raise OSError("Config changed while it was being read")
+    return stamp, content, parse_config(content.decode("utf-8-sig"), jsonc=False)
+
+
+def read_mirrored_antigravity_config(central=None, mirror=None) -> dict | None:
+    """Read the newest valid object, favoring Hub on ties. Never writes.
+
+    Invalid or unavailable copies don't mask a valid peer. If neither can be
+    loaded, return None so callers can distinguish that from an empty object.
+    """
+    central = HUB_CONFIG_FILE if central is None else central
+    mirror = OPENCODE_SHARED_ANTIGRAVITY_CONFIG if mirror is None else mirror
+    candidates = []
+    for path in (central, mirror):
+        try:
+            snapshot = _read_mirror(path)
+        except (OSError, ValueError, RecursionError):
+            continue
+        if snapshot is not None:
+            candidates.append(snapshot)
+    newest = max(candidates, key=lambda item: item[0][2], default=None)
+    return newest[2] if newest else None
+
+
+def sync_shared_antigravity_config():
+    """Seed a missing mirror or sync clearly newer valid settings at startup.
+
+    Neither corrupt nor inaccessible files are considered missing. Leave those
+    and equal-timestamp conflicts for explicit repair. Only the two configured
+    settings paths participate; neither is a secret store.
+    """
+    central, mirror = HUB_CONFIG_FILE, OPENCODE_SHARED_ANTIGRAVITY_CONFIG
+    if central == mirror:
+        return
+    try:
+        left, right = _read_mirror(central), _read_mirror(mirror)
+        if left is None and right is None:
             return
-    except OSError as e:
-        print(f"[Hub Paths] Config sync failed: {type(e).__name__}")
+        if left and right and (left[1] == right[1] or left[0][2] == right[0][2]):
+            return
+        if _path_stamp(central) != (left[0] if left else None):
+            return
+        if _path_stamp(mirror) != (right[0] if right else None):
+            return
+        # This recheck catches changes during the read, not all possible races
+        # with external writers. Both configured parent paths must be trusted.
+        if right is None or (left is not None and left[0][2] > right[0][2]):
+            atomic_write_bytes(mirror, left[1], private_parent=False)
+        else:
+            atomic_write_bytes(central, right[1])
+    except (OSError, ValueError, RecursionError) as exc:
+        print(f"[Hub Paths] Config sync skipped: {type(exc).__name__}")
 
 
 def migrate_legacy_locations():
+    """Compatibility entry point for startup; only sync shared settings.
+
+    Leave legacy credentials, account files and browser sessions in place for
+    explicit recovery. Never copy or delete them here. The disposable Gemini
+    cache can be rebuilt; legacy executables are not adopted.
     """
-    Seamlessly migrates scattered files from older versions into %APPDATA%/AntigravityHub.
-    Safe and idempotent: runs once, never overwrites newer files.
-    """
-    legacy_opencode_dir = Path.home() / ".config" / "opencode"
-    legacy_share_dir = Path.home() / ".local" / "share" / "antigravity-hub"
-
-    # 1. Configs & Accounts
-    pairs = [
-        (legacy_opencode_dir / "openai-accounts.json", OPENAI_ACCOUNTS_FILE),
-        (legacy_opencode_dir / "xpiki.json", XPIKI_CONFIG_FILE),
-        (legacy_opencode_dir / "gemini_domains.json", GEMINI_DOMAINS_FILE),
-        (legacy_share_dir / "openrouter.json", OPENROUTER_SECRET_FILE),
-        (legacy_share_dir / "tokenlavka.json", TOKENLAVKA_SECRET_FILE),
-        (legacy_opencode_dir / "tokenlavka.json", TOKENLAVKA_CONFIG_FILE),
-    ]
-
-    for old_path, new_path in pairs:
-        try:
-            if old_path.is_file() and not new_path.exists():
-                atomic_write_bytes(new_path, old_path.read_bytes())
-        except OSError as exc:
-            print(f"[Hub Paths] Migration failed for {new_path.name}: {type(exc).__name__}")
-
-    # 2. Browser profiles (Claude)
-    legacy_claude = legacy_opencode_dir / "claude_profile"
-    if legacy_claude.exists() and not CLAUDE_PROFILE_DIR.exists():
-        try:
-            shutil.copytree(legacy_claude, CLAUDE_PROFILE_DIR)
-        except Exception:
-            pass
-
-    # Never auto-adopt legacy executables of unknown origin.
     sync_shared_antigravity_config()
 
 

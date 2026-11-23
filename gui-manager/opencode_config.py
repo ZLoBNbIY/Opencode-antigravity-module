@@ -1,175 +1,117 @@
-"""OpenCode configuration manager for Antigravity Hub.
-
-Ensures that critical OpenCode configuration settings (such as the free built-in
-model for session titles: 'opencode/big-pickle') are always properly configured
-and never reset or overwritten.
-"""
+"""Read and repair the OpenCode session title model without replacing the config."""
 
 from __future__ import annotations
 
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+
+import jsonc_config
+import hub_paths
+from secure_storage import atomic_write_bytes
+
 
 TITLE_MODEL = "opencode/big-pickle"
-CONFIG_DIR = Path.home() / ".config" / "opencode"
+CONFIG_DIR = hub_paths.OPENCODE_CONFIG_DIR
+NATIVE_TITLE_KEY = ("agents", "title", "model")
+LEGACY_TITLE_KEY = ("agent", "title", "model")
+LEGACY_SMALL_KEY = ("small_model",)
 
 
-def get_opencode_config_path(config_dir: Optional[Path] = None) -> Path:
-    """Returns the path to opencode.json or opencode.jsonc."""
-    cd = config_dir or CONFIG_DIR
-    jsonc_path = cd / "opencode.jsonc"
-    json_path = cd / "opencode.json"
-    if jsonc_path.exists() and not json_path.exists():
-        return jsonc_path
-    return json_path
+def get_opencode_config_path(config_dir: Path | None = None) -> Path:
+    """Find the global config, or raise if both JSON and JSONC exist."""
+    return jsonc_config.config_path(config_dir if config_dir is not None else CONFIG_DIR)
 
 
-def _parse_config_text(raw: str) -> Dict[str, Any]:
-    """Parses JSON or JSONC text safely."""
+def _resolve_config_path(config_path: Path | None) -> Path:
+    if config_path is None:
+        return get_opencode_config_path()
+    if config_path.name in ("opencode.json", "opencode.jsonc"):
+        get_opencode_config_path(config_path.parent)  # Refuse the same ambiguity for explicit paths.
+    return config_path
+
+
+def _parse_config_text(raw: str) -> dict:
+    return jsonc_config.parse_config(raw)
+
+
+def _get(data: dict, keys: tuple[str, ...]):
+    value = data
+    for key in keys:
+        if not isinstance(value, dict):
+            raise ValueError(f"Поле {'.'.join(keys[:-1])} должно быть JSON-объектом")
+        if key not in value:
+            return None
+        value = value[key]
+    return value
+
+
+def _title_settings(data: dict) -> tuple[tuple[str, ...], object]:
+    """Choose the write key and effective model; V2 overrides legacy values."""
+    native = _get(data, NATIVE_TITLE_KEY)
+    if isinstance(native, str) and native:
+        return NATIVE_TITLE_KEY, native
+    legacy_title = _get(data, LEGACY_TITLE_KEY)
+    legacy_key = LEGACY_TITLE_KEY if isinstance(legacy_title, str) and legacy_title else LEGACY_SMALL_KEY
+    legacy_value = _get(data, legacy_key)
+    if not any(key in data for key in ("agents", "plugins", "providers")) and any(
+        key in data for key in ("agent", "plugin", "small_model")
+    ):
+        # Repair existing V1-style files without writing unsupported V2 keys.
+        return legacy_key, legacy_value
+    return NATIVE_TITLE_KEY, legacy_value if native is None else native
+
+
+def check_session_title_config(config_path: Path | None = None) -> tuple[bool, str]:
+    """Return (configured, message) for the effective title model."""
     try:
-        from jsonc_config import jsonc_text
-        cleaned = jsonc_text(raw)
-    except Exception:
-        cleaned = raw
-    data = json.loads(cleaned)
-    if not isinstance(data, dict):
-        raise ValueError("Конфигурация OpenCode должна быть JSON-объектом")
-    return data
-
-
-def check_session_title_config(config_path: Optional[Path] = None) -> Tuple[bool, str]:
-    """Checks whether the session title model is properly set to 'opencode/big-pickle'.
-
-    Returns (is_valid, message).
-    """
-    path = config_path or get_opencode_config_path()
-    if not path.exists():
-        return False, f"Файл конфигурации не найден: {path}"
-
-    try:
-        raw = path.read_text(encoding="utf-8-sig")
-        data = _parse_config_text(raw)
-
-        small_model = data.get("small_model")
-        agent_title = data.get("agent")
-        agents_title = data.get("agents")
-
-        agent_model = agent_title.get("title", {}).get("model") if isinstance(agent_title, dict) and isinstance(agent_title.get("title"), dict) else None
-        agents_model = agents_title.get("title", {}).get("model") if isinstance(agents_title, dict) and isinstance(agents_title.get("title"), dict) else None
-
-        valid = (small_model == TITLE_MODEL) and (agent_model == TITLE_MODEL) and (agents_model == TITLE_MODEL)
-        if valid:
+        path = _resolve_config_path(config_path)
+        if not path.exists():
+            return False, f"Файл конфигурации не найден: {path}"
+        data = _parse_config_text(path.read_bytes().decode("utf-8"))
+        model = _title_settings(data)[1]
+        if model == TITLE_MODEL:
             return True, f"Настройка активна: {TITLE_MODEL}"
-
-        details = []
-        if small_model != TITLE_MODEL:
-            details.append(f"small_model={small_model}")
-        if agents_model != TITLE_MODEL:
-            details.append(f"agents.title={agents_model}")
-        if agent_model != TITLE_MODEL:
-            details.append(f"agent.title={agent_model}")
-
-        return False, f"Некорректная настройка: {', '.join(details)}"
-    except Exception as e:
-        return False, f"Ошибка проверки конфигурации: {e}"
+        return False, f"Некорректная настройка модели подписи сессий; требуется {TITLE_MODEL}."
+    except (OSError, ValueError) as exc:
+        return False, f"Ошибка проверки конфигурации: {exc}"
 
 
-def ensure_session_title_config(config_path: Optional[Path] = None) -> Tuple[bool, str]:
-    """Verifies and automatically fixes the session title model in OpenCode config.
-
-    Sets:
-      - small_model: 'opencode/big-pickle'
-      - agent.title.model: 'opencode/big-pickle'
-      - agents.title.model: 'opencode/big-pickle'
-
-    Returns (modified, status_message).
-    """
-    path = config_path or get_opencode_config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    path_existed = path.exists()
-    raw = ""
-    data: Dict[str, Any] = {}
-    if path_existed:
-        try:
-            raw = path.read_text(encoding="utf-8-sig")
-            data = _parse_config_text(raw)
-        except Exception as e:
-            err = f"Ошибка чтения конфигурации {path}: {e}"
-            print(f"[OpenCode Config] {err}")
-            return False, err
-    else:
-        # Load template if available
-        root = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
-        template_file = root / "config-templates" / "opencode.json"
-        if template_file.exists():
-            try:
-                data = json.loads(template_file.read_text(encoding="utf-8"))
-            except Exception:
-                pass
-        if not data:
-            data = {
-                "$schema": "https://opencode.ai/config.json",
-                "model": "google/antigravity-gemini-3.8-flash",
-                "plugins": ["@cortexkit/opencode-antigravity-auth@3.0.0"],
-                "provider": {"google": {"options": {"apiKey": "antigravity"}}},
-            }
-
-    # Verify if fix is needed
-    small_model = data.get("small_model")
-    agent_title = data.get("agent")
-    agents_title = data.get("agents")
-
-    agent_model = agent_title.get("title", {}).get("model") if isinstance(agent_title, dict) and isinstance(agent_title.get("title"), dict) else None
-    agents_model = agents_title.get("title", {}).get("model") if isinstance(agents_title, dict) and isinstance(agents_title.get("title"), dict) else None
-
-    if path_existed and small_model == TITLE_MODEL and agent_model == TITLE_MODEL and agents_model == TITLE_MODEL:
-        return False, f"Конфигурация уже корректна ({TITLE_MODEL})"
-
-    # Apply fixes
-    content = None
-    if path_existed and (path.suffix.lower() == ".jsonc" or "//" in raw or "/*" in raw):
-        try:
-            import jsonc_config
-            updated_raw = jsonc_config.set_property(raw, ("small_model",), TITLE_MODEL)
-            if isinstance(data.get("agent"), dict):
-                updated_raw = jsonc_config.set_property(updated_raw, ("agent", "title", "model"), TITLE_MODEL)
-            else:
-                updated_raw = jsonc_config.set_property(updated_raw, ("agent",), {"title": {"model": TITLE_MODEL}})
-            if isinstance(data.get("agents"), dict):
-                updated_raw = jsonc_config.set_property(updated_raw, ("agents", "title", "model"), TITLE_MODEL)
-            else:
-                updated_raw = jsonc_config.set_property(updated_raw, ("agents",), {"title": {"model": TITLE_MODEL}})
-            content = updated_raw
-        except Exception as exc:
-            return False, f"Конфигурация JSONC оставлена без изменений: {type(exc).__name__}"
-
-    if content is None:
-        data["small_model"] = TITLE_MODEL
-
-        if "agent" not in data or not isinstance(data["agent"], dict):
-            data["agent"] = {}
-        if "title" not in data["agent"] or not isinstance(data["agent"]["title"], dict):
-            data["agent"]["title"] = {}
-        data["agent"]["title"]["model"] = TITLE_MODEL
-
-        if "agents" not in data or not isinstance(data["agents"], dict):
-            data["agents"] = {}
-        if "title" not in data["agents"] or not isinstance(data["agents"]["title"], dict):
-            data["agents"]["title"] = {}
-        data["agents"]["title"]["model"] = TITLE_MODEL
-
-        content = json.dumps(data, indent=4, ensure_ascii=False)
+def _new_config() -> dict:
+    root = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
     try:
-        from secure_storage import atomic_write_bytes
-        atomic_write_bytes(path, content.encode("utf-8"), private_parent=False)
+        return _parse_config_text((root / "config-templates" / "opencode.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {
+            "$schema": "https://opencode.ai/config.json",
+            "model": "google/antigravity-gemini-3.8-flash",
+            "plugins": ["@cortexkit/opencode-antigravity-auth@3.0.0"],
+            "providers": {"google": {"settings": {"apiKey": "antigravity"}}},
+        }
 
-        msg = f"Успешно установлена бесплатная модель подписи сессий: {TITLE_MODEL}"
-        print(f"[OpenCode Config] {msg}")
-        return True, msg
-    except Exception as e:
-        err = f"Ошибка записи конфигурации {path}: {e}"
-        print(f"[OpenCode Config] {err}")
-        return False, err
+
+def ensure_session_title_config(config_path: Path | None = None) -> tuple[bool, str]:
+    """Set the session title model, returning (modified, status message)."""
+    try:
+        path = _resolve_config_path(config_path)
+        exists = path.exists()
+        raw = path.read_bytes().decode("utf-8") if exists else json.dumps(
+            _new_config(), indent=2, ensure_ascii=False,
+        ) + "\n"
+        data = _parse_config_text(raw)
+        key, model = _title_settings(data)
+        if exists and model == TITLE_MODEL:
+            return False, f"Конфигурация уже корректна ({TITLE_MODEL})"
+        crlf = "\r\n" in raw and "\n" not in raw.replace("\r\n", "")
+        content = jsonc_config.set_property(raw.replace("\r\n", "\n") if crlf else raw, key, TITLE_MODEL)
+        if crlf:
+            content = content.replace("\n", "\r\n")
+    except (OSError, ValueError) as exc:
+        return False, f"Ошибка чтения конфигурации: {exc}"
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_bytes(path, content.encode("utf-8"), private_parent=False)
+    except OSError as exc:
+        return False, f"Ошибка записи конфигурации {path}: {exc}"
+    return True, f"Успешно установлена бесплатная модель подписи сессий: {TITLE_MODEL}"

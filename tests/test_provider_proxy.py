@@ -138,6 +138,72 @@ class ProviderRouteProxyTests(unittest.TestCase):
         self.assertEqual(provider_proxy._hub_upstream_proxy(hub), "http://first.example:8000")
         self.assertEqual(provider_proxy._get_candidate_proxies(hub), hub["proxy_pool"])
 
+    @patch("provider_proxy._connect_upstream")
+    def test_explicit_proxy_without_external_candidates_never_connects_directly(self, connect):
+        import provider_proxy
+        hub = {"provider_routes": {"openai": "proxy"}, "vless_enabled": True,
+               "vless_url": "vless://example", "dns_mode": "standard"}
+        bad = {**hub, "proxy_pool": ["socks5://proxy.example:1080", "http://proxy.example:bad",
+                                     "http://localhost.:10880/path", "http://[::1]:51180",
+                                     "http://127.0.0.1:10880"]}
+        for cfg in (hub, bad):
+            with self.subTest(config=cfg):
+                with self.assertRaises(provider_proxy.ProxyRouteUnavailable):
+                    select_upstream("api.openai.com", cfg, self.opencode)
+                with self.assertRaises(provider_proxy.ProxyRouteUnavailable):
+                    provider_proxy.connect_routed("api.openai.com", 443, cfg, self.opencode)
+        connect.assert_not_called()
+
+    @patch("provider_proxy._connect_upstream")
+    def test_explicit_proxy_retries_only_pool_candidates_when_enabled(self, connect):
+        import provider_proxy
+        primary, backup = "http://proxy-one.example:3128", "http://proxy-two.example:3128"
+        hub = {"provider_routes": {"openai": "proxy"}, "proxy": backup,
+               "proxy_pool": [primary, backup], "dns_mode": "standard"}
+        connect.side_effect = [OSError("primary down"), connect.return_value]
+        result, upstream = provider_proxy.connect_routed("api.openai.com", 443, hub, self.opencode)
+        self.assertIs(result, connect.return_value)
+        self.assertEqual(upstream, backup)
+        self.assertEqual([call.args[0] for call in connect.call_args_list], [primary, backup])
+        connect.reset_mock()
+        connect.side_effect = OSError("primary down")
+        with self.assertRaises(OSError):
+            provider_proxy.connect_routed("api.openai.com", 443, {**hub, "proxy_failover": False}, self.opencode)
+        connect.assert_called_once_with(primary, "api.openai.com", 443, hub_config={**hub, "proxy_failover": False})
+
+    @patch("provider_proxy._connect_upstream")
+    @patch("provider_proxy._managed_vless_ready", return_value=False)
+    def test_manual_claude_vless_fails_closed_even_when_kill_switch_is_off(self, ready, connect):
+        import provider_proxy
+        hub = {"provider_routes": {"claude-pro": "vless"}, "vless_kill_switch": False,
+               "vless_enabled": True, "vless_url": "vless://example", "vless_http_port": 20779,
+               "proxy": "http://proxy.example:3128", "dns_mode": "standard"}
+        with self.assertRaises(OSError):
+            provider_proxy.connect_routed("claude.ai", 443, hub, self.opencode)
+        ready.assert_called_once_with("http://127.0.0.1:20779")
+        connect.assert_not_called()
+        self.auto_refresh.assert_not_called()
+
+    @patch("provider_proxy._connect_upstream")
+    def test_manual_claude_modes_override_kill_switch(self, connect):
+        import provider_proxy
+        hub = {"vless_enabled": True, "vless_url": "vless://example",
+               "proxy": "http://proxy.example:3128", "dns_mode": "standard"}
+        for mode, upstream in (("direct", None), ("dns", "dns://hub"), ("proxy", hub["proxy"])):
+            with self.subTest(mode=mode):
+                cfg = {**hub, "provider_routes": {"claude-pro": mode}}
+                self.assertEqual(provider_proxy.connect_routed("claude.ai", 443, cfg, self.opencode)[1], upstream)
+        self.auto_refresh.assert_not_called()
+
+    @patch("dns_tester.test_doh_endpoint", return_value={"ok": False})
+    def test_routed_doh_rejects_a_failed_dns_check(self, doh):
+        import provider_proxy
+        hub = {"dns_mode": "doh", "doh_url": "https://resolver.test/dns-query"}
+        with self.assertRaises(OSError):
+            provider_proxy._resolve_with_hub_dns("chatgpt.com", hub)
+        self.assertEqual(doh.call_args.args, (hub["doh_url"],))
+        self.assertEqual(doh.call_args.kwargs["domain"], "chatgpt.com")
+
     @patch("provider_proxy.select_upstream", return_value="http://secret:password@proxy.example:3128")
     def test_route_description_never_exposes_credentials(self, select):
         self.assertEqual(describe_route("cloudcode-pa.googleapis.com"), "http://proxy.example:3128")

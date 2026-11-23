@@ -12,18 +12,19 @@ import socket
 import ssl
 import threading
 import time
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from contextvars import ContextVar
 from pathlib import Path
 from urllib.parse import unquote, urlparse, urlsplit
 
 import jsonc_config
+import hub_paths
 from proxy_config import NATIVE_ROUTES, native_route_revision, native_routes
 
 HOST = "127.0.0.1"
 PORT = 10880
-CONFIG_DIR = Path.home() / ".config" / "opencode"
+PROXY_POLICY = "3"
+CONFIG_DIR = hub_paths.OPENCODE_CONFIG_DIR
 LOCAL_ROUTES = {
     "google": (
         "googleapis.com",
@@ -73,18 +74,42 @@ _thread = None
 _start_lock = threading.Lock()
 
 
+class ProxyRouteUnavailable(OSError):
+    pass
+
+
 def _get_candidate_proxies(hub: dict) -> list[str]:
-    """Return a list of external proxies from the proxy pool or fallback proxy."""
+    """Return usable external proxy URLs in pool order, then the legacy URL."""
     pool = hub.get("proxy_pool")
+    items = list(pool) if isinstance(pool, list) else []
+    items.append(hub.get("proxy"))
     candidates = []
-    if isinstance(pool, list):
-        for item in pool:
-            url = str((item.get("url") if isinstance(item, dict) else item) or "").strip()
-            if url and url not in candidates and url != "http://127.0.0.1:51180" and url != f"http://{HOST}:{PORT}":
-                candidates.append(url)
-    fallback = str(hub.get("proxy") or "").strip()
-    if fallback and fallback not in candidates and fallback != "http://127.0.0.1:51180" and fallback != f"http://{HOST}:{PORT}":
-        candidates.append(fallback)
+    for item in items:
+        url = item.get("url") if isinstance(item, dict) else item
+        if not isinstance(url, str):
+            continue
+        url = url.strip()
+        if not url or url in candidates or re.search(r"[\x00-\x20\x7f\\]", url):
+            continue
+        try:
+            parsed = urlsplit(url)
+            host, port = parsed.hostname, parsed.port
+        except ValueError:
+            continue
+        if parsed.scheme not in ("http", "https") or not host or port == 0:
+            continue
+        if port in (PORT, 51180):
+            local_host = host.rstrip(".")
+            try:
+                addr = ipaddress.ip_address(local_host)
+                if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+                    addr = addr.ipv4_mapped
+                local = addr.is_loopback or addr.is_unspecified
+            except ValueError:
+                local = local_host == "localhost"
+            if local:
+                continue
+        candidates.append(url)
     return candidates
 
 
@@ -92,6 +117,23 @@ def _hub_upstream_proxy(hub: dict) -> str | None:
     """Return the highest-priority configured proxy, ignoring the dispatcher itself."""
     candidates = _get_candidate_proxies(hub)
     return candidates[0] if candidates else None
+
+
+def _vless_upstream(hub):
+    return f"http://127.0.0.1:{hub.get('vless_http_port') or 10879}"
+
+
+def _managed_vless_ready(upstream):
+    from vless_manager import vless_service
+
+    port = urlsplit(upstream).port
+    return vless_service.is_http_listener_ready(port)
+
+
+def _connect_vless(upstream, host, port, **kwargs):
+    if not _managed_vless_ready(upstream):
+        raise OSError("Managed VLESS HTTP listener is not ready")
+    return _connect_upstream(upstream, host, port, **kwargs)
 
 
 def _read_json(path: Path) -> dict:
@@ -283,34 +325,35 @@ def provider_for_host(host: str, opencode_config: dict | None = None) -> str | N
 
 def select_upstream(host: str, hub_config: dict | None = None,
                     opencode_config: dict | None = None, *, provider_id=None) -> str | None:
-    """Return an HTTP proxy URL, or None for a direct connection."""
+    """Return an upstream URL, None for direct, or raise for an unavailable route."""
     hub = hub_config if isinstance(hub_config, dict) else _read_json(CONFIG_DIR / "antigravity.json")
     oc = opencode_config if isinstance(opencode_config, dict) else _read_json(CONFIG_DIR / "opencode.json")
     provider = provider_id or provider_for_host(host, oc)
     routes = hub.get("provider_routes", {})
     mode = routes.get(provider, "default") if isinstance(routes, dict) else "default"
-    http_port = hub.get("vless_http_port", 10879)
-
     if mode == "direct":
         return None
     if mode == "proxy":
-        return _hub_upstream_proxy(hub)
+        upstream = _hub_upstream_proxy(hub)
+        if upstream is None:
+            raise ProxyRouteUnavailable("Внешний HTTP-прокси не настроен")
+        return upstream
     if mode == "vless":
-        return f"http://127.0.0.1:{http_port}"
+        return _vless_upstream(hub)
     if mode == "dns":
         return "dns://hub"
 
     if provider:
         from auto_router import router
         router.refresh(provider, hub, oc)
-        return router.selected_upstream(provider, hub, oc)
+        return router.selected_upstream(provider, hub, oc, host=_strip_host_port(host))
     return _legacy_upstream(hub)
 
 
 def _legacy_upstream(hub):
     # Unknown, non-provider hosts retain the Hub's ordinary system routing.
     if hub.get("vless_enabled") and hub.get("vless_url"):
-        return f"http://127.0.0.1:{hub.get('vless_http_port', 10879)}"
+        return _vless_upstream(hub)
     if external := _hub_upstream_proxy(hub):
         return external
     if hub.get("dns_mode") in ("standard", "dot", "doh"):
@@ -324,11 +367,14 @@ def connect_routed(host, port, hub_config=None, opencode_config=None, *, provide
     provider = provider_id or provider_for_host(host, oc)
     routes = hub.get("provider_routes")
     mode = routes.get(provider, "default") if isinstance(routes, dict) else "default"
-    if provider and mode in ("default", "auto"):
+    if provider and mode not in ("direct", "proxy", "vless", "dns"):
         from auto_router import router
         return router.connect(provider, host, port, hub, oc)
 
     upstream = select_upstream(host, hub, oc, provider_id=provider_id)
+    if mode == "vless" or (mode not in ("direct", "proxy", "dns") and not provider
+                           and hub.get("vless_enabled") and hub.get("vless_url")):
+        return _connect_vless(upstream, host, port, hub_config=hub), upstream
 
     # If routing through external proxy and failover/rotation is enabled, try pool candidates
     candidates = _get_candidate_proxies(hub)
@@ -366,14 +412,10 @@ def _resolve_with_hub_dns(host: str, hub_config=None, timeout=8) -> str:
         doh_url = str(hub.get("doh_url") or "").strip()
         if not doh_url.startswith("https://"):
             raise OSError("Invalid DoH URL")
-        query = dns_tester._build_dns_query(host)
-        request = urllib.request.Request(doh_url, data=query,
-            headers={"Content-Type": "application/dns-message", "Accept": "application/dns-message"}, method="POST")
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        remaining = max(0.5, deadline - time.monotonic())
-        with opener.open(request, timeout=remaining) as response:
-            answer = dns_tester._parse_a_record_ip(response.read(65536))
-        result = {"ok": bool(answer), "resolved_ip": answer}
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Hub DNS resolution timed out")
+        result = dns_tester.test_doh_endpoint(doh_url, timeout=remaining, domain=host)
     elif mode == "dot":
         result = dns_tester.test_dot_endpoint(hub.get("dot_host", ""), timeout=timeout, domain=host)
     else:
@@ -636,7 +678,7 @@ class _Handler(_BoundedHandler):
         if self.path == "/_antigravity_provider_proxy_health":
             body = b"antigravity-provider-proxy"
             self.send_response(200)
-            self.send_header("X-Antigravity-Proxy-Policy", "2")
+            self.send_header("X-Antigravity-Proxy-Policy", PROXY_POLICY)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -843,7 +885,8 @@ def _start() -> bool:
         try:
             probe.request("GET", "/_antigravity_provider_proxy_health")
             with probe.getresponse() as response:
-                compatible = response.status == 200 and response.getheader("X-Antigravity-Proxy-Policy") == "2"
+                compatible = (response.status == 200
+                              and response.getheader("X-Antigravity-Proxy-Policy") == PROXY_POLICY)
             if compatible:
                 return True
         except (OSError, http.client.HTTPException):

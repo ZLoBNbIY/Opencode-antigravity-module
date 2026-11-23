@@ -10,13 +10,8 @@ env:
 
 jobs:
   tests:
-    # The Hub and its installer are Windows-only.  The Ubuntu runner cannot
-    # import the Win32 tray module and its secure-storage fallback intentionally
-    # stores secrets in plaintext, so unit tests are Windows-only.
-    strategy:
-      matrix:
-        os: [windows-latest]
-    runs-on: ${{ matrix.os }}
+    name: tests (windows-latest)
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -27,9 +22,24 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24'
-      - if: runner.os == 'Windows'
-        run: python -m pip install --require-hashes -r gui-manager/requirements-win-py312-x64.lock
-      - if: runner.os != 'Windows'
-        run: python -m pip install -r gui-manager/requirements.txt
+      - run: python -m pip install --require-hashes -r gui-manager/requirements-win-py312-x64.lock
       - run: python -m unittest discover -s tests -p "test_*.py"
+      - run: node --test "tests/*.test.mjs"
+
+  posix:
+    # No desktop, Win32 secure storage or runtime dependencies in this subset.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - run: >-
+          PYTHONPATH=tests python -m unittest
+          test_auto_updater test_install_update_safety test_windows_release_version
       - run: node --test "tests/*.test.mjs"

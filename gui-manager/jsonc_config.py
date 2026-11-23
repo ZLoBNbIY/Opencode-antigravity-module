@@ -23,7 +23,11 @@ def jsonc_text(text: str, *, mask_trailing_commas=True) -> str:
             quoted = True
         elif text[i:i + 2] in ("//", "/*"):
             block = text[i:i + 2] == "/*"
-            end = text.find("*/", i + 2) if block else text.find("\n", i + 2)
+            if block:
+                end = text.find("*/", i + 2)
+            else:
+                ending = _LINE_END.search(text, i + 2)
+                end = ending.start() if ending else -1
             if end < 0:
                 if block:
                     raise ValueError("Незакрытый комментарий в конфигурации OpenCode")
@@ -40,13 +44,25 @@ def jsonc_text(text: str, *, mask_trailing_commas=True) -> str:
     masked = "".join(chars)
     if not mask_trailing_commas:
         return masked
-    for match in re.finditer(r'"(?:\\.|[^"\\])*"|,(?=\s*[}\]])', masked):
+    for match in re.finditer(r'"(?:\\.|[^"\\])*"|,(?=[ \t\r\n]*[}\]])', masked):
         if match.group() == ",":
-            chars[match.start()] = " "
+            previous = match.start() - 1
+            while previous >= 0 and masked[previous] in " \t\r\n":
+                previous -= 1
+            # An empty collection or a second comma isn't a trailing comma.
+            if previous >= 0 and masked[previous] not in "{[,":
+                chars[match.start()] = " "
     return "".join(chars)
 
 
-def parse_config(text: str) -> dict:
+_LINE_END = re.compile(r"[\r\n]")
+
+
+def _reject_constant(_value):
+    raise ValueError("Конфигурация OpenCode не допускает NaN и Infinity")
+
+
+def parse_config(text: str, *, jsonc=True) -> dict:
     def unique(pairs):
         obj = {}
         for key, value in pairs:
@@ -55,7 +71,8 @@ def parse_config(text: str) -> dict:
             obj[key] = value
         return obj
 
-    data = json.loads(jsonc_text(text), object_pairs_hook=unique)
+    data = json.loads(jsonc_text(text) if jsonc else text, object_pairs_hook=unique,
+                      parse_constant=_reject_constant)
     if not isinstance(data, dict):
         raise ValueError("Конфигурация OpenCode должна быть JSON-объектом")
     return data
@@ -73,7 +90,7 @@ def set_property(text: str, path: tuple[str, ...], value) -> str:
     if not path:
         raise ValueError("Путь свойства конфигурации не может быть пустым")
     clean = jsonc_text(text)
-    decoder = json.JSONDecoder()
+    decoder = json.JSONDecoder(parse_constant=_reject_constant)
 
     def skip(i):
         while i < len(clean) and (clean[i].isspace() or clean[i] == ","):
@@ -107,9 +124,9 @@ def set_property(text: str, path: tuple[str, ...], value) -> str:
                     return text[:i] + text[value_end:]
                 if len(keys) > 1:
                     return edit(value_start, keys[1:])
+                rendered = json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False)
                 if type(current) is type(value) and current == value:
                     return text
-                rendered = json.dumps(value, indent=2, ensure_ascii=False)
                 return text[:value_start] + rendered + text[value_end:]
             last_end = value_end
             i = skip(value_end)
@@ -118,7 +135,8 @@ def set_property(text: str, path: tuple[str, ...], value) -> str:
         nested = value
         for key in reversed(keys[1:]):
             nested = {key: nested}
-        rendered = json.dumps(keys[0], ensure_ascii=False) + ": " + json.dumps(nested, indent=2, ensure_ascii=False)
+        rendered = json.dumps(keys[0], ensure_ascii=False) + ": " + json.dumps(
+            nested, indent=2, ensure_ascii=False, allow_nan=False)
         tail = jsonc_text(text[last_end:i], mask_trailing_commas=False) if last_end is not None else ""
         comma = "" if last_end is None or "," in tail else ","
         if comma:
@@ -133,8 +151,16 @@ def set_property(text: str, path: tuple[str, ...], value) -> str:
 
 
 def config_path(directory: Path) -> Path:
+    def present(path):
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return False
+        return True
+
     json_path = directory / "opencode.json"
     jsonc_path = directory / "opencode.jsonc"
-    if json_path.exists() and jsonc_path.exists():
+    has_json, has_jsonc = present(json_path), present(jsonc_path)
+    if has_json and has_jsonc:
         raise ValueError("Найдены opencode.json и opencode.jsonc одновременно. Оставьте один активный конфиг.")
-    return jsonc_path if jsonc_path.exists() else json_path
+    return jsonc_path if has_jsonc else json_path

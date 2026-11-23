@@ -1,4 +1,11 @@
-"""NVIDIA hosted NIM catalog and OpenCode Desktop configuration."""
+"""NVIDIA hosted NIM catalog and OpenCode Desktop configuration.
+
+OpenCode's {file:...} interpolates plaintext. New key files are written with
+0600 on POSIX and an explicit user + LocalSystem DACL on Windows, not DPAPI.
+Existing keys aren't rewritten on read. Use a trusted local Hub directory:
+parent-directory access, other processes under the same user, privileged
+accounts, backups, and prior copies aren't covered by the file permissions.
+"""
 
 import json
 import re
@@ -29,11 +36,26 @@ def _validate_key(key):
     return key
 
 
-def load_key():
+def _read_key_bytes():
     try:
-        return _validate_key(KEY_FILE.read_text(encoding="utf-8").strip())
+        secure_storage.regular_file_stat(KEY_FILE)
     except FileNotFoundError:
+        return None
+    return KEY_FILE.read_bytes()
+
+
+def load_key():
+    raw = _read_key_bytes()
+    if raw is None:
         return ""
+    try:
+        return _validate_key(raw.decode("utf-8").strip())
+    except UnicodeError:
+        raise ValueError("Файл ключа NVIDIA повреждён.") from None
+
+
+def _write_key(raw):
+    secure_storage.atomic_write_bytes(KEY_FILE, raw, private_windows=True)
 
 
 def _opener():
@@ -99,9 +121,14 @@ def probe_model(key, model_id):
 def _config():
     path = jsonc_config.config_path(CONFIG_DIR)
     try:
-        original = path.read_text(encoding="utf-8-sig")
+        secure_storage.regular_file_stat(path)
     except FileNotFoundError:
         original = None
+    else:
+        try:
+            original = path.read_bytes().decode("utf-8")
+        except UnicodeError:
+            raise ValueError("Конфигурация OpenCode должна быть в UTF-8.") from None
     try:
         data = jsonc_config.parse_config(original if original is not None else "{}")
     except ValueError:
@@ -113,7 +140,7 @@ def _config():
 
 
 def _key_reference():
-    return "{file:" + KEY_FILE.resolve().as_posix() + "}"
+    return "{file:" + (KEY_FILE.parent.resolve() / KEY_FILE.name).as_posix() + "}"
 
 
 def _owns(provider):
@@ -124,7 +151,7 @@ def _owns(provider):
 def state():
     _, _, data = _config()
     provider = data.get("providers", {}).get(PROVIDER_ID)
-    has_key = KEY_FILE.is_file()
+    has_key = bool(load_key())
     models = provider.get("models") if _owns(provider) else None
     selected = list(models) if isinstance(models, dict) else []
     return {"hasKey": has_key, "connected": has_key and bool(selected),
@@ -153,21 +180,27 @@ def configure(key, model_ids):
 
     # OpenCode reads the separate private file, not a key embedded in JSONC.
     # Restore the previous key if the config cannot be committed.
-    old_key = KEY_FILE.read_text(encoding="utf-8") if KEY_FILE.exists() else None
-    secure_storage.atomic_write(KEY_FILE, key)
+    old_key = _read_key_bytes()
+    _write_key(key.encode("utf-8"))
     try:
-        secure_storage.atomic_write(path, updated)
+        secure_storage.atomic_write(path, updated, private_parent=False)
     except OSError:
         if old_key is None:
             KEY_FILE.unlink(missing_ok=True)
         else:
-            secure_storage.atomic_write(KEY_FILE, old_key)
+            _write_key(old_key)
         raise
 
 
 def disconnect():
     path, original, data = _config()
     provider = data.get("providers", {}).get(PROVIDER_ID)
-    if original is not None and _owns(provider):
-        secure_storage.atomic_write(path, jsonc_config.remove_property(original, PROVIDER_PATH))
+    if original is None or not _owns(provider):
+        return
+    try:
+        secure_storage.regular_file_stat(KEY_FILE)
+    except FileNotFoundError:
+        pass
+    secure_storage.atomic_write(path, jsonc_config.remove_property(original, PROVIDER_PATH),
+                                private_parent=False)
     KEY_FILE.unlink(missing_ok=True)

@@ -320,6 +320,7 @@ class VlessManager:
         self._exit_generation = 0
 
     def exit_generation(self) -> int:
+        """Return the revision of the last transition to or from a ready tunnel."""
         with self._lock:
             return self._exit_generation
 
@@ -673,6 +674,8 @@ class VlessManager:
                 and proc.poll() is None)
 
     def _clear_child(self) -> None:
+        if self._status == "running":
+            self._exit_generation += 1
         self._process = None
         self._ports = ()
         self._status = "stopped"
@@ -751,7 +754,6 @@ class VlessManager:
                 self._process = proc
                 self._ports = ports
                 self._status = "starting"
-                self._exit_generation += 1
             except (OSError, ValueError) as e:
                 self._clear_child()
                 return False, f"Не удалось запустить процесс ядра: {e}"
@@ -775,6 +777,7 @@ class VlessManager:
                     return False, f"Процесс ядра завершился с кодом {rc}. {details}"
                 if self._owns_listeners(proc, ports):
                     self._status = "running"
+                    self._exit_generation += 1
                     return True, f"VLESS туннель запущен на 127.0.0.1:{http_port}"
                 if time.monotonic() >= deadline:
                     stopped = self._stop_child()
@@ -784,7 +787,6 @@ class VlessManager:
 
     def stop_tunnel(self) -> Tuple[bool, str]:
         with self._lock:
-            self._exit_generation += 1
             if not self._stop_child():
                 return False, "Не удалось остановить процесс ядра VLESS."
 

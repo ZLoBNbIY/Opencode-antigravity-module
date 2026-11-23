@@ -42,16 +42,7 @@ def get_local_commit_sha(repo_dir: Path) -> str:
 def _git_commit_contains(repo_dir: Path, ancestor_sha: str) -> bool:
     """Return whether local HEAD already contains the advertised commit."""
     try:
-        flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-        result = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", ancestor_sha, "HEAD"],
-            cwd=str(repo_dir),
-            capture_output=True,
-            creationflags=flags,
-            timeout=5,
-            env=_direct_git_env(),
-        )
-        return result.returncode == 0
+        return _run_git(repo_dir, "merge-base", "--is-ancestor", ancestor_sha, "HEAD", timeout=5).returncode == 0
     except Exception:
         return False
 

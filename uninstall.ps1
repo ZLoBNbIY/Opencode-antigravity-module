@@ -54,43 +54,124 @@ $profileRoot = [Environment]::GetFolderPath('UserProfile')
 if (-not $profileRoot) { throw 'Cannot determine the current user profile.' }
 $hubRoot = Join-Path $profileRoot 'AppData\Roaming\AntigravityHub'
 $configDir = Join-Path $profileRoot '.config\opencode'
-$centralConfig = Join-Path $hubRoot 'config\antigravity.json'
 $defaultHub = -not $env:ANTIGRAVITY_HUB_DATA_DIR -and $env:APPDATA -and
     (Join-Path $env:APPDATA 'AntigravityHub') -ieq $hubRoot
 
+function Get-JsonValueEnd($Tokens, [int]$Start) {
+    if ($Tokens[$Start].Value -cnotin @('[', '{')) { return $Start }
+    $depth = 1
+    for ($i = $Start + 1; $i -lt $Tokens.Count; $i++) {
+        switch -CaseSensitive ($Tokens[$i].Value) {
+            { $_ -cin @('[', '{') } { $depth++ }
+            { $_ -cin @(']', '}') } { $depth-- }
+        }
+        if (-not $depth) { return $i }
+    }
+    throw 'Incomplete JSON value.'
+}
+
+function Get-JsonString($Token) {
+    if ($Token.Value.StartsWith('"')) {
+        # Wrap the token so PS 5.1 does not have to parse a top-level scalar.
+        return (ConvertFrom-Json -InputObject ('{"value":' + $Token.Value + '}')).value
+    }
+}
+
+function Test-HubPluginEntry($Tokens, [int]$Start, [int]$End, [string]$Field) {
+    $value = Get-JsonString $Tokens[$Start]
+    if ($Field -ceq 'plugin' -and $Tokens[$Start].Value -ceq '[' -and
+        $End -gt ($Start + 4) -and $Tokens[$Start + 2].Value -ceq ',' -and
+        $Tokens[$Start + 3].Value -ceq '{' -and (Get-JsonValueEnd $Tokens ($Start + 3)) -eq ($End - 1)) {
+        $value = Get-JsonString $Tokens[$Start + 1]
+    } elseif ($Field -ceq 'plugins' -and $Tokens[$Start].Value -ceq '{') {
+        $seen = $false
+        for ($i = $Start + 1; $i -lt $End; $i = $j + 2) {
+            $j = Get-JsonValueEnd $Tokens ($i + 2)
+            if ((Get-JsonString $Tokens[$i]) -ceq 'package') {
+                if ($seen) { throw 'Duplicate plugin package key; no changes were written.' }
+                $seen = $true
+                $value = Get-JsonString $Tokens[$i + 2]
+            }
+        }
+    }
+    return ($value -cmatch '^@cortexkit/opencode-antigravity-auth(?:@[^@\s]+)?$')
+}
+
+function Get-HubPluginRemoval([string]$Text) {
+    # Validate JSON, then locate only the root plugin fields in the original
+    # text. Never round-trip user settings (large numbers, escapes, spacing).
+    $offset = if ($Text.StartsWith([string][char]0xFEFF, [StringComparison]::Ordinal)) { 1 } else { 0 }
+    $null = ConvertFrom-Json -InputObject $Text.Substring($offset)
+    $pattern = '\G[ \t\r\n]*(?:"(?:\\(?:["\\/bfnrt]|u[0-9A-Fa-f]{4})|[^"\\\x00-\x1f])*"|[{}\[\],:]|true|false|null|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)'
+    $tokens = [regex]::new($pattern).Matches($Text, $offset)
+    # Strip the leading JSON whitespace from token spans, keeping it in the file.
+    $tokens = @(foreach ($token in $tokens) {
+        $value = $token.Value.TrimStart([char[]]" `t`r`n")
+        [pscustomobject]@{ Value = $value; Index = $token.Index + $token.Length - $value.Length; Length = $value.Length }
+    })
+    if ($tokens.Count -lt 2 -or $tokens[0].Value -cne '{' -or $tokens[-1].Value -cne '}' -or
+        $Text.Substring($tokens[-1].Index + 1).Trim([char[]]" `t`r`n")) {
+        throw 'Expected a plain JSON object; no changes were written.'
+    }
+    for ($i = 1; $i -lt $tokens.Count; $i++) {
+        if ($tokens[$i - 1].Value -ceq ',' -and $tokens[$i].Value -cin @('}', ']')) {
+            throw 'Trailing comma in config; no changes were written.'
+        }
+    }
+    $root = Get-JsonValueEnd $tokens 0
+    if ($root -ne ($tokens.Count - 1)) { throw 'Unexpected text after JSON object.' }
+    $seen = @{}
+    $edits = @{}
+    for ($i = 1; $i -lt $root; $i = $end + 2) {
+        $field = Get-JsonString $tokens[$i]
+        if ($null -eq $field -or $tokens[$i + 1].Value -cne ':') { throw 'Invalid root JSON property.' }
+        $first = $i + 2
+        $end = Get-JsonValueEnd $tokens $first
+        if ($field -cnotin @('plugin', 'plugins')) { continue }
+        if ($seen.ContainsKey($field)) { throw "Duplicate '$field' key; no changes were written." }
+        $seen[$field] = $true
+        if ($tokens[$first].Value -cne '[') {
+            if ($field -ceq 'plugin' -and (Test-HubPluginEntry $tokens $first $end $field)) {
+                $edits[$tokens[$first].Index] = @($tokens[$first].Length, '[]')
+            }
+            continue
+        }
+        $lastKept = $null
+        $commas = @()
+        for ($j = $first + 1; $j -lt $end; $j = $tail + 2) {
+            $tail = Get-JsonValueEnd $tokens $j
+            $owned = Test-HubPluginEntry $tokens $j $tail $field
+            if ($owned) {
+                $edits[$tokens[$j].Index] = @(($tokens[$tail].Index + $tokens[$tail].Length - $tokens[$j].Index), '')
+            } else {
+                if ($null -ne $lastKept) { $commas += $lastKept }
+                $lastKept = $tail + 1
+            }
+        }
+        for ($j = $first + 1; $j -lt $end; $j = $tail + 2) {
+            $tail = Get-JsonValueEnd $tokens $j
+            if ($tail + 1 -lt $end -and ($tail + 1) -notin $commas) {
+                $edits[$tokens[$tail + 1].Index] = @(1, '')
+            }
+        }
+    }
+    foreach ($index in ($edits.Keys | Sort-Object -Descending)) {
+        $length, $replacement = $edits[$index]
+        $Text = $Text.Remove($index, $length).Insert($index, $replacement)
+    }
+    $null = ConvertFrom-Json -InputObject $Text.Substring($offset)
+    return $Text
+}
+
 function Remove-HubPlugin([string]$Path) {
     if (-not (Get-SafeFile $Path)) { return }
+    if ([IO.Path]::GetExtension($Path) -ieq '.jsonc') {
+        throw 'JSONC config was preserved. Remove the Hub plugin using the Hub UI or manually.'
+    }
     $utf8 = [Text.UTF8Encoding]::new($false, $true)
     $original = $utf8.GetString([IO.File]::ReadAllBytes($Path))
-    $plain = $original.TrimStart([char]0xFEFF)
-    $cfg = ConvertFrom-Json -InputObject $plain
-    # Avoid a lossy rewrite of the entire OpenCode config. Only change a
-    # uniquely matched plugin property with a string or array of strings.
-    $package = '^@cortexkit/opencode-antigravity-auth(?:@[^@\s]+)?$'
-    $plugin = $cfg.PSObject.Properties | Where-Object { $_.Name -ceq 'plugin' }
-    if (-not $plugin) { return }
-    $entries = @($plugin.Value)
-    $owned = @($entries | Where-Object { $_ -is [string] -and $_ -cmatch $package })
-    if (-not $owned.Count) { return }
-    if (@($entries | Where-Object { $_ -isnot [string] }).Count) {
-        throw 'Plugin list contains structured entries; remove the Hub plugin manually.'
-    }
-    $quoted = '"(?:\\.|[^"\\])*"'
-    $array = '\[\s*(?:' + $quoted + '(?:\s*,\s*' + $quoted + ')*)?\s*\]'
-    $match = [regex]::Matches($original, '"plugin"\s*:\s*(?<value>' + $array + '|' + $quoted + ')')
-    if ($match.Count -ne 1) { throw 'Cannot identify the plugin field safely.' }
-    $value = $match[0].Groups['value']
-    $candidate = @((ConvertFrom-Json -InputObject ('{"value":' + $value.Value + '}')).value)
-    if ((ConvertTo-Json -InputObject $candidate -Compress) -cne (ConvertTo-Json -InputObject $entries -Compress)) {
-        throw 'Cannot verify the plugin field safely.'
-    }
-    $keep = @($entries | Where-Object { $_ -cnotmatch $package })
-    $replacement = ConvertTo-Json -InputObject $keep -Compress
-    $updated = $original.Substring(0, $value.Index) + $replacement + $original.Substring($value.Index + $value.Length)
-    $parsed = ConvertFrom-Json -InputObject ($updated.TrimStart([char]0xFEFF))
-    if ((ConvertTo-Json -InputObject @($parsed.plugin) -Compress) -cne $replacement) {
-        throw 'Cannot verify the updated plugin field.'
-    }
+    $updated = Get-HubPluginRemoval $original
+    if ($updated -ceq $original) { return }
     $temp = Join-Path (Split-Path -Parent $Path) ('.hub-uninstall-' + [guid]::NewGuid() + '.tmp')
     $stream = [IO.File]::Open($temp, 'CreateNew', 'Write', 'None')
     try {
@@ -98,7 +179,7 @@ function Remove-HubPlugin([string]$Path) {
             $bytes = $utf8.GetBytes($updated)
             $stream.Write($bytes, 0, $bytes.Length)
         } finally { $stream.Dispose() }
-        if ($utf8.GetString([IO.File]::ReadAllBytes($Path)) -cne $original) {
+        if (-not (Get-SafeFile $Path) -or $utf8.GetString([IO.File]::ReadAllBytes($Path)) -cne $original) {
             throw 'The config changed during uninstall; no changes were written.'
         }
         [IO.File]::Replace($temp, $Path, [NullString]::Value)
@@ -108,15 +189,74 @@ function Remove-HubPlugin([string]$Path) {
     }
 }
 
-if ($env:OPENCODE_CONFIG_DIR) {
+$installedScript = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\AI HUB\uninstall.ps1'
+$uninstallBase = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+$uninstallKey = Join-Path $uninstallBase 'AntigravityHub'
+$packageKey = Join-Path $uninstallBase '{D8A77D35-0449-4719-AC3D-D2B42CE9DFBD}_is1'
+$registeredSource = $null
+$sourceCheckout = if ($PSCommandPath -ine $installedScript) { $PSScriptRoot }
+
+function Test-SourceAutostart([string]$Command, [string]$Checkout) {
+    if (-not $Checkout -or $Command -notmatch '^"(?<python>[A-Za-z]:\\[^"]+)" "(?<script>[^"]+)"$') { return $false }
+    $pythonPath = $Matches.python
+    return ($Matches.script -ieq (Join-Path $Checkout 'gui-manager\antigravity_manager.pyw') -and
+        [IO.Path]::GetFileName($pythonPath) -in @('python.exe', 'pythonw.exe') -and
+        [IO.Path]::GetFullPath($pythonPath) -ieq $pythonPath)
+}
+
+function Test-SourceShortcut($Shortcut, [string]$Checkout) {
+    if (-not $Checkout -or $Shortcut.Arguments) { return $false }
+    if ($Shortcut.TargetPath -ieq (Join-Path $Checkout 'gui-manager\start_manager.bat')) { return $true }
+    # Windows PowerShell 5.1 reads BOM-less scripts using its ANSI code page.
+    $legacyName = -join ([char[]]@(0x417,0x430,0x43F,0x443,0x441,0x43A,0x5F,0x41C,0x435,
+        0x43D,0x435,0x434,0x436,0x435,0x440,0x430)) + '.bat'
+    return ($Shortcut.TargetPath -ieq (Join-Path $Checkout $legacyName))
+}
+
+Try-Cleanup 'Source uninstall registration' {
+    if (-not (Test-Path -LiteralPath $uninstallKey)) { return }
+    $registration = Get-ItemProperty -LiteralPath $uninstallKey
+    $expected = '"' + (Get-Command powershell.exe -CommandType Application).Source + '" -NoProfile -ExecutionPolicy Bypass -File "' + $installedScript + '"'
+    $allowed = @('DisplayName', 'DisplayVersion', 'Publisher', 'UninstallString', 'NoModify', 'NoRepair', 'SourceCheckout', 'UninstallerHash')
+    $key = Get-Item -LiteralPath $uninstallKey
+    if ($registration.DisplayName -cne 'AI HUB' -or $registration.Publisher -cne 'AI HUB' -or
+        $registration.UninstallString -ine $expected -or
+        $registration.SourceCheckout -notmatch '^[A-Za-z]:\\' -or
+        ($sourceCheckout -and $registration.SourceCheckout -ine $sourceCheckout) -or
+        $registration.UninstallerHash -cnotmatch '^[0-9A-F]{64}$' -or
+        $key.SubKeyCount -or @($key.GetValueNames() | Where-Object { $_ -notin $allowed }).Count -or
+        -not (Get-SafeFile $installedScript) -or
+        (Get-FileHash -LiteralPath $installedScript).Hash -cne $registration.UninstallerHash) {
+        Write-Warning 'Registration cannot be attributed to this checkout; it was left untouched.'
+        return
+    }
+    $script:registeredSource = $registration
+    $script:sourceCheckout = $registration.SourceCheckout
+}
+
+$isSource = $false
+Try-Cleanup 'Source checkout' {
+    if ($sourceCheckout -and (Get-SafeFile (Join-Path $sourceCheckout 'gui-manager\antigravity_manager.pyw')) -and
+        (Get-SafeFile (Join-Path $sourceCheckout 'gui-manager\start_manager.bat'))) {
+        $script:isSource = $true
+    } else {
+        Write-Warning 'Source checkout could not be verified; shared configuration and launcher entries were left untouched.'
+    }
+}
+$packageInstalled = Test-Path -LiteralPath $packageKey
+if ($packageInstalled) {
+    Write-Warning 'Packaged AI HUB is also installed; retaining the shared OpenCode integration and Hub data.'
+}
+
+if (-not $isSource -or $packageInstalled) {
+    # Integration and data are shared; leave them for the other installation.
+} elseif ($env:OPENCODE_CONFIG_DIR -or
+    $env:OPENCODE_CONFIG -or $env:OPENCODE_CONFIG_CONTENT -or
+    ($env:XDG_CONFIG_HOME -match '^(?:[a-zA-Z]:[\\/]|\\\\[^\\]+\\[^\\]+)')) {
     Write-Warning 'Custom OpenCode configuration was left untouched.'
 } else {
-    Try-Cleanup 'OpenCode configuration' {
-        if (Get-SafeFile (Join-Path $configDir 'opencode.jsonc')) {
-            throw 'JSONC config was preserved. Remove the Hub plugin using the Hub UI or manually.'
-        }
-        Remove-HubPlugin (Join-Path $configDir 'opencode.json')
-    }
+    Try-Cleanup 'OpenCode JSONC configuration' { Remove-HubPlugin (Join-Path $configDir 'opencode.jsonc') }
+    Try-Cleanup 'OpenCode JSON configuration' { Remove-HubPlugin (Join-Path $configDir 'opencode.json') }
     Try-Cleanup 'OpenCode provider routing plugin' {
         $path = Join-Path $configDir 'plugins\antigravity-hub-routes.js'
         if ((Get-SafeFile $path) -and
@@ -124,16 +264,9 @@ if ($env:OPENCODE_CONFIG_DIR) {
             Remove-SafeFile $path
         }
     }
-    Try-Cleanup 'Hub configuration mirror' {
-        $mirror = Join-Path $configDir 'antigravity.json'
-        if ((Get-SafeFile $mirror) -and $defaultHub -and (Get-SafeFile $centralConfig) -and
-            (Get-FileHash -LiteralPath $mirror).Hash -ceq (Get-FileHash -LiteralPath $centralConfig).Hash) {
-            Remove-SafeFile $mirror
-        }
-    }
 }
 
-if ($defaultHub) {
+if ($isSource -and -not $packageInstalled -and $defaultHub) {
     foreach ($file in @(
         'config\antigravity.json', 'config\gemini_domains.json',
         'accounts\openai-accounts.json', 'accounts\claude-accounts.json',
@@ -143,40 +276,23 @@ if ($defaultHub) {
     )) {
         Try-Cleanup $file { Remove-SafeFile (Join-Path $hubRoot $file) }
     }
-} else {
+} elseif (-not $defaultHub) {
     Write-Warning 'Custom or redirected Hub storage was left untouched.'
 }
 
-# Remove only an installation registration stamped by our installer. Never
-# recurse into either the registry or Programs; foreign descendants are kept.
-$installedScript = Join-Path $profileRoot 'AppData\Local\Programs\AI HUB\uninstall.ps1'
-$uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AntigravityHub'
-Try-Cleanup 'Hub uninstall registration' {
-    if (Test-Path -LiteralPath $uninstallKey) {
-        $registration = Get-ItemProperty -LiteralPath $uninstallKey
-        $expected = '"' + (Get-Command powershell.exe).Source + '" -NoProfile -ExecutionPolicy Bypass -File "' + $installedScript + '"'
-        if ($registration.DisplayName -cne 'AI HUB' -or
-            $registration.Publisher -cne 'AI HUB' -or
-            $registration.UninstallString -ine $expected -or
-            @(Get-ChildItem -LiteralPath $uninstallKey).Count) {
-            throw 'Registration does not match the Hub installer; left untouched.'
-        }
-        Remove-Item -LiteralPath $uninstallKey
-        if ($PSCommandPath -ieq $installedScript) { Remove-SafeFile $installedScript }
-    }
-}
-
 Try-Cleanup 'Hub autostart entry' {
+    if (-not $isSource) { return }
     $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
     if (Test-Path -LiteralPath $runKey) {
         $entry = Get-ItemProperty -LiteralPath $runKey -Name 'AI HUB' -ErrorAction SilentlyContinue
-        if ($null -ne $entry -and $entry.'AI HUB' -match 'AI HUB|antigravity_manager\.pyw|AntigravityHub\.exe') {
-            Remove-ItemProperty -LiteralPath $runKey -Name 'AI HUB' -ErrorAction SilentlyContinue
+        if ($null -ne $entry -and (Test-SourceAutostart $entry.'AI HUB' $sourceCheckout)) {
+            Remove-ItemProperty -LiteralPath $runKey -Name 'AI HUB'
         }
     }
 }
 
 Try-Cleanup 'Hub desktop shortcuts' {
+    if (-not $isSource) { return }
     $desktopPath = [Environment]::GetFolderPath('Desktop')
     if (-not $desktopPath) { return }
     $shell = New-Object -ComObject WScript.Shell
@@ -184,21 +300,20 @@ Try-Cleanup 'Hub desktop shortcuts' {
     # upgraded from an older install; remove only shortcuts pointing at the Hub.
     foreach ($name in @('AI HUB.lnk', 'Antigravity Hub.lnk')) {
         $path = Join-Path $desktopPath $name
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
-        $target = $shell.CreateShortcut($path).TargetPath
-        if (-not $target) { continue }
-        $targetDir = Split-Path -Parent $target
-        # The pre-rebrand root launcher has a localized name, so recognize it by
-        # its Hub checkout layout instead of by the .bat file name.
-        $isHubTarget = $target -match 'antigravity_manager\.pyw|start_manager\.bat|AntigravityHub\.exe' -or
-            ((Test-Path -LiteralPath (Join-Path $targetDir 'gui-manager\start_manager.bat') -PathType Leaf) -and
-             (Test-Path -LiteralPath (Join-Path $targetDir 'gui-manager\antigravity_manager.pyw') -PathType Leaf))
-        if ($isHubTarget) {
+        if (-not (Get-SafeFile $path)) { continue }
+        $shortcut = $shell.CreateShortcut($path)
+        if (Test-SourceShortcut $shortcut $sourceCheckout) {
             Remove-SafeFile $path
         } else {
-            Write-Warning "Desktop shortcut '$name' was left untouched: unexpected target '$target'."
+            Write-Warning "Desktop shortcut '$name' was left untouched: unexpected target '$($shortcut.TargetPath)'."
         }
     }
+}
+
+Try-Cleanup 'Remove source uninstall registration' {
+    if (-not $registeredSource) { return }
+    Remove-Item -LiteralPath $uninstallKey
+    Remove-SafeFile $installedScript
 }
 
 Write-Host 'Account-store pointers and all targets, shared provider settings and credentials, and unlisted files were preserved.'

@@ -97,7 +97,7 @@ class DatabaseLocationTests(unittest.TestCase):
             db.parent.mkdir(parents=True)
             db.write_bytes(b"")
             with patch.dict(os.environ, {"XDG_DATA_HOME": tmp, "OPENCODE_DATA_DIR": ""}, clear=False):
-                self.assertEqual(opencode_credentials.database_path(), db)
+                self.assertEqual(opencode_credentials.database_path(), db.resolve())
 
 
 if __name__ == "__main__":

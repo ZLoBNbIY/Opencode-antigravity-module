@@ -33,7 +33,7 @@ _cache: dict = {}
 
 
 def _clean(value) -> str:
-    text = str(value or "").strip()
+    text = value.strip() if isinstance(value, str) else ""
     return "" if not text or text.lower() in _PLACEHOLDERS else text
 
 
@@ -62,7 +62,7 @@ def database_path() -> Optional[Path]:
         candidate = Path(os.path.expanduser(override))
         db = candidate if candidate.suffix == ".db" else candidate / "opencode.db"
         db = db.resolve()
-        return db if db.exists() else None
+        return db if db.is_file() else None
     home = Path.home()
     candidates = []
     xdg = os.environ.get("XDG_DATA_HOME")
@@ -78,8 +78,8 @@ def database_path() -> Optional[Path]:
     else:
         candidates.append(home / ".config" / "opencode" / "opencode.db")
     for candidate in candidates:
-        if candidate.exists():
-            return candidate
+        if candidate.is_file():
+            return candidate.resolve()
     return None
 
 
@@ -107,7 +107,10 @@ def _db_records(db: Path, integration_ids: Sequence[str]) -> dict:
             key = _clean(value.get("key") or value.get("apiKey") or value.get("api_key"))
             if not key:
                 continue
-            timestamp = int(updated or 0)
+            try:
+                timestamp = int(updated or 0)
+            except (TypeError, ValueError, OverflowError):
+                continue
             current = records.get(integration_id)
             if current is None or timestamp > current[2]:
                 records[integration_id] = (str(credential_id or ""), key, timestamp)
@@ -116,7 +119,8 @@ def _db_records(db: Path, integration_ids: Sequence[str]) -> dict:
     return _cached(cache_key, load)
 
 
-def read_config_key(path: Optional[Path], name_hint: str) -> Tuple[str, int]:
+def read_config_key(path: Optional[Path], name_hint: str, *,
+                    integration_ids: Sequence[str] = ()) -> Tuple[str, int]:
     """Key stored in ``opencode.json(c)`` plus that file's modification time."""
     if not path:
         return "", 0
@@ -129,12 +133,14 @@ def read_config_key(path: Optional[Path], name_hint: str) -> Tuple[str, int]:
     except Exception:
         return "", 0
     hint = str(name_hint or "").lower()
+    exact_ids = {name.casefold() for name in integration_ids}
     for section in ("provider", "providers"):
         providers = data.get(section)
         if not isinstance(providers, dict):
             continue
         for name, provider in providers.items():
-            if hint not in str(name).lower() or not isinstance(provider, dict):
+            name = str(name).casefold()
+            if (name not in exact_ids if exact_ids else not hint or hint not in name) or not isinstance(provider, dict):
                 continue
             for holder in (provider, provider.get("options"), provider.get("settings")):
                 if not isinstance(holder, dict):
@@ -147,7 +153,7 @@ def read_config_key(path: Optional[Path], name_hint: str) -> Tuple[str, int]:
 
 
 def read_key(integration_ids: Sequence[str], config_path: Optional[Path] = None,
-             name_hint: str = "") -> Tuple[str, int]:
+             name_hint: str = "", *, exact_config: bool = False) -> Tuple[str, int]:
     """Newest key for the given integrations, with its freshness in ms."""
     candidates = []
     db = database_path()
@@ -155,7 +161,8 @@ def read_key(integration_ids: Sequence[str], config_path: Optional[Path] = None,
         for _, key, timestamp in _db_records(db, integration_ids).values():
             candidates.append((key, timestamp))
     if config_path is not None and name_hint:
-        key, timestamp = read_config_key(config_path, name_hint)
+        key, timestamp = read_config_key(config_path, name_hint,
+                                         integration_ids=integration_ids if exact_config else ())
         if key:
             candidates.append((key, timestamp))
     if not candidates:

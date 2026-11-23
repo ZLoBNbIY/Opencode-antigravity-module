@@ -1,7 +1,9 @@
 from pathlib import Path
+from hashlib import sha256
 import json
 import os
 import re
+import stat
 import sys
 
 from secure_storage import atomic_write_bytes
@@ -11,6 +13,32 @@ MISSING_PLUGIN = (
     "Плагин Antigravity не найден в кэше OpenCode. Установите OpenCode 2.x, "
     "добавьте плагин из стартового конфига AI HUB и откройте проект в OpenCode, "
     "чтобы плагин загрузился. Затем повторите."
+)
+PLUGIN_NAME = "@cortexkit/opencode-antigravity-auth"
+ROUTE_BACKUP_SUFFIX = ".hub-route.bak"
+ROUTE_SELECTOR = re.compile(r"^\ufeff?function getHttpsProxy\(url\) \{\n(.*?)^\}", re.M | re.S)
+COMBINED_GUARD = '  if (url.protocol !== "https:" || noProxyIncludes(url.hostname))\n    return void 0;\n'
+PROTOCOL_GUARD = '  if (url.protocol !== "https:")\n    return void 0;\n'
+NO_PROXY_GUARD = '  if (noProxyIncludes(url.hostname))\n    return void 0;\n'
+CONFIG_NO_PROXY_GUARD = "      if (noProxyIncludes(url.hostname))\n        return void 0;\n"
+CONFIG_READ = re.compile(r'^(      const parsed = JSON\.parse\()(readFileSync\d*\(configPath, "utf-8"\))(\.replace\(/\^\\uFEFF/, ""\))?\);$', re.M)
+LEGACY_VLESS = re.compile(
+    r"^([ ]*)const hubRoutePort = 10880;\n"
+    r"\1const gateHost = [^\n]+;\n"
+    r"(\1const vlessPort = [^\n]+;\n)"
+    r"\1return new URL\(`http://127\.0\.0\.1:\$\{gateHost \? hubRoutePort : vlessPort\}`\);",
+    re.M,
+)
+EXPLICIT_ROUTE = (
+    '      const hubGoogleRoute = parsed.provider_routes?.google;\n'
+    '      if (["default", "auto", "direct", "vless", "proxy", "dns"].includes(hubGoogleRoute) &&\n'
+    '          [".googleapis.com", ".google.com", ".google"].some(suffix => url.hostname.endsWith(suffix))) {\n'
+    '        return new URL("http://127.0.0.1:10880");\n'
+    '      }\n'
+)
+RETRY_404 = re.compile(
+    r"const shouldRetryEndpoint = (?:geoBlockedLocation \|\| )?response\.status === 403"
+    r" \|\| response\.status === 404 \|\| response\.status >= 500;"
 )
 
 
@@ -25,123 +53,139 @@ def _cache_roots(plugin_cache):
                               for base in bases for kind in ("npm", "packages")))
 
 
+def _route_edits(source: str) -> list[tuple[str, str]] | None:
+    """Plan exact selector/retry edits; None means an unrecognized layout."""
+    eol = "\r\n" if "\r\n" in source else "\n"
+    normalized = source.replace("\r\n", "\n")
+    if eol == "\r\n" and "\n" in source.replace("\r\n", ""):
+        return None
+    selectors = list(ROUTE_SELECTOR.finditer(normalized))
+    if len(selectors) != 1:
+        return None
+    old_body = body = selectors[0][1]
+    leading_guard = next((guard for guard in (COMBINED_GUARD, PROTOCOL_GUARD)
+                          if body.startswith(guard)), "")
+    body = body[len(leading_guard):]
+    if not body.startswith("  try {\n"):
+        return None
+    tail = re.search(r"^  \} catch \{\}\n(.*?)^  const rawProxy =", body, re.M | re.S)
+    if not tail or tail[1] not in ("", COMBINED_GUARD, NO_PROXY_GUARD):
+        return None
+    if not leading_guard and tail[1] != COMBINED_GUARD:
+        return None
+    body = body[:tail.start(1)] + NO_PROXY_GUARD + body[tail.end(1):]
+    reads = list(CONFIG_READ.finditer(body))
+    if len(reads) != 1 or reads[0].end() >= tail.start():
+        return None
+    read = reads[0]
+    offset = read.end() + 1
+    rest = body[offset:]
+    if rest.startswith(EXPLICIT_ROUTE):
+        rest = rest[len(EXPLICIT_ROUTE):]
+    if rest.startswith(CONFIG_NO_PROXY_GUARD):
+        rest = rest[len(CONFIG_NO_PROXY_GUARD):]
+    if "hubGoogleRoute" in rest or "hubGoogleRoute" in body[:read.start()]:
+        return None
+    rest, legacy_count = LEGACY_VLESS.subn(r"\2\1return new URL(`http://127.0.0.1:${vlessPort}`);", rest)
+    if legacy_count > 1 or "hubRoutePort" in rest or "gateHost" in rest:
+        return None
+    body = (PROTOCOL_GUARD + body[:read.start()] + read[1] + read[2] + r'.replace(/^\uFEFF/, ""));'
+            + "\n" + EXPLICIT_ROUTE + CONFIG_NO_PROXY_GUARD + rest)
+    edits = []
+    if old_body != body:
+        edits.append((selectors[0][0], selectors[0][0].replace(old_body, body, 1)))
+    retries = list(RETRY_404.finditer(normalized))
+    if len(retries) > 1:
+        return None
+    for retry in retries:
+        old = retry[0]
+        edits.append((old, old.replace(" || response.status === 404", "") + " /* no retry on 404 */"))
+    return [(before.replace("\n", eol), after.replace("\n", eol)) for before, after in edits]
+
+
+def _apply_exact_edits(source: str, edits: list[tuple[str, str]]) -> str | None:
+    for before, after in edits:
+        if source.count(before) != 1:
+            return None
+        source = source.replace(before, after, 1)
+    return source
+
+
+def _route_backup_paths(path: Path) -> tuple[Path, Path]:
+    backup = path.with_name(path.name + ROUTE_BACKUP_SUFFIX)
+    return backup, backup.with_name(backup.name + ".json")
+
+
 def patch_auth_plugin_transport(plugin_cache: Path | None = None, *, include_local=True,
                                 changed_files: list[str] | None = None) -> bool:
     """Use the Hub for explicitly routed Google requests in the Cloud Code transport."""
-    roots = _cache_roots(plugin_cache)
-    candidates = []
-    for root in roots:
-        if not root.exists():
-            continue
-        candidates.extend(root.glob("**/@cortexkit/opencode-antigravity-auth/dist/server.js"))
-        candidates.extend(root.glob("**/@cortexkit/opencode-antigravity-auth/dist/index.js"))
+    candidates = _prompt_fix_candidates(plugin_cache)
     if plugin_cache is None and include_local and not getattr(sys, "frozen", False):
-        local_plugin = Path(__file__).resolve().parent.parent / "plugin" / "dist"
-        for name in ("server.js", "index.js"):
-            cand = local_plugin / name
-            if cand.exists() and cand not in candidates:
-                candidates.append(cand)
-
-    if not candidates:
-        return False
+        local = _local_plugin_dist_dir()
+        if local is not None:
+            candidates.extend(path for path in (local / "server.js", local / "index.js") if path not in candidates)
     patched = 0
-    selector = re.compile(r"^function getHttpsProxy\(url\) \{\r?\n(.*?)^\r?\}", re.M | re.S)
-    old_guard = '  if (url.protocol !== "https:" || noProxyIncludes(url.hostname))\n    return void 0;\n'
-    config_read = re.compile(r'^( *const parsed = JSON\.parse\()(readFileSync\d*\(configPath, "utf-8"\))\);$', re.M)
-    legacy_vless = re.compile(
-        r"^([ ]*)const hubRoutePort = 10880;\n"
-        r"\1const gateHost = [^\n]+;\n"
-        r"(\1const vlessPort = [^\n]+;\n)"
-        r"\1return new URL\(`http://127\.0\.0\.1:\$\{gateHost \? hubRoutePort : vlessPort\}`\);",
-        re.M,
-    )
-    explicit_route = (
-        '      const hubGoogleRoute = parsed.provider_routes?.google;\n'
-        '      if (["default", "auto", "direct", "vless", "proxy", "dns"].includes(hubGoogleRoute) &&\n'
-        '          [".googleapis.com", ".google.com", ".google"].some(suffix => url.hostname.endsWith(suffix))) {\n'
-        '        return new URL("http://127.0.0.1:10880");\n'
-        '      }\n'
-    )
-
     for path in candidates:
         try:
             source = _read_text_exact(path)
-            eol = "\r\n" if "\r\n" in source else "\n"
-            normalized = source.replace("\r\n", "\n")
-            match = selector.search(normalized)
-            if not match:
+            edits = _route_edits(source)
+            if edits is None:
                 continue
-            body = match[1]
-            if explicit_route not in body:
-                # Both plugin layouts read the config the same way. Insert the
-                # explicit Hub route right after that read; newer bundles keep
-                # the protocol/NO_PROXY guard below the try/catch instead of at
-                # the top, so the old guard is no longer required.
-                body, count = config_read.subn(
-                    lambda m: m[1] + m[2] + r'.replace(/^\uFEFF/, ""));' + "\n"
-                    + explicit_route.rstrip("\n")
-                    + "\n      if (noProxyIncludes(url.hostname))\n        return void 0;",
-                    body,
-                )
-                if count != 1:
+            if edits:
+                updated = _apply_exact_edits(source, edits)
+                if updated is None or _route_edits(updated) != []:
                     continue
-                old_layout = body.startswith(old_guard)
-                if old_layout:
-                    # Old layout: collapse the legacy gateHost fallback and move
-                    # the protocol guard, preserving standalone NO_PROXY behavior.
-                    body = legacy_vless.sub(r"\2\1return new URL(`http://127.0.0.1:${vlessPort}`);", body)
-                    if "hubRoutePort" in body:
-                        continue
-                    body = '  if (url.protocol !== "https:")\n    return void 0;\n' + body[len(old_guard):]
-                    body = body.replace(
-                        "\n  } catch {}\n  const rawProxy =",
-                        "\n  } catch {}\n  if (noProxyIncludes(url.hostname))\n    return void 0;\n  const rawProxy =",
-                        1,
-                    )
-            updated = normalized[:match.start(1)] + body + normalized[match.end(1):]
-
-            # Keep the existing fatal-404 retry fix for supported bundles.
-            if "response.status === 404" in updated and "/* no retry on 404 */" not in updated:
-                for old_retry, new_retry in (
-                    (
-                        "const shouldRetryEndpoint = geoBlockedLocation || response.status === 403 || response.status === 404 || response.status >= 500;",
-                        "const shouldRetryEndpoint = geoBlockedLocation || response.status === 403 || response.status >= 500; /* no retry on 404 */",
-                    ),
-                    (
-                        "const shouldRetryEndpoint = response.status === 403 || response.status === 404 || response.status >= 500;",
-                        "const shouldRetryEndpoint = response.status === 403 || response.status >= 500; /* no retry on 404 */",
-                    ),
-                ):
-                    if old_retry in updated:
-                        updated = updated.replace(old_retry, new_retry, 1)
-                        break
-
-            if updated != normalized:
-                final = updated.replace("\n", eol) if eol == "\r\n" else updated
-                backup = path.with_suffix(path.suffix + ".hub-route.bak")
-                if not backup.exists():
+                backup, metadata = _route_backup_paths(path)
+                version = _package_version(path.parent.parent)
+                if not backup.exists() and not metadata.exists():
                     _write_text_exact(backup, source)
-                _write_text_exact(path, final)
+                    if version is not None:
+                        _write_text_exact(metadata, json.dumps({
+                            "version": version,
+                            "sha256": sha256(source.encode("utf-8")).hexdigest(),
+                        }))
+                _write_text_exact(path, updated)
                 if changed_files is not None:
                     changed_files.append(str(path))
             patched += 1
-        except OSError:
+        except (OSError, UnicodeError):
             continue
-    return patched == len(candidates)
+    return bool(candidates) and patched == len(candidates)
 
-def restore_auth_plugin_transport(plugin_cache: Path | None = None) -> None:
-    """Restore patched plugin files before a plugin upgrade or Hub removal."""
-    roots = _cache_roots(plugin_cache)
-    for root in roots:
-        if not root.exists():
+
+def restore_auth_plugin_transport(plugin_cache: Path | None = None) -> dict:
+    """Undo only recorded transport edits in installed, same-version bundles.
+
+    Untracked legacy backups, orphaned backups and conflicting edits are left
+    alone. Inverting only the selector and retry edits preserves later fixes.
+    """
+    restored, skipped = [], []
+    for target in _prompt_fix_candidates(plugin_cache):
+        backup, metadata = _route_backup_paths(target)
+        if not (backup.exists() or metadata.exists()):
             continue
-        for backup in list(root.glob("**/server.js.hub-route.bak")) + list(root.glob("**/index.js.hub-route.bak")):
-            target = backup.with_name(backup.name.replace(".hub-route.bak", ""))
-            try:
-                target.write_text(backup.read_text(encoding="utf-8"), encoding="utf-8")
-                backup.unlink()
-            except OSError:
-                pass
+        try:
+            version = _package_version(target.parent.parent)
+            if version is None or backup.is_symlink() or metadata.is_symlink():
+                raise ValueError("unverified backup")
+            original = backup.read_bytes()
+            record = json.loads(metadata.read_text(encoding="utf-8"))
+            if record != {"version": version, "sha256": sha256(original).hexdigest()}:
+                raise ValueError("backup does not match installed version")
+            edits = _route_edits(original.decode("utf-8"))
+            source = _read_text_exact(target)
+            if not edits or _route_edits(source) != []:
+                raise ValueError("transport no longer matches")
+            content = _apply_exact_edits(source, [(after, before) for before, after in edits])
+            if content is None:
+                raise ValueError("transport has changed after patching")
+            _write_text_exact(target, content)
+            restored.append(str(target))
+            metadata.unlink()
+            backup.unlink()
+        except (OSError, ValueError):
+            skipped.append(str(target))
+    return {"restored": restored, "skipped": skipped}
 
 
 PROMPT_FIX_MARKER = "function sanitizeAntigravitySystemInstruction("
@@ -186,6 +230,52 @@ PROMPT_FIX_CALL_ANCHOR = '''        if ("system_instruction" in requestPayload) 
           requestPayload.systemInstruction = requestPayload.system_instruction;
           delete requestPayload.system_instruction;
         }'''
+PROMPT_TABLE, _, PROMPT_FUNCTION = PROMPT_FIX_BLOCK.partition(PROMPT_FIX_MARKER)
+PROMPT_FUNCTION = PROMPT_FIX_MARKER + PROMPT_FUNCTION
+PROMPT_TABLE_NAME = "var ANTIGRAVITY_BLOCKED_SYSTEM_INSTRUCTION_PATTERNS = ["
+LEGACY_PROMPT_TABLES = (
+    PROMPT_TABLE_NAME + '''
+  [/tools\\.opencode\\.session_move/gi, 'tools.opencode["session_move"]']
+];
+''',
+    PROMPT_TABLE_NAME + '''
+  [/tools\\.opencode\\.([A-Za-z0-9_]+)/gi, 'tools["agent"]["$1"]'],
+  [/\\bOpenCode\\b/g, 'the coding agent'],
+  [/\\bopencode\\b/g, 'coding agent']
+];
+''',
+)
+
+
+def _plan_prompt_fix(source: str) -> str | None:
+    """Repair known missing or legacy parts; refuse unknown/ambiguous anchors."""
+    eol = "\r\n" if "\r\n" in source else "\n"
+    anchor, table, helper, call_anchor = (part.replace("\n", eol) for part in (
+        PROMPT_FIX_ANCHOR, PROMPT_TABLE, PROMPT_FUNCTION, PROMPT_FIX_CALL_ANCHOR,
+    ))
+    if source.count(anchor) != 1 or source.count(call_anchor) != 1:
+        return None
+    for legacy in LEGACY_PROMPT_TABLES:
+        old_table = legacy.replace("\n", eol)
+        if source.count(PROMPT_TABLE_NAME) == 1 and source.count(old_table) == 1:
+            source = source.replace(old_table, table, 1)
+            break
+    for marker, block in ((PROMPT_TABLE_NAME, table), (PROMPT_FIX_MARKER, helper)):
+        if source.count(marker) > 1 or (marker in source and block not in source):
+            return None
+    if PROMPT_FIX_MARKER not in source:
+        source = source.replace(anchor, helper + anchor, 1)
+    if PROMPT_TABLE_NAME not in source:
+        source = source.replace(helper, table + helper, 1)
+
+    active_call = call_anchor + eol + "        " + PROMPT_FIX_CALL
+    if source.count(PROMPT_FIX_CALL) > 1 or (PROMPT_FIX_CALL in source and active_call not in source):
+        return None
+    return source if active_call in source else source.replace(call_anchor, active_call, 1)
+
+
+def _prompt_is_patched(source: str) -> bool:
+    return _plan_prompt_fix(source) == source
 
 
 def _prompt_fix_candidates(plugin_cache: Path | None = None) -> list[Path]:
@@ -193,14 +283,22 @@ def _prompt_fix_candidates(plugin_cache: Path | None = None) -> list[Path]:
     roots = _cache_roots(plugin_cache)
     candidates: list[Path] = []
     for root in roots:
-        if not root.exists():
+        try:
+            root = root.resolve(strict=True)
+            for name in ("server.js", "index.js"):
+                candidates.extend(root.glob(f"**/{PLUGIN_NAME}/dist/{name}"))
+        except OSError:
             continue
-        for name in ("server.js", "index.js"):
-            candidates.extend(root.glob(f"**/@cortexkit/opencode-antigravity-auth/dist/{name}"))
     seen: set[str] = set()
     unique: list[Path] = []
     for path in candidates:
-        key = str(path.resolve())
+        try:
+            resolved = path.resolve(strict=True)
+            if resolved != path or not stat.S_ISREG(path.lstat().st_mode):
+                continue
+        except OSError:
+            continue
+        key = str(resolved)
         if key in seen:
             continue
         seen.add(key)
@@ -223,25 +321,26 @@ def _local_plugin_dist_dir() -> Path | None:
     return candidate if all((candidate / name).is_file() for name in ("server.js", "index.js")) else None
 
 
-def _package_version(plugin_dir: Path) -> tuple[int, int, int] | None:
+def _package_version(plugin_dir: Path) -> str | None:
     """Read a plugin package version without importing packaging."""
     package_json = plugin_dir / "package.json"
     try:
-        data = json.loads(package_json.read_text(encoding="utf-8"))
+        if package_json.is_symlink():
+            return None
+        data = json.loads(package_json.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
-    if not isinstance(data, dict):
+    if not isinstance(data, dict) or data.get("name", PLUGIN_NAME) != PLUGIN_NAME:
         return None
-    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", str(data.get("version", "")))
-    return tuple(map(int, match.groups())) if match else None
+    version = data.get("version")
+    return version if isinstance(version, str) and re.fullmatch(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}", version) else None
 
 
 def sync_local_plugin_bundles(plugin_cache: Path | None = None) -> dict:
     """Copy the verified local plugin bundle over installed OpenCode caches.
 
-    This is the same strategy as ``scripts/patch_plugin.mjs``: after an
-    OpenCode/plugin update the installed bundle may be replaced by a stock
-    one, so restore the module's verified bundle first.
+    This recovery fallback is separate from the notification-only updater recipe
+    in ``scripts/patch_plugin.mjs``.
 
     Only restore the build matching the installed package version. Mounting
     these JS files over another version can mismatch its dependencies.
@@ -254,9 +353,10 @@ def sync_local_plugin_bundles(plugin_cache: Path | None = None) -> dict:
     if not target_dirs:
         return {"ok": False, "copied": [], "skipped": [], "message": MISSING_PLUGIN}
     copied: list[str] = []
+    already: list[str] = []
     skipped: list[str] = []
     failed: list[str] = []
-    for target in target_dirs:
+    for target in sorted(target_dirs):
         target_version = _package_version(target.parent)
         if target_version is None or local_version is None or target_version != local_version:
             skipped.append(str(target))
@@ -264,19 +364,24 @@ def sync_local_plugin_bundles(plugin_cache: Path | None = None) -> dict:
         for name in ("cli.js", "server.js", "index.js"):
             source = local / name
             destination = target / name
-            if not source.exists() or not destination.exists():
+            if not source.is_file() or not destination.is_file() or destination.is_symlink():
                 continue
             try:
                 content = source.read_bytes()
                 previous = destination.read_bytes()
                 if content == previous:
+                    already.append(str(destination))
                     continue
-                if name != "cli.js" and all(marker.encode() in previous for marker in (
-                    PROMPT_FIX_MARKER, PROMPT_FIX_CALL, GEMINI4_FIX_MARKER, IDENTITY_FIX_MARKER,
-                    'const hubGoogleRoute = parsed.provider_routes?.google;',
-                )):
-                    # Retain an applied transport patch on repeat clicks.
-                    continue
+                if name != "cli.js":
+                    try:
+                        installed = previous.decode("utf-8")
+                    except UnicodeError:
+                        installed = ""
+                    if (GEMINI4_FIX_MARKER in installed and _plan_identity_fix(installed)[0] is not None
+                            and _plan_prompt_fix(installed) is not None and _route_edits(installed) is not None):
+                        # The remaining known edits can be applied in place.
+                        already.append(str(destination))
+                        continue
                 backup = destination.with_suffix(destination.suffix + ".hub-bundle.bak")
                 if not backup.exists():
                     atomic_write_bytes(backup, previous, private_parent=False)
@@ -284,18 +389,25 @@ def sync_local_plugin_bundles(plugin_cache: Path | None = None) -> dict:
                 copied.append(str(destination))
             except OSError as exc:
                 failed.append(f"{name}: {type(exc).__name__}")
-    if skipped and not copied:
+    if skipped and not (copied or already):
         message = (
             "Версия установленного плагина отличается от бандла Hub или неизвестна. "
             "Бандл не перезаписан; возможны только совместимые патчи на месте."
         )
     elif copied:
         message = f"Синхронизировано файлов бандла: {len(copied)}."
+    elif already:
+        message = "Подходящие бандлы уже восстановлены или поддерживают исправление на месте."
     else:
-        message = "Бандл плагина уже совпадает с локальным."
+        message = "Нет подходящих файлов для синхронизации."
+    if skipped and (copied or already):
+        message += f" Пропущено версий: {len(skipped)}."
+    if failed:
+        message += f" Ошибок записи: {len(failed)}."
     return {
-        "ok": bool(copied or skipped) and not failed,
+        "ok": bool(copied or already) and not failed,
         "copied": copied,
+        "already": already,
         "skipped": skipped,
         "failed": failed,
         "message": message,
@@ -325,45 +437,10 @@ def patch_prompt_sanitizer(plugin_cache: Path | None = None) -> dict:
     for path in candidates:
         try:
             source = _read_text_exact(path)
-            eol = "\r\n" if "\r\n" in source else "\n"
-            if PROMPT_FIX_MARKER in source and PROMPT_FIX_CALL in source:
-                old_pattern = (
-                    "  [/tools\\.opencode\\.session_move/gi, "
-                    "'tools.opencode[\"session_move\"]']"
-                )
-                new_pattern = eol.join((
-                    "  [/tools\\.opencode\\.([A-Za-z0-9_]+)/gi, "
-                    "'tools[\"agent\"][\"$1\"]'],",
-                    "  [/\\bOpenCode\\b/g, 'the coding agent'],",
-                    "  [/\\bopencode\\b/g, 'coding agent']",
-                ))
-                if old_pattern in source:
-                    patched = source.replace(old_pattern, new_pattern, 1)
-                    backup = path.with_suffix(path.suffix + PROMPT_FIX_BACKUP_SUFFIX)
-                    if not backup.exists():
-                        _write_text_exact(backup, source)
-                    _write_text_exact(path, patched)
-                    changed.append(str(path))
-                    continue
-                already.append(str(path))
+            patched = _plan_prompt_fix(source)
+            if patched is None:
+                missing.append(str(path))
                 continue
-            patched = source
-            if PROMPT_FIX_MARKER not in patched:
-                if PROMPT_FIX_ANCHOR not in patched:
-                    missing.append(str(path))
-                    continue
-                block = PROMPT_FIX_BLOCK.replace("\n", eol)
-                patched = patched.replace(PROMPT_FIX_ANCHOR, block + eol + PROMPT_FIX_ANCHOR, 1)
-            if PROMPT_FIX_CALL not in patched:
-                call_anchor = PROMPT_FIX_CALL_ANCHOR.replace("\n", eol)
-                if call_anchor not in patched:
-                    missing.append(str(path))
-                    continue
-                patched = patched.replace(
-                    call_anchor,
-                    call_anchor + eol + "        " + PROMPT_FIX_CALL,
-                    1,
-                )
             if patched == source:
                 already.append(str(path))
                 continue
@@ -372,7 +449,7 @@ def patch_prompt_sanitizer(plugin_cache: Path | None = None) -> dict:
                 _write_text_exact(backup, source)
             _write_text_exact(path, patched)
             changed.append(str(path))
-        except OSError:
+        except (OSError, UnicodeError):
             missing.append(str(path))
 
     if changed:
@@ -380,13 +457,12 @@ def patch_prompt_sanitizer(plugin_cache: Path | None = None) -> dict:
         if missing:
             message += f" Не удалось обновить: {len(missing)}."
     elif already:
-        message = "Фикс 429 уже применён во всех найденных копиях плагина."
-        if missing:
-            message += " Часть копий не найдена или изменилась."
+        message = (f"Фикс 429 уже применён в {len(already)} копиях; не удалось обновить: {len(missing)}."
+                   if missing else "Фикс 429 уже применён во всех найденных копиях плагина.")
     else:
         message = "Не удалось применить фикс. Проверьте версию плагина и права записи в его кэш."
     return {
-        "ok": bool(changed or already),
+        "ok": bool(changed or already) and not missing,
         "changed": changed,
         "already": already,
         "missing": missing,
@@ -409,18 +485,9 @@ def get_prompt_sanitizer_status(plugin_cache: Path | None = None, *, full=False)
     for path in candidates:
         try:
             source = _read_text_exact(path)
-        except OSError:
+        except (OSError, UnicodeError):
             continue
-        if (
-            PROMPT_FIX_MARKER in source
-            and PROMPT_FIX_CALL in source
-            and GEMINI4_FIX_MARKER in source
-            and (not full or (
-                IDENTITY_FIX_MARKER in source
-                and 'var AGY_CLIENT_KIND = "hub";' in source
-                and "const hubGoogleRoute = parsed.provider_routes?.google;" in source
-            ))
-        ):
+        if _prompt_is_patched(source) and (not full or _full_fix_is_patched(source)):
             patched += 1
     pending = len(candidates) - patched
     if pending == 0:
@@ -429,8 +496,8 @@ def get_prompt_sanitizer_status(plugin_cache: Path | None = None, *, full=False)
             "found": len(candidates),
             "patched": patched,
             "pending": 0,
-            "message": ("Фикс 429, идентичность и маршрутизация активны во всех найденных копиях."
-                        if full else "Фикс 429 и поддержка Gemini активны во всех найденных копиях."),
+            "message": ("Фикс 429, поддержка Gemini, идентичность и маршрутизация активны во всех найденных копиях."
+                        if full else "Фикс 429 активен во всех найденных копиях."),
         }
     return {
         "state": "pending",
@@ -729,8 +796,9 @@ def _identity_replacements(eol: str) -> list[tuple[str, str, str, bool]]:
         ),
         (
             "session-id-constant",
-            r'const workspaceUri = directory \? pathToFileURL\(resolve\w+\(directory\)\)\.href : "";',
-            'const workspaceUri = "";',
+            r'const workspaceUri = directory \? pathToFileURL\(resolve\w+\(directory\)\)\.href : "";'
+            + re.escape(lit("\n    this.requestSessions = new AgyRequestSessionStore(workspaceUri, options);")),
+            lit('const workspaceUri = "";\n    this.requestSessions = new AgyRequestSessionStore(workspaceUri, options);'),
             True,
         ),
         (
@@ -749,25 +817,6 @@ def _identity_replacements(eol: str) -> list[tuple[str, str, str, bool]]:
                 "      scope.session.rootCascadeId = identity.parentSessionId;\n"
                 "    }\n"
                 "    this.recordParent(key, identity.parentSessionId);"
-            ),
-            True,
-        ),
-        (
-            "sanitizer-all-opencode-tools",
-            re.escape(lit(
-                "var ANTIGRAVITY_BLOCKED_SYSTEM_INSTRUCTION_PATTERNS = [\n"
-                "  [/tools\\.opencode\\.session_move/gi, 'tools.opencode[\"session_move\"]']\n"
-                "];"
-            )),
-            lit(
-                "var ANTIGRAVITY_BLOCKED_SYSTEM_INSTRUCTION_PATTERNS = [\n"
-                "  [/tools\\.opencode\\.([A-Za-z0-9_]+)/gi, 'tools[\"agent\"][\"$1\"]'],\n"
-                "  [/tools\\[\"agent\"\\]\\[\"([A-Za-z0-9_]+)\"\\]/g, 'tools.$1'],\n"
-                "  [/\\bOpenCode\\b/g, 'the coding agent'],\n"
-                "  [/\\bopencode\\b/g, 'coding agent'],\n"
-                "  [/Code Mode/g, 'tool catalog'],\n"
-                "  [/code mode/g, 'tool catalog']\n"
-                "];"
             ),
             True,
         ),
@@ -874,15 +923,31 @@ def _identity_replacements(eol: str) -> list[tuple[str, str, str, bool]]:
             True,
         ),
         (
-            "oauth-userinfo-ua-1",
-            re.escape(lit('"User-Agent": GEMINI_CLI_HEADERS["User-Agent"]')),
-            lit('"User-Agent": buildAntigravityHarnessUserAgent()'),
+            "oauth-exchange-ua",
+            re.escape(lit(
+                '"Accept-Encoding": "gzip, deflate, br",\n'
+                '        "User-Agent": GEMINI_CLI_HEADERS["User-Agent"]\n'
+                '      },\n'
+                '      body: new URLSearchParams({\n'
+                '        client_id: ANTIGRAVITY_CLIENT_ID,\n'
+                '        client_secret: ANTIGRAVITY_CLIENT_SECRET,'
+            )),
+            lit(
+                '"Accept-Encoding": "gzip, deflate, br",\n'
+                '        "User-Agent": buildAntigravityHarnessUserAgent()\n'
+                '      },\n'
+                '      body: new URLSearchParams({\n'
+                '        client_id: ANTIGRAVITY_CLIENT_ID,\n'
+                '        client_secret: ANTIGRAVITY_CLIENT_SECRET,'
+            ),
             True,
         ),
         (
-            "oauth-userinfo-ua-2",
-            re.escape(lit('"User-Agent": GEMINI_CLI_HEADERS["User-Agent"]')),
-            lit('"User-Agent": buildAntigravityHarnessUserAgent()'),
+            "oauth-userinfo-ua",
+            re.escape(lit('Authorization: `Bearer ${tokenPayload.access_token}`,\n'
+                          '        "User-Agent": GEMINI_CLI_HEADERS["User-Agent"]')),
+            lit('Authorization: `Bearer ${tokenPayload.access_token}`,\n'
+                '        "User-Agent": buildAntigravityHarnessUserAgent()'),
             True,
         ),
         (
@@ -941,8 +1006,6 @@ def patch_antigravity_identity(plugin_cache: Path | None = None) -> dict:
     sequence, checkpoint helper requests, Gemini 3 thinking level and removal
     of the extra toolConfig field.
     """
-    import re
-
     candidates = _identity_candidates(plugin_cache)
     if not candidates:
         return {
@@ -958,54 +1021,32 @@ def patch_antigravity_identity(plugin_cache: Path | None = None) -> dict:
     for path in candidates:
         try:
             source = _read_text_exact(path)
-            if IDENTITY_FIX_MARKER in source:
-                already.append(str(path))
-                continue
-            eol = "\r\n" if "\r\n" in source else "\n"
-            patched = source
-            failed: list[str] = []
-            for name, pattern, replacement, is_regex in _identity_replacements(eol):
-                # Use a function replacement so backslashes in JS regex/template
-                # literals are not interpreted as re.sub escapes (\\b, \\n, ...).
-                if is_regex:
-                    patched, count = re.subn(
-                        pattern,
-                        lambda _match, value=replacement: value,
-                        patched,
-                        count=1,
-                        flags=re.DOTALL,
-                    )
-                else:
-                    patched, count = re.subn(
-                        pattern,
-                        lambda _match, value=replacement: value,
-                        patched,
-                        count=1,
-                    )
-                if count == 0:
-                    failed.append(name)
+            patched, failed = _plan_identity_fix(source)
             if failed:
                 missing.append(f"{path}: {', '.join(failed)}")
                 continue
-            patched = patched.rstrip("\r\n") + eol + eol + IDENTITY_FIX_MARKER + eol
+            if patched == source:
+                already.append(str(path))
+                continue
             backup = path.with_suffix(path.suffix + IDENTITY_FIX_BACKUP_SUFFIX)
             if not backup.exists():
                 _write_text_exact(backup, source)
             _write_text_exact(path, patched)
             changed.append(str(path))
-        except (OSError, re.error) as exc:
+        except (OSError, UnicodeError) as exc:
             missing.append(f"{path}: {exc}")
 
     if changed:
         message = f"Фикс идентичности Antigravity применён: {len(changed)} файл(ов). Перезапустите OpenCode."
     elif already:
-        message = "Фикс идентичности Antigravity уже применён во всех найденных копиях."
+        message = (f"Фикс идентичности Antigravity уже применён в {len(already)} копиях."
+                   if missing else "Фикс идентичности Antigravity уже применён во всех найденных копиях.")
     else:
         message = "Не удалось применить фикс идентичности: структура плагина изменилась."
     if missing:
         message += f" Проблем: {len(missing)}."
     return {
-        "ok": bool(changed or already),
+        "ok": bool(changed or already) and not missing,
         "changed": changed,
         "already": already,
         "missing": missing,
@@ -1013,18 +1054,52 @@ def patch_antigravity_identity(plugin_cache: Path | None = None) -> dict:
     }
 
 
+def _plan_identity_fix(source: str) -> tuple[str | None, list[str]]:
+    eol = "\r\n" if "\r\n" in source else "\n"
+    if source.count(IDENTITY_FIX_MARKER) > 1:
+        return None, ["identity-marker"]
+    updated = source
+    failed: list[str] = []
+    for name, pattern, replacement, is_regex in _identity_replacements(eol):
+        applied = list(re.finditer(re.escape(replacement), updated))
+        original = list(re.finditer(pattern if is_regex else re.escape(pattern), updated, re.DOTALL))
+        if len(applied) == 1 and all(
+            applied[0].start() <= match.start() and match.end() <= applied[0].end()
+            for match in original
+        ):
+            continue
+        if applied or len(original) != 1:
+            failed.append(name)
+            continue
+        match = original[0]
+        updated = updated[:match.start()] + replacement + updated[match.end():]
+    if failed:
+        return None, failed
+    if IDENTITY_FIX_MARKER not in updated:
+        updated = updated + eol + IDENTITY_FIX_MARKER + eol
+    return updated, failed
+
+
+def _identity_is_patched(source: str) -> bool:
+    return _plan_identity_fix(source)[0] == source
+
+
+def _full_fix_is_patched(source: str) -> bool:
+    return GEMINI4_FIX_MARKER in source and _identity_is_patched(source) and _route_edits(source) == []
+
+
 def get_identity_fix_status(plugin_cache: Path | None = None) -> dict:
     """Report whether the identity alignment fix is present in all bundles."""
     candidates = _identity_candidates(plugin_cache)
     if not candidates:
-        return {"state": "missing", "found": 0, "patched": 0, "message": MISSING_PLUGIN}
+        return {"state": "missing", "found": 0, "patched": 0, "pending": 0, "message": MISSING_PLUGIN}
     patched = 0
     for path in candidates:
         try:
             source = _read_text_exact(path)
-        except OSError:
+        except (OSError, UnicodeError):
             continue
-        if IDENTITY_FIX_MARKER in source and 'var AGY_CLIENT_KIND = "hub";' in source:
+        if _identity_is_patched(source):
             patched += 1
     pending = len(candidates) - patched
     if pending == 0:
@@ -1048,7 +1123,9 @@ def main():
     import sys
     command = sys.argv[1] if len(sys.argv) > 1 else "route"
     if command == "restore":
-        restore_auth_plugin_transport()
+        result = restore_auth_plugin_transport()
+        print(f"Transport only: restored {len(result['restored'])}; skipped {len(result['skipped'])} "
+              "(unverified backup or changed bundle).")
     elif command == "identity":
         print(patch_antigravity_identity()["message"])
     elif command == "status":
