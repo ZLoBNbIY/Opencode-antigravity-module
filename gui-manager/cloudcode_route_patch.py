@@ -388,6 +388,285 @@ def _write_text_exact(path: Path, text: str) -> None:
     atomic_write_bytes(path, text.encode("utf-8"), private_parent=False)
 
 
+# This is the user-request executor, not fetchWithActiveTimeout (which also
+# serves OAuth and probes). Keep the send fingerprint separate from the route
+# profiles; a known proxy selector does not imply a known executor.
+QUOTA_BREAKER_MARKER = "/* hub-quota-breaker:v1 */"
+QUOTA_EXECUTOR = 'function createRequestExecutor(deps) {'
+QUOTA_EXECUTOR_END = "function extractRateLimitBodyInfo(body) {"
+QUOTA_WARMUP = '''            await runThinkingWarmup(prepared, sendProjectId);
+            await runCacheWarmupProbe(prepared);'''
+QUOTA_SEND = '''            pushDebug(
+              `dispatching request via ${prepared.headerStyle} transport`
+            );
+            physicalAttemptStarted = true;
+            const response = prepared.headerStyle === "antigravity" ? await transport(
+              toUrlString(prepared.request),
+              prepared.init,
+              { signal: abortSignal, onDebug: pushDebug }
+            ) : await upstreamFetch(prepared.request, prepared.init);
+            apiRequestCount++;'''
+QUOTA_EXECUTOR_END_V2 = "function extractRateLimitBodyInfo(body, status, headers) {"
+# 3.1.13 shares sendPhysical with warmup and probes. Hook only the main call,
+# before the native refusal buffering/rewrapping, and after billing sees it.
+QUOTA_SEND_V2 = '''            pushDebug(
+              `dispatching request via ${prepared.headerStyle} transport`
+            );
+            physicalAttemptStarted = true;
+            let response = await sendPhysical(
+              toUrlString(prepared.request),
+              prepared.init,
+              sendAdmission,
+              prepared.effectiveModel ?? model ?? "unknown",
+              kind ?? "primary",
+              retainMainTransportFailure
+            );
+            const receivedAtMs = Date.now();'''
+QUOTA_KEY_AND_GUARD = '''            const hubQuotaKey = hubQuotaBreaker.key(account, sendAdmission, prepared, resolvedUrl);
+            const hubQuotaBeforeWarmup = hubQuotaBreaker.blocked(hubQuotaKey);
+            if (hubQuotaBeforeWarmup) return hubQuotaBeforeWarmup;
+'''
+QUOTA_SEND_GUARD = '''            const hubQuotaBeforeSend = hubQuotaBreaker.blocked(hubQuotaKey);
+            if (hubQuotaBeforeSend) {
+              if (tokenConsumed) trackers.token.refund(account.index);
+              return hubQuotaBeforeSend;
+            }
+'''
+QUOTA_OBSERVE = "\n            await hubQuotaBreaker.observe(hubQuotaKey, response);"
+QUOTA_OBSERVE_V2 = "\n            await hubQuotaBreaker.observe(hubQuotaKey, response, receivedAtMs);"
+QUOTA_BREAKER_JS = r'''/* hub-quota-breaker:v1 */
+function createHubQuotaBreaker() {
+  const windowMs = 60_000;
+  const cooldownMs = 15 * 60_000;
+  const accounts = new Map();
+  let sweepAt = 0;
+  const quotaCode = (code) => [
+    "RESOURCE_EXHAUSTED", "QUOTA_EXHAUSTED", "QUOTA_EXCEEDED",
+    "RATE_LIMIT_EXCEEDED", "DAILY_LIMIT_EXCEEDED", "USER_RATE_LIMIT_EXCEEDED"
+  ].includes(typeof code === "string"
+    ? code.replace(/([a-z])([A-Z])/g, "$1_$2").toUpperCase() : "");
+  const rpcType = (detail, name) => detail?.["@type"] === `type.googleapis.com/google.rpc.${name}`;
+  function absoluteTime(value) {
+    if (typeof value === "number" || (typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value))) {
+      const number = Number(value);
+      return Number.isFinite(number) ? (number < 1e12 ? number * 1000 : number) : 0;
+    }
+    if (typeof value !== "string" || !/^\d{4}-\d\d-\d\dT.+(?:Z|[+-]\d\d:\d\d)$/i.test(value)) return 0;
+    return Date.parse(value) || 0;
+  }
+  function deadline(headers, body, details, now) {
+    let until = 0;
+    function delay(value, factor) {
+      const end = now + Number(value) * factor;
+      if (Number.isFinite(end)) until = Math.max(until, end);
+    }
+    const retry = headers.get("retry-after");
+    if (retry && /^\d+$/.test(retry)) delay(retry, 1000);
+    // HTTP-date (including obsolete HTTP-date formats); reject arbitrary text.
+    else if (retry && /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)/i.test(retry))
+      until = Math.max(until, Date.parse(retry) || 0);
+    const retryMs = headers.get("retry-after-ms");
+    if (retryMs && /^\d+$/.test(retryMs)) delay(retryMs, 1);
+    for (const value of [body, body?.metadata, body?.error, body?.error?.metadata,
+                         ...details.flatMap(d => [d, d?.metadata])]) {
+      until = Math.max(until, absoluteTime(value?.resetAt), absoluteTime(value?.quotaResetTimeStamp),
+        absoluteTime(value?.quotaResetTime));
+      for (const duration of [value?.retryDelay, value?.quotaResetDelay]) {
+        if (typeof duration !== "string" || !/^(?=\d)(?:\d+h)?(?:\d+m)?(?:\d+(?:\.\d+)?s)?$/.test(duration)) continue;
+        let ms = 0;
+        for (const [, part, unit] of duration.matchAll(/(\d+(?:\.\d+)?)([hms])/g))
+          ms += Number(part) * (unit === "h" ? 3_600_000 : unit === "m" ? 60_000 : 1000);
+        delay(ms, 1);
+      }
+    }
+    return until;
+  }
+  async function errorJson(response) {
+    let reader, timer;
+    try {
+      reader = response.clone().body?.getReader();
+      if (!reader) return null;
+      const limit = new Promise((_, reject) => { timer = setTimeout(reject, 1000); });
+      const decoder = new TextDecoder();
+      let bytes = 0, text = "";
+      for (;;) {
+        const { done, value } = await Promise.race([reader.read(), limit]);
+        if (done) return JSON.parse(text + decoder.decode());
+        bytes += value.byteLength;
+        if (bytes > 65_536) return null;
+        text += decoder.decode(value, { stream: true });
+      }
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+      // Don't await cancellation of the clone's tee; the original is unread.
+      if (reader) void reader.cancel().catch(() => {});
+    }
+  }
+  function stateFor(key, now, create = false) {
+    if (now >= sweepAt) {
+      sweepAt = now + windowMs;
+      for (const [id, models] of accounts) {
+        for (const [model, state] of models) {
+          if (!state.pending && Math.max(state.cooldown, state.upstream, state.touched + windowMs) < now)
+            models.delete(model);
+        }
+        if (!models.size) accounts.delete(id);
+      }
+    }
+    let models = accounts.get(key.id);
+    if (!models && create) accounts.set(key.id, models = new Map());
+    let state = models?.get(key.model);
+    if (!state && create) {
+      state = { strikes: [], upstream: 0, cooldown: 0, pending: 0, touched: now, successes: 0 };
+      models.set(key.model, state);
+    }
+    return state;
+  }
+  return {
+    key(account, admission, prepared, url) {
+      const model = prepared?.effectiveModel;
+      if (typeof model !== "string" || !model ||
+          !/^https:\/\/(?:daily-)?cloudcode-pa\.googleapis\.com\/v1internal:(?:streamGenerateContent|generateContent)(?:\?|$)/.test(url))
+        return null;
+      const identity = admission?.accountIdentity || account.rowRef?.identity || account.email?.trim().toLowerCase();
+      const row = admission?.credentialId || account.rowRef?.id;
+      // No token or pool index: indexes can be reused for a different account.
+      const id = identity ? `account:${identity}` : row ? `row:${row}` : account;
+      return { id, model };
+    },
+    blocked(key, now = Date.now()) {
+      const state = key && stateFor(key, now);
+      const until = state && Math.max(state.cooldown, state.upstream);
+      if (!(until > now)) return null;
+      // Terminal local error; do not ask the pool to switch and do not
+      // manufacture an upstream 429 or an authoritative quota reading.
+      return new Response(JSON.stringify({
+        error: { code: 412, status: "FAILED_PRECONDITION",
+          message: "Antigravity: the selected account and model are temporarily cooling down." }
+      }), { status: 412, headers: {
+        "Content-Type": "application/json",
+        "Retry-After": String(Math.ceil((until - now) / 1000)),
+        "X-Antigravity-Synthetic": "true",
+        "X-Antigravity-Error-Type": "hub_quota_cooldown"
+      } });
+    },
+    async observe(key, response, now = Date.now()) {
+      if (!key || response.headers.has("x-antigravity-synthetic")) return;
+      if (response.ok) {
+        const state = stateFor(key, now);
+        if (state) {
+          state.strikes = [];
+          state.successes++;
+        }
+        return;
+      }
+      if (response.status !== 429 && response.status !== 409) return;
+      const state = stateFor(key, now, true);
+      const successes = state.successes;
+      state.pending++;
+      try {
+        if (response.status === 429)
+          state.upstream = Math.max(state.upstream, deadline(response.headers, null, [], now));
+        const body = await errorJson(response);
+        const error = body?.error ?? body;
+        const details = Array.isArray(error?.details) ? error.details : [];
+        if (response.status === 409 && !(quotaCode(error?.status) || quotaCode(error?.reason) ||
+          quotaCode(error?.code) ||
+          (Array.isArray(error?.errors) && error.errors.some(e => quotaCode(e?.reason))) ||
+          details.some(d => rpcType(d, "QuotaFailure") || (rpcType(d, "ErrorInfo") && quotaCode(d.reason))))) return;
+        state.upstream = Math.max(state.upstream, deadline(response.headers, body, details, now));
+        // Error-body parsing can complete after a newer successful response.
+        // Keep explicit upstream deadlines, but never re-add stale strikes.
+        if (state.successes !== successes || state.cooldown > now) return;
+        const latest = Math.max(now, ...state.strikes);
+        state.strikes = [...state.strikes, now].filter(t => t >= latest - windowMs);
+        if (state.strikes.length >= 3) {
+          state.cooldown = latest + cooldownMs;
+          state.strikes = [];
+        }
+      } finally {
+        state.pending--;
+        state.touched = Math.max(state.touched, now);
+      }
+    }
+  };
+}
+'''
+
+
+def _plan_quota_breaker_profile(source: str, anchors: tuple[str, str, str]) -> str | None:
+    eol = "\r\n" if "\r\n" in source else "\n"
+    end_anchor, send_anchor, observe_call = anchors
+    executor, end, warmup, send, helper, key, guard, observe = (
+        block.replace("\n", eol) for block in (
+            QUOTA_EXECUTOR, end_anchor, QUOTA_WARMUP, send_anchor, QUOTA_BREAKER_JS,
+            QUOTA_KEY_AND_GUARD, QUOTA_SEND_GUARD, observe_call,
+        )
+    )
+    edits = [
+        (executor, helper + executor + eol + "  const hubQuotaBreaker = createHubQuotaBreaker();"),
+        (warmup, key + warmup),
+        (send, guard + send + observe),
+    ]
+    if QUOTA_BREAKER_MARKER in source:
+        if source.count(QUOTA_BREAKER_MARKER) != 1:
+            return None
+        original = _apply_exact_edits(source, [(after, before) for before, after in edits])
+        if original is None or QUOTA_BREAKER_MARKER in original:
+            return None
+        return source if _plan_quota_breaker_profile(original, anchors) == source else None
+    if _route_edits(source) is None or any(source.count(anchor) != 1 for anchor in (executor, end, warmup, send)):
+        return None
+    if not 0 <= source.index(executor) < source.index(warmup) < source.index(send) < source.index(end):
+        return None
+    # The key depends on resolvedUrl in the same prepared-request scope.
+    before_warmup = source[source.index(executor):source.index(warmup)]
+    if (not all(context in before_warmup for context in (
+            "            const resolvedUrl = toUrlString(prepared.request);",
+            "            let sendAdmission;",
+            "          let tokenConsumed = false;",
+    ))
+            or any(name in source for name in ("createHubQuotaBreaker", "hubQuotaBreaker", "hubQuotaKey"))):
+        return None
+    return _apply_exact_edits(source, edits)
+
+
+def _plan_quota_breaker(source: str) -> str | None:
+    """Return a complete, verified edit or refuse the executor layout."""
+    if "\r\n" in source and "\n" in source.replace("\r\n", ""):
+        return None
+    plans = [plan for anchors in (
+        (QUOTA_EXECUTOR_END, QUOTA_SEND, QUOTA_OBSERVE),
+        (QUOTA_EXECUTOR_END_V2, QUOTA_SEND_V2, QUOTA_OBSERVE_V2),
+    ) if (plan := _plan_quota_breaker_profile(source, anchors)) is not None]
+    return plans[0] if len(plans) == 1 else None
+
+
+def patch_quota_breaker(plugin_cache: Path | None = None) -> dict:
+    """Patch installed bundles only; report unrecognized application layouts."""
+    changed, already, unsupported = [], [], []
+    for path in _prompt_fix_candidates(plugin_cache):
+        try:
+            source = _read_text_exact(path)
+            updated = _plan_quota_breaker(source)
+            if updated is None or _plan_quota_breaker(updated) != updated:
+                unsupported.append(str(path))
+            elif updated == source:
+                already.append(str(path))
+            else:
+                backup = path.with_suffix(path.suffix + ".hub-quota-breaker.bak")
+                if not backup.exists():
+                    _write_text_exact(backup, source)
+                _write_text_exact(path, updated)
+                changed.append(str(path))
+        except (OSError, UnicodeError):
+            unsupported.append(str(path))
+    return {"ok": bool(changed or already) and not unsupported, "changed": changed,
+            "already": already, "unsupported": unsupported}
+
+
 def _local_plugin_dist_dir() -> Path | None:
     root = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
     candidate = root / "plugin" / "dist"
@@ -398,6 +677,29 @@ def get_vendored_plugin_version() -> str | None:
     """Version of the recovery bundle shipped with this Hub."""
     local = _local_plugin_dist_dir()
     return _package_version(local.parent) if local is not None else None
+
+
+def get_expected_plugin_version() -> str | None:
+    """Version OpenCode should load: explicit pin, else the verified bundle.
+
+    Using the recovery bundle version here is unsafe: 3.1.x moves the account
+    store and leaves a schema-2 forward pointer, which older releases refuse
+    to open. The Hub must pin the version it actually verified, not the one it
+    happens to ship for recovery.
+    """
+    version_re = r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}"
+    try:
+        import hub_paths
+        config = hub_paths.read_mirrored_antigravity_config() or {}
+        pinned = config.get("plugin_pin_version")
+        if isinstance(pinned, str) and re.fullmatch(version_re, pinned):
+            return pinned
+    except Exception:
+        pass
+    verified = load_patch_state().get("verified_version")
+    if isinstance(verified, str) and re.fullmatch(version_re, verified):
+        return verified
+    return get_vendored_plugin_version()
 
 
 def _package_version(plugin_dir: Path) -> str | None:
@@ -1229,7 +1531,11 @@ def _identity_is_patched(source: str) -> bool:
 def _is_v2_profile(source: str) -> bool:
     """Distinguish 3.1.x from 3.0.x (which shares the literal 10880 URL)."""
     normalized = source.replace("\r\n", "\n")
-    return (FORCED_GOOGLE_ROUTE_V2 in normalized or GEMINI4_FIX_MARKER_V2 in normalized
+    # The forced-route marker alone is NOT sufficient: the v2 route planner
+    # also patches older 3.0.x bundles that share the simple getHttpsProxy
+    # layout. Only 3.1.x defines the Neon/Carbon model family.
+    return ("function getGeminiNeonAntigravityModel(" in normalized
+            or GEMINI4_FIX_MARKER_V2 in normalized
             or GEMINI4_HELPER_V2 in normalized)
 
 
@@ -1276,15 +1582,21 @@ def get_identity_fix_status(plugin_cache: Path | None = None) -> dict:
 PATCH_STATE_VERSION = 1
 
 
-def _patch_state_path() -> Path:
+def _patch_state_path(plugin_cache: Path | None = None, state_path: Path | None = None) -> Path:
+    if state_path is not None:
+        return Path(state_path)
+    if plugin_cache is not None:
+        # A temp/cache-specific state keeps tests and diagnostics from
+        # overwriting the real Hub state file.
+        return Path(plugin_cache) / ".hub-plugin-patch-state.json"
     import hub_paths
     return hub_paths.HUB_ROOT / "config" / "plugin-patch-state.json"
 
 
-def load_patch_state() -> dict:
+def load_patch_state(plugin_cache: Path | None = None, state_path: Path | None = None) -> dict:
     """Read Hub-owned patch state; a missing or broken file means "unknown"."""
     try:
-        data = json.loads(_patch_state_path().read_text(encoding="utf-8-sig"))
+        data = json.loads(_patch_state_path(plugin_cache, state_path).read_text(encoding="utf-8-sig"))
     except (OSError, UnicodeError, ValueError):
         return {"schema": PATCH_STATE_VERSION, "verified_version": None,
                 "verified_sha256": {}, "last_ok": None, "degraded": False,
@@ -1292,13 +1604,14 @@ def load_patch_state() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def save_patch_state(state: dict) -> None:
+def save_patch_state(state: dict, plugin_cache: Path | None = None,
+                     state_path: Path | None = None) -> None:
     import datetime
     state = dict(state)
     state["schema"] = PATCH_STATE_VERSION
     state["last_ok"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     state.setdefault("unsupported_versions", [])
-    atomic_write_bytes(_patch_state_path(),
+    atomic_write_bytes(_patch_state_path(plugin_cache, state_path),
                        (json.dumps(state, indent=2, ensure_ascii=False) + "\n").encode("utf-8"),
                        private_parent=False)
 
@@ -1334,12 +1647,12 @@ def get_verified_versions(plugin_cache: Path | None = None) -> list[str]:
     return sorted(versions)
 
 
-def check_patch_state(plugin_cache: Path | None = None) -> dict:
+def check_patch_state(plugin_cache: Path | None = None, state_path: Path | None = None) -> dict:
     """Compare installed bundles with the last Hub-verified fingerprint."""
     fingerprint = get_installed_fingerprint(plugin_cache)
     if not fingerprint["found"]:
         return {"state": "missing", **fingerprint}
-    state = load_patch_state()
+    state = load_patch_state(plugin_cache, state_path)
     expected_versions = state.get("verified_versions") or (
         [state["verified_version"]] if state.get("verified_version") else [])
     hashes = state.get("verified_sha256") if isinstance(state.get("verified_sha256"), dict) else {}
@@ -1359,21 +1672,32 @@ def check_patch_state(plugin_cache: Path | None = None) -> dict:
 
 
 def verify_plugin_health(plugin_cache: Path | None = None) -> dict:
-    """Patched must mean markers are present AND the JS still parses."""
+    """Check base patches and report the optional quota breaker separately."""
     import shutil
     import subprocess
     candidates = _prompt_fix_candidates(plugin_cache)
+    quota = {"state": "missing", "active": 0, "pending": 0, "unsupported": []}
     if not candidates:
-        return {"ok": False, "state": "missing", "reasons": [MISSING_PLUGIN], "syntax_checked": False}
+        return {"ok": False, "state": "missing", "reasons": [MISSING_PLUGIN],
+                "syntax_checked": False, "quota_breaker": quota}
     reasons: list[str] = []
+    warnings: list[str] = []
     for path in candidates:
         try:
             source = _read_text_exact(path)
         except (OSError, UnicodeError) as exc:
             reasons.append(f"{path.name}: read error {type(exc).__name__}")
+            quota["unsupported"].append(str(path))
             continue
         if not _prompt_is_patched(source):
             reasons.append(f"{path.name}: systemInstruction sanitizer missing")
+        breaker = _plan_quota_breaker(source)
+        if breaker is None:
+            quota["unsupported"].append(str(path))
+        elif breaker != source:
+            quota["pending"] += 1
+        else:
+            quota["active"] += 1
         if _is_v2_profile(source):
             if not _gemini4_v2_is_patched(source):
                 reasons.append(f"{path.name}: Gemini 4 dynamic wire map missing")
@@ -1398,19 +1722,23 @@ def verify_plugin_health(plugin_cache: Path | None = None) -> dict:
                     reasons.append(f"{path.name}: JS syntax error: {result.stderr.strip()[:200]}")
             except (OSError, subprocess.SubprocessError):
                 syntax_checked = False
+    quota["state"] = ("unsupported" if quota["unsupported"] else
+                      "pending" if quota["pending"] else "active")
     return {
         "ok": not reasons,
         "state": "ok" if not reasons else "unsupported",
         "reasons": reasons,
         "syntax_checked": syntax_checked,
+        "quota_breaker": quota,
     }
 
 
-def self_heal_plugin(plugin_cache: Path | None = None) -> dict:
+def self_heal_plugin(plugin_cache: Path | None = None, state_path: Path | None = None) -> dict:
     """Re-apply all Hub patches; persist a verified fingerprint on success."""
     health = verify_plugin_health(plugin_cache)
-    if health["ok"] and check_patch_state(plugin_cache)["state"] in ("ok", "unknown"):
-        state = load_patch_state()
+    if (health["ok"] and not health["quota_breaker"]["pending"]
+            and check_patch_state(plugin_cache, state_path)["state"] in ("ok", "unknown")):
+        state = load_patch_state(plugin_cache, state_path=state_path)
         state["degraded"] = False
         state["degraded_reason"] = ""
         state["unsupported_versions"] = []
@@ -1420,28 +1748,31 @@ def self_heal_plugin(plugin_cache: Path | None = None) -> dict:
             f"{copy.get('version') or 'unknown'}:{Path(copy['path']).name}": copy["sha256"]
             for copy in get_installed_fingerprint(plugin_cache)["copies"]
         }
-        save_patch_state(state)
-        return {"state": "already_healthy", "ok": True, "reasons": []}
+        save_patch_state(state, plugin_cache, state_path=state_path)
+        return {"state": "already_healthy", "ok": True, "reasons": [],
+                "quota_breaker": health["quota_breaker"]}
     prompt = patch_prompt_sanitizer(plugin_cache)
     identity = patch_antigravity_identity(plugin_cache)
     gemini4 = patch_gemini4_models(plugin_cache)
     route_changed: list[str] = []
     route = bool(patch_auth_plugin_transport(plugin_cache, include_local=False,
                                              changed_files=route_changed))
+    patch_quota_breaker(plugin_cache)
     health = verify_plugin_health(plugin_cache)
     if not health["ok"]:
-        state = load_patch_state()
+        state = load_patch_state(plugin_cache, state_path=state_path)
         state["degraded"] = True
         state["degraded_reason"] = "; ".join(health["reasons"])[:800]
         for copy in get_installed_fingerprint(plugin_cache)["copies"]:
             version = copy.get("version")
             if version and version not in state.get("unsupported_versions", []):
                 state.setdefault("unsupported_versions", []).append(version)
-        save_patch_state(state)
+        save_patch_state(state, plugin_cache, state_path=state_path)
         return {"state": "unsupported", "ok": False, "reasons": health["reasons"],
                 "prompt": prompt["message"], "identity": identity["message"],
-                "gemini4": gemini4["message"], "route": route}
-    state = load_patch_state()
+                "gemini4": gemini4["message"], "route": route,
+                "quota_breaker": health["quota_breaker"]}
+    state = load_patch_state(plugin_cache, state_path=state_path)
     state["degraded"] = False
     state["degraded_reason"] = ""
     state["verified_version"] = get_verified_version(plugin_cache)
@@ -1451,8 +1782,9 @@ def self_heal_plugin(plugin_cache: Path | None = None) -> dict:
         f"{copy.get('version') or 'unknown'}:{Path(copy['path']).name}": copy["sha256"]
         for copy in get_installed_fingerprint(plugin_cache)["copies"]
     }
-    save_patch_state(state)
-    return {"state": "healed", "ok": True, "reasons": [], "syntax_checked": health["syntax_checked"]}
+    save_patch_state(state, plugin_cache, state_path=state_path)
+    return {"state": "healed", "ok": True, "reasons": [], "syntax_checked": health["syntax_checked"],
+            "quota_breaker": health["quota_breaker"]}
 
 
 def main():
@@ -1472,6 +1804,8 @@ def main():
         print(json.dumps(verify_plugin_health(), indent=2, ensure_ascii=False))
     elif command == "heal":
         print(json.dumps(self_heal_plugin(), indent=2, ensure_ascii=False))
+    elif command == "quota-breaker":
+        print(json.dumps(patch_quota_breaker(), indent=2, ensure_ascii=False))
     else:
         print("patched" if patch_auth_plugin_transport() else "no auth plugin found or patch failed")
 

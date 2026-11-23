@@ -105,6 +105,20 @@ def ensure_plugin_pin(version: str, config_path: Path | None = None) -> tuple[bo
         path = _resolve_config_path(config_path)
         if not path.exists():
             return False, f"Файл конфигурации не найден: {path}"
+        # 3.1.x moves the account store and leaves a schema-2 forward pointer
+        # (`relocatedTo`). Releases up to 3.0.15 refuse to open that pointer.
+        pointer = path.parent / "antigravity-accounts.json.store.pointer.json"
+        if pointer.is_file():
+            try:
+                data = json.loads(pointer.read_bytes().decode("utf-8-sig"))
+                if isinstance(data, dict) and data.get("schemaVersion", 1) >= 2:
+                    parts = tuple(int(part) for part in version.split("."))
+                    if parts < (3, 0, 16):
+                        return False, (
+                            f"Версия {version} не понимает перемещённое хранилище "
+                            "(pointer schema 2). Нужна версия 3.0.16 или новее.")
+            except (OSError, ValueError, TypeError):
+                pass
         raw = path.read_bytes().decode("utf-8")
         pinned = f"@cortexkit/opencode-antigravity-auth@{version}"
         pattern = re.compile(r'"@cortexkit/opencode-antigravity-auth(?:@[^"\s]*)?"')

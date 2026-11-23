@@ -195,6 +195,9 @@ DEFAULT_CONFIG = {
     # Keep the updater off: a plugin self-update replaces the bundles patched
     # by the Hub and silently reintroduces the Google 429 regression.
     "auto_update": False,
+    # 3.1.x moved the account store and leaves a schema-2 pointer that older
+    # releases refuse to open. Pin a version that understands this layout.
+    "plugin_pin_version": "3.1.13",
     "account_selection_strategy": "hybrid",
     "soft_quota_threshold_percent": 100,
     "switch_on_first_rate_limit": True,

@@ -18808,7 +18808,7 @@ function generatePkcePair() {
     challenge: createHash3("sha256").update(verifier).digest("base64url")
   };
 }
-async function refreshAntigravityToken(refreshToken) {
+async function refreshAntigravityToken(refreshToken, { redactedErrors = false } = {}) {
   const startTime = Date.now();
   const response = await fetchWithActiveTimeout("https://oauth2.googleapis.com/token", {
     method: "POST",
@@ -18821,7 +18821,16 @@ async function refreshAntigravityToken(refreshToken) {
     })
   });
   if (!response.ok) {
+    if (redactedErrors && response.status === 429) {
+      const header = response.headers.get("retry-after")?.trim() ?? "";
+      const seconds = /^\d+$/.test(header) ? Number(header) : Math.ceil((Date.parse(header) - Date.now()) / 1e3);
+      void response.body?.cancel().catch(() => {});
+      throw new DueRefreshError("rate_limited", Number.isSafeInteger(seconds) ? Math.max(0, seconds) : 0);
+    }
     const errorText2 = await response.text().catch(() => "");
+    if (redactedErrors) {
+      throw new DueRefreshError(parseOAuthErrorPayload(errorText2).code === "invalid_grant" ? "invalid_grant" : "failed");
+    }
     throw new Error(`Antigravity token refresh failed (${response.status} ${response.statusText})${errorText2 ? ` - ${errorText2}` : ""}`);
   }
   const payload = await response.json();
@@ -21762,6 +21771,7 @@ Commands:
   list [--json]
   quota [--json] [--refresh]
   health-token --email <email>  (private GUI pipe; outputs an access token)
+  refresh-due --list | --account <generation> <id> <epoch> <expires>  (private Hub pipe; no tokens)
   init
   migrate --offline [--yes]
   rollback --offline [--yes]
@@ -21814,6 +21824,15 @@ function parseArgs(argv) {
       return { ok: false, error: "Usage: health-token --email <email>" };
     }
     return { ok: true, value: { command, email: args[1] } };
+  }
+  if (command === "refresh-due") {
+    if (args.length === 1 && args[0] === "--list")
+      return { ok: true, value: { command } };
+    const [option, generation, id, epoch, expires] = args;
+    const positiveInteger = (n) => /^\d+$/.test(n) && Number.isSafeInteger(Number(n)) && Number(n) > 0;
+    if (args.length === 5 && option === "--account" && [generation, id].every(isDueRefreshId) && positiveInteger(epoch) && positiveInteger(expires))
+      return { ok: true, value: { command, account: { generation, id, epoch: Number(epoch), expires: Number(expires) } } };
+    return { ok: false, error: "Usage: refresh-due --list | --account <generation> <id> <epoch> <expires>" };
   }
   if (command === "quota") {
     let json = false;
@@ -21942,6 +21961,18 @@ async function runCli(argv, deps) {
   }
   if (parsed.value.command === "help") {
     deps.stdout.write(HELP);
+    return 0;
+  }
+  if (parsed.value.command === "refresh-due") {
+    // Keep this path separate from generic error reporting: OAuth/network and
+    // repository exceptions may contain credentials.
+    let result;
+    try {
+      result = await deps.refreshDueAccount(parsed.value.account);
+    } catch {
+      result = { status: "failed" };
+    }
+    deps.stdout.write(`${JSON.stringify(result)}\n`);
     return 0;
   }
   try {
@@ -22167,6 +22198,8 @@ function createDefaultCliDependencies() {
       const project = await ensureProjectContext(refreshed);
       return { accessToken: project.auth.access, expires: project.auth.expires, projectId: project.effectiveProjectId };
     },
+    // Unlike interactive commands, never migrate Windows legacy paths here.
+    refreshDueAccount: (account) => refreshDueGoogleStore(join9(getConfigDir2(), "antigravity-accounts.json"), account),
     getQuota: (accounts, options) => checkAccountsQuotaStandalone(accounts, options),
     accountStore: createDefaultAccountStoreOperations()
   };
@@ -22245,6 +22278,86 @@ async function readAccountStore(legacyPath) {
     await repository.dispose();
   }
 }
+// Local extension to the vendored runnable CLI. Keep it self-contained:
+// the existing recovery copier may install this file without its siblings.
+class DueRefreshError extends Error {
+  constructor(status, retryAfterSeconds = 0) {
+    super("Background Google OAuth exchange failed");
+    this.status = status;
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+function isDueRefreshId(value) {
+  return typeof value === "string" && /^[a-z0-9_][a-z0-9_.-]{0,255}$/i.test(value);
+}
+function googleRowDue(row, now) {
+  const credential = row.credential;
+  const meta = row.metadata?.status === "present" ? row.metadata.metadata : undefined;
+  return row.enabled && !row.invalid && !row.torn && !row.unbound && row.stamp === "bound" &&
+    meta?.accountIneligible !== true && meta?.verificationRequired !== true &&
+    Boolean(credential?.refreshToken && credential?.accessToken) &&
+    Number.isSafeInteger(credential.expiresAt) && credential.expiresAt > now && credential.expiresAt <= now + 1800e3;
+}
+async function refreshDueGoogleStore(legacyPath, account, now = Date.now) {
+  const modules = await loadCommonAuthStoreModules();
+  const admission = await readAccountStoreBinding(resolve6(legacyPath), modules, now);
+  if (admission.status !== "bound")
+    return { status: "unavailable" };
+  const generation = admission.receipt.id;
+  if (!isDueRefreshId(generation) || account && account.generation !== generation)
+    return { status: "skipped" };
+  let exchangeFailure;
+  const repository = createAccountRepositoryFactory(modules)({
+    paths: admission.paths,
+    now,
+    exchange: async ({ refreshToken }) => {
+      try {
+        const result = await refreshAntigravityToken(refreshToken, { redactedErrors: true });
+        if (typeof result.access !== "string" || !result.access.trim() ||
+            typeof result.refresh !== "string" || !result.refresh.trim() ||
+            !Number.isSafeInteger(result.expires) || result.expires <= now())
+          throw new DueRefreshError("failed");
+        return { accessToken: result.access, refreshToken: result.refresh, expiresAt: result.expires };
+      } catch (error) {
+        if (error instanceof DueRefreshError)
+          exchangeFailure = error;
+        throw error;
+      }
+    }
+  });
+  try {
+    const read = await repository.read();
+    if (read.status !== "ready")
+      return { status: "unavailable" };
+    const checkedAt = now();
+    const due = read.rows.filter((row) => isDueRefreshId(row.ref.id) && googleRowDue(row, checkedAt));
+    if (!account) {
+      due.sort((a, b) => a.credential.expiresAt - b.credential.expiresAt);
+      return {
+        status: "ready", generation,
+        accounts: due.map(({ ref, credential }) => ({
+          id: ref.id, epoch: ref.credentialEpoch, expires: credential.expiresAt
+        }))
+      };
+    }
+    const row = due.find(({ ref, credential }) => ref.id === account.id && ref.credentialEpoch === account.epoch &&
+      credential.expiresAt === account.expires);
+    if (!row)
+      return { status: "skipped" };
+    const result = await repository.refresh(row.ref, {
+      // Freeze time so crossing the old expiry doesn't drop a rotation.
+      refuse: (current) => googleRowDue(current, checkedAt) && current.credential.expiresAt === account.expires ?
+        undefined : "no-longer-due"
+    });
+    return { status: result.status === "rotated" ? "refreshed" : "skipped" };
+  } catch {
+    if (exchangeFailure?.status === "rate_limited")
+      return { status: "rate_limited", retryAfterSeconds: exchangeFailure.retryAfterSeconds };
+    return { status: exchangeFailure?.status ?? "failed" };
+  } finally {
+    await repository.dispose();
+  }
+}
 function createDefaultAccountStoreOperations() {
   const offline = { processesStopped: true };
   return {
@@ -22277,6 +22390,7 @@ export {
   createDefaultAccountStoreOperations,
   createDefaultCliDependencies,
   performOAuthLogin,
+  refreshDueGoogleStore,
   runCli
 };
 //# sourceMappingURL=cli.js.map

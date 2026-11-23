@@ -100,6 +100,65 @@ class WebviewBackendTests(unittest.TestCase):
         startup_migration.start()
         self.addCleanup(startup_migration.stop)
 
+    @patch("cloudcode_route_patch.get_expected_plugin_version", return_value="3.0.0")
+    def test_google_proactive_refresh_accepts_node_from_path(self, expected):
+        cli = Path(self.temp.name) / "cli.js"
+        cli.touch()
+        self.manager.get_cli_js = Mock(return_value=str(cli))
+        self.manager.get_node_executable = Mock(return_value="node")
+        self.manager.run_google_route_cmd = Mock()
+        api = self.backend.HubApi()
+        self.assertIs(api._run_google_refresh_cli(["refresh-due", "--list"], 45),
+                      self.manager.run_google_route_cmd.return_value)
+        self.manager.run_google_route_cmd.assert_called_once_with(
+            ["node", str(cli), "refresh-due", "--list"], timeout=45)
+
+    @patch("cloudcode_route_patch.get_expected_plugin_version", return_value="3.0.0")
+    def test_google_proactive_refresh_respects_opt_out_and_supported_profiles(self, expected):
+        api = self.backend.HubApi()
+        api.load_config = Mock(return_value={})
+        self.manager.get_cli_js = Mock()
+        self.manager.get_node_executable = Mock(return_value="node")
+        self.manager.run_google_route_cmd = Mock()
+        cli = Path(self.temp.name) / "cached-cli.js"
+        cli.touch()
+        finder = self.enterContext(patch.object(
+            self.backend.google_proactive_refresh, "find_cli_3113", return_value=cli))
+        with patch.dict("os.environ", {"AI_HUB_GOOGLE_PROACTIVE_REFRESH": ""}):
+            self.assertTrue(api._google_refresh_enabled())
+            api.load_config.return_value = {"google_proactive_refresh": False}
+            api._google_refresh.check()
+            self.manager.run_google_route_cmd.assert_not_called()
+            api.load_config.return_value = {"plugin_pin_version": "3.1.13"}
+            self.assertEqual(api._google_refresh_profile(), "3.1.13")
+            api.load_config.return_value = {}
+            source = b'{"plugins":["@cortexkit/opencode-antigravity-auth@3.1.13"]}'
+            self.backend.OPENCODE_CONFIG_FILE.write_bytes(source)
+            api._google_refresh.check()
+            self.assertEqual(self.backend.OPENCODE_CONFIG_FILE.read_bytes(), source)
+            args = self.manager.run_google_route_cmd.call_args.args[0]
+            self.assertEqual(args, ["node", str(self.backend.CURRENT_DIR.parent / "plugin" / "dist" /
+                                                "google-cli-3113.mjs"), str(cli), "--list"])
+            self.manager.run_google_route_cmd.reset_mock()
+            self.backend.OPENCODE_CONFIG_FILE.write_text(
+                '{"plugins":[{"package":"@cortexkit/opencode-antigravity-auth@3.1.13","options":{}}]}',
+                encoding="utf-8")
+            self.assertEqual(api._google_refresh_profile(), "3.1.13")
+            api.load_config.return_value = {"plugin_pin_version": "3.0.0"}
+            api._google_refresh.check()  # Conflicting pins fail closed.
+            api.load_config.return_value = {}
+            self.backend.OPENCODE_CONFIG_FILE.unlink()
+            expected.return_value = "3.1.13"
+            finder.return_value = None
+            api._google_refresh.check()  # Missing 3.1 profile never uses 3.0 CLI.
+            expected.return_value = "3.1.14"
+            api._google_refresh.check()
+        with patch.dict("os.environ", {"AI_HUB_GOOGLE_PROACTIVE_REFRESH": "0"}):
+            expected.return_value = "3.0.0"
+            api._google_refresh.check()
+        self.manager.run_google_route_cmd.assert_not_called()
+        self.manager.get_cli_js.assert_not_called()
+
     def test_tokenlavka_configure_validates_saves_and_registers_models(self):
         self.tokenlavka.test_connection.return_value = (True, 'ok')
         api = self.backend.HubApi()
@@ -527,11 +586,30 @@ class WebviewBackendTests(unittest.TestCase):
                 {"version": "3.0.0"}]}),
             load_patch_state=Mock(return_value={
                 "verified_version": "3.0.0", "degraded": False, "degraded_reason": ""}),
+            verify_plugin_health=Mock(return_value={"ok": True, "state": "ok", "reasons": []}),
         )
         with patch.dict("sys.modules", {"cloudcode_route_patch": patcher}):
             status = self.backend.HubApi().get_opencode_plugin_status()
         self.assertEqual(status["state"], "patched")
         patcher.get_prompt_sanitizer_status.assert_called_once_with(full=True)
+
+    def test_plugin_status_ignores_stale_reason_when_live_bundles_healthy(self):
+        patcher = SimpleNamespace(
+            get_prompt_sanitizer_status=Mock(return_value={
+                "state": "patched", "found": 2, "patched": 2, "pending": 0, "message": "ok"}),
+            check_patch_state=Mock(return_value={"state": "version_changed", "copies": [
+                {"version": "3.1.13"}]}),
+            load_patch_state=Mock(return_value={
+                "verified_version": "3.1.13", "degraded": True,
+                "degraded_reason": "stale test fixture reason"}),
+            verify_plugin_health=Mock(return_value={"ok": True, "state": "ok", "reasons": []}),
+        )
+        with patch.dict("sys.modules", {"cloudcode_route_patch": patcher}):
+            status = self.backend.HubApi().get_opencode_plugin_status()
+        self.assertEqual(status["state"], "patched")
+        self.assertFalse(status["degraded"])
+        self.assertEqual(status["reason"], "")
+        self.assertEqual(status["state_detail"], "version_changed")
 
     def test_apply_antigravity_patch_delegates_to_patcher(self):
         patcher = SimpleNamespace(

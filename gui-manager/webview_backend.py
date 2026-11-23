@@ -113,6 +113,7 @@ import nvidia_manager
 import tokenlavka_manager
 import hub_paths
 import deepseek_api
+import google_proactive_refresh
 import opencode_usage
 import jsonc_config
 import secure_storage
@@ -407,6 +408,7 @@ def _backup_config(data: dict) -> dict:
         "account_selection_strategy": str, "soft_quota_threshold_percent": int,
         "switch_on_first_rate_limit": bool, "max_account_switches": int,
         "quota_style_fallback": bool, "close_to_tray": bool, "autostart_on_login": bool,
+        "google_proactive_refresh": bool,
         "providers_visibility": dict, "provider_routes": dict, "vless_kill_switch": bool,
         "vless_enabled": bool, "dns_mode": str, "custom_dns": list, "dot_host": str,
         "doh_url": str, "dns_presets": list, "proxy": str, "proxy_pool": list,
@@ -553,7 +555,7 @@ class HubApi:
             pass
         try:
             import cloudcode_route_patch
-            pinned_version = cloudcode_route_patch.get_vendored_plugin_version()
+            pinned_version = cloudcode_route_patch.get_expected_plugin_version()
             if pinned_version:
                 opencode_config.ensure_plugin_pin(pinned_version)
         except Exception:
@@ -584,6 +586,65 @@ class HubApi:
         self._closing = threading.Event()
         self._uninstalled = False
         self._login_locks = {name: threading.Lock() for name in ("google", "openai", "claude")}
+        self._google_refresh = google_proactive_refresh.GoogleProactiveRefresh(
+            self._run_google_refresh_cli, self._closing, self._google_refresh_enabled)
+
+    def _google_refresh_enabled(self):
+        if self._uninstalled or os.getenv("AI_HUB_GOOGLE_PROACTIVE_REFRESH") == "0":
+            return False
+        cfg = self.load_config()
+        return cfg.get("google_proactive_refresh", True) is True
+
+    def _google_refresh_profile(self):
+        cfg = self.load_config()
+        hub_pin = cfg.get("plugin_pin_version")
+        # A user may pin OpenCode directly, independently of Hub's settings.
+        raw = _read_if_present(_opencode_config_path())
+        oc = jsonc_config.parse_config(raw.decode("utf-8-sig")) if raw is not None else {}
+        package = google_proactive_refresh.PLUGIN_PACKAGE
+        pins = set()
+        for field in ("plugins", "plugin"):
+            entries = oc.get(field, [])
+            for entry in entries if isinstance(entries, list) else [entries]:
+                if isinstance(entry, dict):
+                    entry = entry.get("package")
+                if isinstance(entry, str) and (entry == package or entry.startswith(package + "@")):
+                    pins.add(entry[len(package) + 1:])
+        if hub_pin is not None:
+            if not isinstance(hub_pin, str):
+                return None
+            pins.add(hub_pin)
+        if not pins:
+            import cloudcode_route_patch
+            pins.add(cloudcode_route_patch.get_expected_plugin_version())
+        if len(pins) != 1:
+            return None
+        version = pins.pop()
+        return version if version in google_proactive_refresh.SUPPORTED_PROFILES else None
+
+    def _run_google_refresh_cli(self, args, timeout):
+        if self._closing.is_set():
+            return None
+        profile = self._google_refresh_profile()
+        if profile == "3.1.13":
+            cli = google_proactive_refresh.find_cli_3113(Path.home() / ".cache" / "opencode" / "npm")
+            root = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else CURRENT_DIR.parent
+            runner = root / "plugin" / "dist" / "google-cli-3113.mjs"
+            if cli is None or not runner.is_file():
+                return None
+            command = [str(runner), str(cli), *args[1:]]
+        elif profile == "3.0.0":
+            cli = antigravity_manager.get_cli_js()
+            if not os.path.isfile(cli):
+                return None
+            command = [cli, *args]
+        else:
+            return None
+        # The manager can return bare "node"; subprocess resolves it on PATH.
+        node_exe = antigravity_manager.get_node_executable()
+        if self._closing.is_set():
+            return None
+        return antigravity_manager.run_google_route_cmd([node_exe, *command], timeout=timeout)
 
     def load_config(self) -> dict:
         with self._config_lock:
@@ -1688,8 +1749,8 @@ class HubApi:
 
             # A freshly logged-in row exists in config.json, but its state.json
             # metadata (email/refresh) is written lazily. export_google_accounts()
-            # skips rows without both, so without this synchronous refresh the
-            # new account stays invisible until the Hub's startup refresher runs.
+            # skips rows without both, so keep this explicit post-login quota
+            # check separate from the periodic credential-only refresh.
             notes = []
             try:
                 quota = antigravity_manager.run_google_route_cmd(
@@ -2016,17 +2077,27 @@ class HubApi:
             status = cloudcode_route_patch.get_prompt_sanitizer_status(full=True)
             state = cloudcode_route_patch.check_patch_state()
             patch_state = cloudcode_route_patch.load_patch_state()
+            health = cloudcode_route_patch.verify_plugin_health()
             status["installed_version"] = ", ".join(sorted({
                 copy.get("version") or "unknown" for copy in state.get("copies", [])
             })) or None
             status["expected_version"] = patch_state.get("verified_version")
             status["state_detail"] = state.get("state")
-            status["degraded"] = bool(patch_state.get("degraded"))
-            status["reason"] = patch_state.get("degraded_reason") or ""
-            if state.get("state") in ("version_changed", "structure_changed"):
+            # A stale state file (e.g. written by a test with a temp cache)
+            # must not override a fresh, healthy check of the live bundles.
+            live_ok = status["state"] == "patched" and health["ok"]
+            if live_ok:
+                status["degraded"] = False
+                status["reason"] = ""
+            else:
                 status["degraded"] = True
-                status["reason"] = (status["reason"] or
-                                    f"Обнаружена новая версия или структура плагина: {state['state']}.")
+                status["reason"] = ""
+                if state.get("state") in ("version_changed", "structure_changed"):
+                    status["reason"] = (
+                        f"Обнаружена новая версия или структура плагина: {state['state']}.")
+                if health.get("reasons"):
+                    status["reason"] = (status["reason"] + " " + "; ".join(health["reasons"])[:300]).strip()
+                status["reason"] = status["reason"] or patch_state.get("degraded_reason") or ""
             if status["degraded"] and status["state"] == "patched":
                 status["state"] = "unsupported"
             return status
@@ -2789,7 +2860,7 @@ def run_webview_app():
 
     threading.Thread(target=apply_native_window_styling, daemon=True).start()
 
-    # Run background token refresh thread
+    # Start network services and periodic quota checks.
     def bg_refresher():
         try:
             import cloudcode_route_patch
@@ -2811,6 +2882,11 @@ def run_webview_app():
                 claude_manager.bridge_service.ensure_running()
         except Exception as exc:
             hub_logging.failed("Network startup", exc)
+        # Standalone Google quota CLI returned an unused snapshot and did not
+        # update the store. Use a credential-only worker for periodic OAuth.
+        if not api._closing.is_set() and not api._uninstalled:
+            threading.Thread(target=api._google_refresh.run, daemon=True,
+                             name="hub-google-oauth").start()
         while not api._uninstalled and not api._closing.is_set():
             api.refresh_openai_quotas()
             try:
@@ -2837,16 +2913,6 @@ def run_webview_app():
                         "; ".join(healed.get("reasons", []))[:200])
             except Exception as exc:
                 hub_logging.failed("Plugin drift check", exc)
-            try:
-                node_exe = antigravity_manager.get_node_executable()
-                cli_js = antigravity_manager.get_cli_js()
-                if os.path.exists(node_exe) and os.path.exists(cli_js):
-                    antigravity_manager.run_silent_cmd(
-                        [node_exe, cli_js, "quota", "--refresh", "--json"],
-                        timeout=25, env=antigravity_manager.provider_route_environment()
-                    )
-            except Exception:
-                pass
 
     threading.Thread(target=bg_refresher, daemon=True).start()
 

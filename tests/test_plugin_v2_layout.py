@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 import cloudcode_route_patch as patcher
 import hub_paths
 import opencode_config
+from test_quota_breaker_patch import EXECUTOR_FIXTURE_V2
 
 
 V2_PROXY = '''function getHttpsProxy(url) {
@@ -79,7 +80,8 @@ V2_SOURCE = (V2_PROXY + "\n" + V2_GEMINI + "\n" + patcher.PROMPT_FIX_BLOCK
              + "function sanitizeRequestPayloadForAntigravity(payload) {\n"
              + patcher.PROMPT_FIX_CALL_ANCHOR + "\n        " + patcher.PROMPT_FIX_CALL + "\n"
              + "  return payload;\n}\n"
-             + "const shouldRetryEndpoint = response.status === 404 || response.status >= 500;\n")
+             + "const shouldRetryEndpoint = response.status === 404 || response.status >= 500;\n"
+             + EXECUTOR_FIXTURE_V2)
 
 
 def write_bundle(root: Path, name: str, source: str) -> Path:
@@ -103,6 +105,7 @@ class PluginV2LayoutTests(unittest.TestCase):
 
             self.assertEqual(result["state"], "healed", result)
             self.assertTrue(result["ok"])
+            self.assertEqual(result["quota_breaker"]["state"], "active")
             health = patcher.verify_plugin_health(root)
             self.assertTrue(health["ok"], health)
             self.assertEqual(patcher.get_prompt_sanitizer_status(root, full=True)["state"], "patched")
@@ -111,8 +114,20 @@ class PluginV2LayoutTests(unittest.TestCase):
                 self.assertIn(patcher.FORCED_GOOGLE_ROUTE_V2, text)
                 self.assertIn(patcher.RETRY_404_V2_FIXED, text)
                 self.assertIn(patcher.GEMINI4_FIX_MARKER_V2, text)
+                self.assertIn(patcher.QUOTA_BREAKER_MARKER, text)
                 self.assertIn('getDynamicWireModel("antigravity-gemini-4-neon")', text)
             self.assertEqual(patcher.self_heal_plugin(root)["state"], "already_healthy")
+            # Simulate a replacement bundle with a changed application executor.
+            server.write_text(V2_SOURCE.replace("retainMainTransportFailure\n", "otherFailureHandler\n"),
+                              encoding="utf-8")
+            drift = patcher.self_heal_plugin(root)
+            self.assertTrue(drift["ok"], drift)
+            self.assertEqual(drift["quota_breaker"]["state"], "unsupported")
+            self.assertEqual(drift["quota_breaker"]["unsupported"], [str(server)])
+            text = server.read_text(encoding="utf-8")
+            self.assertNotIn(patcher.QUOTA_BREAKER_MARKER, text)
+            self.assertIn(patcher.FORCED_GOOGLE_ROUTE_V2, text)
+            self.assertIn(patcher.GEMINI4_FIX_MARKER_V2, text)
 
     def test_unknown_layout_reports_unsupported_instead_of_silent_pending(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -122,6 +137,21 @@ class PluginV2LayoutTests(unittest.TestCase):
             self.assertEqual(result["state"], "unsupported")
             self.assertFalse(result["ok"])
             self.assertIn("server.js", " ".join(result["reasons"]))
+
+
+    def test_self_heal_with_temp_cache_does_not_touch_hub_state(self):
+        real_state = patcher._patch_state_path()
+        before = real_state.read_bytes() if real_state.exists() else None
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_bundle(root, "server.js", "function unknown() { return 1; }\n")
+            result = patcher.self_heal_plugin(root)
+            self.assertEqual(result["state"], "unsupported")
+            local_state = root / ".hub-plugin-patch-state.json"
+            self.assertTrue(local_state.exists())
+            self.assertTrue(json.loads(local_state.read_text(encoding="utf-8"))["degraded"])
+        after = real_state.read_bytes() if real_state.exists() else None
+        self.assertEqual(after, before)
 
 
 class UpdateGuardTests(unittest.TestCase):
