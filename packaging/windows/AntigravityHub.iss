@@ -146,13 +146,13 @@ begin
 end;
 
 function IsAbsoluteDrivePath(P: String): Boolean;
-var Drive: Char;
+var Drive: String;
 begin
   Result := False;
   if Length(P) < 3 then
     Exit;
-  Drive := UpCase(P[1]);
-  Result := (Drive >= 'A') and (Drive <= 'Z') and (Copy(P, 2, 2) = ':\');
+  Drive := Uppercase(Copy(P, 1, 1));
+  Result := (Pos(Drive, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') > 0) and (Copy(P, 2, 2) = ':\');
 end;
 
 function OpenCodeConfigDir(Param: String): String;
