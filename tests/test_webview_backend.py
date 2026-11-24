@@ -16,6 +16,7 @@ class WebviewBackendTests(unittest.TestCase):
         manager.enrich_google_accounts_with_generation_store = Mock(return_value=[])
         manager.get_active_google_account_index = Mock(return_value=0)
         manager.get_active_google_health_account = Mock(return_value=None)
+        manager.has_relocated_google_store = Mock(return_value=False)
         manager.terminate_opencode_desktop = Mock(return_value={
             "ok": True, "closed": 0, "failed": 0, "message": ""})
         self.manager = manager
@@ -185,7 +186,8 @@ class WebviewBackendTests(unittest.TestCase):
         self.manager.repair_legacy_google_account_file = Mock(return_value=None)
         self.manager.run_silent_cmd = Mock(return_value=SimpleNamespace(returncode=0, stdout="", stderr=""))
         self.manager.run_google_route_cmd = Mock(return_value=SimpleNamespace(returncode=0, stdout="", stderr=""))
-        with patch.object(self.backend.os.path, "exists", return_value=True):
+        with patch.object(self.backend.google_proactive_refresh, "find_cli_3113", return_value=None), \
+             patch.object(self.backend.os.path, "exists", return_value=True):
             result = self.backend.HubApi().add_google_account()
         self.assertEqual(result['status'], 'ok')
         self.assertIn('квоты обновлены', result['message'])
@@ -209,7 +211,8 @@ class WebviewBackendTests(unittest.TestCase):
             SimpleNamespace(returncode=0, stdout="", stderr=""),
             SimpleNamespace(returncode=1, stdout="", stderr="quota failed"),
         ])
-        with patch.object(self.backend.os.path, "exists", return_value=True):
+        with patch.object(self.backend.google_proactive_refresh, "find_cli_3113", return_value=None), \
+             patch.object(self.backend.os.path, "exists", return_value=True):
             result = self.backend.HubApi().add_google_account()
         self.assertEqual(result['status'], 'ok')
         self.assertIn('квоты обновить не удалось', result['message'])
@@ -223,7 +226,8 @@ class WebviewBackendTests(unittest.TestCase):
         self.manager.run_silent_cmd = Mock()
         self.manager.run_google_route_cmd = Mock(
             return_value=SimpleNamespace(returncode=1, stdout="", stderr="login failed"))
-        with patch.object(self.backend.os.path, "exists", return_value=True):
+        with patch.object(self.backend.google_proactive_refresh, "find_cli_3113", return_value=None), \
+             patch.object(self.backend.os.path, "exists", return_value=True):
             result = self.backend.HubApi().add_google_account()
         self.assertEqual(result, {'status':'error', 'message':'Не удалось завершить вход в Google.'})
         self.manager.run_silent_cmd.assert_not_called()
@@ -245,7 +249,8 @@ class WebviewBackendTests(unittest.TestCase):
                 pass
 
         api = self.backend.HubApi()
-        with patch.object(self.backend.threading, "Thread", RecordingThread), \
+        with patch.object(self.backend.google_proactive_refresh, "find_cli_3113", return_value=None), \
+             patch.object(self.backend.threading, "Thread", RecordingThread), \
              patch.object(self.backend.os.path, "exists", return_value=True):
             result = api.add_google_account()
         self.assertEqual(result["status"], "ok")
@@ -255,6 +260,95 @@ class WebviewBackendTests(unittest.TestCase):
         self.assertEqual(connect_threads[0].target.__func__,
                          api.ensure_google_connection.__func__)
         self.assertIs(connect_threads[0].target.__self__, api)
+
+    def test_google_login_uses_3113_runner_when_cached_and_skips_300_migrate(self):
+        self.manager.get_node_executable = Mock(return_value="node")
+        self.manager.get_cli_js = Mock(return_value="cli.js")
+        self.manager.get_opencode_cli = Mock(return_value="cli.exe")
+        self.manager.has_relocated_google_store = Mock(return_value=True)
+        self.manager.run_silent_cmd = Mock(return_value=SimpleNamespace(returncode=0, stdout="", stderr=""))
+        self.manager.run_google_route_cmd = Mock(return_value=SimpleNamespace(returncode=0, stdout="", stderr=""))
+        cached_3113 = Path("/cache/opencode/3.1.13/dist/cli.js")
+        with patch.object(self.backend.google_proactive_refresh, "find_cli_3113", return_value=cached_3113), \
+             patch.object(self.backend.os.path, "exists", return_value=True):
+            result = self.backend.HubApi().add_google_account()
+        self.assertEqual(result["status"], "ok")
+        cmds = [c.args[0] for c in self.manager.run_google_route_cmd.call_args_list]
+        self.assertEqual(len(cmds), 2)
+        self.assertTrue(cmds[0][1].endswith("google-login-3113.mjs"))
+        self.assertEqual(cmds[0][2:], [str(cached_3113), "--login"])
+        self.assertTrue(cmds[1][1].endswith("google-login-3113.mjs"))
+        self.assertEqual(cmds[1][2:], [str(cached_3113), "--quota"])
+        self.assertEqual([c.args[0] for c in self.manager.run_silent_cmd.call_args_list],
+                         [["cli.exe", "service", "restart"]])
+
+    def test_google_login_refuses_300_fallback_when_store_is_relocated_without_3113_cache(self):
+        self.manager.get_node_executable = Mock(return_value="node")
+        self.manager.get_cli_js = Mock(return_value="cli.js")
+        self.manager.has_relocated_google_store = Mock(return_value=True)
+        self.manager.run_google_route_cmd = Mock()
+        self.manager.run_silent_cmd = Mock()
+        with patch.object(self.backend.google_proactive_refresh, "find_cli_3113", return_value=None):
+            result = self.backend.HubApi().add_google_account()
+        self.assertEqual(result["status"], "error")
+        self.assertIn("3.1", result["message"])
+        self.manager.run_google_route_cmd.assert_not_called()
+        self.manager.run_silent_cmd.assert_not_called()
+
+    def test_test_google_account_uses_3113_runner_and_refreshes_quota_cache(self):
+        self.manager.get_node_executable = Mock(return_value="node")
+        self.manager.get_cli_js = Mock(return_value="cli.js")
+        self.manager.has_relocated_google_store = Mock(return_value=True)
+        self.manager.export_google_accounts = Mock(return_value=[
+            {"id": "acc-1", "email": "user@example.com", "enabled": True, "refreshToken": "rt-1"}
+        ])
+        quota_payload = json.dumps({
+            "accounts": [{
+                "email": "user@example.com",
+                "status": "ok",
+                "groups": [{"name": "gemini", "remainingPercent": 77.5, "windows": [{"window": "5h", "remainingPercent": 77.5}]}],
+            }]
+        })
+        health_payload = json.dumps({
+            "email": "user@example.com",
+            "accessToken": "ya29.fresh",
+            "expires": 9999999999999,
+            "projectId": "proj-1",
+        })
+        self.manager.run_google_route_cmd = Mock(side_effect=[
+            SimpleNamespace(returncode=0, stdout=health_payload, stderr=""),
+            SimpleNamespace(returncode=0, stdout=quota_payload, stderr=""),
+        ])
+        cached_3113 = Path("/cache/opencode/3.1.13/dist/cli.js")
+        api = self.backend.HubApi()
+        import health_checker
+        with patch.object(self.backend.google_proactive_refresh, "find_cli_3113", return_value=cached_3113), \
+             patch.object(self.backend.os.path, "exists", return_value=True), \
+             patch.object(health_checker, "test_google_account_health", return_value={"ok": True, "latency_ms": 42}):
+            msg = api.test_google_account("user@example.com")
+        self.assertIn("Аккаунт успешно проверен", msg)
+        self.assertIn("42 мс", msg)
+        cmds = [c.args[0] for c in self.manager.run_google_route_cmd.call_args_list]
+        self.assertEqual(len(cmds), 2)
+        self.assertTrue(cmds[0][1].endswith("google-login-3113.mjs"))
+        self.assertEqual(cmds[0][2:], [str(cached_3113), "health-token", "--email", "user@example.com"])
+        self.assertEqual(cmds[1][2:], [str(cached_3113), "--quota"])
+        accounts = [{"email": "user@example.com", "groups": [{"name": "gemini", "remainingPercent": 10.0, "windows": [{"window": "5h", "remainingPercent": 10.0}]}]}]
+        api._merge_google_quota_cache(accounts)
+        self.assertEqual(accounts[0]["groups"][0]["remainingPercent"], 77.5)
+
+    def test_test_google_account_reports_missing_3113_cache_on_relocated_store(self):
+        self.manager.get_node_executable = Mock(return_value="node")
+        self.manager.get_cli_js = Mock(return_value="cli.js")
+        self.manager.has_relocated_google_store = Mock(return_value=True)
+        self.manager.export_google_accounts = Mock(return_value=[
+            {"id": "acc-1", "email": "user@example.com", "enabled": True, "refreshToken": "rt-1"}
+        ])
+        self.manager.run_google_route_cmd = Mock()
+        with patch.object(self.backend.google_proactive_refresh, "find_cli_3113", return_value=None):
+            msg = self.backend.HubApi().test_google_account("user@example.com")
+        self.assertIn("3.1.13", msg)
+        self.manager.run_google_route_cmd.assert_not_called()
 
     def test_google_connection_respects_lock_and_closing_state(self):
         api = self.backend.HubApi()

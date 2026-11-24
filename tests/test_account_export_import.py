@@ -294,6 +294,57 @@ class AccountExportImportTests(unittest.TestCase):
             self.assertEqual(antigravity_manager.get_active_google_account_index(), 0)
             self.assertFalse(antigravity_manager.delete_google_account("missing@example.com"))
 
+    def test_get_active_generation_dir_follows_relocated_sub_pointer_and_handles_corrupt_pointer(self):
+        relocated_parent = self.config_dir / "state" / "cortexkit" / "antigravity-auth" / "opencode"
+        relocated_parent.mkdir(parents=True)
+        initial_gen = relocated_parent / "antigravity-accounts.json.store.11111111-2222-3333-4444-555555555555.generation"
+        rotated_gen = relocated_parent / "antigravity-accounts.json.store.99999999-8888-7777-6666-555555555555.generation"
+        initial_gen.mkdir()
+        rotated_gen.mkdir()
+        legacy_target = relocated_parent / "antigravity-accounts.json"
+        (relocated_parent / "antigravity-accounts.json.store.pointer.json").write_text(
+            json.dumps({"schemaVersion": 1, "id": "99999999-8888-7777-6666-555555555555", "directoryBasename": rotated_gen.name}),
+            encoding="utf-8-sig",
+        )
+        pointer = self.config_dir / "antigravity-accounts.json.store.pointer.json"
+        pointer.write_text(json.dumps({
+            "schemaVersion": 2,
+            "relocatedTo": {
+                "id": "11111111-2222-3333-4444-555555555555",
+                "legacyPath": str(legacy_target),
+            },
+        }), encoding="utf-8-sig")
+
+        self.assertEqual(antigravity_manager.get_active_generation_dir(self.config_dir), rotated_gen.resolve())
+        self.assertTrue(antigravity_manager.has_relocated_google_store(self.config_dir))
+
+        pointer.write_text("{broken", encoding="utf-8")
+        self.assertIsNone(antigravity_manager.get_active_generation_dir(self.config_dir))
+        self.assertFalse(antigravity_manager.has_relocated_google_store(self.config_dir))
+
+    def test_export_google_accounts_keeps_account_with_refresh_token_when_email_missing_and_reads_utf8_bom(self):
+        gen_dir = self.config_dir / "antigravity-accounts.json.store.aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.generation"
+        gen_dir.mkdir(parents=True)
+        (self.config_dir / "antigravity-accounts.json.store.pointer.json").write_text(
+            json.dumps({"schemaVersion": 1, "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "directoryBasename": gen_dir.name}),
+            encoding="utf-8-sig",
+        )
+        (gen_dir / "config.json").write_text(json.dumps({"accounts": [{"id": "acc-no-email"}]}), encoding="utf-8-sig")
+        (gen_dir / "state.json").write_text(json.dumps({
+            "accounts": {
+                "acc-no-email": {
+                    "refresh": "1//refresh-only",
+                    "commonAuthProviderState": {"metadata": {"email": None}},
+                }
+            }
+        }), encoding="utf-8-sig")
+
+        exported = antigravity_manager.export_google_accounts()
+        self.assertEqual(len(exported), 1)
+        self.assertEqual(exported[0]["id"], "acc-no-email")
+        self.assertEqual(exported[0]["email"], "Account 1")
+        self.assertEqual(exported[0]["refreshToken"], "1//refresh-only")
+
 
 if __name__ == "__main__":
     unittest.main()

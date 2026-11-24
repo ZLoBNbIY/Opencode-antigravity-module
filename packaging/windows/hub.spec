@@ -21,7 +21,7 @@ datas = [
 ] + [
     (str(repo / "plugin" / "dist" / name), "plugin/dist")
     for name in ("cli.js", "server.js", "index.js", "google-due-store.mjs",
-                 "google-cli-3113.mjs", "google-cli-3113-loader.mjs")
+                 "google-cli-3113.mjs", "google-cli-3113-loader.mjs", "google-login-3113.mjs")
 ] + [
     (str(browser_root / folder_name), f"browsers/{folder_name}")
     for entry in browsers if entry["name"] in required

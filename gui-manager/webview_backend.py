@@ -568,6 +568,7 @@ class HubApi:
         self._quota_refreshing = False
         self._quota_error = None
         self._quota_notice = None
+        self._google_quota_cache = {}
         self._diagnostics = {}
         self._diagnostic_signatures = {}
         self._diagnostic_checked = {}
@@ -649,6 +650,73 @@ class HubApi:
         if self._closing.is_set():
             return None
         return antigravity_manager.run_google_route_cmd([node_exe, *command], timeout=timeout)
+
+    def _google_runner(self):
+        node_exe = antigravity_manager.get_node_executable()
+        profile = self._google_refresh_profile()
+        has_relocated = bool(getattr(antigravity_manager, "has_relocated_google_store", lambda: False)())
+        if profile == "3.1.13" or has_relocated:
+            cli_3113 = google_proactive_refresh.find_cli_3113(Path.home() / ".cache" / "opencode" / "npm")
+            root = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else CURRENT_DIR.parent
+            login_runner_3113 = root / "plugin" / "dist" / "google-login-3113.mjs"
+            if cli_3113 is not None and login_runner_3113.is_file():
+                return ("3.1.13", node_exe, login_runner_3113, cli_3113)
+            if has_relocated:
+                return ("missing_3113", node_exe, None, None)
+        return ("3.0.0", node_exe, None, antigravity_manager.get_cli_js())
+
+    def _store_google_quota_snapshot(self, raw_stdout: str):
+        if not raw_stdout:
+            return
+        try:
+            payload = json.loads(raw_stdout)
+        except Exception:
+            return
+        rows = payload.get("accounts") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            return
+        parsed = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            email = str(row.get("email") or "").strip().lower()
+            groups = row.get("groups")
+            if email and isinstance(groups, list) and groups:
+                parsed[email] = groups
+        if not parsed:
+            return
+        with self._quota_lock:
+            self._google_quota_cache = parsed
+
+    def _merge_google_quota_cache(self, accounts: list[dict]):
+        with self._quota_lock:
+            cache = dict(getattr(self, "_google_quota_cache", {}) or {})
+        if not cache:
+            return
+        for account in accounts:
+            email = str(account.get("email") or "").strip().lower()
+            cached_groups = cache.get(email)
+            if cached_groups:
+                account["groups"] = cached_groups
+
+    def _refresh_google_quotas_sync(self, timeout=45) -> bool:
+        kind, node_exe, runner, cli = self._google_runner()
+        if kind == "3.1.13":
+            res = antigravity_manager.run_google_route_cmd(
+                [node_exe, str(runner), str(cli), "--quota"],
+                timeout=timeout,
+            )
+        elif kind == "3.0.0" and cli and os.path.exists(cli):
+            res = antigravity_manager.run_google_route_cmd(
+                [node_exe, cli, "quota", "--refresh", "--json"],
+                timeout=timeout,
+            )
+        else:
+            return False
+        if res and res.returncode == 0:
+            self._store_google_quota_snapshot(res.stdout)
+            return True
+        return False
 
     def _schedule_google_connection(self):
         """Start the isolated daemon worker; never block the calling thread."""
@@ -747,6 +815,7 @@ class HubApi:
         """Returns the full reactive state for the glass frontend."""
         raw_accounts = antigravity_manager.export_google_accounts()
         accounts = antigravity_manager.enrich_google_accounts_with_generation_store(raw_accounts)
+        self._merge_google_quota_cache(accounts)
         disk_accounts = antigravity_manager.enrich_google_accounts_with_generation_store([])
         # Exported credential rows can omit index and incomplete generation rows.
         # Preserve the store's original index rather than numbering filtered rows.
@@ -1486,13 +1555,7 @@ class HubApi:
             pass
         def bg_google():
             try:
-                node_exe = antigravity_manager.get_node_executable()
-                cli_js = antigravity_manager.get_cli_js()
-                if os.path.exists(node_exe) and os.path.exists(cli_js):
-                    antigravity_manager.run_silent_cmd(
-                        [node_exe, cli_js, "quota", "--refresh", "--json"],
-                        timeout=30, env=antigravity_manager.provider_route_environment()
-                    )
+                self._refresh_google_quotas_sync(timeout=45)
             except Exception:
                 pass
         threading.Thread(target=bg_google, daemon=True, name="hub-all-quotas-google").start()
@@ -1763,39 +1826,84 @@ class HubApi:
         failure_message = "Не удалось завершить вход в Google."
         try:
             node_exe = antigravity_manager.get_node_executable()
-            cli_js = antigravity_manager.get_cli_js()
-            if not os.path.exists(cli_js):
-                failure_message = "Файл CLI не найден."
-                raise RuntimeError("Файл CLI не найден")
-            repair_error = antigravity_manager.repair_legacy_google_account_file()
-            if repair_error:
-                failure_message = "Не удалось прочитать хранилище Google."
-                raise RuntimeError("Google account store")
-            result = antigravity_manager.run_google_route_cmd([node_exe, cli_js, "login"], timeout=300)
-            if result.returncode:
-                raise RuntimeError("Google login CLI")
-            repair_error = antigravity_manager.repair_legacy_google_account_file()
-            if repair_error:
-                failure_message = "Не удалось прочитать хранилище Google."
-                raise RuntimeError("Google account store")
-            result = antigravity_manager.run_silent_cmd(
-                [node_exe, cli_js, "migrate", "--offline", "--yes"], timeout=30)
-            if result.returncode:
-                failure_message = "Миграция аккаунта Google не завершилась."
-                raise RuntimeError("Google migration CLI")
-
-            # A freshly logged-in row exists in config.json, but its state.json
-            # metadata (email/refresh) is written lazily. export_google_accounts()
-            # skips rows without both, so keep this explicit post-login quota
-            # check separate from the periodic credential-only refresh.
+            profile = self._google_refresh_profile()
+            has_relocated = bool(getattr(antigravity_manager, "has_relocated_google_store", lambda: False)())
+            cli_3113 = (
+                google_proactive_refresh.find_cli_3113(Path.home() / ".cache" / "opencode" / "npm")
+                if profile == "3.1.13" or has_relocated
+                else None
+            )
+            root = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else CURRENT_DIR.parent
+            login_runner_3113 = root / "plugin" / "dist" / "google-login-3113.mjs"
             notes = []
-            try:
-                quota = antigravity_manager.run_google_route_cmd(
-                    [node_exe, cli_js, "quota", "--refresh", "--json"], timeout=60)
-                if quota.returncode != 0:
+
+            if cli_3113 is not None and login_runner_3113.is_file():
+                result = antigravity_manager.run_google_route_cmd(
+                    [node_exe, str(login_runner_3113), str(cli_3113), "--login"],
+                    timeout=300,
+                )
+                if result.returncode:
+                    detail = (result.stderr or result.stdout or "").strip()
+                    lower_detail = detail.lower()
+                    if "already in use" in lower_detail or "eaddrinuse" in lower_detail:
+                        failure_message = "Порт 51121 занят другим процессом входа — закройте зависший node.exe или повторите через минуту."
+                    elif "timed out" in lower_detail:
+                        failure_message = "Время ожидания входа в Google истекло — попробуйте снова."
+                    raise RuntimeError(f"Google 3.1.13 login CLI: {detail}" if detail else "Google 3.1.13 login CLI")
+                try:
+                    quota = antigravity_manager.run_google_route_cmd(
+                        [node_exe, str(login_runner_3113), str(cli_3113), "--quota"],
+                        timeout=60,
+                    )
+                    if quota.returncode != 0:
+                        notes.append("квоты обновить не удалось")
+                    else:
+                        self._store_google_quota_snapshot(quota.stdout)
+                except Exception:
                     notes.append("квоты обновить не удалось")
-            except Exception:
-                notes.append("квоты обновить не удалось")
+            elif has_relocated:
+                failure_message = (
+                    "Хранилище Google использует формат плагина 3.1.x, но кэш 3.1.13 не найден — "
+                    "запустите OpenCode один раз и повторите вход."
+                )
+                raise RuntimeError("Google 3.1.13 plugin cache missing for relocated store")
+            else:
+                cli_js = antigravity_manager.get_cli_js()
+                if not os.path.exists(cli_js):
+                    failure_message = "Файл CLI не найден."
+                    raise RuntimeError("Файл CLI не найден")
+                repair_error = antigravity_manager.repair_legacy_google_account_file()
+                if repair_error:
+                    failure_message = "Не удалось прочитать хранилище Google."
+                    raise RuntimeError("Google account store")
+                result = antigravity_manager.run_google_route_cmd([node_exe, cli_js, "login"], timeout=300)
+                if result.returncode:
+                    detail = (result.stderr or result.stdout or "").strip()
+                    raise RuntimeError(f"Google login CLI: {detail}" if detail else "Google login CLI")
+                repair_error = antigravity_manager.repair_legacy_google_account_file()
+                if repair_error:
+                    failure_message = "Не удалось прочитать хранилище Google."
+                    raise RuntimeError("Google account store")
+                result = antigravity_manager.run_silent_cmd(
+                    [node_exe, cli_js, "migrate", "--offline", "--yes"], timeout=30)
+                if result.returncode:
+                    failure_message = "Миграция аккаунта Google не завершилась."
+                    detail = (result.stderr or result.stdout or "").strip()
+                    raise RuntimeError(f"Google migration CLI: {detail}" if detail else "Google migration CLI")
+
+                # A freshly logged-in row exists in config.json, but its state.json
+                # metadata (email/refresh) is written lazily. export_google_accounts()
+                # skips rows without both, so keep this explicit post-login quota
+                # check separate from the periodic credential-only refresh.
+                try:
+                    quota = antigravity_manager.run_google_route_cmd(
+                        [node_exe, cli_js, "quota", "--refresh", "--json"], timeout=60)
+                    if quota.returncode != 0:
+                        notes.append("квоты обновить не удалось")
+                    else:
+                        self._store_google_quota_snapshot(quota.stdout)
+                except Exception:
+                    notes.append("квоты обновить не удалось")
 
             # The plugin opens the account store once per process. Restart the
             # v2 background service so it reopens the store and picks up the new
@@ -1843,14 +1951,43 @@ class HubApi:
                     if a.get("id") == aid_or_email or a.get("email") == aid_or_email), None)
         if not acc:
             return "Аккаунт не найден"
+        if acc.get("enabled") is False:
+            return "Аккаунт отключён — включите его для проверки."
         try:
             import google_health_auth
-            node_exe = antigravity_manager.get_node_executable()
-            cli_js = antigravity_manager.get_cli_js()
+            import health_checker
+            kind, node_exe, runner, cli = self._google_runner()
+            if kind == "missing_3113":
+                return (
+                    "Хранилище Google использует формат плагина 3.1.x, но кэш 3.1.13 не найден — "
+                    "запустите OpenCode один раз."
+                )
+            if kind == "3.1.13":
+                run_cmd = lambda cmd, timeout=30: antigravity_manager.run_google_route_cmd(
+                    [cmd[0], str(runner), str(cli), *cmd[2:]], timeout=timeout
+                )
+                cli_arg = str(cli)
+            else:
+                run_cmd = antigravity_manager.run_google_route_cmd
+                cli_arg = cli
             refreshed = google_health_auth.refresh_google_health_account(
-                acc, antigravity_manager.run_google_route_cmd, node_exe, cli_js
+                acc, run_cmd, node_exe, cli_arg
             )
-            return "Аккаунт успешно проверен, токены активны"
+            health_res = health_checker.test_google_account_health(
+                refreshed,
+                refresh_account=lambda current: google_health_auth.refresh_google_health_account(
+                    current, run_cmd, node_exe, cli_arg
+                ),
+            )
+            if health_res.get("ok"):
+                try:
+                    self._refresh_google_quotas_sync(timeout=30)
+                except Exception:
+                    pass
+                latency = health_res.get("latency_ms")
+                suffix = f" ({latency} мс)" if isinstance(latency, (int, float)) else ""
+                return f"Аккаунт успешно проверен, токены активны{suffix}"
+            return f"Результат проверки: {health_res.get('message') or 'ошибка подключения'}"
         except Exception as e:
             return f"Результат проверки: {e}"
 

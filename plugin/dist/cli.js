@@ -18948,6 +18948,15 @@ async function exchangeAntigravity(code2, state) {
       }
     });
     const userInfo2 = userInfoResponse.ok ? await userInfoResponse.json() : {};
+    let idTokenClaims = {};
+    if ((!userInfo2.email || !userInfo2.name) && typeof tokenPayload.id_token === "string") {
+      try {
+        const parts = tokenPayload.id_token.split(".");
+        if (parts.length >= 2) {
+          idTokenClaims = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) || {};
+        }
+      } catch {}
+    }
     const refreshToken = tokenPayload.refresh_token;
     if (!refreshToken) {
       return { type: "failed", error: "Missing refresh token in response" };
@@ -18957,13 +18966,15 @@ async function exchangeAntigravity(code2, state) {
       effectiveProjectId = await fetchProjectID(tokenPayload.access_token);
     }
     const storedRefresh = `${refreshToken}|${effectiveProjectId || ""}`;
+    const resolvedEmail = userInfo2.email || idTokenClaims.email || void 0;
+    const resolvedLabel = userInfo2.name?.trim() || idTokenClaims.name?.trim() || void 0;
     return {
       type: "success",
       refresh: storedRefresh,
       access: tokenPayload.access_token,
       expires: calculateTokenExpiry(startTime, tokenPayload.expires_in),
-      email: userInfo2.email,
-      label: userInfo2.name?.trim() || void 0,
+      email: resolvedEmail,
+      label: resolvedLabel,
       projectId: effectiveProjectId || ""
     };
   } catch (error) {
@@ -22150,7 +22161,7 @@ function createDefaultCliDependencies() {
             const parts = parseRefreshParts(result.refresh);
             const now = Date.now();
             const existingRow = read.status === "ready" ? read.rows.find(
-              (r) => r.metadata?.status === "present" && r.metadata.metadata?.email === result.email
+              (r) => r.metadata?.status === "present" && typeof result.email === "string" && result.email.length > 0 && r.metadata.metadata?.email === result.email
             ) : void 0;
             if (existingRow) {
               await repository.replaceCredential(existingRow.ref, {

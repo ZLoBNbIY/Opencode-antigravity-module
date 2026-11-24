@@ -332,9 +332,9 @@ def get_active_google_account_index() -> int:
         cfg_file = gen_dirs[0] / "config.json"
         if cfg_file.exists():
             try:
-                cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+                cfg = json.loads(cfg_file.read_text(encoding="utf-8-sig")) or {}
                 routing = cfg.get("antigravityRouting") or {}
-                accounts = cfg.get("accounts", [])
+                accounts = cfg.get("accounts") or []
                 # Check active row for gemini first, then general activeRow
                 active_row_by_family = routing.get("activeRowByFamily") or {}
                 gemini_row = active_row_by_family.get("gemini") if isinstance(active_row_by_family, dict) else None
@@ -358,7 +358,7 @@ def get_active_google_account_index() -> int:
     legacy_file = config_dir / "antigravity-accounts.json"
     if legacy_file.exists():
         try:
-            data = json.loads(legacy_file.read_text(encoding="utf-8"))
+            data = json.loads(legacy_file.read_text(encoding="utf-8-sig")) or {}
             return int(data.get("activeIndex", 0))
         except Exception:
             pass
@@ -568,15 +568,18 @@ def export_google_accounts() -> list[dict]:
         state_file = gen_dir / "state.json"
         if cfg_file.exists() and state_file.exists():
             try:
-                cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
-                state = json.loads(state_file.read_text(encoding="utf-8"))
-                for acc in cfg.get("accounts", []):
+                cfg = json.loads(cfg_file.read_text(encoding="utf-8-sig")) or {}
+                state = json.loads(state_file.read_text(encoding="utf-8-sig")) or {}
+                state_accounts = state.get("accounts") or {}
+                for idx, acc in enumerate(cfg.get("accounts") or [], start=1):
+                    if not isinstance(acc, dict):
+                        continue
                     aid = acc.get("id")
-                    st = state.get("accounts", {}).get(aid, {})
-                    meta = st.get("commonAuthProviderState", {}).get("metadata", {})
-                    email = meta.get("email")
+                    st = state_accounts.get(aid) or {}
+                    meta = (st.get("commonAuthProviderState") or {}).get("metadata") or {}
+                    email = meta.get("email") or f"Account {idx}"
                     refresh = st.get("refresh")
-                    if email and refresh:
+                    if refresh:
                         accounts.append({
                             "id": aid,
                             "email": email,
@@ -595,8 +598,8 @@ def export_google_accounts() -> list[dict]:
     legacy_file = config_dir / "antigravity-accounts.json"
     if not accounts and legacy_file.exists():
         try:
-            data = json.loads(legacy_file.read_text(encoding="utf-8"))
-            accounts = data.get("accounts", [])
+            data = json.loads(legacy_file.read_text(encoding="utf-8-sig")) or {}
+            accounts = data.get("accounts") or []
         except Exception:
             pass
 
@@ -608,8 +611,11 @@ def get_active_google_health_account():
     index = get_active_google_account_index()
     generations = ordered_generation_dirs(get_opencode_config_dir())
     if generations and (generations[0] / "config.json").exists():
-        config = json.loads((generations[0] / "config.json").read_text(encoding="utf-8"))
-        rows = config.get("accounts", [])
+        try:
+            config = json.loads((generations[0] / "config.json").read_text(encoding="utf-8-sig")) or {}
+            rows = config.get("accounts") or []
+        except Exception:
+            return None
         if 0 <= index < len(rows):
             active_id = rows[index].get("id")
             return next((account for account in accounts if account.get("id") == active_id), None)
@@ -628,13 +634,14 @@ def delete_google_account(target_email_or_id: str) -> bool:
         state_file = gen_dir / "state.json"
         if cfg_file.exists() and state_file.exists():
             try:
-                cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
-                state = json.loads(state_file.read_text(encoding="utf-8"))
+                cfg = json.loads(cfg_file.read_text(encoding="utf-8-sig")) or {}
+                state = json.loads(state_file.read_text(encoding="utf-8-sig")) or {}
+                state_accounts = state.get("accounts") or {}
                 target_id = None
-                for acc in cfg.get("accounts", []):
+                for acc in cfg.get("accounts") or []:
                     aid = acc.get("id")
-                    st = state.get("accounts", {}).get(aid, {})
-                    email = st.get("commonAuthProviderState", {}).get("metadata", {}).get("email")
+                    st = state_accounts.get(aid) or {}
+                    email = ((st.get("commonAuthProviderState") or {}).get("metadata") or {}).get("email")
                     if aid == target_email_or_id or email == target_email_or_id:
                         target_id = aid
                         break
@@ -691,8 +698,8 @@ def delete_google_account(target_email_or_id: str) -> bool:
     legacy_file = config_dir / "antigravity-accounts.json"
     if legacy_file.exists():
         try:
-            legacy_data = json.loads(legacy_file.read_text(encoding="utf-8"))
-            old_accounts = legacy_data.get("accounts", [])
+            legacy_data = json.loads(legacy_file.read_text(encoding="utf-8-sig")) or {}
+            old_accounts = legacy_data.get("accounts") or []
             new_accounts = [
                 a for a in old_accounts
                 if a.get("email") != target_email_or_id and a.get("id") != target_email_or_id
@@ -721,19 +728,24 @@ def enrich_google_accounts_with_generation_store(accounts: list[dict]) -> list[d
         return accounts
 
     try:
-        cfg = json.loads(cfg_p.read_text(encoding="utf-8"))
-        state = json.loads(state_p.read_text(encoding="utf-8"))
+        cfg = json.loads(cfg_p.read_text(encoding="utf-8-sig")) or {}
+        state = json.loads(state_p.read_text(encoding="utf-8-sig")) or {}
     except Exception:
         return accounts
 
     disk_accounts = []
-    for idx, acc in enumerate(cfg.get("accounts", []), start=1):
+    pool_rows = (cfg.get("commonAuthPool") or {}).get("rows") or {}
+    state_accounts = state.get("accounts") or {}
+    for idx, acc in enumerate(cfg.get("accounts") or [], start=1):
+        if not isinstance(acc, dict):
+            continue
         aid = acc.get("id")
-        row = cfg.get("commonAuthPool", {}).get("rows", {}).get(aid, {})
-        meta = state.get("accounts", {}).get(aid, {}).get("commonAuthProviderState", {}).get("metadata", {})
-        email = meta.get("email", f"Account {idx}")
+        row = pool_rows.get(aid) or {}
+        st = state_accounts.get(aid) or {}
+        meta = (st.get("commonAuthProviderState") or {}).get("metadata") or {}
+        email = meta.get("email") or f"Account {idx}"
         added_at = meta.get("addedAt") or acc.get("addedAt")
-        cached = row.get("quota", {}).get("cachedQuota", {})
+        cached = (row.get("quota") or {}).get("cachedQuota") or {}
 
         groups = []
         for g_name in ["gemini", "non-gemini"]:
@@ -817,7 +829,7 @@ def repair_legacy_google_account_file(config_dir=None) -> str | None:
     if not legacy_file.exists():
         return None
     try:
-        data = json.loads(legacy_file.read_text(encoding="utf-8"))
+        data = json.loads(legacy_file.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as exc:
         return f"Не удалось прочитать файл аккаунтов Google: {exc}"
     if not isinstance(data, dict) or not isinstance(data.get("accounts"), list):
@@ -918,27 +930,41 @@ def get_active_generation_dir(config_dir: Path) -> Path | None:
     dirs = _generation_dirs(config_dir)
     pointer_file = config_dir / "antigravity-accounts.json.store.pointer.json"
     if pointer_file.exists():
+        ptr = None
         try:
-            ptr = json.loads(pointer_file.read_text(encoding="utf-8"))
+            ptr = json.loads(pointer_file.read_text(encoding="utf-8-sig"))
             # Plugin 3.1.x moves the canonical store into its own state folder
             # and leaves a schema-2 forward pointer here. Hub account readers
             # must follow it before `directoryBasename`: that basename still
             # names the stale pre-migration snapshot under the config folder.
-            relocated = ptr.get("relocatedTo")
+            relocated = ptr.get("relocatedTo") if isinstance(ptr, dict) else None
             if isinstance(relocated, dict):
                 rid = relocated.get("id")
                 legacy = relocated.get("legacyPath")
-                if isinstance(rid, str) and rid and isinstance(legacy, str) and legacy:
-                    parent = Path(legacy).expanduser().parent
-                    expected = parent / f"antigravity-accounts.json.store.{rid}.generation"
-                    if expected.is_dir():
-                        return expected.resolve()
-                    for entry in parent.glob("*.generation"):
-                        if rid in entry.name and entry.is_dir():
-                            return entry.resolve()
+                if isinstance(legacy, str) and legacy:
+                    legacy_target = Path(legacy).expanduser()
+                    parent = legacy_target.parent
+                    sub_pointer = parent / f"{legacy_target.name}.store.pointer.json"
+                    if sub_pointer.exists():
+                        try:
+                            sub_ptr = json.loads(sub_pointer.read_text(encoding="utf-8-sig"))
+                            sub_dir = sub_ptr.get("directoryBasename") if isinstance(sub_ptr, dict) else None
+                            if isinstance(sub_dir, str) and sub_dir:
+                                sub_candidate = parent / sub_dir
+                                if sub_candidate.is_dir():
+                                    return sub_candidate.resolve()
+                        except Exception:
+                            pass
+                    if isinstance(rid, str) and rid:
+                        expected = parent / f"antigravity-accounts.json.store.{rid}.generation"
+                        if expected.is_dir():
+                            return expected.resolve()
+                        for entry in parent.glob("*.generation"):
+                            if rid in entry.name and entry.is_dir():
+                                return entry.resolve()
         except Exception:
             pass
-        dirname = ptr.get("directoryBasename")
+        dirname = ptr.get("directoryBasename") if isinstance(ptr, dict) else None
         if isinstance(dirname, str):
             selected = next((path for path in dirs if path.name == dirname), None)
             if selected is not None:
@@ -950,6 +976,20 @@ def get_active_generation_dir(config_dir: Path) -> Path | None:
             return 0.0
     gen_dirs = sorted(dirs, key=_safe_mtime, reverse=True)
     return gen_dirs[0] if gen_dirs else None
+
+
+def has_relocated_google_store(config_dir: Path | None = None) -> bool:
+    base = Path(config_dir) if config_dir else get_opencode_config_dir()
+    pointer_file = base / "antigravity-accounts.json.store.pointer.json"
+    if not pointer_file.exists():
+        return False
+    try:
+        ptr = json.loads(pointer_file.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return False
+    if not isinstance(ptr, dict):
+        return False
+    return ptr.get("schemaVersion") == 2 or isinstance(ptr.get("relocatedTo"), dict)
 
 
 def import_google_accounts(accounts_list: list[dict]) -> int:

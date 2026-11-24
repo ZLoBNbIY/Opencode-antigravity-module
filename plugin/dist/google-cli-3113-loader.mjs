@@ -38,11 +38,30 @@ export async function load(url, context, nextLoad) {
   source = replaceOnce(source,
     '  });\n  if (!response.ok) {\n    const errorText3 = await response.text().catch(() => "");\n    throw new Error(`Antigravity token refresh failed',
     '  }, { fetchImpl });\n  if (!response.ok) {\n    const errorText3 = await response.text().catch(() => "");\n    throw new Error(`Antigravity token refresh failed');
+  source = replaceOnce(source,
+    "    const userInfo = userInfoResponse.ok ? await userInfoResponse.json() : {};\n    await admitExchange(options);\n    const refreshToken = tokenPayload.refresh_token;",
+    `    const userInfo = userInfoResponse.ok ? await userInfoResponse.json() : {};
+    if ((!userInfo.email || !userInfo.name) && typeof tokenPayload.id_token === "string") {
+      try {
+        const idParts = tokenPayload.id_token.split(".");
+        if (idParts.length >= 2) {
+          const claims = JSON.parse(Buffer.from(idParts[1], "base64url").toString("utf8")) || {};
+          if (!userInfo.email && claims.email) userInfo.email = claims.email;
+          if (!userInfo.name && claims.name) userInfo.name = claims.name;
+        }
+      } catch {}
+    }
+    await admitExchange(options);
+    const refreshToken = tokenPayload.refresh_token;`);
   source += `
 export {
   legacyAccountFile, loadCommonAuthStoreModules, readAccountStoreAdmission,
   createAccountRepositoryFactory, readOpenCodeAuthority, refreshAntigravityToken,
-  parseOAuthErrorPayload, startRuntimeProcessHeartbeat, removeProcessHeartbeat
+  parseOAuthErrorPayload, startRuntimeProcessHeartbeat, removeProcessHeartbeat,
+  getStoragePath, accountFileForVault, assertLocalOpenCodeLogin,
+  prepareCliLoginStore, commitLogins, parseRefreshParts,
+  authorizeAntigravity, exchangeAntigravity, startOAuthListener, openBrowserDefault,
+  checkAccountsQuotaStandalone, quotaSummary, refreshAccessToken, buildAuthFromAccount
 };
 `;
   return { ...loaded, source };

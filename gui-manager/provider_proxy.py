@@ -930,4 +930,5 @@ def proxy_environment(base: dict | None = None) -> dict:
         env[name] = proxy
     env["NO_PROXY"] = "localhost,127.0.0.1,::1"
     env["no_proxy"] = env["NO_PROXY"]
+    env["NODE_USE_ENV_PROXY"] = "1"
     return env

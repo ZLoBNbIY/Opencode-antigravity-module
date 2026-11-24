@@ -1403,7 +1403,7 @@ function renderGoogleTab() {
     return bIsActive - aIsActive;
   });
 
-  renderList(container, sorted.map(acc => {
+  renderList(container, sorted.map((acc, index) => {
     const isAct = acc.is_active === true;
     const isEnabled = acc.enabled !== false;
     const isCandidate = acc.candidate !== false;
@@ -1498,7 +1498,7 @@ function renderGoogleTab() {
     card.querySelector('[data-action="delete"]')?.addEventListener('click', () => deleteGoogleAccount(acc.id || acc.email));
     card.querySelector('[data-action="toggle-enabled"]')?.addEventListener('change', event => toggleGoogleEnabled(acc.id || acc.email, event.target.checked));
     card.querySelector('[data-action="candidate"]')?.addEventListener('change', event => toggleCandidate(acc.id || acc.email, event.target.checked));
-    return [acc.id || acc.email || acc.index, card];
+    return [acc.id || (acc.email ? `${acc.email}#${acc.index ?? index}` : `row#${acc.index ?? index}`), card];
   }));
 
 
@@ -2724,7 +2724,11 @@ async function uninstallHubCompletely() {
 // --- Account Actions ---
 const accountLogins = new Set();
 async function loginAccount(provider, method, label) {
-  if (!window.pywebview?.api || accountLogins.has(provider)) return;
+  if (!window.pywebview?.api) return;
+  if (accountLogins.has(provider)) {
+    showToast(`Вход в ${label} уже выполняется — завершите его в браузере или подождите таймаут`);
+    return;
+  }
   accountLogins.add(provider);
   showToast(`Ожидание входа в ${label} через браузер...`);
   try {

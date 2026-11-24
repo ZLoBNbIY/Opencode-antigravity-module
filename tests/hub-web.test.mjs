@@ -597,3 +597,16 @@ test('Dashboard has Restart Hub button wired to restart_hub API', async () => {
   assert.equal(called, 1);
   assert.equal(elements.get('btn-restart-hub').disabled, true);
 });
+
+test('renderGoogleTab preserves multiple accounts without id or email without Map key collisions', () => {
+  const fixture = structuredClone(state);
+  fixture.accounts = [
+    {email: '', is_active: true, groups: []},
+    {email: '', is_active: false, groups: []},
+    {email: 'dup@example.com', is_active: false, groups: []},
+    {email: 'dup@example.com', is_active: false, groups: []},
+  ];
+  const {elements} = frontend(fixture);
+  const list = elements.get('google-accounts-list');
+  assert.equal(list.children.length, 4);
+});
