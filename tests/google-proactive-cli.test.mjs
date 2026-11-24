@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { createDefaultCliDependencies, refreshDueGoogleStore, runCli } from '../plugin/dist/cli.js';
 
 async function fixture(t, accounts) {
-  const directory = await mkdtemp(join(tmpdir(), 'hub-refresh-test-'));
+  const directory = await mkdtemp(join(await realpath(tmpdir()), 'hub-refresh-test-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const now = Date.now();
   let clock = now;
@@ -44,8 +44,9 @@ async function fixture(t, accounts) {
       verificationRequired: account.verificationRequired ?? false,
       addedAt: now - 3600000, lastUsed: now - 3600000,
     })),
-  }));
-  assert.equal((await run(['migrate', '--offline', '--yes'])).code, 0);
+  }), { mode: 0o600 });
+  const migration = await run(['migrate', '--offline', '--yes']);
+  assert.equal(migration.code, 0, migration.stderr);
   const pointer = JSON.parse(await readFile(`${legacy}.store.pointer.json`, 'utf8'));
   const configPath = join(dirname(legacy), pointer.directoryBasename, 'config.json');
   const statePath = join(dirname(configPath), 'state.json');

@@ -96,7 +96,7 @@ def write_bundle(root: Path, name: str, source: str) -> Path:
 class PluginV2LayoutTests(unittest.TestCase):
     def test_self_heal_brings_v2_bundle_to_patched_state(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             server = write_bundle(root, "server.js", V2_SOURCE)
             index = write_bundle(root, "index.js", V2_SOURCE)
             self.assertFalse(patcher.verify_plugin_health(root)["ok"])

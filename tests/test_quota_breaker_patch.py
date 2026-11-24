@@ -88,7 +88,7 @@ class QuotaBreakerPatchTests(unittest.TestCase):
 
     def test_installed_copy_fixture_reports_unsupported_separately(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             dist = root / "node_modules" / patcher.PLUGIN_NAME / "dist"
             dist.mkdir(parents=True)
             index, server = dist / "index.js", dist / "server.js"
