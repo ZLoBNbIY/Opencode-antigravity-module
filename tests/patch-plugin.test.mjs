@@ -85,8 +85,8 @@ test('shipped updater variants match the patch recipe and template pin', () => {
   assert.equal((result.stdout.match(/Already applied:/g) ?? []).length, shippedTargets.length);
   assert.doesNotMatch(result.stdout, /Would update/);
   const config = JSON.parse(fs.readFileSync(path.join(root, 'config-templates', 'opencode.json'), 'utf8'));
-  assert.deepEqual(config.plugins, [`${packageName}@3.0.0`]);
   const settings = JSON.parse(fs.readFileSync(path.join(root, 'config-templates', 'antigravity.json'), 'utf8'));
+  assert.deepEqual(config.plugins, [`${packageName}@${settings.plugin_pin_version}`]);
   assert.equal(settings.auto_update, false);
 });
 
