@@ -187,6 +187,7 @@ def sync_opencode_credential(api_key):
         result = subprocess.run(
             [cli, "auth", "import"],
             input=json.dumps(credential), capture_output=True, text=True, encoding="utf-8", timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode != 0:
             # Never expose CLI output: it may include credential data.
@@ -264,7 +265,10 @@ def disconnect():
     if updated != original:
         secure_storage.atomic_write(config_path, updated, private_parent=False)
     try:
-        result = subprocess.run([cli, "auth", "logout", PROVIDER_ID], capture_output=True, timeout=15)
+        result = subprocess.run(
+            [cli, "auth", "logout", PROVIDER_ID], capture_output=True, timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
         if result.returncode != 0:
             raise OSError("OpenCode не удалил учётные данные OpenRouter Free")
     except (subprocess.TimeoutExpired, OSError):

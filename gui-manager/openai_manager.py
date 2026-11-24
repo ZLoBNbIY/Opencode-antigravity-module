@@ -275,6 +275,7 @@ def _run_opencode_cli(cli: str, args: list[str], input_text: str | None = None) 
         "encoding": "utf-8",
         "timeout": 30,
         "check": True,
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
     }
     if input_text is not None:
         kwargs["input"] = input_text

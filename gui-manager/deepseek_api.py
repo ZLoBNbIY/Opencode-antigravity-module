@@ -659,6 +659,7 @@ def sync_opencode_credential(api_key: Optional[str] = None, provider_id: Optiona
             [cli, "auth", "import"],
             input=json.dumps(credential), capture_output=True, text=True,
             encoding="utf-8", timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode != 0:
             # Never surface CLI output: it may include the credential.
@@ -684,7 +685,10 @@ def disconnect_opencode() -> bool:
             atomic_write(path, updated, private_parent=False)
         if cli:
             try:
-                result = subprocess.run([cli, "auth", "logout", target], capture_output=True, timeout=15)
+                result = subprocess.run(
+                    [cli, "auth", "logout", target], capture_output=True, timeout=15,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
                 if result.returncode != 0:
                     raise OSError("Ключ DeepSeek не удалён из OpenCode")
             except (OSError, subprocess.TimeoutExpired):

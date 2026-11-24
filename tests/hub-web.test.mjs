@@ -540,7 +540,7 @@ test('Google account patch disclaimer follows live OpenCode patch status', async
   const disclaimer = elements.get('google-patch-disclaimer');
   const toasts = elements.get('toasts');
 
-  await vm.runInContext('refreshGooglePatchDisclaimer()', context);
+  await vm.runInContext('refreshOpenCodePatchStatuses()', context);
   assert.equal(disclaimer.style.display, '', 'disclaimer is shown when a patch is pending');
   await vm.runInContext('addGoogleAccount()', context);
   assert.match(toasts.children.at(-1).textContent, /Патчи OpenCode не активны/);
@@ -553,6 +553,134 @@ test('Google account patch disclaimer follows live OpenCode patch status', async
   assert.equal(toasts.children.length, 2, 'no extra disclaimer toast when patches work');
   assert.match(toasts.children.at(-1).textContent, /добавлен/);
   assert.doesNotMatch(toasts.children.map(t => t.textContent).join(' '), /Патчи OpenCode не активны/);
+
+  pluginState = 'unavailable';
+  toasts.children.length = 0;
+  await vm.runInContext('addGoogleAccount()', context);
+  assert.equal(disclaimer.style.display, 'none', 'a syntax-check outage is not a confirmed failure');
+  assert.equal(toasts.children.length, 2, 'no patch warning toast for an inconclusive check');
+});
+
+test('patch status checks coalesce across the timer, settings and Google without repainting unchanged DOM', async () => {
+  const {elements, context} = frontend(state);
+  const pending = [];
+  let identityChecks = 0;
+  let tick;
+  context.setInterval = fn => { tick = fn; };
+  context.window.pywebview = {api:{
+    get_opencode_plugin_status: () => new Promise(resolve => pending.push(resolve)),
+    get_antigravity_patch_status: async () => {
+      identityChecks++;
+      return {state:'patched', message:'Фикс идентичности активен'};
+    },
+    get_storage_stats: async () => null,
+  }};
+  vm.runInContext("initializeHub(); switchTab('settings'); switchTab('google');", context);
+  tick();
+  const first = vm.runInContext('refreshOpenCodePatchStatuses()', context);
+  assert.equal(vm.runInContext('refreshOpenCodePatchStatuses()', context), first);
+  assert.equal(pending.length, 1);
+  assert.equal(identityChecks, 1);
+  const healthy = {state:'patched', message:'Фикс 429 активен'};
+  pending.shift()(healthy);
+  assert.equal(await first, true);
+  assert.match(elements.get('antigravity-patch-badge').innerHTML, /Идентичность настроена/);
+
+  for (const id of ['plugin-fix-badge', 'antigravity-patch-badge', 'plugin-fix-status',
+    'antigravity-patch-status', 'plugin-fix-warning', 'google-patch-disclaimer']) {
+    const element = elements.get(id);
+    for (const property of ['innerHTML', 'className', 'textContent']) {
+      const value = element[property];
+      Object.defineProperty(element, property, {
+        get: () => value,
+        set: () => assert.fail(`${id}.${property} repainted`),
+      });
+    }
+    const display = element.style.display;
+    Object.defineProperty(element.style, 'display', {
+      get: () => display,
+      set: () => assert.fail(`${id}.style.display repainted`),
+    });
+  }
+  tick();
+  const next = vm.runInContext('refreshOpenCodePatchStatuses()', context);
+  assert.equal(pending.length, 1);
+  assert.equal(identityChecks, 2);
+  pending.shift()({...healthy});
+  assert.equal(await next, true);
+});
+
+test('unavailable syntax checks retain confirmed status without hiding actual patch failures', async () => {
+  const {elements, context} = frontend(state);
+  const unavailable = {state:'unavailable', message:'Проверка синтаксиса плагина временно недоступна.'};
+  let plugin = unavailable;
+  let identity = 'patched';
+  context.window.pywebview = {api:{
+    get_opencode_plugin_status: async () => plugin,
+    get_antigravity_patch_status: async () => ({state:identity}),
+  }};
+  const refresh = () => vm.runInContext('refreshOpenCodePatchStatuses()', context);
+  const badge = elements.get('plugin-fix-badge');
+  const message = elements.get('plugin-fix-status');
+  const warning = elements.get('plugin-fix-warning');
+  const disclaimer = elements.get('google-patch-disclaimer');
+
+  assert.equal(await refresh(), null);
+  assert.match(badge.className, /badge-pool/);
+  assert.match(badge.innerHTML, /Проверка недоступна/);
+  assert.equal(warning.style.display, 'none');
+  assert.equal(disclaimer.style.display, 'none');
+
+  plugin = {state:'patched', message:'Фикс активен'};
+  assert.equal(await refresh(), true);
+  plugin = unavailable;
+  assert.equal(await refresh(), null);
+  assert.match(badge.className, /badge-available/);
+  assert.equal(message.textContent, 'Фикс активен');
+  assert.equal(disclaimer.style.display, 'none');
+
+  identity = 'pending';
+  assert.equal(await refresh(), false, 'an unavailable syntax check does not suppress a known identity failure');
+  assert.equal(disclaimer.style.display, '');
+  identity = 'patched';
+  assert.equal(await refresh(), null);
+  assert.equal(disclaimer.style.display, 'none');
+
+  plugin = {state:'syntax_error', degraded:true, message:'В бандле обнаружена ошибка JS.', reason:'unexpected token'};
+  assert.equal(await refresh(), false);
+  assert.match(badge.className, /badge-error/);
+  assert.match(badge.innerHTML, /Ошибка синтаксиса JS/);
+  assert.equal(message.textContent, plugin.message);
+  assert.match(warning.textContent, /unexpected token/);
+  assert.equal(disclaimer.style.display, '');
+
+  plugin = unavailable;
+  assert.equal(await refresh(), null);
+  assert.match(badge.innerHTML, /Ошибка синтаксиса JS/, 'a known error is preserved until a conclusive result');
+  assert.equal(disclaimer.style.display, '');
+});
+
+test('a patch applied during a status check invalidates the old snapshot and waits for a fresh one', async () => {
+  const {elements, context} = frontend(state);
+  const pending = [];
+  let finishPatch;
+  context.window.pywebview = {api:{
+    get_opencode_plugin_status: () => new Promise(resolve => pending.push(resolve)),
+    get_antigravity_patch_status: async () => ({state:'patched'}),
+    fix_opencode_plugin: () => new Promise(resolve => { finishPatch = resolve; }),
+  }};
+  const previous = vm.runInContext('refreshOpenCodePatchStatuses()', context);
+  const fixing = vm.runInContext('fixOpenCodePlugin()', context);
+  assert.equal(await vm.runInContext('refreshOpenCodePatchStatuses()', context), null);
+  finishPatch({ok:true, message:'Фикс применён'});
+  pending.shift()({state:'pending', message:'Требуется фикс'});
+  assert.equal(await previous, null);
+  assert.doesNotMatch(elements.get('plugin-fix-badge').innerHTML, /Требуется фикс/);
+  assert.equal(pending.length, 1);
+  pending.shift()({state:'patched', message:'Фикс активен'});
+  await fixing;
+  assert.match(elements.get('plugin-fix-badge').innerHTML, /Фикс активен/);
+  assert.equal(elements.get('google-patch-disclaimer').style.display, 'none');
 });
 
 test('OpenCode restart button is placed in sidebar above status indicator and removed from settings', () => {

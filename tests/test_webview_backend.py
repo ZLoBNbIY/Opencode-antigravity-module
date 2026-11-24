@@ -749,6 +749,43 @@ class WebviewBackendTests(unittest.TestCase):
         self.assertEqual(status["reason"], "")
         self.assertEqual(status["state_detail"], "version_changed")
 
+    def test_plugin_status_distinguishes_unavailable_checks_from_real_failures(self):
+        cases = [
+            ("patched", [], "unavailable", "временно недоступна"),
+            ("pending", ["server.js: systemInstruction sanitizer missing"], "pending", "компоненты"),
+            ("patched", ["server.js: Hub Google route not active"], "unsupported", "Не удалось подтвердить"),
+            ("patched", ["server.js: JS syntax error: unexpected token"], "syntax_error", "ошибка синтаксиса"),
+            ("pending", ["server.js: JS syntax error: unexpected token"], "syntax_error", "ошибка синтаксиса"),
+            ("pending", ["server.js: read error PermissionError"], "error", "Не удалось прочитать"),
+        ]
+        for markers, reasons, expected, message in cases:
+            with self.subTest(markers=markers, reasons=reasons):
+                patcher = SimpleNamespace(
+                    get_prompt_sanitizer_status=Mock(return_value={
+                        "state": markers,
+                        "message": ("Фикс и маршрутизация активны." if markers == "patched"
+                                    else "Не все компоненты патча активны."),
+                    }),
+                    check_patch_state=Mock(return_value={"state": "structure_changed", "copies": [
+                        {"version": "3.1.13"}]}),
+                    load_patch_state=Mock(return_value={
+                        "verified_version": "3.1.13", "degraded": True,
+                        "degraded_reason": "stale test fixture reason"}),
+                    verify_plugin_health=Mock(return_value={
+                        "ok": False, "syntax_unavailable": True, "reasons": reasons}),
+                )
+                with patch.dict("sys.modules", {"cloudcode_route_patch": patcher}):
+                    status = self.backend.HubApi().get_opencode_plugin_status()
+                self.assertEqual(status["state"], expected)
+                self.assertEqual(status["degraded"], bool(reasons))
+                self.assertTrue(status["syntax_unavailable"])
+                self.assertIn(message, status["message"])
+                self.assertNotIn("Фикс и маршрутизация активны", status["message"])
+                if reasons:
+                    self.assertIn(reasons[0], status["reason"])
+                else:
+                    self.assertEqual(status["reason"], "")
+
     def test_apply_antigravity_patch_delegates_to_patcher(self):
         patcher = SimpleNamespace(
             patch_antigravity_identity=Mock(return_value={

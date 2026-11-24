@@ -2704,6 +2704,8 @@ class HubApi:
             result["message"] += " Не все компоненты патча подтверждены. " + synced.get("message", "")
             if health.get("reasons"):
                 result["message"] += " Причина: " + "; ".join(health["reasons"])[:300]
+            elif health.get("syntax_unavailable"):
+                result["message"] += " Проверка синтаксиса плагина временно недоступна."
         hub_logging.log.info("Plugin full patch: prompt=%s identity=%s route=%s recovery_errors=%d",
                              status["state"], bool(identity.get("ok")), route_patched,
                              len(synced.get("failed", [])))
@@ -2721,23 +2723,31 @@ class HubApi:
             })) or None
             status["expected_version"] = patch_state.get("verified_version")
             status["state_detail"] = state.get("state")
-            # A stale state file (e.g. written by a test with a temp cache)
-            # must not override a fresh, healthy check of the live bundles.
-            live_ok = status["state"] == "patched" and health["ok"]
-            if live_ok:
-                status["degraded"] = False
-                status["reason"] = ""
-            else:
-                status["degraded"] = True
-                status["reason"] = ""
-                if state.get("state") in ("version_changed", "structure_changed"):
-                    status["reason"] = (
-                        f"Обнаружена новая версия или структура плагина: {state['state']}.")
-                if health.get("reasons"):
-                    status["reason"] = (status["reason"] + " " + "; ".join(health["reasons"])[:300]).strip()
-                status["reason"] = status["reason"] or patch_state.get("degraded_reason") or ""
-            if status["degraded"] and status["state"] == "patched":
-                status["state"] = "unsupported"
+            reasons = health.get("reasons") or []
+            status["syntax_unavailable"] = bool(health.get("syntax_unavailable"))
+
+            # Marker checks alone cannot confirm health. Conversely, a stale
+            # fingerprint must not override a healthy live check or turn an
+            # unavailable syntax check into an unsupported version.
+            if any("JS syntax error:" in reason for reason in reasons):
+                status.update(state="syntax_error", message="В бандле плагина обнаружена ошибка синтаксиса JavaScript.")
+            elif any(": read error " in reason for reason in reasons):
+                status.update(state="error", message="Не удалось прочитать все файлы плагина OpenCode.")
+            elif status["state"] == "patched":
+                if reasons or (not health["ok"] and not status["syntax_unavailable"]):
+                    status.update(state="unsupported", message="Не удалось подтвердить структуру или компоненты патча плагина.")
+                elif status["syntax_unavailable"]:
+                    status.update(state="unavailable", message="Проверка синтаксиса плагина временно недоступна.")
+
+            status["degraded"] = status["state"] not in ("patched", "unavailable")
+            status["reason"] = ""
+            if status["degraded"]:
+                details = ["; ".join(reasons)[:300]] if reasons else []
+                if state.get("state") == "version_changed":
+                    details.append("Обнаружена новая версия плагина.")
+                elif state.get("state") == "structure_changed":
+                    details.append("Изменилась структура файлов плагина.")
+                status["reason"] = " ".join(details)
             return status
         except Exception as exc:
             return {

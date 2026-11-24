@@ -83,6 +83,14 @@ class FakeOpenCodeCli:
         return [call[0][1:] for call in self.calls if call[0][1:][:len(prefix)] == list(prefix)]
 
 
+class OpenCodeCliWindowTests(unittest.TestCase):
+    def test_background_cli_does_not_create_console(self):
+        with patch.object(subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True), \
+             patch.object(subprocess, "run") as run:
+            manager._run_opencode_cli("opencode-cli.exe", ["auth", "list"])
+        self.assertEqual(run.call_args.kwargs["creationflags"], 0x08000000)
+
+
 class OpenCodeCredentialSyncTests(unittest.TestCase):
     def setUp(self):
         self.tmp = TemporaryDirectory()

@@ -53,11 +53,10 @@ function switchTab(tabId) {
   });
   if (changed) document.getElementById('main-scroll').scrollTop = 0;
   if (changed && tabId === 'settings') {
-    void refreshPluginFixStatus();
-    void refreshAntigravityPatchStatus();
+    void refreshOpenCodePatchStatuses();
     void refreshStorageStats();
   }
-  if (changed && tabId === 'google') void refreshGooglePatchDisclaimer();
+  if (changed && tabId === 'google') void refreshOpenCodePatchStatuses();
   if (changed && tabId === 'nvidia') {
     nvidiaAutoLoadAttempted = false;
     maybeAutoLoadNvidiaCatalog();
@@ -2527,7 +2526,7 @@ async function restartOpenCode() {
   }
   showToast("Перезапуск окна и фонового сервера OpenCode...");
   try {
-    const ok = await window.pywebview.api.restart_opencode();
+    const ok = await runOpenCodePatchChange(() => window.pywebview.api.restart_opencode());
     if (!ok) throw new Error('Перезапуск не завершён');
     showToast('OpenCode и фоновый сервер перезапущены');
   } catch (e) {
@@ -2539,9 +2538,7 @@ async function restartOpenCode() {
       if (label) label.textContent = originalText;
     }
     setTimeout(refreshState, 1500);
-    void refreshPluginFixStatus();
-    void refreshAntigravityPatchStatus();
-    void refreshGooglePatchDisclaimer();
+    void refreshOpenCodePatchStatuses();
   }
 }
 
@@ -2588,13 +2585,11 @@ async function fixOpenCodePlugin() {
   }
   if (statusEl) statusEl.textContent = 'Применение патча к плагину OpenCode…';
   try {
-    const res = await window.pywebview.api.fix_opencode_plugin();
+    const res = await runOpenCodePatchChange(() => window.pywebview.api.fix_opencode_plugin());
     const message = res?.message || 'Не удалось получить результат применения патча.';
     if (statusEl) statusEl.textContent = message;
     showToast(message);
-    await refreshPluginFixStatus();
-    await refreshAntigravityPatchStatus();
-    void refreshGooglePatchDisclaimer();
+    await refreshOpenCodePatchStatuses();
     if (res?.ok && res?.changed?.length) {
       if (confirm(`${message}\n\nПерезапустить OpenCode сейчас, чтобы изменения вступили в силу?`)) {
         await restartOpenCode();
@@ -2622,13 +2617,11 @@ async function applyAntigravityPatch() {
   }
   if (statusEl) statusEl.textContent = 'Применение патча совместимости Antigravity…';
   try {
-    const res = await window.pywebview.api.apply_antigravity_patch();
+    const res = await runOpenCodePatchChange(() => window.pywebview.api.apply_antigravity_patch());
     const message = res?.message || 'Не удалось получить результат применения патча Antigravity.';
     if (statusEl) statusEl.textContent = message;
     showToast(message);
-    await refreshAntigravityPatchStatus();
-    await refreshPluginFixStatus();
-    void refreshGooglePatchDisclaimer();
+    await refreshOpenCodePatchStatuses();
     if (res?.ok && res?.changed?.length) {
       if (confirm(`${message}\n\nПерезапустить OpenCode сейчас, чтобы изменения вступили в силу?`)) {
         await restartOpenCode();
@@ -2645,96 +2638,123 @@ async function applyAntigravityPatch() {
   }
 }
 
-async function refreshAntigravityPatchStatus() {
-  if (!window.pywebview?.api?.get_antigravity_patch_status) return;
-  const badge = document.getElementById('antigravity-patch-badge');
-  const statusEl = document.getElementById('antigravity-patch-status');
-  try {
-    const res = await window.pywebview.api.get_antigravity_patch_status();
-    if (!badge) return;
-    const state = res?.state || 'error';
-    const label = state === 'patched' ? 'Патч активен'
-      : state === 'pending' ? 'Требуется патч'
-      : state === 'missing' ? 'Плагин не найден'
-      : 'Ошибка проверки';
-    const badgeClass = state === 'patched' ? 'badge-available'
-      : state === 'pending' ? 'badge-checking'
-      : 'badge-error';
-    badge.className = `badge-pill ${badgeClass}`;
-    badge.innerHTML = `<span class="dot"></span> ${label}`;
-    if (statusEl) statusEl.textContent = res?.message || '';
-  } catch (e) {
-    if (badge) {
-      badge.className = 'badge-pill badge-error';
-      badge.innerHTML = `<span class="dot"></span> Ошибка проверки`;
-    }
-    if (statusEl) statusEl.textContent = `Ошибка проверки патча Antigravity: ${e?.message || e}`;
-  }
+function renderPatchBadge(id, label, state) {
+  const badge = document.getElementById(id);
+  if (!badge) return;
+  const badgeClass = state === 'patched' ? 'badge-available'
+    : state === 'pending' ? 'badge-checking'
+    : state === 'unavailable' ? 'badge-pool'
+    : 'badge-error';
+  const className = `badge-pill ${badgeClass}`;
+  if (badge.className !== className) badge.className = className;
+  setMarkup(badge, `<span class="dot"></span> ${label}`);
 }
 
-async function refreshPluginFixStatus() {
-  if (!window.pywebview?.api?.get_opencode_plugin_status) return;
-  const badge = document.getElementById('plugin-fix-badge');
+let confirmedPluginStatus = null;
+function renderPluginFixStatus(res) {
+  if (!res) return;
+  const state = res.state || 'error';
+  if (state === 'unavailable' && confirmedPluginStatus) res = confirmedPluginStatus;
+  else if (state !== 'unavailable') confirmedPluginStatus = res;
+  const displayState = res.state || 'error';
+  const label = displayState === 'patched' ? 'Фикс активен'
+    : displayState === 'unsupported' ? 'Структура не подтверждена'
+    : displayState === 'pending' ? 'Требуется фикс'
+    : displayState === 'syntax_error' ? 'Ошибка синтаксиса JS'
+    : displayState === 'unavailable' ? 'Проверка недоступна'
+    : displayState === 'missing' ? 'Плагин не найден'
+    : 'Ошибка проверки';
+  renderPatchBadge('plugin-fix-badge', label, displayState);
   const statusEl = document.getElementById('plugin-fix-status');
+  if (statusEl) setText(statusEl, res.message || '');
   const warningEl = document.getElementById('plugin-fix-warning');
+  if (!warningEl) return;
+  const detail = [res.installed_version && `установлена ${res.installed_version}`,
+    res.expected_version && `ранее проверена ${res.expected_version}`,
+    res.reason].filter(Boolean).join(' · ');
+  const show = !['patched', 'unavailable'].includes(displayState) && (displayState === 'unsupported' || res.degraded);
+  const display = show ? '' : 'none';
+  if (warningEl.style.display !== display) warningEl.style.display = display;
+  setText(warningEl, show
+    ? `Внимание: работа патча плагина не подтверждена${detail ? ` (${detail})` : ''}. Google-запросы могут получать 429 при живой квоте. Обновите Hub и нажмите «Применить фикс плагина».`
+    : '');
+}
+
+function renderAntigravityPatchStatus(res) {
+  if (!res) return;
+  const state = res.state || 'error';
+  const label = state === 'patched' ? 'Идентичность настроена'
+    : state === 'pending' ? 'Требуется фикс идентичности'
+    : state === 'missing' ? 'Плагин не найден'
+    : 'Ошибка проверки идентичности';
+  renderPatchBadge('antigravity-patch-badge', label, state);
+  const statusEl = document.getElementById('antigravity-patch-status');
+  if (statusEl) setText(statusEl, res.message || '');
+}
+
+let patchStatusFlight = null;
+let patchStatusRevision = 0;
+let patchStatusBusy = 0;
+async function runOpenCodePatchChange(action) {
+  patchStatusRevision++;
+  patchStatusBusy++;
   try {
-    const res = await window.pywebview.api.get_opencode_plugin_status();
-    if (!badge) return;
-    const state = res?.state || 'error';
-    const label = state === 'patched' ? 'Фикс активен'
-      : state === 'unsupported' ? 'Версия не проверена'
-      : state === 'pending' ? 'Требуется фикс'
-      : state === 'missing' ? 'Плагин не найден'
-      : 'Ошибка проверки';
-    const badgeClass = state === 'patched' ? 'badge-available'
-      : state === 'pending' ? 'badge-checking'
-      : 'badge-error';
-    badge.className = `badge-pill ${badgeClass}`;
-    badge.innerHTML = `<span class="dot"></span> ${label}`;
-    if (statusEl) statusEl.textContent = res?.message || '';
-    if (warningEl) {
-      const detail = [res?.installed_version && `установлена ${res.installed_version}`,
-        res?.expected_version && `проверена ${res.expected_version}`,
-        res?.reason].filter(Boolean).join(' · ');
-      const show = state === 'unsupported' || res?.degraded;
-      warningEl.style.display = show ? '' : 'none';
-      warningEl.textContent = show
-        ? `Внимание: патч плагина не активен (${detail || 'причина не указана'}). Google-запросы могут получать 429 при живой квоте. Обновите Hub и нажмите «Применить фикс плагина».`
-        : '';
-    }
+    return await action();
+  } finally {
+    patchStatusBusy--;
+  }
+}
+
+async function readPatchStatus(api, method, label) {
+  if (!api[method]) return null;
+  try {
+    const result = await api[method]();
+    return result?.state ? result : {state: 'error', message: label};
   } catch (e) {
-    if (badge) {
-      badge.className = 'badge-pill badge-error';
-      badge.innerHTML = `<span class="dot"></span> Ошибка проверки`;
-    }
-    if (statusEl) statusEl.textContent = `Ошибка проверки плагина: ${e?.message || e}`;
-    if (warningEl) {
-      warningEl.style.display = 'none';
-      warningEl.textContent = '';
-    }
+    return {state: 'error', message: `${label}: ${e?.message || e}`};
   }
 }
 
-// OpenCode updates itself, so patch state is re-checked on every Google account action.
-async function checkOpenCodePatchesApplied() {
+function openCodePatchesApplied(plugin, identity) {
+  const states = [plugin, identity];
+  if (states.every(state => state === 'patched')) return true;
+  if (states.some(state => state && state !== 'patched' && state !== 'unavailable')) return false;
+  return null;
+}
+
+// Share one snapshot across settings, the timer and Google account actions.
+// A mutation invalidates any in-flight reply and waits for a fresh check.
+function refreshOpenCodePatchStatuses() {
   const api = window.pywebview?.api;
-  if (!api?.get_opencode_plugin_status || !api?.get_antigravity_patch_status) return null;
-  try {
-    const [pluginStatus, patchStatus] = await Promise.all([
-      api.get_opencode_plugin_status(),
-      api.get_antigravity_patch_status()
-    ]);
-    return pluginStatus?.state === "patched" && patchStatus?.state === "patched";
-  } catch {
-    return false;
+  if (!api || patchStatusBusy) return Promise.resolve(null);
+  const revision = patchStatusRevision;
+  if (patchStatusFlight) {
+    return patchStatusFlight.revision === revision
+      ? patchStatusFlight.promise
+      : patchStatusFlight.promise.then(refreshOpenCodePatchStatuses);
   }
-}
-
-async function refreshGooglePatchDisclaimer() {
-  const applied = await checkOpenCodePatchesApplied();
-  const el = document.getElementById('google-patch-disclaimer');
-  if (el) el.style.display = applied ? 'none' : '';
-  return applied;
+  const promise = Promise.all([
+    readPatchStatus(api, 'get_opencode_plugin_status', 'Ошибка проверки плагина'),
+    readPatchStatus(api, 'get_antigravity_patch_status', 'Ошибка проверки идентичности Antigravity'),
+  ]).then(([plugin, identity]) => {
+    if (revision !== patchStatusRevision) return null;
+    renderPluginFixStatus(plugin);
+    renderAntigravityPatchStatus(identity);
+    const shownPluginState = plugin?.state === 'unavailable' ? confirmedPluginStatus?.state : plugin?.state;
+    const showDisclaimer = openCodePatchesApplied(shownPluginState, identity?.state) === false;
+    const disclaimer = document.getElementById('google-patch-disclaimer');
+    const display = showDisclaimer ? '' : 'none';
+    if (showDisclaimer) {
+      const title = document.getElementById('google-patch-disclaimer-title');
+      if (title) setText(title, 'Работа патчей OpenCode не подтверждена');
+    }
+    if (disclaimer && disclaimer.style.display !== display) disclaimer.style.display = display;
+    // Keep the prior display during a syntax-check outage, but do not use an
+    // old failure to warn about the just-completed Google login.
+    return openCodePatchesApplied(plugin?.state, identity?.state);
+  }).finally(() => { patchStatusFlight = null; });
+  patchStatusFlight = {revision, promise};
+  return promise;
 }
 
 async function openFolder(type) {
@@ -2860,10 +2880,10 @@ async function loginAccount(provider, method, label) {
 
 async function addGoogleAccount() {
   // Check immediately: an OpenCode self-update may have removed the patches.
-  void refreshGooglePatchDisclaimer();
+  void refreshOpenCodePatchStatuses();
   const result = await loginAccount('google', 'add_google_account', 'Google');
   if (!result || result.status === 'error') return;
-  const applied = await refreshGooglePatchDisclaimer();
+  const applied = await refreshOpenCodePatchStatuses();
   if (applied === false) {
     showToast('⚠️ Патчи OpenCode не активны — примените их в «Настройки → OpenCode и система»');
   }
@@ -3176,13 +3196,12 @@ function initializeHub() {
   console.log("PyWebView bridge ready");
   document.getElementById('network-settings')?.addEventListener('input', renderDnsStatus);
   refreshState();
-  void refreshPluginFixStatus();
-  void refreshAntigravityPatchStatus();
+  void refreshOpenCodePatchStatuses();
   // Auto refresh loop every 10 seconds. Include the plugin patch status so a
   // successful startup self-heal is reflected without reloading the page.
   setInterval(() => {
     void refreshState();
-    void refreshPluginFixStatus();
+    void refreshOpenCodePatchStatuses();
   }, 10000);
 }
 window.addEventListener('pywebviewready', initializeHub);

@@ -1,10 +1,16 @@
 from pathlib import Path
 from hashlib import sha256
+from collections import OrderedDict
+from concurrent.futures import Future
 import json
 import os
 import re
+import shutil
 import stat
+import subprocess
 import sys
+import tempfile
+from threading import Lock
 
 from secure_storage import atomic_write_bytes
 
@@ -890,27 +896,123 @@ def _strip_cloaking_block(source: str) -> str:
     return source
 
 
-def _cloaking_syntax_ok(text: str) -> bool:
-    import shutil
-    import subprocess
-    import tempfile
+_SYNTAX_CACHE = OrderedDict()
+_SYNTAX_IN_FLIGHT = {}
+_SYNTAX_LOCK = Lock()
+_SYNTAX_CACHE_LIMIT = 64
+_SYNTAX_ERROR = re.compile(r"^SyntaxError: (.+)$", re.M)
 
-    node = shutil.which("node")
+
+def _find_syntax_node() -> str | None:
+    if getattr(sys, "frozen", False):
+        bundled = Path(sys._MEIPASS) / "playwright" / "driver" / "node.exe"
+        if bundled.is_file():
+            return str(bundled)
+    return shutil.which("node")
+
+
+def _node_identity(node: Path) -> tuple:
+    info = node.stat()
+    return (os.path.normcase(str(node)), info.st_dev, info.st_ino, info.st_size,
+            info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _js_module_mode(path: Path) -> str:
+    """Snapshot the nearest package scope, stopping at Node's node_modules boundary."""
+    for directory in path.parents:
+        if directory.name == "node_modules":
+            break
+        try:
+            manifest = (directory / "package.json").read_text(encoding="utf-8-sig")
+        except FileNotFoundError:
+            continue
+        package = json.loads(manifest)
+        package_type = package.get("type") if isinstance(package, dict) else None
+        if package_type in ("module", "commonjs"):
+            return package_type
+        break
+    return "auto_dependency" if any(parent.name == "node_modules" for parent in path.parents) else "auto"
+
+
+def _run_node_syntax_check(node: Path, content: bytes, mode: str) -> tuple[str, str]:
+    """Check a private snapshot, not a live bundle that an updater could replace."""
+    try:
+        with tempfile.TemporaryDirectory(prefix="hub-js-check-") as temporary:
+            directory = Path(temporary)
+            if mode == "auto_dependency":
+                directory = directory / "node_modules" / "bundle"
+                directory.mkdir(parents=True)
+            extension = {"module": ".mjs", "commonjs": ".cjs"}.get(mode, ".js")
+            if extension == ".js":
+                # Do not inherit any package.json above the temp directory.
+                (directory / "package.json").write_bytes(b"{}")
+            snapshot = directory / ("bundle" + extension)
+            snapshot.write_bytes(content)
+            env = os.environ.copy()
+            # Keep this a parser-only check with deterministic Node defaults.
+            env.pop("NODE_OPTIONS", None)
+            env.pop("NODE_V8_COVERAGE", None)
+            flags = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)} if sys.platform == "win32" else {}
+            result = subprocess.run([str(node), "--check", str(snapshot)], capture_output=True,
+                                    stdin=subprocess.DEVNULL, encoding="utf-8", errors="replace",
+                                    timeout=30, env=env, **flags)
+    except (OSError, subprocess.SubprocessError):
+        return "unavailable", ""
+    if result.returncode == 0:
+        return "ok", ""
+    match = _SYNTAX_ERROR.search(result.stderr or "")
+    if result.returncode == 1 and match:
+        return "invalid", match.group(0)[:200]
+    return "unavailable", ""
+
+
+def _check_node_syntax(node: str, content: bytes, digest: str, mode: str) -> tuple[str, str]:
+    try:
+        executable = Path(node).resolve(strict=True)
+        identity = _node_identity(executable)
+    except (OSError, RuntimeError):
+        return "unavailable", ""
+    key = (digest, identity, mode)
+    with _SYNTAX_LOCK:
+        if key in _SYNTAX_CACHE:
+            _SYNTAX_CACHE.move_to_end(key)
+            return "ok", ""
+        flight = _SYNTAX_IN_FLIGHT.get(key)
+        if flight is None:
+            flight = _SYNTAX_IN_FLIGHT[key] = Future()
+            owner = True
+        else:
+            owner = False
+    if not owner:
+        return flight.result()
+    try:
+        result = _run_node_syntax_check(executable, content, mode)
+        try:
+            if _node_identity(executable) != identity:
+                result = ("unavailable", "")
+        except OSError:
+            result = ("unavailable", "")
+        with _SYNTAX_LOCK:
+            if result[0] == "ok":
+                _SYNTAX_CACHE[key] = None
+                if len(_SYNTAX_CACHE) > _SYNTAX_CACHE_LIMIT:
+                    _SYNTAX_CACHE.popitem(last=False)
+            flight.set_result(result)
+        return result
+    except BaseException as exc:
+        flight.set_exception(exc)
+        raise
+    finally:
+        with _SYNTAX_LOCK:
+            del _SYNTAX_IN_FLIGHT[key]
+
+
+def _cloaking_syntax_ok(text: str) -> bool:
+    node = _find_syntax_node()
     if not node:
         return True
-    descriptor, path = tempfile.mkstemp(suffix=".mjs")
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
-            handle.write(text)
-        result = subprocess.run([node, "--check", path], capture_output=True, timeout=30)
-        return result.returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        return False
-    finally:
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
+    content = text.encode("utf-8")
+    return _check_node_syntax(node, content, sha256(content).hexdigest(), "module")[0] == "ok"
 
 
 def _plan_cloaking(source: str, optin: bool | None = None) -> str | None:
@@ -2083,21 +2185,33 @@ def check_patch_state(plugin_cache: Path | None = None, state_path: Path | None 
 
 
 def verify_plugin_health(plugin_cache: Path | None = None) -> dict:
-    """Check base patches and report the optional quota breaker separately."""
-    import shutil
-    import subprocess
+    """Check base patches and report optional patches separately.
+
+    ``syntax_unavailable`` means at least one readable bundle could not be
+    checked. It is not a drift reason. ``syntax_checked`` means all bundles
+    got a conclusive verdict (including any actual JS syntax errors).
+    """
+    health, _ = _verify_plugin_health(plugin_cache)
+    return health
+
+
+def _verify_plugin_health(plugin_cache: Path | None) -> tuple[dict, list[dict]]:
     candidates = _active_plugin_candidates(plugin_cache)
     quota = {"state": "missing", "active": 0, "pending": 0, "unsupported": []}
     cloaking = {"state": "missing", "active": 0, "pending": 0,
                 "unsupported": [], "opt_in": _cloaking_optin_enabled()}
     if not candidates:
         return {"ok": False, "state": "missing", "reasons": [MISSING_PLUGIN],
-                "syntax_checked": False, "quota_breaker": quota, "cloaking": cloaking}
+                "syntax_checked": False, "syntax_unavailable": False,
+                "quota_breaker": quota, "cloaking": cloaking}, []
     reasons: list[str] = []
-    warnings: list[str] = []
+    copies: list[dict] = []
+    syntax_unavailable = False
+    node = _find_syntax_node()
     for path in candidates:
         try:
-            source = _read_text_exact(path)
+            content = path.read_bytes()
+            source = content.decode("utf-8")
         except (OSError, UnicodeError) as exc:
             reasons.append(f"{path.name}: read error {type(exc).__name__}")
             quota["unsupported"].append(str(path))
@@ -2131,51 +2245,61 @@ def verify_plugin_health(plugin_cache: Path | None = None) -> dict:
                 reasons.append(f"{path.name}: Gemini 4 model fix missing")
             if _route_edits_v1(source) != []:
                 reasons.append(f"{path.name}: Hub Google route not active")
-    syntax_checked = False
-    node = shutil.which("node")
-    if node:
-        syntax_checked = True
-        for path in candidates:
+        digest = sha256(content).hexdigest()
+        copies.append({"path": str(path), "version": _package_version(path.parent.parent), "sha256": digest})
+        verdict, detail = "unavailable", ""
+        if node:
             try:
-                result = subprocess.run([node, "--check", str(path)], capture_output=True,
-                                        text=True, timeout=30)
-                if result.returncode != 0:
-                    reasons.append(f"{path.name}: JS syntax error: {result.stderr.strip()[:200]}")
-            except (OSError, subprocess.SubprocessError):
-                syntax_checked = False
+                mode = _js_module_mode(path)
+            except (OSError, ValueError):
+                pass
+            else:
+                verdict, detail = _check_node_syntax(node, content, digest, mode)
+        if verdict == "invalid":
+            reasons.append(f"{path.name}: JS syntax error: {detail}")
+        elif verdict == "unavailable":
+            syntax_unavailable = True
     quota["state"] = ("unsupported" if quota["unsupported"] else
                       "pending" if quota["pending"] else "active")
     cloaking["state"] = ("unsupported" if cloaking["unsupported"] else
                          "pending" if cloaking["pending"] else "active")
     return {
-        "ok": not reasons,
-        "state": "ok" if not reasons else "unsupported",
+        "ok": not reasons and not syntax_unavailable,
+        "state": "unsupported" if reasons else "syntax_unavailable" if syntax_unavailable else "ok",
         "reasons": reasons,
-        "syntax_checked": syntax_checked,
+        "syntax_checked": len(copies) == len(candidates) and not syntax_unavailable,
+        "syntax_unavailable": syntax_unavailable,
         "quota_breaker": quota,
         "cloaking": cloaking,
-    }
+    }, copies
+
+
+def _save_verified_copies(copies: list[dict], plugin_cache: Path | None, state_path: Path | None) -> None:
+    # Persist the exact snapshots checked above, not another read that could
+    # pick up unchecked bytes from a plugin updater.
+    versions = sorted({copy["version"] for copy in copies if copy["version"]}, key=_semver_key)
+    state = load_patch_state(plugin_cache, state_path=state_path)
+    state.update(
+        degraded=False, degraded_reason="", unsupported_versions=[],
+        verified_version=versions[-1] if versions else None, verified_versions=versions,
+        verified_sha256={
+            f"{copy['version'] or 'unknown'}:{Path(copy['path']).name}": copy["sha256"]
+            for copy in copies
+        },
+    )
+    save_patch_state(state, plugin_cache, state_path=state_path)
 
 
 def self_heal_plugin(plugin_cache: Path | None = None, state_path: Path | None = None) -> dict:
     """Re-apply all Hub patches; persist a verified fingerprint on success."""
-    health = verify_plugin_health(plugin_cache)
-    if (health["ok"] and not health["quota_breaker"]["pending"]
-            and not health["cloaking"]["pending"]
+    health, copies = _verify_plugin_health(plugin_cache)
+    optional_pending = health["quota_breaker"]["pending"] or health["cloaking"]["pending"]
+    if health["syntax_unavailable"] and not health["reasons"] and not optional_pending:
+        return health
+    if (health["ok"] and not optional_pending
             and check_patch_state(plugin_cache, state_path)["state"] in ("ok", "unknown")):
-        state = load_patch_state(plugin_cache, state_path=state_path)
-        state["degraded"] = False
-        state["degraded_reason"] = ""
-        state["unsupported_versions"] = []
-        state["verified_version"] = get_verified_version(plugin_cache)
-        state["verified_versions"] = get_verified_versions(plugin_cache)
-        state["verified_sha256"] = {
-            f"{copy.get('version') or 'unknown'}:{Path(copy['path']).name}": copy["sha256"]
-            for copy in get_installed_fingerprint(plugin_cache)["copies"]
-        }
-        save_patch_state(state, plugin_cache, state_path=state_path)
-        return {"state": "already_healthy", "ok": True, "reasons": [],
-                "quota_breaker": health["quota_breaker"], "cloaking": health["cloaking"]}
+        _save_verified_copies(copies, plugin_cache, state_path)
+        return {**health, "state": "already_healthy"}
     prompt = patch_prompt_sanitizer(plugin_cache)
     identity = patch_antigravity_identity(plugin_cache)
     gemini4 = patch_gemini4_models(plugin_cache)
@@ -2184,7 +2308,13 @@ def self_heal_plugin(plugin_cache: Path | None = None, state_path: Path | None =
                                              changed_files=route_changed))
     patch_quota_breaker(plugin_cache)
     patch_cloaking(plugin_cache)
-    health = verify_plugin_health(plugin_cache)
+    health, copies = _verify_plugin_health(plugin_cache)
+    details = {"prompt": prompt["message"], "identity": identity["message"],
+               "gemini4": gemini4["message"], "route": route}
+    if health["syntax_unavailable"]:
+        # Real structural drift can still be repaired, but an inconclusive
+        # check must not record success, degradation or an unsupported version.
+        return {**health, **details}
     if not health["ok"]:
         state = load_patch_state(plugin_cache, state_path=state_path)
         state["degraded"] = True
@@ -2194,23 +2324,9 @@ def self_heal_plugin(plugin_cache: Path | None = None, state_path: Path | None =
             if version and version not in state.get("unsupported_versions", []):
                 state.setdefault("unsupported_versions", []).append(version)
         save_patch_state(state, plugin_cache, state_path=state_path)
-        return {"state": "unsupported", "ok": False, "reasons": health["reasons"],
-                "prompt": prompt["message"], "identity": identity["message"],
-                "gemini4": gemini4["message"], "route": route,
-                "quota_breaker": health["quota_breaker"], "cloaking": health["cloaking"]}
-    state = load_patch_state(plugin_cache, state_path=state_path)
-    state["degraded"] = False
-    state["degraded_reason"] = ""
-    state["verified_version"] = get_verified_version(plugin_cache)
-    state["verified_versions"] = get_verified_versions(plugin_cache)
-    state["unsupported_versions"] = []
-    state["verified_sha256"] = {
-        f"{copy.get('version') or 'unknown'}:{Path(copy['path']).name}": copy["sha256"]
-        for copy in get_installed_fingerprint(plugin_cache)["copies"]
-    }
-    save_patch_state(state, plugin_cache, state_path=state_path)
-    return {"state": "healed", "ok": True, "reasons": [], "syntax_checked": health["syntax_checked"],
-            "quota_breaker": health["quota_breaker"], "cloaking": health["cloaking"]}
+        return {**health, **details, "state": "unsupported"}
+    _save_verified_copies(copies, plugin_cache, state_path)
+    return {**health, "state": "healed"}
 
 
 def main():
