@@ -2997,8 +2997,12 @@ function initializeHub() {
   refreshState();
   void refreshPluginFixStatus();
   void refreshAntigravityPatchStatus();
-  // Auto refresh loop every 10 seconds
-  setInterval(refreshState, 10000);
+  // Auto refresh loop every 10 seconds. Include the plugin patch status so a
+  // successful startup self-heal is reflected without reloading the page.
+  setInterval(() => {
+    void refreshState();
+    void refreshPluginFixStatus();
+  }, 10000);
 }
 window.addEventListener('pywebviewready', initializeHub);
 initializeHub();
