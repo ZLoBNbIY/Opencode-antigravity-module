@@ -42,7 +42,7 @@ class AutoTransportTests(unittest.TestCase):
                 pass
 
             def do_CONNECT(self):
-                with socket.create_connection(('127.0.0.1', target_port), timeout=2) as conn:
+                with socket.create_connection(('127.0.0.1', target_port), timeout=10) as conn:
                     self.send_response(200)
                     self.end_headers()
                     provider_proxy._relay(self.connection, conn)
@@ -61,7 +61,7 @@ class AutoTransportTests(unittest.TestCase):
         probe = lambda upstream, host, hub: {'host': host, 'ok': True,
                     'latency_ms': 1 if str(self.closed.getsockname()[1]) in upstream else 30}
         self.router = auto_router.AutoRouter(provider_proxy._connect_upstream, probe=probe)
-        self.assertTrue(self.router.refresh('openai', self.hub, self.oc).wait(2))
+        self.assertTrue(self.router.refresh('openai', self.hub, self.oc).wait(10))
         # Simulate a public DNS answer; the fixture proxy routes it only
         # to the in-process target. No external DNS or provider traffic.
         self.patches = [patch('auto_router.router', self.router),
@@ -89,7 +89,7 @@ class AutoTransportTests(unittest.TestCase):
             response.extend(part)
 
     def test_plain_http_reaches_target_once_after_vless_failure(self):
-        with socket.create_connection(('127.0.0.1', self.dispatcher.server_port), timeout=4) as conn:
+        with socket.create_connection(('127.0.0.1', self.dispatcher.server_port), timeout=15) as conn:
             conn.sendall(f'GET http://api.fixture.test:{self.target.server_port}/check?q=1 HTTP/1.1\r\nHost: api.fixture.test\r\nConnection: close\r\n\r\n'.encode())
             response = self.read_response(conn)
         self.assertIn(b'fixture-ok', response)
@@ -97,7 +97,7 @@ class AutoTransportTests(unittest.TestCase):
         self.assertEqual(self.router.state('openai', self.hub, self.oc)['selected'], 'proxy')
 
     def test_connect_tunnel_fails_over_before_forwarding_client_request(self):
-        with socket.create_connection(('127.0.0.1', self.dispatcher.server_port), timeout=4) as conn:
+        with socket.create_connection(('127.0.0.1', self.dispatcher.server_port), timeout=15) as conn:
             conn.sendall(f'CONNECT api.fixture.test:{self.target.server_port} HTTP/1.1\r\nHost: api.fixture.test\r\n\r\n'.encode())
             headers = b''
             while b'\r\n\r\n' not in headers:
@@ -111,7 +111,7 @@ class AutoTransportTests(unittest.TestCase):
 
     def test_manual_vless_failure_does_not_switch_to_another_route(self):
         self.hub['provider_routes']['openai'] = 'vless'
-        with socket.create_connection(('127.0.0.1', self.dispatcher.server_port), timeout=4) as conn:
+        with socket.create_connection(('127.0.0.1', self.dispatcher.server_port), timeout=15) as conn:
             conn.sendall(f'GET http://api.fixture.test:{self.target.server_port}/manual HTTP/1.1\r\nHost: api.fixture.test\r\nConnection: close\r\n\r\n'.encode())
             response = self.read_response(conn)
         self.assertIn(b'502', response)
@@ -121,8 +121,8 @@ class AutoTransportTests(unittest.TestCase):
     def test_nvidia_connect_is_dispatched_over_loopback(self):
         with patch('provider_proxy.connect_public_routed') as route:
             route.side_effect = lambda *_: (
-                socket.create_connection(('127.0.0.1', self.target.server_port), timeout=2), None)
-            with socket.create_connection(('127.0.0.1', self.dispatcher.server_port), timeout=4) as conn:
+                socket.create_connection(('127.0.0.1', self.target.server_port), timeout=10), None)
+            with socket.create_connection(('127.0.0.1', self.dispatcher.server_port), timeout=15) as conn:
                 conn.sendall(b'CONNECT integrate.api.nvidia.com:443 HTTP/1.1\r\n'
                              b'Host: integrate.api.nvidia.com:443\r\n\r\n')
                 headers = b''

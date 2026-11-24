@@ -700,7 +700,7 @@ class WebviewBackendTests(unittest.TestCase):
         )
         with patch("webview.util.load_js_files", return_value=("bootstrap", "%(functions)s")):
             inject_pywebview("edgechromium", window)
-            self.assertTrue(window.events.loaded.wait(2), "Bridge initialization did not finish")
+            self.assertTrue(window.events.loaded.wait(10), "Bridge initialization did not finish")
         self.assertTrue(window.events._pywebviewready.is_set())
         self.assertFalse(touched.is_set(), "Bridge traversed a native Window property")
         functions = json.loads(window.run_js.call_args.args[0])

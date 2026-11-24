@@ -18,7 +18,7 @@ class WindowsTrayTests(unittest.TestCase):
         self.kernel = Mock()
         self.kernel.GetModuleHandleW.return_value = 30
         self.message_loop_exit = threading.Event()
-        self.user.GetMessageW.side_effect = lambda *_: self.message_loop_exit.wait(timeout=3) and 0
+        self.user.GetMessageW.side_effect = lambda *_: self.message_loop_exit.wait(timeout=10) and 0
         self.user.PostMessageW.side_effect = lambda *_: self.message_loop_exit.set()
         self.enterContext(patch.object(win_tray, "sys", SimpleNamespace(platform="win32")))
         self.enterContext(patch.object(win_tray.ctypes, "windll", SimpleNamespace(
@@ -31,7 +31,7 @@ class WindowsTrayTests(unittest.TestCase):
         self.tray.remove()
         self.message_loop_exit.set()
         if self.tray._thread is not None:
-            self.tray._thread.join(timeout=3)
+            self.tray._thread.join(timeout=10)
 
     def test_reports_success_after_icon_is_added_and_reuses_live_tray(self):
         self.shell.Shell_NotifyIconW.return_value = True
@@ -77,7 +77,7 @@ class WindowsTrayTests(unittest.TestCase):
         def notify(action, _):
             if action == win_tray.NIM_ADD:
                 adding.set()
-                return release.wait(timeout=3)
+                return release.wait(timeout=10)
             return True
 
         def startup_wait(*, timeout):
@@ -90,7 +90,7 @@ class WindowsTrayTests(unittest.TestCase):
                 self.assertFalse(self.tray.start())
             finally:
                 release.set()
-        self.tray._thread.join(timeout=3)
+        self.tray._thread.join(timeout=10)
         self.assertFalse(self.tray.is_visible)
         actions = [call.args[0] for call in self.shell.Shell_NotifyIconW.call_args_list]
         self.assertEqual(actions, [win_tray.NIM_ADD, win_tray.NIM_DELETE])

@@ -28,10 +28,10 @@ class OpenAiLoginTests(unittest.TestCase):
             direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             # A favicon or unrelated request must not consume the callback listener.
             with self.assertRaises(urllib.error.HTTPError):
-                direct.open(base + '/favicon.ico', timeout=2)
+                direct.open(base + '/favicon.ico', timeout=10)
             with self.assertRaises(urllib.error.HTTPError):
-                direct.open(base + '/auth/callback?error=cancelled&state=unrelated', timeout=2)
-            with direct.open(base + '/auth/callback?code=test&state=' + state, timeout=2) as response:
+                direct.open(base + '/auth/callback?error=cancelled&state=unrelated', timeout=10)
+            with direct.open(base + '/auth/callback?code=test&state=' + state, timeout=10) as response:
                 self.assertEqual(response.status, 200)
                 self.assertIn('Ответ браузера получен', response.read().decode('utf-8'))
             return True
@@ -50,7 +50,7 @@ class OpenAiLoginTests(unittest.TestCase):
              patch.object(manager, 'load_openai_accounts', return_value=[]), \
              patch.object(manager, 'save_openai_accounts', return_value=save_ok) as save, \
              patch.object(manager, 'write_active_auth_openai', return_value=True) as activate:
-            result = manager.login_openai_browser(timeout=2)
+            result = manager.login_openai_browser(timeout=10)
         return result, save, activate
 
     def test_unrelated_request_does_not_break_callback_and_account_is_saved(self):

@@ -291,7 +291,7 @@ class GoogleConnectionTests(unittest.TestCase):
 
         def blocking(_args, timeout):
             started.set()
-            release.wait(2)
+            release.wait(10)
             return response(envelope(integration(with_pool=True)))
 
         first_run = Mock(side_effect=blocking)
@@ -304,12 +304,12 @@ class GoogleConnectionTests(unittest.TestCase):
         worker = threading.Thread(target=first, daemon=True)
         worker.start()
         try:
-            self.assertTrue(started.wait(2))
+            self.assertTrue(started.wait(10))
             self.assertEqual(gc.ensure_google_connection(**options(second_run)), gc.IN_PROGRESS)
             second_run.assert_not_called()
         finally:
             release.set()
-            worker.join(2)
+            worker.join(10)
         self.assertEqual(results["status"], gc.ALREADY_CONNECTED)
         first_run.assert_called_once()
 

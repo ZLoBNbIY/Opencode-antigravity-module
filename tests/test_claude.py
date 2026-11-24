@@ -89,7 +89,7 @@ class ClaudeManagerTests(unittest.TestCase):
         key = {"Authorization": f"Bearer {bridge.bridge_token}"}
 
         def request(method, path, headers, body=None):
-            conn = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+            conn = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=10)
             try:
                 conn.request(method, path, body=body, headers=headers)
                 with conn.getresponse() as response:

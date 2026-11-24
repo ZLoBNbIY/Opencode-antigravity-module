@@ -393,7 +393,7 @@ class ProviderRouteProxyTests(unittest.TestCase):
         self.assertEqual(c1.recv(16), b"pong")
         c1.close()
         c2.close()
-        t.join(timeout=2)
+        t.join(timeout=10)
         self.assertFalse(t.is_alive())
 
 

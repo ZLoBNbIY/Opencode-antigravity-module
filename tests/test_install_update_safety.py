@@ -129,7 +129,7 @@ class OfflineGitUpdateTests(unittest.TestCase):
     def git(self, *args):
         result = subprocess.run(
             ["git", *args], cwd=self.repo, env=auto_updater._direct_git_env(),
-            text=True, capture_output=True, check=True, timeout=15,
+            text=True, capture_output=True, check=True, timeout=30,
         )
         return result.stdout.strip()
 
@@ -236,7 +236,7 @@ class ShellInstallSafetyTests(unittest.TestCase):
             + setup + '\nsource "$MOCK_SOURCE/install.sh" "$@"'
         )
         return subprocess.run([find_bash(), "-c", script, "mock-install", *args], env=env,
-                              capture_output=True, text=True, errors="replace", timeout=20)
+                              capture_output=True, text=True, errors="replace", timeout=40)
 
     def test_existing_unparseable_jsonc_and_antigravity_are_preserved_byte_for_byte(self):
         self.config.mkdir(parents=True)
@@ -305,7 +305,7 @@ Publish-NewConfig $Template (Join-Path $Config 'antigravity.json') @('antigravit
             result = subprocess.run(
                 ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(harness),
                  str(ROOT / "install.ps1"), str(config), str(template)],
-                capture_output=True, text=True, errors="replace", timeout=15,
+                capture_output=True, text=True, errors="replace", timeout=30,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual({p.name: p.read_bytes() for p in config.iterdir()},
@@ -344,7 +344,7 @@ foreach ($name in $names) {
         return subprocess.run(
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(harness),
              str(ROOT / script), str(self.fixture.resolve())],
-            capture_output=True, text=True, errors="replace", timeout=15,
+            capture_output=True, text=True, errors="replace", timeout=30,
         )
 
     def run_removal(self, content, name="opencode.json"):

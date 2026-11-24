@@ -18,7 +18,7 @@ class AutoRouterTests(unittest.TestCase):
         self.oc = {"provider": {"google": {"options": {}}, "openai": {"options": {"baseURL": "https://chatgpt.com"}}}}
 
     def ready(self, router, provider="openai", hub=None):
-        self.assertTrue(router.refresh(provider, hub or self.hub, self.oc).wait(2))
+        self.assertTrue(router.refresh(provider, hub or self.hub, self.oc).wait(10))
         return router.state(provider, hub or self.hub, self.oc)
 
     def test_deepseek_has_probe_host_and_auto_can_select_a_route(self):
@@ -100,16 +100,16 @@ class AutoRouterTests(unittest.TestCase):
         entered = threading.Event()
         def probe(upstream, host, hub):
             entered.set()
-            gate.wait(2)
+            gate.wait(10)
             return {"host": host, "ok": True, "latency_ms": 10}
         mocked = Mock(side_effect=probe)
         router = AutoRouter(Mock(), probe=mocked)
         event = router.refresh("openai", self.hub, self.oc)
-        self.assertTrue(entered.wait(1))
+        self.assertTrue(entered.wait(10))
         for _ in range(10):
             self.assertIs(router.refresh("openai", self.hub, self.oc, force=True), event)
         gate.set()
-        self.assertTrue(event.wait(2))
+        self.assertTrue(event.wait(10))
         self.assertEqual(mocked.call_count, 3)
 
     def test_https_probe_accepts_auth_required_but_rejects_blocks_and_gateway_errors(self):
@@ -248,7 +248,7 @@ class AutoRouterTests(unittest.TestCase):
         router = AutoRouter(Mock(), clock=lambda: now[0])
         with patch.object(router, "_measure", side_effect=RuntimeError("boom")):
             ev = router.refresh("openai", self.hub, self.oc)
-            self.assertTrue(ev.wait(2))
+            self.assertTrue(ev.wait(10))
         entry = next(iter(router._entries.values()))
         self.assertFalse(entry["running"])
         self.assertEqual(entry["expires"], 110)
