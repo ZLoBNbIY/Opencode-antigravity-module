@@ -86,8 +86,8 @@ def _new_config() -> dict:
         return {
             "$schema": "https://opencode.ai/config.json",
             "model": "google/antigravity-gemini-3.8-flash",
-            "plugins": ["@cortexkit/opencode-antigravity-auth@3.0.0"],
-            "providers": {"google": {"settings": {"apiKey": "antigravity"}}},
+            "plugins": ["@cortexkit/opencode-antigravity-auth@3.1.13"],
+            "providers": {"google": {"settings": {"apiKey": "common-auth-placeholder.google"}}},
         }
 
 

@@ -139,7 +139,7 @@ opencode-cli.exe api POST /api/integration/google/connect/oauth/{attemptID}/comp
 4. `GET /api/integration` (таймаут ~5–8 c). Найти `id == "google"`.
 5. Проанализировать `connections`:
    - есть `type == "credential"` и `label == "Antigravity Hub pool"` → **already_connected**, выход, POST не делать;
-   - есть любой другой `type == "credential"` (другой label/method) → **foreign_credential**, выход без изменений (не создавать дубликат, не трогать чужую connection);
+   - есть любой другой `type == "credential"` (другой label/method) → проверить, не является ли он **мёртвым legacy OAuth**: в строке БД `methodID == "oauth"`, `access` пуст, `expires <= 0`. Такую строку не удаляем и не переключаем, но она **не блокирует** создание Hub-credential (`stale_foreign_credential` → перейти к шагу 6). Живая чуж credential по-прежнему даёт **foreign_credential** и выход без изменений;
    - только `type == "env"` → перейти к созданию.
 6. Перед POST ещё раз взять per-process лок (см. §7) и повторить шаг 4 — закрыть гонку с другим потоком/логином.
 7. POST create → распарсить `attemptID`; если ответ не содержит `attemptID` или `mode != "auto"` → **api_error**, не вызывать complete.
@@ -159,7 +159,7 @@ opencode-cli.exe api POST /api/integration/google/connect/oauth/{attemptID}/comp
   Если в `methods` есть vault-метод — это нормально; если пользователь использует
   vault-конфигурацию, existence Hub-credential не мешает, но Hub не должен
   «переключать» источник учётных данных. Проверка §2.1 не читает и не пишет токены.
-- **Env connection** остаётся нетронутой во всех ветвях.
+- **Env connection** остаётся нетронутой во всех ветвях. Единственная нормализация — подмена устаревшего значения `GOOGLE_GENERATIVE_AI_API_KEY=antigravity` на `common-auth-placeholder.google` для профиля 3.1.x в окружении дочернего OpenCode (`proxy_config.opencode_launch_environment()`); сам `env`-connection и чужие ключи не удаляются.
 
 ## 5. Совместимость по версиям
 

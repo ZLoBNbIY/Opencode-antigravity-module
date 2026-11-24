@@ -7,7 +7,7 @@
     }
   },
   "plugins": [
-    "@cortexkit/opencode-antigravity-auth@3.0.0"
+    "@cortexkit/opencode-antigravity-auth@3.1.13"
   ],
   "provider": {
     "google": {

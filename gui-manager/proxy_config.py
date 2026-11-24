@@ -132,11 +132,28 @@ def _legacy_hub_proxy(value):
 
 
 def opencode_launch_environment(base=None):
-    """Do not pass a stale Hub dispatcher to the whole OpenCode process."""
-    return {
+    """Do not pass a stale Hub dispatcher or legacy auth sentinel to OpenCode."""
+    env = {
         key: value for key, value in (os.environ if base is None else base).items()
         if not (key.upper() in PROXY_ENV_KEYS and _legacy_hub_proxy(value))
     }
+    # 3.1.x identifies its own requests with the OpenCode common-auth
+    # placeholder.  Some systems still carry the 3.0.x "antigravity" value in
+    # GOOGLE_GENERATIVE_AI_API_KEY; left unchanged, OpenCode sends it to Google
+    # and gets "API key not valid" instead of letting the plugin attach OAuth.
+    # Only that exact legacy sentinel is rewritten, for the 3.1.x profile.
+    try:
+        import opencode_config
+        key = "GOOGLE_GENERATIVE_AI_API_KEY"
+        current = env.get(key)
+        expected = opencode_config.google_api_key_sentinel()
+        if (isinstance(current, str)
+                and current.strip() == opencode_config.GOOGLE_SENTINEL_API_KEY
+                and expected == opencode_config.GOOGLE_SENTINEL_API_KEY_V2):
+            env[key] = expected
+    except Exception:
+        pass
+    return env
 
 
 def select_effective_proxy(config: dict, http_port: int) -> str | None:

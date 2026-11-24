@@ -172,6 +172,40 @@ class AccountExportImportTests(unittest.TestCase):
         self.assertEqual(exported[0]["email"], "new@example.com")
         self.assertEqual(exported[0]["refreshToken"], "new-refresh")
 
+    def test_export_follows_schema2_relocated_pointer(self):
+        stale = self.config_dir / "antigravity-accounts.json.store.11111111-2222-3333-4444-555555555555.generation"
+        stale.mkdir(parents=True)
+        (stale / "config.json").write_text(json.dumps({"accounts": [{"id": "a1"}]}))
+        (stale / "state.json").write_text(json.dumps({"accounts": {
+            "a1": {"refresh": "old-refresh",
+                   "commonAuthProviderState": {"metadata": {"email": "old@example.com"}}}
+        }}))
+        state_root = self.config_dir / "relocated-state"
+        state_root.mkdir()
+        relocated_id = "62eb7e40-4475-41d8-b767-fc956a7a9100"
+        canonical = state_root / f"antigravity-accounts.json.store.{relocated_id}.generation"
+        canonical.mkdir()
+        (canonical / "config.json").write_text(json.dumps({"accounts": [{"id": "a2"}]}))
+        (canonical / "state.json").write_text(json.dumps({"accounts": {
+            "a2": {"refresh": "new-refresh", "access": "new-access", "expires": 4102444800000,
+                   "commonAuthProviderState": {"metadata": {"email": "new@example.com"}}}
+        }}))
+        (self.config_dir / "antigravity-accounts.json.store.pointer.json").write_text(json.dumps({
+            "schemaVersion": 2,
+            "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "directoryBasename": stale.name,
+            "relocatedTo": {"id": relocated_id,
+                            "legacyPath": str(state_root / "antigravity-accounts.json")}
+        }))
+
+        self.assertEqual(antigravity_manager.get_active_generation_dir(self.config_dir).resolve(),
+                         canonical.resolve())
+        self.assertEqual(antigravity_manager.ordered_generation_dirs(self.config_dir)[0].resolve(),
+                         canonical.resolve())
+        exported = antigravity_manager.export_google_accounts()
+        self.assertEqual([a["email"] for a in exported], ["new@example.com"])
+        self.assertEqual(exported[0]["refreshToken"], "new-refresh")
+
     def test_openai_import_merges_and_refreshes_tokens(self):
         openai_manager.CONFIG_DIR = self.config_dir
         openai_manager.OPENAI_ACCOUNTS_FILE = self.config_dir / "openai-accounts.json"

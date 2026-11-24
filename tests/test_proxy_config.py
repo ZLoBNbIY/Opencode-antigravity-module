@@ -130,6 +130,16 @@ class ProxyConfigTests(unittest.TestCase):
         })
         self.assertIn("Https_Proxy", base)
 
+    def test_launch_env_normalizes_legacy_google_sentinel_for_v2_plugin(self):
+        from unittest.mock import patch
+        with patch("cloudcode_route_patch.get_expected_plugin_version", return_value="3.1.13"):
+            env = opencode_launch_environment({"GOOGLE_GENERATIVE_AI_API_KEY": "antigravity"})
+        self.assertEqual(env["GOOGLE_GENERATIVE_AI_API_KEY"], "common-auth-placeholder.google")
+        # Real keys are never replaced.
+        with patch("cloudcode_route_patch.get_expected_plugin_version", return_value="3.1.13"):
+            env = opencode_launch_environment({"GOOGLE_GENERATIVE_AI_API_KEY": "AIza-real-key"})
+        self.assertEqual(env["GOOGLE_GENERATIVE_AI_API_KEY"], "AIza-real-key")
+
     @unittest.skipUnless(shutil.which("node"), "Node required for OpenCode plugin smoke test")
     def test_native_plugin_routes_only_eligible_requests(self):
         with TemporaryDirectory() as path:

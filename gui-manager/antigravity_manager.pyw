@@ -196,7 +196,9 @@ def ordered_generation_dirs(config_dir: Path | None = None) -> list[Path]:
     base = Path(config_dir) if config_dir else get_opencode_config_dir()
     active = get_active_generation_dir(base)
     dirs = _generation_dirs(base)
-    if active is not None and active in dirs:
+    if active is not None:
+        # A schema-2 pointer can relocate the live store outside the config
+        # directory; in that case the canonical directory is not in `dirs`.
         return [active] + [p for p in dirs if p != active]
     def _safe_mtime(p: Path) -> float:
         try:
@@ -918,13 +920,29 @@ def get_active_generation_dir(config_dir: Path) -> Path | None:
     if pointer_file.exists():
         try:
             ptr = json.loads(pointer_file.read_text(encoding="utf-8"))
-            dirname = ptr.get("directoryBasename")
-            if isinstance(dirname, str):
-                selected = next((path for path in dirs if path.name == dirname), None)
-                if selected is not None:
-                    return selected
+            # Plugin 3.1.x moves the canonical store into its own state folder
+            # and leaves a schema-2 forward pointer here. Hub account readers
+            # must follow it before `directoryBasename`: that basename still
+            # names the stale pre-migration snapshot under the config folder.
+            relocated = ptr.get("relocatedTo")
+            if isinstance(relocated, dict):
+                rid = relocated.get("id")
+                legacy = relocated.get("legacyPath")
+                if isinstance(rid, str) and rid and isinstance(legacy, str) and legacy:
+                    parent = Path(legacy).expanduser().parent
+                    expected = parent / f"antigravity-accounts.json.store.{rid}.generation"
+                    if expected.is_dir():
+                        return expected.resolve()
+                    for entry in parent.glob("*.generation"):
+                        if rid in entry.name and entry.is_dir():
+                            return entry.resolve()
         except Exception:
             pass
+        dirname = ptr.get("directoryBasename")
+        if isinstance(dirname, str):
+            selected = next((path for path in dirs if path.name == dirname), None)
+            if selected is not None:
+                return selected
     def _safe_mtime(p: Path) -> float:
         try:
             return p.stat().st_mtime

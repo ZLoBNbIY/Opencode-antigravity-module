@@ -58,6 +58,7 @@ TIMEOUT = "timeout"
 VERIFY_FAILED = "verify_failed"
 IN_PROGRESS = "connect_in_progress"
 FOREIGN_CREDENTIAL = "foreign_credential"
+STALE_FOREIGN_CREDENTIAL = "stale_foreign_credential"
 INACTIVE = "inactive"
 
 # Backwards-compatible aliases for early callers of this module.
@@ -322,10 +323,55 @@ def _is_inactive(row, active_check=None) -> bool:
     return False
 
 
+def _stale_foreign_credentials(foreign_rows, active_check=None):
+    """Detect a dead legacy OAuth credential that can be safely worked around.
+
+    OpenCode may keep an old ``methodID=oauth`` row with an empty access token,
+    zero expiry and no usable method.  It is not a live user credential, so it
+    must not block provisioning of the Hub pool credential.  We never delete it:
+    the pool login simply creates its own active credential alongside it.
+    Any credential whose state cannot be positively confirmed as stale is still
+    treated as foreign and is never duplicated.
+    """
+    checker = active_check or _default_active_check
+    try:
+        db_rows = checker(GOOGLE_INTEGRATION_ID)
+    except Exception:
+        return False
+    if not isinstance(db_rows, list) or not foreign_rows:
+        return False
+    by_id = {
+        str(row.get("id")): row for row in db_rows
+        if isinstance(row, dict) and row.get("id")
+    }
+    for row in foreign_rows:
+        match = by_id.get(_first_str(row, ("id",)))
+        if not isinstance(match, dict):
+            return False
+        value = match.get("value")
+        if not isinstance(value, dict):
+            return False
+        method = _first_str(value, ("methodID", "methodId", "method")).lower()
+        if method and method != "oauth":
+            return False
+        access = value.get("access")
+        if isinstance(access, str):
+            if access.strip():
+                return False
+        elif access not in (None, "", 0, False):
+            return False
+        try:
+            if float(value.get("expires") or 0) > 0:
+                return False
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
 def classify_connections(integration, active_check=None):
     """Return a terminal status, or None when provisioning may proceed."""
     ours = None
-    foreign_credential = False
+    foreign_rows = []
     for row in _connections(integration):
         if not isinstance(row, dict):
             continue
@@ -334,12 +380,15 @@ def classify_connections(integration, active_check=None):
             if _is_pool_row(row):
                 ours = row
             else:
-                foreign_credential = True
+                foreign_rows.append(row)
     if ours is not None:
         if _is_inactive(ours, active_check):
             return INACTIVE
         return ALREADY_CONNECTED
-    if foreign_credential:
+    if foreign_rows:
+        if _stale_foreign_credentials(foreign_rows, active_check):
+            _debug(STALE_FOREIGN_CREDENTIAL)
+            return None
         return FOREIGN_CREDENTIAL
     return None
 

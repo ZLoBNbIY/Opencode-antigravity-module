@@ -130,6 +130,35 @@ class GoogleConnectionTests(unittest.TestCase):
         self.assertEqual(gc.ensure_google_connection(**options(run)), gc.FOREIGN_CREDENTIAL)
         run.assert_called_once()
 
+    def test_stale_foreign_oauth_does_not_block_pool_login(self):
+        # A dead legacy row (empty access, expires=0, no plugin method) is not a
+        # live user credential: create the Hub credential alongside it.
+        stale = [{"id": "cred-other", "active": 1, "label": "OAuth",
+                  "value": {"methodID": "oauth", "access": "", "expires": 0}}]
+        run = Mock(side_effect=[
+            response(envelope(integration(foreign=True))),
+            response(envelope(integration(foreign=True))),
+            response({"attemptID": "attempt-stale", "mode": "auto", "status": "pending"}),
+            response({"status": "complete"}),
+            response(envelope(integration(with_pool=True, foreign=True))),
+        ])
+        status = gc.ensure_google_connection(
+            **options(run, active_check=lambda _integration: stale))
+        self.assertEqual(status, gc.CONNECTED)
+        calls = json.dumps([call.args[0] for call in run.call_args_list])
+        self.assertIn(gc.POOL_METHOD_ID, calls)
+        self.assertNotIn("logout", calls)
+        self.assertNotIn("DELETE", calls)
+
+    def test_live_foreign_oauth_still_blocks_pool_login(self):
+        live = [{"id": "cred-other", "active": 1, "label": "Somebody else",
+                 "value": {"methodID": "oauth", "access": "token", "expires": 4102444800000}}]
+        run = Mock(return_value=response(envelope(integration(foreign=True))))
+        status = gc.ensure_google_connection(
+            **options(run, active_check=lambda _integration: live))
+        self.assertEqual(status, gc.FOREIGN_CREDENTIAL)
+        run.assert_called_once()
+
     def test_inactive_hub_credential_is_diagnosed_without_writes(self):
         active_check = Mock(return_value=[{"id": "cred-pool", "active": 0,
                                            "label": gc.POOL_LABEL, "value": {}}])
