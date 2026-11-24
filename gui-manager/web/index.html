@@ -218,9 +218,7 @@
             <span style="font-size: 18px; line-height: 1.2;">⚠️</span>
             <div>
               <div class="patch-disclaimer-title" id="google-patch-disclaimer-title">Патчи OpenCode не применены</div>
-              <p class="help-text" id="google-patch-disclaimer-text" style="margin: 0 0 10px;">
-                Добавленный Google-аккаунт может не заработать: OpenCode может обновляться сам и сбрасывать патчи. Откройте «Настройки → OpenCode и система» и примените фикс плагина и патч Antigravity.
-              </p>
+              <p class="help-text" id="google-patch-disclaimer-text" style="margin: 0 0 10px;"></p>
               <button class="opencode-action-btn" onclick="switchTab('settings')">Перейти к патчам OpenCode</button>
             </div>
           </div>
@@ -799,7 +797,12 @@
         <div class="glass-card" style="margin-bottom: 16px;">
           <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 6px;">Патчи OpenCode и подпись сессий</div>
           <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
-            Восстанавливает проверенный бандл плагина (фикс 429 Code Mode, маршруты Gemini 4 и маршрутизация Hub), приводит тело и заголовки запросов к формату оригинального Antigravity (User-Agent, sessionId, labels, requestId, checkpoint, thinking, инструменты) и закрепляет именование новых сессий за бесплатной моделью Big Pickle (opencode/big-pickle). Применяется к установленному плагину без отката версии.
+            Фикс восстанавливает проверенный бандл установленного плагина без отката версии (фикс 429 Code Mode, маршруты Gemini 4 и маршрутизация Hub). Здесь также можно настроить совместимость запросов с Antigravity и закрепить именование новых сессий за бесплатной моделью Big Pickle (opencode/big-pickle).
+          </div>
+          <div style="margin-bottom: 12px;">
+            <button type="button" class="opencode-action-btn" id="btn-install-plugin" onclick="installOpenCodePlugin()" aria-describedby="plugin-install-hint"><span aria-hidden="true">📦</span> Установить плагин</button>
+            <p class="help-text" id="plugin-install-hint" style="margin-top: 6px;">На чистой установке OpenCode сначала установите плагин. Фикс предназначен для уже установленного плагина.</p>
+            <p class="help-text" id="plugin-install-status" role="status" style="margin-top: 6px;"></p>
           </div>
           <div style="margin-bottom: 12px;">
             <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">

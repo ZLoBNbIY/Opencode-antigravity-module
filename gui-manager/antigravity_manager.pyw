@@ -184,23 +184,47 @@ def get_opencode_exe():
         return which_opencode_cap
     return str(candidates[0])
 
-def get_opencode_cli():
+def get_opencode_cli(*, native_only=False):
     """Locate opencode-cli.exe without depending on an install folder name.
 
     Order: PATH, generic ``Programs\\*\\resources`` glob (newest install first),
     beside the detected desktop app, then the Roaming CLI cache.  A missing
-    executable is never reported as a successful lookup.
+    executable is never reported as a successful lookup. ``native_only``
+    skips Windows shell-script shims for subprocesses that must not use cmd.
     """
     candidates = []
-    path_cli = shutil.which("opencode-cli") or shutil.which("opencode")
-    if path_cli:
-        candidates.append(Path(path_cli))
-    programs = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "Programs"
-    if programs.is_dir():
-        installed = [p for p in programs.glob("*/resources/opencode-cli.exe") if p.is_file()]
-        installed.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        candidates.extend(installed)
-    exe = get_opencode_exe()
+    if native_only and sys.platform == "win32":
+        # Explicit .exe names avoid shell shims and never search the working
+        # directory implicitly (the Hub may be started from a removable drive).
+        for directory in os.get_exec_path():
+            path = Path(directory.strip('"'))
+            if path.is_absolute():
+                for executable in (path / "opencode-cli.exe", path / "resources" / "opencode-cli.exe",
+                                   path / "opencode.exe"):
+                    try:
+                        if executable.is_file():
+                            return str(executable)
+                    except OSError:
+                        continue
+    else:
+        path_cli = shutil.which("opencode-cli") or shutil.which("opencode")
+        if path_cli:
+            candidates.append(Path(path_cli))
+    user_local = Path.home() / "AppData" / "Local"
+    local = Path(os.environ.get("LOCALAPPDATA") or user_local)
+    roots = (local, user_local) if native_only and local != user_local else (local,)
+    installed = []
+    for root in roots:
+        if native_only and not root.is_absolute():
+            continue
+        for path in (root / "Programs").glob("*/resources/opencode-cli.exe"):
+            try:
+                if path.is_file():
+                    installed.append((path.stat().st_mtime, path))
+            except OSError:
+                continue
+    candidates.extend(path for _, path in sorted(installed, key=lambda item: item[0], reverse=True))
+    exe = get_opencode_exe() if not native_only else None
     if exe:
         candidates.append(Path(exe).parent / "resources" / "opencode-cli.exe")
     roaming_cli = Path.home() / "AppData" / "Roaming" / "ai.opencode.desktop" / "cli"
@@ -208,7 +232,7 @@ def get_opencode_cli():
         candidates.extend(sorted(roaming_cli.glob("*/opencode-cli.exe"), reverse=True))
     for c in candidates:
         try:
-            if c.is_file():
+            if c.is_file() and (not native_only or c.is_absolute()):
                 return str(c)
         except OSError:
             continue

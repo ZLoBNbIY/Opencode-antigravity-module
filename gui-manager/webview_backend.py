@@ -568,6 +568,81 @@ def _opencode_cache_dirs() -> list[Path]:
     return dirs
 
 
+_PLUGIN_PACKAGE = google_proactive_refresh.PLUGIN_PACKAGE
+_PLUGIN_VERSION = re.compile(r"(?:0|[1-9][0-9]{0,8})(?:\.(?:0|[1-9][0-9]{0,8})){2}")
+_PLUGIN_INSTALL_TIMEOUT = 90
+
+
+class _PluginInstallConfigError(ValueError):
+    """An install error whose message is safe to show in the Hub."""
+
+
+def _is_exact_plugin_version(value) -> bool:
+    return isinstance(value, str) and _PLUGIN_VERSION.fullmatch(value) is not None
+
+
+def _plugin_version_key(value: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in value.split("."))
+
+
+def _antigravity_plugin_specs(cfg: dict) -> set[str]:
+    """Collect Hub-package specs in V2, V1 and legacy tuple entries."""
+    specs = set()
+    for field in ("plugins", "plugin"):
+        entries = cfg.get(field)
+        for entry in entries if isinstance(entries, list) else [entries]:
+            if isinstance(entry, list) and entry:
+                entry = entry[0]
+            if isinstance(entry, dict):
+                entry = entry.get("package")
+            if entry == _PLUGIN_PACKAGE:
+                specs.add("")
+            elif isinstance(entry, str) and entry.startswith(_PLUGIN_PACKAGE + "@"):
+                specs.add(entry[len(_PLUGIN_PACKAGE) + 1:])
+    return specs
+
+
+def _template_plugin_version() -> str:
+    root = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else CURRENT_DIR.parent
+    text = (root / "config-templates" / "opencode.json").read_text(encoding="utf-8-sig")
+    specs = _antigravity_plugin_specs(jsonc_config.parse_config(text))
+    if len(specs) != 1 or not _is_exact_plugin_version(next(iter(specs))):
+        raise _PluginInstallConfigError("В шаблоне AI HUB не найдена точная версия плагина.")
+    return next(iter(specs))
+
+
+def _plugin_cached(version: str) -> bool:
+    """Check the active cache for this exact spec, not another version or tag."""
+    cache_home = Path(os.environ.get("XDG_CACHE_HOME", ""))
+    cache_root = (cache_home if cache_home.is_absolute() else Path.home() / ".cache") / "opencode"
+    candidates = [cache_root / "node_modules" / _PLUGIN_PACKAGE]
+    for layout in ("npm", "packages"):
+        root = cache_root / layout / f"{_PLUGIN_PACKAGE}@{version}"
+        candidates += [root, root / "node_modules" / _PLUGIN_PACKAGE]
+        try:
+            generations = [entry for entry in root.iterdir()
+                           if entry.is_dir() and not entry.name.startswith(".")
+                           and not entry.name.endswith(".rejected")]
+        except OSError:
+            continue
+        numbered = [entry for entry in generations if re.fullmatch(r"[0-9]{1,20}", entry.name)]
+        if numbered:
+            generations = [max(numbered, key=lambda entry: int(entry.name))]
+        candidates.extend(entry / "node_modules" / _PLUGIN_PACKAGE for entry in generations)
+    for directory in candidates:
+        try:
+            meta = json.loads((directory / "package.json").read_text(encoding="utf-8-sig"))
+            if (isinstance(meta, dict) and meta.get("name") == _PLUGIN_PACKAGE
+                    and meta.get("version") == version):
+                for name in ("server.js", "index.js"):
+                    path = directory / "dist" / name
+                    if path.is_file() and path.stat().st_size > 0:
+                        return True
+        except (OSError, ValueError, RecursionError):
+            continue
+    return False
+
+
 def _find_cli_3113() -> Path | None:
     finder = google_proactive_refresh.find_cli_3113
     package = google_proactive_refresh.PLUGIN_PACKAGE
@@ -639,10 +714,18 @@ class HubApi:
             hub_logging.failed("Migrate legacy Hub locations", exc)
         try:
             import cloudcode_route_patch
-            pinned_version = cloudcode_route_patch.get_expected_plugin_version()
-            if pinned_version:
-                opencode_config.ensure_plugin_pin(pinned_version)
-            opencode_config.ensure_google_api_key()
+            raw = _read_if_present(_opencode_config_path())
+            existing = _antigravity_plugin_specs(jsonc_config.parse_config(raw.decode("utf-8-sig"))) if raw else set()
+            exact = {value for value in existing if _is_exact_plugin_version(value)}
+            if len(exact) == 1:
+                # A stale Hub pin must not rewrite an explicit OpenCode pin,
+                # including one chosen by the clean-install flow.
+                opencode_config.ensure_google_api_key(version=next(iter(exact)))
+            elif not exact:
+                pinned_version = cloudcode_route_patch.get_expected_plugin_version()
+                if pinned_version:
+                    opencode_config.ensure_plugin_pin(pinned_version)
+                opencode_config.ensure_google_api_key()
         except Exception as exc:
             hub_logging.failed("Initialize OpenCode plugin configuration", exc)
         self._config_lock = threading.RLock()
@@ -664,6 +747,7 @@ class HubApi:
         self._core_lock = threading.Lock()
         self._vless_exit = VlessExitStatus()
         self._restart_lock = threading.Lock()
+        self._plugin_install_lock = threading.Lock()
         self._hub_restart_lock = threading.Lock()
         self._backup_lock = threading.Lock()
         self._update_lock = threading.Lock()
@@ -863,8 +947,8 @@ class HubApi:
             self._close_to_tray = bool(cfg.get("close_to_tray", True))
             return cfg
 
-    def _config_snapshot(self):
-        cfg = copy.deepcopy(antigravity_manager.DEFAULT_CONFIG)
+    def _config_snapshot(self, *, defaults=True):
+        cfg = copy.deepcopy(antigravity_manager.DEFAULT_CONFIG) if defaults else {}
         sources = {}
         candidates = []
         for path in (HUB_CONFIG_FILE, ANTIGRAVITY_CONFIG_FILE):
@@ -2625,6 +2709,106 @@ class HubApi:
             return msg
         except Exception as e:
             return str(e)
+
+    def _plugin_install_target(self):
+        # plugin add edits the global config, preferring the root opencode.json(c)
+        # to the equivalent under .opencode. Reject ambiguous inputs before the
+        # CLI downloads anything.
+        config = _opencode_config_path()
+        raw = _read_if_present(config)
+        if raw is None:
+            raw = _read_if_present(jsonc_config.config_path(config.parent / ".opencode"))
+        current = jsonc_config.parse_config(raw.decode("utf-8-sig")) if raw is not None else {}
+        if "plugins" in current and not isinstance(current["plugins"], list):
+            raise _PluginInstallConfigError("В конфиге OpenCode поле plugins должно быть массивом.")
+        specs = _antigravity_plugin_specs(current)
+        if len(specs) > 1 or (specs and not _is_exact_plugin_version(next(iter(specs)))):
+            raise _PluginInstallConfigError(
+                "В конфиге OpenCode оставьте одну запись плагина Antigravity с точной версией.")
+        with self._config_lock:
+            hub_cfg, _ = self._config_snapshot(defaults=False)
+        pin = hub_cfg.get("plugin_pin_version")
+        if "plugin_pin_version" in hub_cfg and not _is_exact_plugin_version(pin):
+            raise _PluginInstallConfigError("В настройках AI HUB задана некорректная версия плагина.")
+        if specs:
+            configured = next(iter(specs))
+            if pin is not None and _plugin_version_key(configured) < _plugin_version_key(pin):
+                raise _PluginInstallConfigError(
+                    "В OpenCode закреплена версия плагина ниже версии в настройках AI HUB. "
+                    "Согласуйте версии перед установкой.")
+            version = configured
+        else:
+            if pin is None:
+                import cloudcode_route_patch
+                verified = cloudcode_route_patch.load_patch_state().get("verified_version")
+                pin = verified if _is_exact_plugin_version(verified) else _template_plugin_version()
+            version = pin
+
+        pointer = _read_if_present(config.parent / "antigravity-accounts.json.store.pointer.json")
+        if pointer is not None:
+            data = jsonc_config.parse_config(pointer.decode("utf-8-sig"), jsonc=False)
+            schema = data.get("schemaVersion")
+            relocated = (type(schema) is int and schema >= 2) or isinstance(data.get("relocatedTo"), dict)
+            if relocated and _plugin_version_key(version) < (3, 0, 16):
+                raise _PluginInstallConfigError("Хранилищу аккаунтов schema 2 нужна версия 3.0.16 или новее.")
+        return config.parent, version, bool(specs)
+
+    def install_opencode_plugin(self) -> dict:
+        """Install only the Hub package; repairing its bundles is a separate action."""
+        if self._closing.is_set():
+            return {"ok": False, "status": "unavailable", "message": "AI HUB завершает работу."}
+        if not self._plugin_install_lock.acquire(blocking=False):
+            return {"ok": False, "status": "in_progress", "message": "Установка плагина уже выполняется."}
+        try:
+            try:
+                cli = antigravity_manager.get_opencode_cli(native_only=True)
+            except OSError:
+                cli = None
+            if not cli:
+                return {"ok": False, "status": "missing_cli",
+                        "message": "CLI OpenCode не найден. Установите OpenCode и повторите попытку."}
+            try:
+                config_dir, version, configured = self._plugin_install_target()
+            except _PluginInstallConfigError as exc:
+                return {"ok": False, "status": "config_error", "message": str(exc)}
+            except (OSError, ValueError, RecursionError):
+                return {"ok": False, "status": "config_error",
+                        "message": "Не удалось выбрать безопасную версию плагина. Проверьте настройки AI HUB, "
+                                   "закреплённую версию в OpenCode и совместимость с хранилищем аккаунтов."}
+            if configured and _plugin_cached(version):
+                return {"ok": True, "status": "already_installed", "version": version,
+                        "message": f"Плагин Antigravity {version} уже есть в кэше OpenCode."}
+            env = opencode_launch_environment()
+            env.update(OPENCODE_CONFIG_DIR=str(config_dir), CI="1", NO_COLOR="1")
+            try:
+                result = subprocess.run(
+                    [cli, "plugin", "add", f"{_PLUGIN_PACKAGE}@{version}"],
+                    cwd=Path.home(), env=env, timeout=_PLUGIN_INSTALL_TIMEOUT, shell=False,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                )
+            except FileNotFoundError:
+                return {"ok": False, "status": "missing_cli",
+                        "message": "CLI OpenCode недоступен. Проверьте установку OpenCode."}
+            except subprocess.TimeoutExpired:
+                return {"ok": False, "status": "timeout", "version": version,
+                        "message": "Установка плагина не завершилась вовремя. Проверьте сеть и повторите попытку."}
+            except OSError:
+                return {"ok": False, "status": "launch_failed",
+                        "message": "Не удалось запустить CLI OpenCode."}
+            if result.returncode:
+                hub_logging.log.info("OpenCode plugin add failed (exit=%s)", result.returncode)
+                return {"ok": False, "status": "download_failed", "version": version,
+                        "message": "OpenCode не смог скачать или зарегистрировать плагин. "
+                                   "Проверьте сеть и настройки OpenCode."}
+            if not _plugin_cached(version):
+                return {"ok": False, "status": "pending_cache", "version": version,
+                        "message": "OpenCode принял плагин, но нужная версия пока не подтверждена в кэше. "
+                                   "Откройте OpenCode и проверьте статус плагина."}
+            return {"ok": True, "status": "installed", "version": version,
+                    "message": f"Плагин Antigravity {version} установлен. Исправления Hub применяются отдельно."}
+        finally:
+            self._plugin_install_lock.release()
 
     def fix_opencode_plugin(self) -> dict:
         """Re-apply module patches after an OpenCode or plugin update."""

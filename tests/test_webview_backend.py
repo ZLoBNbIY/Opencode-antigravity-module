@@ -1,6 +1,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import threading
 import tempfile
 from types import ModuleType, SimpleNamespace
@@ -159,6 +160,153 @@ class WebviewBackendTests(unittest.TestCase):
             api._google_refresh.check()
         self.manager.run_google_route_cmd.assert_not_called()
         self.manager.get_cli_js.assert_not_called()
+
+    def _plugin_install_fixture(self):
+        self.manager.get_opencode_cli = Mock(return_value="native-opencode.exe")
+        self.backend.opencode_config.ensure_plugin_pin = Mock()
+        self.backend.opencode_config.ensure_google_api_key = Mock()
+        self.enterContext(patch("cloudcode_route_patch.get_expected_plugin_version", return_value=None))
+        self.enterContext(patch("cloudcode_route_patch.load_patch_state", return_value={}))
+        self.enterContext(patch.object(self.backend, "opencode_launch_environment", return_value={"PATH": "example"}))
+        cache = Path(self.temp.name) / "cache"
+        self.enterContext(patch.dict("os.environ", {"XDG_CACHE_HOME": str(cache)}))
+        run = self.enterContext(patch.object(self.backend.subprocess, "run", return_value=SimpleNamespace(returncode=0)))
+        return cache / "opencode", run
+
+    def _cache_plugin(self, cache, key, version, *, generation="123", layout="npm"):
+        package = self.backend._PLUGIN_PACKAGE
+        folder = cache / layout / f"{package}@{key}" / generation / "node_modules" / package
+        (folder / "dist").mkdir(parents=True)
+        (folder / "package.json").write_text(json.dumps({"name": package, "version": version}), encoding="utf-8")
+        (folder / "dist" / "server.js").write_text("export default {}", encoding="utf-8")
+        return folder
+
+    def test_clean_install_uses_shipped_template_not_defaults_and_checks_cache(self):
+        cache, run = self._plugin_install_fixture()
+        self.manager.DEFAULT_CONFIG = {"plugin_pin_version": "3.0.0"}
+        api = self.backend.HubApi()
+        bridge = self.backend._WebviewBridge(api)
+
+        def install(*args, **kwargs):
+            self._cache_plugin(cache, "3.1.13", "3.1.13")
+            return SimpleNamespace(returncode=0)
+
+        run.side_effect = install
+        self.assertEqual(bridge.install_opencode_plugin()["status"], "installed")
+        self.manager.get_opencode_cli.assert_called_once_with(native_only=True)
+        command, = run.call_args.args
+        self.assertEqual(command, ["native-opencode.exe", "plugin", "add",
+                                   "@cortexkit/opencode-antigravity-auth@3.1.13"])
+        opts = run.call_args.kwargs
+        self.assertEqual(opts["env"], {"PATH": "example", "OPENCODE_CONFIG_DIR": self.temp.name,
+                                       "CI": "1", "NO_COLOR": "1"})
+        self.assertGreater(opts["timeout"], 0)
+        self.assertLessEqual(opts["timeout"], 120)
+        self.assertFalse(opts["shell"])
+        self.assertTrue(all(opts[key] == subprocess.DEVNULL for key in ("stdin", "stdout", "stderr")))
+        self.assertFalse(self.backend.OPENCODE_CONFIG_FILE.exists())  # Hub itself does not write it.
+
+    def test_clean_install_preserves_newer_configured_pin_and_skips_exact_cache(self):
+        cache, run = self._plugin_install_fixture()
+        path = self.backend.OPENCODE_CONFIG_FILE.with_suffix(".jsonc")
+        raw = b'{\n // retain settings\n "plugins": [{"package":"@cortexkit/opencode-antigravity-auth@3.1.20","options":{}}],\n}\n'
+        path.write_bytes(raw)
+        self.backend.HUB_CONFIG_FILE.write_text('{"plugin_pin_version":"3.0.0"}', encoding="utf-8")
+        (path.parent / "antigravity-accounts.json.store.pointer.json").write_text(
+            '{"schemaVersion": 2}', encoding="utf-8")
+        with patch("cloudcode_route_patch.get_expected_plugin_version", return_value="3.0.0"):
+            api = self.backend.HubApi()
+        self.backend.opencode_config.ensure_plugin_pin.assert_not_called()
+        self._cache_plugin(cache, "3.1.20", "3.1.20", layout="packages")
+        result = api.install_opencode_plugin()
+        self.assertTrue(result["ok"])
+        self.assertEqual((result["status"], result["version"]), ("already_installed", "3.1.20"))
+        self.assertEqual(path.read_bytes(), raw)
+        run.assert_not_called()
+
+    def test_direct_cache_layout_is_visible_to_install_and_patch(self):
+        import cloudcode_route_patch
+
+        cache, _ = self._plugin_install_fixture()
+        package = self.backend._PLUGIN_PACKAGE
+        folder = cache / "node_modules" / package
+        bundle = folder / "dist" / "server.js"
+        bundle.parent.mkdir(parents=True)
+        bundle.write_text("export default {}", encoding="utf-8")
+        (folder / "package.json").write_text(
+            json.dumps({"name": package, "version": "3.1.13"}), encoding="utf-8")
+        self.assertTrue(self.backend._plugin_cached("3.1.13"))
+        self.assertIn(bundle.resolve(), cloudcode_route_patch._prompt_fix_candidates())
+
+    def test_clean_install_ignores_other_versions_tags_and_incomplete_generations(self):
+        cache, run = self._plugin_install_fixture()
+        self.backend.HUB_CONFIG_FILE.write_text('{"plugin_pin_version":"3.1.12"}', encoding="utf-8")
+        self.backend.OPENCODE_CONFIG_FILE.write_text(
+            '{"plugins":["@cortexkit/opencode-antigravity-auth@3.1.12"]}', encoding="utf-8")
+        self._cache_plugin(cache, "3.1.13", "3.1.13")
+        self._cache_plugin(cache, "latest", "3.1.12")
+        self._cache_plugin(cache, "3.1.12", "3.1.12", generation=".staging-123")
+        self._cache_plugin(cache, "3.1.12", "3.1.12", generation="456.rejected")
+        self._cache_plugin(cache, "3.1.12", "3.1.11")
+        result = self.backend.HubApi().install_opencode_plugin()
+        run.assert_called_once()
+        self.assertFalse(result["ok"])
+        self.assertEqual((result["status"], result["version"]), ("pending_cache", "3.1.12"))
+
+    def test_clean_install_registers_exact_cached_package_if_not_configured(self):
+        cache, run = self._plugin_install_fixture()
+        self._cache_plugin(cache, "3.1.13", "3.1.13")
+        source = b'{"plugins":["another-package"],"model":"example/model"}'
+        self.backend.OPENCODE_CONFIG_FILE.write_bytes(source)
+        result = self.backend.HubApi().install_opencode_plugin()
+        self.assertEqual(result["status"], "installed")
+        run.assert_called_once()  # Official add registers it and reuses its cache.
+        self.assertEqual(self.backend.OPENCODE_CONFIG_FILE.read_bytes(), source)
+
+    def test_clean_install_rejects_schema2_downgrade_or_invalid_pin(self):
+        _, run = self._plugin_install_fixture()
+        (Path(self.temp.name) / "antigravity-accounts.json.store.pointer.json").write_text(
+            '{"schemaVersion": 2}', encoding="utf-8")
+        api = self.backend.HubApi()
+        self.backend.HUB_CONFIG_FILE.write_text('{"plugin_pin_version":"3.0.15"}', encoding="utf-8")
+        self.assertIn("schema 2", api.install_opencode_plugin()["message"])
+        self.backend.HUB_CONFIG_FILE.write_text(
+            '{"plugin_pin_version":"1.2.3 & secret-proxy-password"}', encoding="utf-8")
+        result = api.install_opencode_plugin()
+        self.assertEqual(result["status"], "config_error")
+        self.assertNotIn("secret-proxy-password", str(result))
+        run.assert_not_called()
+
+    def test_clean_install_rejects_ambiguous_config_without_rewriting_it(self):
+        _, run = self._plugin_install_fixture()
+        path = self.backend.OPENCODE_CONFIG_FILE
+        source = b'{"plugins":["@cortexkit/opencode-antigravity-auth@latest"]}'
+        path.write_bytes(source)
+        api = self.backend.HubApi()
+        self.assertEqual(api.install_opencode_plugin()["status"], "config_error")
+        path.with_suffix(".jsonc").write_bytes(b'{"plugins":[]}')
+        self.assertEqual(api.install_opencode_plugin()["status"], "config_error")
+        self.assertEqual(path.read_bytes(), source)
+        self.assertEqual(path.with_suffix(".jsonc").read_bytes(), b'{"plugins":[]}')
+        run.assert_not_called()
+
+    def test_clean_install_reports_missing_cli_failure_timeout_and_busy_separately(self):
+        _, run = self._plugin_install_fixture()
+        api = self.backend.HubApi()
+        with api._plugin_install_lock:
+            self.assertEqual(api.install_opencode_plugin()["status"], "in_progress")
+        self.manager.get_opencode_cli.return_value = None
+        self.assertEqual(api.install_opencode_plugin()["status"], "missing_cli")
+        run.assert_not_called()
+        self.manager.get_opencode_cli.return_value = "native-opencode.exe"
+        run.side_effect = [SimpleNamespace(returncode=1, stderr="proxy secret"),
+                           subprocess.TimeoutExpired("native-opencode.exe", 90, stderr=b"proxy secret")]
+        for status in ("download_failed", "timeout"):
+            with self.subTest(status=status):
+                result = api.install_opencode_plugin()
+                self.assertEqual(result["status"], status)
+                self.assertFalse(result["ok"])
+                self.assertNotIn("proxy secret", str(result))
 
     def test_tokenlavka_configure_validates_saves_and_registers_models(self):
         self.tokenlavka.test_connection.return_value = (True, 'ok')

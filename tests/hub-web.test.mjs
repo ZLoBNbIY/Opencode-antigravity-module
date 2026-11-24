@@ -683,6 +683,143 @@ test('a patch applied during a status check invalidates the old snapshot and wai
   assert.equal(elements.get('google-patch-disclaimer').style.display, 'none');
 });
 
+test('clean OpenCode setup points to the separate, accessible install action instead of warning about 429s', async () => {
+  assert.match(markup, /<button[^>]+id="btn-install-plugin"[^>]+onclick="installOpenCodePlugin\(\)"[^>]+aria-describedby="plugin-install-hint"[^>]*>.*Установить плагин<\/button>/);
+  assert.match(markup, /id="btn-fix-plugin"[^>]+onclick="fixOpenCodePlugin\(\)"/);
+  assert.match(markup, /id="plugin-install-status" role="status"/);
+  assert.match(markup, /id="plugin-install-hint"[^>]*>На чистой установке OpenCode/);
+
+  const {elements, context} = frontend(state);
+  const missing = {state:'missing', found:0, degraded:true, message:'Старые инструкции', reason:'недоступно'};
+  let plugin = {state:'unsupported', found:1, degraded:true};
+  context.window.pywebview = {api:{
+    get_opencode_plugin_status: async () => plugin,
+    get_antigravity_patch_status: async () => ({state:'missing', message:'Старые инструкции'}),
+    add_google_account: async () => ({status:'ok', message:'Google аккаунт добавлен в пул'}),
+  }};
+  const warning = elements.get('plugin-fix-warning');
+  await vm.runInContext('refreshOpenCodePatchStatuses()', context);
+  assert.match(warning.textContent, /429/);
+
+  plugin = missing;
+  await vm.runInContext('addGoogleAccount()', context);
+  assert.equal(warning.style.display, 'none');
+  assert.equal(warning.textContent, '');
+  for (const id of ['plugin-fix-status', 'antigravity-patch-status', 'google-patch-disclaimer-text']) {
+    assert.match(elements.get(id).textContent, /Установить плагин/);
+    assert.doesNotMatch(elements.get(id).textContent, /429|Применить фикс/);
+  }
+  assert.equal(elements.get('google-patch-disclaimer').style.display, '');
+  assert.match(elements.get('google-patch-disclaimer-title').textContent, /не установлен/);
+  assert.match(elements.get('toasts').children.at(-1).textContent, /Установить плагин/);
+});
+
+test('plugin installation blocks duplicate and conflicting actions until both patch statuses are refreshed', async () => {
+  const {elements, context} = frontend(state);
+  const pending = [];
+  let finishInstall;
+  let installCalls = 0;
+  let identityChecks = 0;
+  context.window.pywebview = {api:{
+    install_opencode_plugin: (...args) => {
+      assert.deepEqual(args, []);
+      installCalls++;
+      return new Promise(resolve => { finishInstall = resolve; });
+    },
+    fix_opencode_plugin: () => assert.fail('install must not run the fix'),
+    apply_antigravity_patch: () => assert.fail('identity patch must not overlap installation'),
+    restart_opencode: () => assert.fail('restart must not overlap installation'),
+    get_opencode_plugin_status: () => new Promise(resolve => pending.push(resolve)),
+    get_antigravity_patch_status: async () => ({state: ++identityChecks === 1 ? 'missing' : 'patched'}),
+  }};
+  const refresh = () => vm.runInContext('refreshOpenCodePatchStatuses()', context);
+  const install = () => vm.runInContext('installOpenCodePlugin()', context);
+  const btn = elements.get('btn-install-plugin');
+  const fix = elements.get('btn-fix-plugin');
+  const status = elements.get('plugin-install-status');
+  const previous = refresh();
+
+  const installing = install();
+  assert.equal(btn.disabled, true);
+  assert.equal(fix.disabled, true);
+  assert.match(status.textContent, /Установка/);
+  await install();
+  await vm.runInContext('Promise.all([fixOpenCodePlugin(), applyAntigravityPatch(), restartOpenCode()])', context);
+  assert.equal(await refresh(), null);
+  assert.equal(installCalls, 1);
+
+  finishInstall({ok:true, message:'Бандл плагина установлен'});
+  pending.shift()({state:'missing', found:0, degraded:true});
+  assert.equal(await previous, null);
+  assert.doesNotMatch(elements.get('plugin-fix-badge').innerHTML, /Плагин не найден/);
+  assert.equal(pending.length, 1);
+  assert.equal(identityChecks, 2);
+  assert.equal(btn.disabled, true);
+  await install();
+  assert.equal(installCalls, 1);
+  pending.shift()({state:'patched', message:'Фикс активен'});
+  await installing;
+
+  assert.equal(btn.disabled, false);
+  assert.equal(fix.disabled, false);
+  assert.match(elements.get('plugin-fix-badge').innerHTML, /Фикс активен/);
+  assert.match(elements.get('antigravity-patch-badge').innerHTML, /Идентичность настроена/);
+  assert.equal(elements.get('google-patch-disclaimer').style.display, 'none');
+  assert.equal(status.textContent, 'Бандл плагина установлен');
+  assert.equal(elements.get('toasts').children.at(-1).textContent, status.textContent);
+});
+
+test('a successful install does not fall back to the pre-install missing status if verification is unavailable', async () => {
+  const {elements, context} = frontend(state);
+  let installed = false;
+  context.window.pywebview = {api:{
+    get_opencode_plugin_status: async () => ({state:installed ? 'unavailable' : 'missing'}),
+    get_antigravity_patch_status: async () => ({state:installed ? 'patched' : 'missing'}),
+    install_opencode_plugin: async () => { installed = true; return {ok:true}; },
+  }};
+  await vm.runInContext('refreshOpenCodePatchStatuses()', context);
+  assert.match(elements.get('plugin-fix-badge').innerHTML, /Плагин не найден/);
+  await vm.runInContext('installOpenCodePlugin()', context);
+  assert.match(elements.get('plugin-fix-badge').innerHTML, /Проверка недоступна/);
+  assert.equal(elements.get('google-patch-disclaimer').style.display, 'none');
+  assert.match(elements.get('plugin-install-status').textContent, /установлен/);
+});
+
+test('plugin installation reports old bridge compatibility and failure, refreshes after attempted installs and allows retry', async () => {
+  const {elements, context} = frontend(state);
+  let checks = 0;
+  const api = {
+    get_opencode_plugin_status: async () => { checks++; return {state:'missing'}; },
+    get_antigravity_patch_status: async () => ({state:'missing'}),
+    fix_opencode_plugin: () => assert.fail('must not fall back to the fix'),
+  };
+  context.window.pywebview = {api};
+  const install = () => vm.runInContext('installOpenCodePlugin()', context);
+  const btn = elements.get('btn-install-plugin');
+  const status = elements.get('plugin-install-status');
+  const lastToast = () => elements.get('toasts').children.at(-1).textContent;
+
+  await install();
+  assert.match(status.textContent, /Обновите Hub/);
+  assert.equal(lastToast(), status.textContent);
+  assert.equal(checks, 0);
+  assert.notEqual(btn.disabled, true);
+
+  api.install_opencode_plugin = async () => ({ok:false, message:'Бандл недоступен'});
+  await install();
+  assert.equal(status.textContent, 'Бандл недоступен');
+  assert.equal(lastToast(), status.textContent);
+  assert.equal(checks, 1);
+  assert.equal(btn.disabled, false);
+
+  api.install_opencode_plugin = async () => { throw new Error('bridge failure'); };
+  await install();
+  assert.match(status.textContent, /Ошибка установки.*bridge failure/);
+  assert.equal(lastToast(), status.textContent);
+  assert.equal(checks, 2);
+  assert.equal(btn.disabled, false);
+});
+
 test('OpenCode restart button is placed in sidebar above status indicator and removed from settings', () => {
   const footerMatch = markup.match(/<div class="sidebar-footer">([\s\S]*?)<\/div>\s*<\/aside>/);
   assert.ok(footerMatch, 'sidebar-footer should exist');

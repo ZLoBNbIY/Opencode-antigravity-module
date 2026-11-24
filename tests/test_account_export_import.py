@@ -30,6 +30,18 @@ class AccountExportImportTests(unittest.TestCase):
         self.patch_home.stop()
         self.temp_dir.cleanup()
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows CLI layout")
+    def test_native_opencode_cli_skips_shell_shims_and_finds_desktop_cli(self):
+        path = self.config_dir / "npm"
+        path.mkdir()
+        (path / "opencode.cmd").touch()
+        install = self.config_dir / "Programs" / "ai.opencode.desktop"
+        cli = install / "resources" / "opencode-cli.exe"
+        cli.parent.mkdir(parents=True)
+        cli.touch()
+        with patch.dict(os.environ, {"PATH": str(path), "LOCALAPPDATA": str(self.config_dir)}):
+            self.assertEqual(antigravity_manager.get_opencode_cli(native_only=True), str(cli))
+
     def test_google_import_preserves_unreadable_legacy_store(self):
         legacy = self.config_dir / "antigravity-accounts.json"
         legacy.write_bytes(b"{")

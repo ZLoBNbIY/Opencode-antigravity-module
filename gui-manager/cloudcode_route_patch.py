@@ -361,6 +361,12 @@ def _prompt_fix_candidates(plugin_cache: Path | None = None) -> list[Path]:
     """Find installed Antigravity bundles that OpenCode loads at startup."""
     roots = _cache_roots(plugin_cache)
     candidates: list[Path] = []
+    if plugin_cache is None:
+        for cache in dict.fromkeys(root.parent for root in roots):
+            dist = cache / "node_modules" / PLUGIN_NAME / "dist"
+            for name in ("server.js", "index.js"):
+                if (path := dist / name).is_file():
+                    candidates.append(path)
     for root in roots:
         try:
             root = root.resolve(strict=True)

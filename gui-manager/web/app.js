@@ -2514,8 +2514,10 @@ async function saveSettings() {
 }
 
 // --- OpenCode system actions ---
+let pluginInstallInProgress = false;
+
 async function restartOpenCode() {
-  if (!window.pywebview?.api) return;
+  if (pluginInstallInProgress || !window.pywebview?.api) return;
   const btn = document.getElementById('btn-restart-opencode');
   const label = btn ? btn.querySelector('span') : null;
   const originalText = label ? label.textContent : '';
@@ -2574,8 +2576,49 @@ async function fixSessionTitle() {
   } catch (e) { showToast(`Ошибка настройки подписи сессий: ${e?.message || e}`); }
 }
 
+async function installOpenCodePlugin() {
+  if (pluginInstallInProgress || patchStatusBusy) return;
+  const api = window.pywebview?.api;
+  const btn = document.getElementById('btn-install-plugin');
+  const statusEl = document.getElementById('plugin-install-status');
+  const report = message => {
+    if (statusEl) setText(statusEl, message);
+    showToast(message);
+  };
+  if (typeof api?.install_opencode_plugin !== 'function') {
+    report('Установка плагина недоступна в этой версии Hub. Обновите Hub и повторите попытку.');
+    return;
+  }
+
+  const buttons = ['btn-install-plugin', 'btn-fix-plugin', 'btn-antigravity-patch', 'btn-restart-opencode']
+    .map(id => document.getElementById(id)).filter(Boolean);
+  if (buttons.some(button => button.disabled)) return;
+  const originalHtml = btn?.innerHTML;
+  pluginInstallInProgress = true;
+  for (const button of buttons) button.disabled = true;
+  if (btn) btn.textContent = 'Установка…';
+  if (statusEl) setText(statusEl, 'Установка плагина OpenCode…');
+
+  // Installation can replace a missing/older bundle, so do not reuse its
+  // last confirmed state if the fresh syntax check is unavailable.
+  confirmedPluginStatus = null;
+  try {
+    try {
+      const res = await runOpenCodePatchChange(() => api.install_opencode_plugin());
+      report(res?.message || (res?.ok ? 'Плагин OpenCode установлен.' : 'Не удалось установить плагин OpenCode.'));
+    } catch (e) {
+      report(`Ошибка установки плагина OpenCode: ${e?.message || e}`);
+    }
+    await refreshOpenCodePatchStatuses();
+  } finally {
+    if (btn) btn.innerHTML = originalHtml;
+    for (const button of buttons) button.disabled = false;
+    pluginInstallInProgress = false;
+  }
+}
+
 async function fixOpenCodePlugin() {
-  if (!window.pywebview?.api?.fix_opencode_plugin) return;
+  if (pluginInstallInProgress || !window.pywebview?.api?.fix_opencode_plugin) return;
   const btn = document.getElementById('btn-fix-plugin');
   const statusEl = document.getElementById('plugin-fix-status');
   const originalHtml = btn ? btn.innerHTML : '';
@@ -2607,7 +2650,7 @@ async function fixOpenCodePlugin() {
 }
 
 async function applyAntigravityPatch() {
-  if (!window.pywebview?.api?.apply_antigravity_patch) return;
+  if (pluginInstallInProgress || !window.pywebview?.api?.apply_antigravity_patch) return;
   const btn = document.getElementById('btn-antigravity-patch');
   const statusEl = document.getElementById('antigravity-patch-status');
   const originalHtml = btn ? btn.innerHTML : '';
@@ -2651,6 +2694,8 @@ function renderPatchBadge(id, label, state) {
 }
 
 let confirmedPluginStatus = null;
+const missingPluginHint = 'Плагин не найден. Сначала нажмите «Установить плагин».';
+
 function renderPluginFixStatus(res) {
   if (!res) return;
   const state = res.state || 'error';
@@ -2666,13 +2711,14 @@ function renderPluginFixStatus(res) {
     : 'Ошибка проверки';
   renderPatchBadge('plugin-fix-badge', label, displayState);
   const statusEl = document.getElementById('plugin-fix-status');
-  if (statusEl) setText(statusEl, res.message || '');
+  if (statusEl) setText(statusEl, displayState === 'missing' ? missingPluginHint : res.message || '');
   const warningEl = document.getElementById('plugin-fix-warning');
   if (!warningEl) return;
   const detail = [res.installed_version && `установлена ${res.installed_version}`,
     res.expected_version && `ранее проверена ${res.expected_version}`,
     res.reason].filter(Boolean).join(' · ');
-  const show = !['patched', 'unavailable'].includes(displayState) && (displayState === 'unsupported' || res.degraded);
+  const show = !['patched', 'unavailable', 'missing'].includes(displayState)
+    && res.found !== 0 && (displayState === 'unsupported' || res.degraded);
   const display = show ? '' : 'none';
   if (warningEl.style.display !== display) warningEl.style.display = display;
   setText(warningEl, show
@@ -2689,7 +2735,7 @@ function renderAntigravityPatchStatus(res) {
     : 'Ошибка проверки идентичности';
   renderPatchBadge('antigravity-patch-badge', label, state);
   const statusEl = document.getElementById('antigravity-patch-status');
-  if (statusEl) setText(statusEl, res.message || '');
+  if (statusEl) setText(statusEl, state === 'missing' ? missingPluginHint : res.message || '');
 }
 
 let patchStatusFlight = null;
@@ -2745,8 +2791,13 @@ function refreshOpenCodePatchStatuses() {
     const disclaimer = document.getElementById('google-patch-disclaimer');
     const display = showDisclaimer ? '' : 'none';
     if (showDisclaimer) {
+      const missing = shownPluginState === 'missing' || (!shownPluginState && identity?.state === 'missing');
       const title = document.getElementById('google-patch-disclaimer-title');
-      if (title) setText(title, 'Работа патчей OpenCode не подтверждена');
+      const text = document.getElementById('google-patch-disclaimer-text');
+      if (title) setText(title, missing ? 'Плагин OpenCode не установлен' : 'Работа патчей OpenCode не подтверждена');
+      if (text) setText(text, missing
+        ? 'Для работы Google-аккаунта в OpenCode откройте «Настройки → OpenCode и система» и нажмите «Установить плагин».'
+        : 'Добавленный Google-аккаунт может не заработать: OpenCode может обновляться сам и сбрасывать патчи. Откройте «Настройки → OpenCode и система» и примените фикс плагина и патч Antigravity.');
     }
     if (disclaimer && disclaimer.style.display !== display) disclaimer.style.display = display;
     // Keep the prior display during a syntax-check outage, but do not use an
@@ -2885,7 +2936,9 @@ async function addGoogleAccount() {
   if (!result || result.status === 'error') return;
   const applied = await refreshOpenCodePatchStatuses();
   if (applied === false) {
-    showToast('⚠️ Патчи OpenCode не активны — примените их в «Настройки → OpenCode и система»');
+    showToast(confirmedPluginStatus?.state === 'missing'
+      ? 'Плагин OpenCode не найден — нажмите «Установить плагин» в «Настройки → OpenCode и система»'
+      : '⚠️ Патчи OpenCode не активны — примените их в «Настройки → OpenCode и система»');
   }
 }
 
