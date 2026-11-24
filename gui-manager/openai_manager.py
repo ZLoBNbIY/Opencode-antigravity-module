@@ -629,6 +629,35 @@ def load_openai_accounts(*, strict: bool = False) -> list[dict]:
         for acc in accounts:
             acc["is_active"] = acc is active
 
+        if active is not None and active_auth and active_auth.get("access"):
+            try:
+                auth_expires = int(active_auth.get("expires") or 0)
+            except (TypeError, ValueError):
+                auth_expires = 0
+            try:
+                hub_expires = int(active.get("expires") or 0)
+            except (TypeError, ValueError):
+                hub_expires = 0
+            auth_access = str(active_auth.get("access") or "")
+            auth_refresh = str(active_auth.get("refresh") or "")
+            hub_refresh = str(active.get("refresh") or "")
+            should_adopt = auth_expires > hub_expires or (
+                auth_expires == hub_expires and (
+                    (not active.get("access") and bool(auth_access))
+                    or (bool(auth_refresh) and auth_refresh != hub_refresh)
+                )
+            )
+            if should_adopt:
+                active["access"] = auth_access
+                if auth_refresh:
+                    active["refresh"] = auth_refresh
+                if auth_expires > 0:
+                    active["expires"] = auth_expires
+                if active_auth.get("email") and not active.get("email"):
+                    active["email"] = active_auth["email"]
+                if not strict:
+                    save_openai_accounts(accounts)
+
         return accounts
 
 
@@ -872,22 +901,24 @@ def remove_openai_account(account_id: str) -> bool:
 
 def set_openai_account_enabled(account_id: str, enabled: bool) -> bool:
     """Enables or disables an OpenAI account."""
-    accounts = load_openai_accounts()
-    target = _find_openai_account(accounts, account_id)
-    if not target:
-        return False
-    target["enabled"] = enabled
-    return save_openai_accounts(accounts)
+    with _accounts_lock:
+        accounts = load_openai_accounts()
+        target = _find_openai_account(accounts, account_id)
+        if not target:
+            return False
+        target["enabled"] = enabled
+        return save_openai_accounts(accounts)
 
 
 def set_openai_account_candidate(account_id: str, candidate: bool) -> bool:
     """Sets whether an OpenAI account participates in auto-rotation."""
-    accounts = load_openai_accounts()
-    target = _find_openai_account(accounts, account_id)
-    if not target:
-        return False
-    target["candidate"] = candidate
-    return save_openai_accounts(accounts)
+    with _accounts_lock:
+        accounts = load_openai_accounts()
+        target = _find_openai_account(accounts, account_id)
+        if not target:
+            return False
+        target["candidate"] = candidate
+        return save_openai_accounts(accounts)
 
 
 def _get_http_opener(timeout: int = 15):
@@ -902,6 +933,43 @@ OPENAI_BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
+
+
+def _match_openai_row(accounts: list[dict], source: dict) -> dict | None:
+    for field in ("id", "accountId"):
+        value = source.get(field)
+        if value:
+            match = next((a for a in accounts if a.get(field) == value), None)
+            if match is not None:
+                return match
+    email = str(source.get("email") or "").strip().casefold()
+    if email:
+        return next(
+            (a for a in accounts if str(a.get("email") or "").strip().casefold() == email),
+            None,
+        )
+    return None
+
+
+def _persist_refreshed_tokens_to_store(account: dict) -> None:
+    if not OPENAI_ACCOUNTS_FILE.exists():
+        return
+    with _accounts_lock:
+        try:
+            stored = load_openai_accounts()
+        except Exception:
+            return
+        match = _match_openai_row(stored, account)
+        if match is None:
+            return
+        changed = False
+        for field in ("access", "refresh", "expires", "email", "plan_type"):
+            val = account.get(field)
+            if val and match.get(field) != val:
+                match[field] = val
+                changed = True
+        if changed:
+            save_openai_accounts(stored)
 
 
 def refresh_openai_token(account: dict) -> tuple[bool, dict]:
@@ -942,6 +1010,8 @@ def refresh_openai_token(account: dict) -> tuple[bool, dict]:
                 account["email"] = claims["email"]
             if claims.get("plan_type"):
                 account["plan_type"] = claims["plan_type"]
+
+            _persist_refreshed_tokens_to_store(account)
 
             if account.get("is_active"):
                 write_active_auth_openai(account)
@@ -1160,19 +1230,43 @@ def check_and_auto_rotate_openai(accounts: list[dict]) -> tuple[bool, str]:
 
 
 def refresh_all_openai_accounts() -> tuple[list[dict], str | None]:
-    accounts = load_openai_accounts()
-    for acc in accounts:
+    snapshot = [dict(acc) for acc in load_openai_accounts()]
+    originals = [
+        (acc.get("access"), acc.get("refresh"), acc.get("expires"))
+        for acc in snapshot
+    ]
+    for acc in snapshot:
         try:
             acc["quota"] = fetch_openai_usage(acc)
             acc["last_used"] = int(time.time())
         except Exception as e:
             print(f"[OpenAI Manager] Quota refresh failed ({type(e).__name__})")
             acc["quota"] = _stale_openai_usage(acc)
-    if not save_openai_accounts(accounts):
-        raise OSError("Не удалось сохранить лимиты ChatGPT")
 
-    _rotated, msg = check_and_auto_rotate_openai(accounts)
-    return accounts, (msg or None)
+    with _accounts_lock:
+        accounts = load_openai_accounts()
+        for acc, (orig_access, orig_refresh, orig_expires) in zip(snapshot, originals):
+            target = _match_openai_row(accounts, acc)
+            if target is None:
+                continue
+            target["quota"] = acc.get("quota")
+            target["last_used"] = acc.get("last_used")
+            token_changed = (
+                acc.get("refresh") != orig_refresh
+                or acc.get("access") != orig_access
+                or acc.get("expires") != orig_expires
+            )
+            if token_changed:
+                for field in ("access", "refresh", "expires", "email", "plan_type"):
+                    if acc.get(field):
+                        target[field] = acc[field]
+                if target.get("is_active") and not acc.get("is_active"):
+                    write_active_auth_openai(target)
+        if not save_openai_accounts(accounts):
+            raise OSError("Не удалось сохранить лимиты ChatGPT")
+
+        _rotated, msg = check_and_auto_rotate_openai(accounts)
+        return accounts, (msg or None)
 
 
 # --- OAuth Server Handler for Browser Login ---
@@ -1401,25 +1495,26 @@ def login_openai_browser(timeout: int = 300) -> tuple[bool, str, dict | None]:
         print(f"[OpenAI Manager] Usage fetch error after login ({type(e).__name__})")
 
     # Add to accounts pool
-    accounts = load_openai_accounts()
-    # Replace existing account with same accountId or email, or append
-    existing_idx = next(
-        (i for i, a in enumerate(accounts) if a.get("accountId") == account_id or a.get("email") == new_account["email"]),
-        None
-    )
+    with _accounts_lock:
+        accounts = load_openai_accounts()
+        # Replace existing account with same accountId or email, or append
+        existing_idx = next(
+            (i for i, a in enumerate(accounts) if a.get("accountId") == account_id or a.get("email") == new_account["email"]),
+            None
+        )
 
-    if existing_idx is not None:
-        accounts[existing_idx] = new_account
-    else:
-        accounts.append(new_account)
+        if existing_idx is not None:
+            accounts[existing_idx] = new_account
+        else:
+            accounts.append(new_account)
 
-    # Set as active in auth.json
-    for a in accounts:
-        a["is_active"] = (a["accountId"] == account_id)
+        # Set as active in auth.json
+        for a in accounts:
+            a["is_active"] = (a is new_account)
 
-    if not save_openai_accounts(accounts):
-        return False, "Не удалось сохранить аккаунт ChatGPT на диск.", None
-    if not write_active_auth_openai(new_account):
-        return False, "Аккаунт сохранён в Hub, но не удалось активировать его в OpenCode.", new_account
+        if not save_openai_accounts(accounts):
+            return False, "Не удалось сохранить аккаунт ChatGPT на диск.", None
+        if not write_active_auth_openai(new_account):
+            return False, "Аккаунт сохранён в Hub, но не удалось активировать его в OpenCode.", new_account
 
     return True, f"Аккаунт {new_account['email']} успешно подключен!", new_account

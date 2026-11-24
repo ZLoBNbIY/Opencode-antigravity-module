@@ -70,6 +70,16 @@ def check_for_updates(repo_dir: Path, timeout=12) -> dict:
         }
     """
     local_sha = get_local_commit_sha(repo_dir)
+    if not SHA_RE.fullmatch(local_sha):
+        return {
+            "has_update": False,
+            "local_sha": local_sha[:7] if local_sha else "unknown",
+            "remote_sha": "",
+            "message": "",
+            "date": "",
+            "author": "",
+            "error": "Не удалось определить локальную версию.",
+        }
 
     headers = {
         "User-Agent": "Antigravity-Hub-Updater/2.0",
@@ -87,17 +97,22 @@ def check_for_updates(repo_dir: Path, timeout=12) -> dict:
         try:
             req = urllib.request.Request(GITHUB_COMMITS_API, headers=headers)
             with opener.open(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+                data = json.loads(resp.read(1024 * 1024).decode("utf-8"))
+                if not isinstance(data, dict):
+                    raise ValueError("Некорректный формат ответа GitHub API")
                 remote_sha = data.get("sha", "")
-                commit_info = data.get("commit", {})
-                msg = commit_info.get("message", "").split("\n")[0]
-                date_str = commit_info.get("author", {}).get("date", "")
-                author = commit_info.get("author", {}).get("name", "Author")
-
                 if not isinstance(remote_sha, str) or not SHA_RE.fullmatch(remote_sha):
                     return {"has_update": False, "error": "Не удалось определить remote sha"}
-                if not SHA_RE.fullmatch(local_sha):
-                    return {"has_update": False, "error": "Не удалось определить локальную версию."}
+                commit_info = data.get("commit")
+                if not isinstance(commit_info, dict):
+                    commit_info = {}
+                raw_msg = commit_info.get("message")
+                msg = raw_msg.split("\n")[0] if isinstance(raw_msg, str) else ""
+                author_info = commit_info.get("author")
+                if not isinstance(author_info, dict):
+                    author_info = {}
+                date_str = author_info.get("date") if isinstance(author_info.get("date"), str) else ""
+                author = author_info.get("name") if isinstance(author_info.get("name"), str) else "Author"
 
                 has_update = _has_newer_remote_commit(repo_dir, local_sha, remote_sha)
 
@@ -116,22 +131,31 @@ def check_for_updates(repo_dir: Path, timeout=12) -> dict:
             continue
 
     # If GitHub REST API is throttled (403 rate limit), fall back to git ls-remote directly
+    fallback_err = None
     try:
-        if SHA_RE.fullmatch(local_sha):
-            remote_sha = _upstream_sha(repo_dir)
-            has_update = _has_newer_remote_commit(repo_dir, local_sha, remote_sha)
-            return {
-                "has_update": has_update,
-                "local_sha": local_sha[:7] if local_sha else "unknown",
-                "remote_sha": remote_sha[:7],
-                "remote_commit": remote_sha,
-                "message": "Обновление ветки V2",
-                "date": "",
-                "author": "GitHub",
-                "error": None,
-            }
-    except Exception:
-        pass
+        remote_sha = _upstream_sha(repo_dir)
+        has_update = _has_newer_remote_commit(repo_dir, local_sha, remote_sha)
+        return {
+            "has_update": has_update,
+            "local_sha": local_sha[:7] if local_sha else "unknown",
+            "remote_sha": remote_sha[:7],
+            "remote_commit": remote_sha,
+            "message": "Обновление ветки V2",
+            "date": "",
+            "author": "GitHub",
+            "error": None,
+        }
+    except Exception as e:
+        fallback_err = e
+
+    if fallback_err is not None and last_err is not None:
+        error_text = f"{fallback_err} (API: {last_err})"
+    elif fallback_err is not None:
+        error_text = str(fallback_err)
+    elif last_err is not None:
+        error_text = str(last_err)
+    else:
+        error_text = "Неизвестная ошибка проверки обновлений"
 
     return {
         "has_update": False,
@@ -140,7 +164,7 @@ def check_for_updates(repo_dir: Path, timeout=12) -> dict:
         "message": "",
         "date": "",
         "author": "",
-        "error": str(last_err) if last_err else "Неизвестная ошибка проверки обновлений",
+        "error": error_text,
     }
 
 def _direct_git_env() -> dict:

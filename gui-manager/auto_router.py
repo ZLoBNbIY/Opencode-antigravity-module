@@ -188,12 +188,12 @@ class AutoRouter:
         ranked = [item for group in sorted(filter(None, groups), key=score) for item in group]
         return ranked, by_mode
 
-    def refresh(self, provider, hub, opencode, force=False):
-        key = self._key(provider, hub, opencode)
+    def _start_refresh(self, provider, hub, opencode, force=False):
         with self._lock:
+            key = self._key(provider, hub, opencode)
             entry = self._entries.get(key)
             if entry and (entry["running"] or (not force and self._clock() < entry["expires"])):
-                return entry["event"]
+                return entry["event"], key
             if entry is None:
                 entry = {"running": False, "rows": [], "checkedAt": None,
                          "expires": 0, "event": threading.Event(), "failed_hosts": {}}
@@ -206,9 +206,21 @@ class AutoRouter:
                     break
                 if old != key and not self._entries[old]["running"]:
                     del self._entries[old]
-        threading.Thread(target=self._refresh, args=(entry, provider, copy.deepcopy(hub), copy.deepcopy(opencode)),
-                         daemon=True, name=f"auto-route-{provider}").start()
-        return entry["event"]
+        try:
+            hub_copy = copy.deepcopy(hub)
+            oc_copy = copy.deepcopy(opencode)
+            threading.Thread(target=self._refresh, args=(entry, provider, hub_copy, oc_copy),
+                             daemon=True, name=f"auto-route-{provider}").start()
+        except BaseException:
+            with self._lock:
+                entry["running"] = False
+                entry["event"].set()
+            raise
+        return entry["event"], key
+
+    def refresh(self, provider, hub, opencode, force=False):
+        event, _key = self._start_refresh(provider, hub, opencode, force=force)
+        return event
 
     def _refresh(self, entry, provider, hub, opencode):
         try:
@@ -253,8 +265,8 @@ class AutoRouter:
     def selected_upstream(self, provider, hub, opencode, *, host=None):
         if host is not None:
             host = host.lower().rstrip(".")
-        key = self._key(provider, hub, opencode)
         with self._lock:
+            key = self._key(provider, hub, opencode)
             entry = self._entries.get(key)
             if entry:
                 ranked, _ = self._rank(entry, host)
@@ -266,8 +278,7 @@ class AutoRouter:
         if not configured_routes(hub, provider):
             raise AutoRouteUnavailable("Auto: настройте VLESS, DNS или HTTP-прокси")
         route_host = host.lower().rstrip(".")
-        ready = self.refresh(provider, hub, opencode)
-        key = self._key(provider, hub, opencode)
+        ready, key = self._start_refresh(provider, hub, opencode)
 
         def candidates():
             with self._lock:

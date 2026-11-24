@@ -3,6 +3,7 @@ import socket
 import struct
 import sys
 import unittest
+import urllib.error
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'gui-manager'))
@@ -72,9 +73,21 @@ class DnsAvailabilityTests(unittest.TestCase):
         self.assertIsNone(dns_tester._parse_a_record_ip(valid_other_txid, expected_txid=0x1234))
         self.assertEqual(dns_tester._parse_a_record_ip(valid_other_txid, expected_txid=0x9999), '1.2.3.4')
 
-        # Plaintext http:// DoH must be rejected
-        res = dns_tester.test_doh_endpoint('http://resolver.test/dns-query')
+        # Plaintext http:// DoH must be rejected (case-insensitively)
+        res = dns_tester.test_doh_endpoint('HTTP://resolver.test/dns-query')
         self.assertFalse(res['ok'])
+
+        # Malformed or None inputs must return error dict cleanly without AttributeError
+        self.assertFalse(dns_tester.test_dot_endpoint(None)['ok'])
+        self.assertFalse(dns_tester.test_dot_endpoint('dns.google', port=99999)['ok'])
+        self.assertFalse(dns_tester.test_doh_endpoint(None)['ok'])
+
+        # Redirecting DoH endpoint must be blocked
+        with patch('dns_tester.urllib.request.build_opener') as build:
+            build.return_value.open.side_effect = urllib.error.HTTPError(
+                'https://resolver.test/dns-query', 302, 'Redirect blocked', {}, None
+            )
+            self.assertFalse(dns_tester.test_doh_endpoint('https://resolver.test/dns-query')['ok'])
 
 
 if __name__ == '__main__':

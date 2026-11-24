@@ -21,11 +21,35 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-DB_PATH = Path(os.path.expanduser("~/.local/share/opencode/opencode.db"))
+import hub_paths
+import opencode_credentials
+
+
+def _default_db_path() -> Path:
+    getter = getattr(hub_paths, "get_opencode_data_dir", None)
+    if callable(getter):
+        return Path(getter()) / "opencode.db"
+    detected = opencode_credentials.database_path()
+    if detected is not None:
+        return detected
+    xdg = os.environ.get("XDG_DATA_HOME")
+    if xdg:
+        return Path(xdg) / "opencode" / "opencode.db"
+    return Path(os.path.expanduser("~/.local/share/opencode/opencode.db"))
+
+
+_INITIAL_DB_PATH = _default_db_path()
+DB_PATH = _INITIAL_DB_PATH
 PROVIDER = "deepseek"
+PROVIDERS = ("deepseek", "deepseek-account")
 SOURCE = "OpenCode"
 CACHE_TTL_SECONDS = 60
-_MODEL_LIKE = ('%"providerID":"deepseek"%', '%"providerID": "deepseek"%')
+_MODEL_LIKE = (
+    '%"providerID":"deepseek"%',
+    '%"providerID": "deepseek"%',
+    '%"providerID":"deepseek-account"%',
+    '%"providerID": "deepseek-account"%',
+)
 DEFAULT_CURRENCY = "CNY"
 
 # Official DeepSeek prices per 1M tokens: (cache hit input, cache miss input,
@@ -256,7 +280,7 @@ def deepseek_usage(days: int = 30, now: Optional[datetime] = None,
         "error": None,
     }
 
-    db = Path(DB_PATH)
+    db = Path(DB_PATH) if DB_PATH != _INITIAL_DB_PATH else _default_db_path()
     if not db.exists():
         result["status"] = "unavailable"
         result["error"] = "Локальная база OpenCode не найдена — расход пока недоступен"
@@ -277,7 +301,7 @@ def deepseek_usage(days: int = 30, now: Optional[datetime] = None,
             if not isinstance(payload, dict):
                 continue
             model = payload.get("model")
-            if not isinstance(model, dict) or model.get("providerID") != PROVIDER:
+            if not isinstance(model, dict) or model.get("providerID") not in PROVIDERS:
                 continue
             timing = payload.get("time")
             occurred = timing.get("created") if isinstance(timing, dict) else None

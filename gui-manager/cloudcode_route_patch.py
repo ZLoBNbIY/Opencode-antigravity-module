@@ -192,7 +192,7 @@ def _route_backup_paths(path: Path) -> tuple[Path, Path]:
 def patch_auth_plugin_transport(plugin_cache: Path | None = None, *, include_local=False,
                                 changed_files: list[str] | None = None) -> bool:
     """Use the Hub for explicitly routed Google requests in the Cloud Code transport."""
-    candidates = _prompt_fix_candidates(plugin_cache)
+    candidates = _active_plugin_candidates(plugin_cache)
     if plugin_cache is None and include_local and not getattr(sys, "frozen", False):
         local = _local_plugin_dist_dir()
         if local is not None:
@@ -648,7 +648,7 @@ def _plan_quota_breaker(source: str) -> str | None:
 def patch_quota_breaker(plugin_cache: Path | None = None) -> dict:
     """Patch installed bundles only; report unrecognized application layouts."""
     changed, already, unsupported = [], [], []
-    for path in _prompt_fix_candidates(plugin_cache):
+    for path in _active_plugin_candidates(plugin_cache):
         try:
             source = _read_text_exact(path)
             updated = _plan_quota_breaker(source)
@@ -969,7 +969,7 @@ def _plan_cloaking(source: str, optin: bool | None = None) -> str | None:
 def patch_cloaking(plugin_cache: Path | None = None) -> dict:
     """Apply the cloaking layer to installed bundles only, with a backup."""
     changed, already, unsupported, failed = [], [], [], []
-    for path in _prompt_fix_candidates(plugin_cache):
+    for path in _active_plugin_candidates(plugin_cache):
         try:
             source = _read_text_exact(path)
             updated = _plan_cloaking(source)
@@ -1005,6 +1005,70 @@ def _local_plugin_dist_dir() -> Path | None:
     return candidate if all((candidate / name).is_file() for name in ("server.js", "index.js")) else None
 
 
+_SEMVER_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+
+
+def _semver_key(version: str | None) -> tuple[int, int, int]:
+    if isinstance(version, str):
+        match = _SEMVER_RE.fullmatch(version.strip())
+        if match:
+            return int(match.group(1)), int(match.group(2)), int(match.group(3))
+    return (0, 0, 0)
+
+
+def _read_opencode_plugin_pin() -> str | None:
+    try:
+        import hub_paths
+        import jsonc_config
+        cfg_path = jsonc_config.config_path(hub_paths.get_opencode_config_dir())
+        if not cfg_path.is_file():
+            return None
+        data = jsonc_config.parse_config(cfg_path.read_text(encoding="utf-8-sig"))
+        if not isinstance(data, dict):
+            return None
+        pins: list[str] = []
+        for field in ("plugins", "plugin"):
+            entries = data.get(field)
+            if entries is None:
+                continue
+            for entry in entries if isinstance(entries, list) else [entries]:
+                pkg = entry.get("package") if isinstance(entry, dict) else entry
+                if isinstance(pkg, str) and pkg.startswith(PLUGIN_NAME + "@"):
+                    ver = pkg[len(PLUGIN_NAME) + 1:]
+                    if _SEMVER_RE.fullmatch(ver):
+                        pins.append(ver)
+        return max(pins, key=_semver_key) if pins else None
+    except Exception:
+        return None
+
+
+def _active_plugin_candidates(plugin_cache: Path | None = None) -> list[Path]:
+    """Select active plugin bundles, ignoring stale older cached versions."""
+    candidates = _prompt_fix_candidates(plugin_cache)
+    if len(candidates) <= 1:
+        return candidates
+    versioned = [(path, _package_version(path.parent.parent)) for path in candidates]
+    versions = {ver for _, ver in versioned if ver is not None}
+    if not versions:
+        return candidates
+    target = None
+    if plugin_cache is None:
+        oc_pin = _read_opencode_plugin_pin()
+        if oc_pin and oc_pin in versions:
+            target = oc_pin
+        else:
+            try:
+                import hub_paths
+                cfg_pin = (hub_paths.read_mirrored_antigravity_config() or {}).get("plugin_pin_version")
+                if isinstance(cfg_pin, str) and cfg_pin in versions:
+                    target = cfg_pin
+            except Exception:
+                pass
+    if target is None:
+        target = max(versions, key=_semver_key)
+    return [path for path, ver in versioned if ver is None or ver == target]
+
+
 def get_vendored_plugin_version() -> str | None:
     """Version of the recovery bundle shipped with this Hub."""
     local = _local_plugin_dist_dir()
@@ -1012,26 +1076,39 @@ def get_vendored_plugin_version() -> str | None:
 
 
 def get_expected_plugin_version() -> str | None:
-    """Version OpenCode should load: explicit pin, else the verified bundle.
+    """Version OpenCode should load: explicit pin, OpenCode pin, or verified bundle.
 
     Using the recovery bundle version here is unsafe: 3.1.x moves the account
     store and leaves a schema-2 forward pointer, which older releases refuse
-    to open. The Hub must pin the version it actually verified, not the one it
-    happens to ship for recovery.
+    to open. Never fall back to the vendored 3.0.0 recovery bundle when
+    plugin_pin_version and verified_version are uninitialized.
     """
-    version_re = r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}"
     try:
         import hub_paths
         config = hub_paths.read_mirrored_antigravity_config() or {}
         pinned = config.get("plugin_pin_version")
-        if isinstance(pinned, str) and re.fullmatch(version_re, pinned):
+        if isinstance(pinned, str) and _SEMVER_RE.fullmatch(pinned):
             return pinned
     except Exception:
         pass
     verified = load_patch_state().get("verified_version")
-    if isinstance(verified, str) and re.fullmatch(version_re, verified):
+    oc_pin = _read_opencode_plugin_pin()
+    if isinstance(verified, str) and _SEMVER_RE.fullmatch(verified):
+        if oc_pin and _semver_key(oc_pin) > _semver_key(verified):
+            return oc_pin
         return verified
-    return get_vendored_plugin_version()
+    if oc_pin:
+        return oc_pin
+    installed = get_verified_version()
+    if installed:
+        return installed
+    try:
+        import antigravity_manager
+        if antigravity_manager.has_relocated_google_store():
+            return "3.1.13"
+    except Exception:
+        pass
+    return None
 
 
 def _package_version(plugin_dir: Path) -> str | None:
@@ -1046,7 +1123,7 @@ def _package_version(plugin_dir: Path) -> str | None:
     if not isinstance(data, dict) or data.get("name", PLUGIN_NAME) != PLUGIN_NAME:
         return None
     version = data.get("version")
-    return version if isinstance(version, str) and re.fullmatch(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}", version) else None
+    return version if isinstance(version, str) and _SEMVER_RE.fullmatch(version) else None
 
 
 def sync_local_plugin_bundles(plugin_cache: Path | None = None) -> dict:
@@ -1062,7 +1139,7 @@ def sync_local_plugin_bundles(plugin_cache: Path | None = None) -> dict:
     if local is None:
         return {"ok": False, "copied": [], "skipped": [], "message": "Локальный бандл плагина не найден."}
     local_version = _package_version(local.parent)
-    target_dirs = {path.parent for path in _prompt_fix_candidates(plugin_cache)}
+    target_dirs = {path.parent for path in _active_plugin_candidates(plugin_cache)}
     if not target_dirs:
         return {"ok": False, "copied": [], "skipped": [], "message": MISSING_PLUGIN}
     copied: list[str] = []
@@ -1134,7 +1211,7 @@ def patch_prompt_sanitizer(plugin_cache: Path | None = None) -> dict:
     ``tools.opencode.session_move`` (OpenCode's Code Mode catalog does). The
     patch rewrites only that reference, keeping the same JS tool path.
     """
-    candidates = _prompt_fix_candidates(plugin_cache)
+    candidates = _active_plugin_candidates(plugin_cache)
     changed: list[str] = []
     already: list[str] = []
     missing: list[str] = []
@@ -1185,7 +1262,7 @@ def patch_prompt_sanitizer(plugin_cache: Path | None = None) -> dict:
 
 def get_prompt_sanitizer_status(plugin_cache: Path | None = None, *, full=False) -> dict:
     """Report whether the 429 fix is present in every installed plugin copy."""
-    candidates = _prompt_fix_candidates(plugin_cache)
+    candidates = _active_plugin_candidates(plugin_cache)
     if not candidates:
         return {
             "state": "missing",
@@ -1251,7 +1328,7 @@ def _gemini4_v2_is_patched(source: str) -> bool:
 
 def patch_gemini4_models(plugin_cache: Path | None = None) -> dict:
     """Enable dynamic Gemini 4 wire-model mapping in installed bundles."""
-    candidates = _prompt_fix_candidates(plugin_cache)
+    candidates = _active_plugin_candidates(plugin_cache)
     changed: list[str] = []
     already: list[str] = []
     missing: list[str] = []
@@ -1287,7 +1364,7 @@ IDENTITY_FIX_BACKUP_SUFFIX = ".hub-identity.bak"
 
 def _identity_candidates(plugin_cache: Path | None = None) -> list[Path]:
     """Only report/modify installed copies, never the recovery bundle."""
-    return _prompt_fix_candidates(plugin_cache)
+    return _active_plugin_candidates(plugin_cache)
 
 
 def _identity_replacements(eol: str) -> list[tuple[str, str, str, bool]]:
@@ -1952,7 +2029,7 @@ def get_installed_fingerprint(plugin_cache: Path | None = None) -> dict:
     """Describe every installed bundle OpenCode may load, without modifying it."""
     from hashlib import sha256
     copies = []
-    for path in _prompt_fix_candidates(plugin_cache):
+    for path in _active_plugin_candidates(plugin_cache):
         try:
             source = _read_text_exact(path)
             version = _package_version(path.parent.parent)
@@ -1976,7 +2053,7 @@ def get_verified_versions(plugin_cache: Path | None = None) -> list[str]:
     """All installed plugin versions; several cached versions may coexist."""
     versions = {copy.get("version") for copy in get_installed_fingerprint(plugin_cache)["copies"]}
     versions.discard(None)
-    return sorted(versions)
+    return sorted(versions, key=_semver_key)
 
 
 def check_patch_state(plugin_cache: Path | None = None, state_path: Path | None = None) -> dict:
@@ -1985,15 +2062,17 @@ def check_patch_state(plugin_cache: Path | None = None, state_path: Path | None 
     if not fingerprint["found"]:
         return {"state": "missing", **fingerprint}
     state = load_patch_state(plugin_cache, state_path)
-    expected_versions = state.get("verified_versions") or (
+    raw_expected = state.get("verified_versions") or (
         [state["verified_version"]] if state.get("verified_version") else [])
+    expected_versions = sorted(raw_expected, key=_semver_key)
     hashes = state.get("verified_sha256") if isinstance(state.get("verified_sha256"), dict) else {}
     if not expected_versions:
         return {"state": "unknown", "expected_version": None, **fingerprint}
     versions = {copy.get("version") for copy in fingerprint["copies"]}
     if versions - set(expected_versions):
         return {"state": "version_changed", "expected_version": expected_versions[-1],
-                "installed_versions": sorted(v or "unknown" for v in versions), **fingerprint}
+                "installed_versions": sorted((v or "unknown" for v in versions), key=lambda v: _semver_key(v) if v != "unknown" else (0, 0, 0)),
+                **fingerprint}
     for copy in fingerprint["copies"]:
         key = f"{copy.get('version') or 'unknown'}:{Path(copy['path']).name}"
         expected = hashes.get(key)
@@ -2007,7 +2086,7 @@ def verify_plugin_health(plugin_cache: Path | None = None) -> dict:
     """Check base patches and report the optional quota breaker separately."""
     import shutil
     import subprocess
-    candidates = _prompt_fix_candidates(plugin_cache)
+    candidates = _active_plugin_candidates(plugin_cache)
     quota = {"state": "missing", "active": 0, "pending": 0, "unsupported": []}
     cloaking = {"state": "missing", "active": 0, "pending": 0,
                 "unsupported": [], "opt_in": _cloaking_optin_enabled()}

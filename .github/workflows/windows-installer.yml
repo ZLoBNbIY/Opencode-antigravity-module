@@ -35,7 +35,7 @@ jobs:
         run: |
           set -euo pipefail
           tag="$(python3 packaging/windows/release_version.py)"
-          refs="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$tag" \
+          refs="$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$tag" \
             --jq ".[] | select(.ref == \"refs/tags/$tag\") | .ref")"
           if [[ -n "$refs" ]]; then
             target="$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq '.sha')"
@@ -44,10 +44,10 @@ jobs:
               exit 1
             fi
           fi
-          release="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
-            --jq ".[] | select(.tag_name == \"$tag\") | .draft")"
+          published="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
+            --jq ".[] | select(.tag_name == \"$tag\" and .draft == false) | .id")"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          if [[ "$release" == "false" ]]; then
+          if [[ -n "$published" ]]; then
             echo "publish=false" >> "$GITHUB_OUTPUT"
             echo "Release $tag already published."
           else
@@ -95,7 +95,7 @@ jobs:
           TAG: ${{ needs.version.outputs.tag }}
         run: |
           set -euo pipefail
-          refs="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$TAG" \
+          refs="$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$TAG" \
             --jq ".[] | select(.ref == \"refs/tags/$TAG\") | .ref")"
           if [[ -n "$refs" ]]; then
             target="$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq '.sha')"
@@ -116,7 +116,7 @@ jobs:
         run: |
           python -m pip install --require-hashes -r gui-manager/requirements-win-py312-x64.lock
           if ($LASTEXITCODE -ne 0) { throw 'Could not install runtime dependencies' }
-          python -m pip install pyinstaller==6.22.3
+          python -m pip install --only-binary=:all: pyinstaller==6.22.3
           if ($LASTEXITCODE -ne 0) { throw 'Could not install PyInstaller' }
           $inno = Join-Path $env:RUNNER_TEMP 'inno.exe'
           $dir = Join-Path $env:RUNNER_TEMP 'InnoSetup'
@@ -206,27 +206,71 @@ jobs:
           set -euo pipefail
           sha256sum --strict --check AntigravityHub-Setup-x64.exe.sha256
           owner_repo="$GITHUB_REPOSITORY"
+          created_tag=false
+          created_draft_id=""
+          published=false
+          cleanup_on_failure() {
+            if [[ "$published" == "true" ]]; then
+              return
+            fi
+            if [[ -n "$created_draft_id" ]]; then
+              gh api --method DELETE "repos/$owner_repo/releases/$created_draft_id" >/dev/null 2>&1 || true
+            fi
+            if [[ "$created_tag" == "true" ]]; then
+              gh api --method DELETE "repos/$owner_repo/git/refs/tags/$TAG" >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup_on_failure EXIT
+
           matches="$(gh api --paginate "repos/$owner_repo/git/matching-refs/tags/$TAG" \
             --jq ".[] | select(.ref == \"refs/tags/$TAG\") | .ref")"
           if [[ -z "$matches" ]]; then
             gh api --method POST "repos/$owner_repo/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$GITHUB_SHA" >/dev/null
+            created_tag=true
           fi
           target="$(gh api "repos/$owner_repo/commits/$TAG" --jq '.sha')"
           if [[ "$target" != "$GITHUB_SHA" ]]; then
             echo "::error::Tag $TAG points to a different commit. Re-run all jobs to calculate a new version."
             exit 1
           fi
-          draft="$(gh api --paginate "repos/$owner_repo/releases" \
-            --jq ".[] | select(.tag_name == \"$TAG\") | .draft")"
-          if [[ "$draft" == "false" ]]; then
+
+          releases_json="$(gh api --paginate "repos/$owner_repo/releases" \
+            --jq ".[] | select(.tag_name == \"$TAG\") | {id, draft}" | jq -s '.')"
+          if jq -e 'any(.[]; .draft == false)' <<<"$releases_json" >/dev/null; then
+            published=true
             echo "Release $TAG already published."
             exit 0
           fi
-          if [[ -z "$draft" ]]; then
+
+          mapfile -t draft_ids < <(jq -r '.[] | select(.draft == true) | .id' <<<"$releases_json")
+          if [[ ${#draft_ids[@]} -gt 1 ]]; then
+            for stale_id in "${draft_ids[@]:1}"; do
+              gh api --method DELETE "repos/$owner_repo/releases/$stale_id" >/dev/null
+            done
+            draft_ids=("${draft_ids[0]}")
+          fi
+
+          if [[ ${#draft_ids[@]} -eq 0 ]]; then
             gh release create "$TAG" --repo "$owner_repo" --verify-tag --draft \
               --title "AI HUB $TAG" --generate-notes \
               --notes "Windows x64 installer and SHA-256 checksum. The installer is unsigned."
+            for _ in 1 2 3 4 5; do
+              mapfile -t draft_ids < <(gh api --paginate "repos/$owner_repo/releases" \
+                --jq ".[] | select(.tag_name == \"$TAG\" and .draft == true) | .id")
+              if [[ ${#draft_ids[@]} -eq 1 ]]; then
+                created_draft_id="${draft_ids[0]}"
+                break
+              fi
+              sleep 2
+            done
           fi
+
+          if [[ ${#draft_ids[@]} -ne 1 ]]; then
+            echo "::error::Expected a single draft release for $TAG, found ${#draft_ids[@]}."
+            exit 1
+          fi
+
           gh release upload "$TAG" AntigravityHub-Setup-x64.exe AntigravityHub-Setup-x64.exe.sha256 \
             --repo "$owner_repo" --clobber
           gh release edit "$TAG" --repo "$owner_repo" --draft=false
+          published=true

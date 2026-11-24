@@ -37,6 +37,34 @@ def check_plugin_recovery():
             raise RuntimeError("A repeat recovery unexpectedly rewrote the patched bundle")
 
 
+def check_storage_and_backup():
+    import crypto_backup
+    import secure_storage
+
+    payload = {"apiKey": "smoke-test-key", "nested": {"count": 1}}
+    password = "smoke-test-password"
+    encrypted = crypto_backup.encrypt_backup(payload, password)
+    if not crypto_backup.is_encrypted_backup(encrypted):
+        raise RuntimeError("Encrypted backup header check failed")
+    decrypted = crypto_backup.decrypt_backup(encrypted, password)
+    if decrypted != payload:
+        raise RuntimeError("Backup encrypt/decrypt roundtrip mismatch")
+
+    with TemporaryDirectory() as tmp:
+        target = Path(tmp) / "smoke-secret.json"
+        record = secure_storage.protect_secret("smoke-test", {"apiKey": "smoke-test-key"})
+        secure_storage.atomic_write(
+            target,
+            json.dumps(record),
+            private_parent=True,
+            private_windows=True,
+        )
+        loaded = json.loads(target.read_text(encoding="utf-8"))
+        unprotected = secure_storage.unprotect_secret(loaded, "smoke-test")
+        if unprotected != {"apiKey": "smoke-test-key"}:
+            raise RuntimeError("Secure storage protect/unprotect roundtrip mismatch")
+
+
 def check_bundle(bundle, report):
     stage = "dependencies"
     try:
@@ -72,6 +100,8 @@ def check_bundle(bundle, report):
                     raise RuntimeError("Sidebar logo animation is not running")
         stage = "plugin recovery"
         check_plugin_recovery()
+        stage = "storage and backup"
+        check_storage_and_backup()
         stage = "plugin CLI"
         node = bundle / "playwright" / "driver" / "node.exe"
         result = subprocess.run([str(node), str(bundle / "plugin" / "dist" / "cli.js"), "--help"],
@@ -80,7 +110,7 @@ def check_bundle(bundle, report):
             raise RuntimeError("Bundled plugin CLI did not produce help")
         checks = {"ok": True, "webview": bool(webview and edgechromium and webview_backend),
                    "aes256": len(AESGCM.generate_key(256)) == 32, "chromium": True, "node_cli": True,
-                   "plugin_recovery": True}
+                   "plugin_recovery": True, "storage_and_backup": True}
     except Exception as exc:
         checks = {"ok": False, "stage": stage, "error_type": type(exc).__name__, "error": str(exc)}
     report.write_text(json.dumps(checks), encoding="utf-8")

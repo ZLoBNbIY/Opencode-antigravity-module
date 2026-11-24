@@ -14,6 +14,7 @@ import json
 import os
 import sqlite3
 import sys
+import threading
 import time
 from contextlib import closing
 from pathlib import Path
@@ -30,6 +31,7 @@ _KEY_TYPES = ("key", "api", None)
 
 _CACHE_TTL = 2.0
 _cache: dict = {}
+_cache_lock = threading.Lock()
 
 
 def _clean(value) -> str:
@@ -39,20 +41,23 @@ def _clean(value) -> str:
 
 def _cached(name, loader):
     now = time.monotonic()
-    entry = _cache.get(name)
-    if entry is not None and now - entry[0] < _CACHE_TTL:
-        return entry[1]
+    with _cache_lock:
+        entry = _cache.get(name)
+        if entry is not None and now - entry[0] < _CACHE_TTL:
+            return entry[1]
     try:
         value = loader()
     except Exception:
         value = {}
-    _cache[name] = (now, value)
+    with _cache_lock:
+        _cache[name] = (time.monotonic(), value)
     return value
 
 
 def invalidate() -> None:
     """Forget cached credentials (call after writing to OpenCode)."""
-    _cache.clear()
+    with _cache_lock:
+        _cache.clear()
 
 
 def database_path() -> Optional[Path]:

@@ -22,22 +22,28 @@ def browser_paths() -> dict[str, Path]:
                 try:
                     with winreg.OpenKey(hive, rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{filename}") as key:
                         raw_val = winreg.QueryValue(key, None)
-                        value = Path(os.path.expandvars(str(raw_val).strip('"')))
-                    if value.is_file() and value.name.lower() == filename:
-                        found[brand] = value
+                        if isinstance(raw_val, str):
+                            cleaned = os.path.expandvars(raw_val.strip(' \t"')).strip(' \t"')
+                            if cleaned:
+                                value = Path(cleaned)
+                                if value.is_file() and value.name.lower() == filename:
+                                    found.setdefault(brand, value)
+                                    break
                 except OSError:
                     pass
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice") as key:
                 prog_id = winreg.QueryValueEx(key, "ProgId")[0]
-            if prog_id:
-                with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, prog_id + r"\shell\open\command") as key:
-                    command = os.path.expandvars(str(winreg.QueryValueEx(key, None)[0]))
-                match = re.match(r'^\s*"([^\"]+\.exe)"|^\s*(.+?\.exe)(?:\s|$)', command, re.IGNORECASE)
-                executable = Path(next(group for group in match.groups() if group).strip()) if match else None
-                if executable and executable.is_file():
-                    found["default"] = executable
-        except (OSError, StopIteration, AttributeError):
+            if isinstance(prog_id, str) and prog_id.strip():
+                with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, prog_id.strip() + r"\shell\open\command") as key:
+                    raw_cmd = winreg.QueryValueEx(key, None)[0]
+                if isinstance(raw_cmd, str):
+                    command = os.path.expandvars(raw_cmd)
+                    match = re.match(r'^\s*"([^\"]+\.exe)"|^\s*(.+?\.exe)(?:\s|$)', command, re.IGNORECASE)
+                    executable = Path(next(group for group in match.groups() if group).strip(' \t"')) if match else None
+                    if executable and executable.is_file():
+                        found["default"] = executable
+        except (OSError, StopIteration, AttributeError, TypeError):
             pass
         roots = [
             Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")),

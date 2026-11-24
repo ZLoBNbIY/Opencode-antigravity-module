@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 import urllib.request
@@ -34,6 +35,15 @@ _source_count = 0
 _last_attempt = 0.0
 
 
+_MAX_SOURCE_BYTES = 2 * 1024 * 1024
+_DOMAIN_RE = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+
+def _valid_domain(domain: str) -> bool:
+    return (bool(domain) and len(domain) <= 253 and bool(_DOMAIN_RE.fullmatch(domain))
+            and not domain.endswith((".localhost", ".local", ".internal", ".home.arpa")))
+
+
 def _parse(text: str) -> tuple[set[str], set[str]]:
     domains, exact = set(), set()
     for raw in text.splitlines():
@@ -45,14 +55,14 @@ def _parse(text: str) -> tuple[set[str], set[str]]:
         if not line:
             continue
         if line.startswith("full:"):
-            line = line[5:].strip(".")
-            if line:
-                exact.add(line)
+            candidate = line[5:].strip(".")
+            if _valid_domain(candidate):
+                exact.add(candidate)
         elif line.startswith(("domain:", "domain=")):
-            line = (line.split(":", 1)[-1] if line.startswith("domain:") else line.split("=", 1)[-1]).strip(".")
-            if line:
-                domains.add(line)
-        else:
+            candidate = (line.split(":", 1)[-1] if line.startswith("domain:") else line.split("=", 1)[-1]).strip(".")
+            if _valid_domain(candidate):
+                domains.add(candidate)
+        elif _valid_domain(line):
             domains.add(line)
     return domains, exact
 
@@ -90,7 +100,10 @@ def _refresh() -> None:
             try:
                 request = urllib.request.Request(url, headers={"User-Agent": "AntigravityHub-Gemini-Rules"})
                 with opener.open(request, timeout=15) as response:
-                    text = response.read().decode("utf-8-sig")
+                    raw_bytes = response.read(_MAX_SOURCE_BYTES + 1)
+                if len(raw_bytes) > _MAX_SOURCE_BYTES:
+                    raise ValueError("ResponseTooLarge")
+                text = raw_bytes.decode("utf-8-sig")
                 parsed_domains, parsed_exact = _parse(text)
                 domains.update(parsed_domains)
                 exact.update(parsed_exact)

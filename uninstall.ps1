@@ -127,6 +127,35 @@ function Get-HubPluginRemoval([string]$Text) {
         if ($null -eq $field -or $tokens[$i + 1].Value -cne ':') { throw 'Invalid root JSON property.' }
         $first = $i + 2
         $end = Get-JsonValueEnd $tokens $first
+        if ($field -cin @('providers', 'provider')) {
+            if ($seen.ContainsKey($field)) { throw "Duplicate '$field' key; no changes were written." }
+            $seen[$field] = $true
+            if ($tokens[$first].Value -ceq '{') {
+                $seenProv = @{}
+                $lastKeptProv = $null
+                $provCommas = @()
+                for ($j = $first + 1; $j -lt $end; $j = $tail + 2) {
+                    $provKey = Get-JsonString $tokens[$j]
+                    if ($null -eq $provKey -or $tokens[$j + 1].Value -cne ':') { throw "Invalid '$field' JSON property." }
+                    if ($seenProv.ContainsKey($provKey)) { throw "Duplicate '$provKey' key in '$field'; no changes were written." }
+                    $seenProv[$provKey] = $true
+                    $tail = Get-JsonValueEnd $tokens ($j + 2)
+                    if ($provKey -ceq 'nvidia-nim') {
+                        $edits[$tokens[$j].Index] = @(($tokens[$tail].Index + $tokens[$tail].Length - $tokens[$j].Index), '')
+                    } else {
+                        if ($null -ne $lastKeptProv) { $provCommas += $lastKeptProv }
+                        $lastKeptProv = $tail + 1
+                    }
+                }
+                for ($j = $first + 1; $j -lt $end; $j = $tail + 2) {
+                    $tail = Get-JsonValueEnd $tokens ($j + 2)
+                    if ($tail + 1 -lt $end -and ($tail + 1) -notin $provCommas) {
+                        $edits[$tokens[$tail + 1].Index] = @(1, '')
+                    }
+                }
+            }
+            continue
+        }
         if ($field -cnotin @('plugin', 'plugins')) { continue }
         if ($seen.ContainsKey($field)) { throw "Duplicate '$field' key; no changes were written." }
         $seen[$field] = $true
@@ -268,10 +297,11 @@ if (-not $isSource -or $packageInstalled) {
 
 if ($isSource -and -not $packageInstalled -and $defaultHub) {
     foreach ($file in @(
-        'config\antigravity.json', 'config\gemini_domains.json',
+        'config\antigravity.json', 'config\gemini_domains.json', 'config\plugin-patch-state.json',
         'accounts\openai-accounts.json', 'accounts\claude-accounts.json',
         'accounts\xpiki.json', 'accounts\tokenlavka.json', 'accounts\deepseek-api.json',
         'secure\openrouter.json', 'secure\tokenlavka.json', 'secure\deepseek-api-key.json',
+        'secure\claude-bridge-token.json', 'opencode-secrets\nvidia-nim.key',
         'vless\config.json', 'vless\core.log'
     )) {
         Try-Cleanup $file { Remove-SafeFile (Join-Path $hubRoot $file) }

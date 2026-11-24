@@ -409,10 +409,10 @@ def _attempt(payload):
     return {}
 
 
-def _verify(cli, run_cli):
+def _verify(cli, run_cli, active_check=None):
     payload = api_request(cli, API_GET, INTEGRATION_PATH, run_cli=run_cli, timeout=VERIFY_TIMEOUT)
     integration = _google_integration(payload)
-    status = classify_connections(integration)
+    status = classify_connections(integration, active_check)
     # Verification must distinguish "connected now" from an earlier listing.
     result = CONNECTED if status == ALREADY_CONNECTED else VERIFY_FAILED
     _debug(result)
@@ -480,14 +480,17 @@ def ensure_google_connection(cli=None, *, version=None, resolve=True, run_cli=No
 
         # Re-read under the lock to close the race with another thread whose
         # attempt finished while this one was waiting for the lock.
-        if not (callable(stop) and stop()):
-            fresh = api_request(target, API_GET, INTEGRATION_PATH,
-                                run_cli=run_cli, timeout=GET_TIMEOUT)
-            status = classify_connections(_google_integration(fresh), active_check)
-            if status:
-                _debug(status)
-                return status
+        if callable(stop) and stop():
+            return SKIP
+        fresh = api_request(target, API_GET, INTEGRATION_PATH,
+                            run_cli=run_cli, timeout=GET_TIMEOUT)
+        status = classify_connections(_google_integration(fresh), active_check)
+        if status:
+            _debug(status)
+            return status
 
+        if callable(stop) and stop():
+            return SKIP
         started = api_request(target, API_POST, CONNECT_PATH,
                               {"methodID": POOL_METHOD_ID, "label": POOL_LABEL},
                               run_cli=run_cli, timeout=POST_TIMEOUT)
@@ -499,7 +502,7 @@ def ensure_google_connection(cli=None, *, version=None, resolve=True, run_cli=No
             _debug(TIMEOUT)
             return TIMEOUT
         if attempt["status"] == "complete":
-            return _verify(target, run_cli)
+            return _verify(target, run_cli, active_check=active_check)
 
         attempt_id = attempt["id"]
         if not _ATTEMPT_ID_RE.fullmatch(attempt_id):
@@ -511,7 +514,7 @@ def ensure_google_connection(cli=None, *, version=None, resolve=True, run_cli=No
         if _attempt(completed).get("status") != "complete":
             _debug(TIMEOUT)
             return TIMEOUT
-        return _verify(target, run_cli)
+        return _verify(target, run_cli, active_check=active_check)
     except Exception:
         _debug(API_ERROR)
         return API_ERROR

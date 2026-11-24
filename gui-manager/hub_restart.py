@@ -16,7 +16,9 @@ def wait_for_exit(pid: int, timeout: float = 60) -> bool:
         kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
         kernel.OpenProcess.restype = wintypes.HANDLE
         kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
         kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
         handle = kernel.OpenProcess(0x00100000, False, pid)
         if not handle:
             return ctypes.get_last_error() == 87  # Process already exited.
@@ -25,6 +27,7 @@ def wait_for_exit(pid: int, timeout: float = 60) -> bool:
         finally:
             kernel.CloseHandle(handle)
     deadline = time.monotonic() + timeout
+    proc_stat = Path(f"/proc/{pid}/stat")
     while True:
         try:
             os.kill(pid, 0)
@@ -32,6 +35,15 @@ def wait_for_exit(pid: int, timeout: float = 60) -> bool:
             return True
         except OSError:
             return False
+        try:
+            stat_text = proc_stat.read_text(encoding="utf-8", errors="replace")
+            rparen = stat_text.rfind(")")
+            if rparen != -1:
+                fields = stat_text[rparen + 1:].split()
+                if fields and fields[0] == "Z":
+                    return True
+        except OSError:
+            pass
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return False
@@ -79,8 +91,19 @@ def relaunch_source(parent_pid: str) -> int:
     from proxy_config import opencode_launch_environment
 
     script = Path(__file__).resolve().with_name("antigravity_manager.pyw")
-    subprocess.Popen([sys.executable, str(script)], cwd=str(script.parent), close_fds=True,
-                     env=opencode_launch_environment())
+    executable = sys.executable
+    kwargs = {
+        "cwd": str(script.parent),
+        "close_fds": True,
+        "env": opencode_launch_environment(),
+    }
+    if os.name == "nt":
+        pythonw = Path(sys.executable).with_name("pythonw.exe")
+        if pythonw.is_file():
+            executable = str(pythonw)
+        else:
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    subprocess.Popen([executable, str(script)], **kwargs)
     return 0
 
 

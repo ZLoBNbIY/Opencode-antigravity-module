@@ -7,12 +7,11 @@ and logs into a single isolated directory: %APPDATA%/AntigravityHub (or ~/.confi
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import sys
 from pathlib import Path
 from typing import Dict, Any
-from jsonc_config import parse_config
+from jsonc_config import parse_config, set_property
 from secure_storage import atomic_write_bytes, regular_file_stat
 
 
@@ -88,8 +87,7 @@ def _file_stamp(info):
 
 def _path_stamp(path):
     try:
-        regular_file_stat(path)
-        return _file_stamp(path.stat())
+        return _file_stamp(regular_file_stat(path))
     except FileNotFoundError:
         return None
 
@@ -104,7 +102,7 @@ def _read_mirror(path):
         content = stream.read()
         if _file_stamp(os.fstat(stream.fileno())) != stamp:
             raise OSError("Config changed while it was being read")
-    return stamp, content, parse_config(content.decode("utf-8-sig"), jsonc=False)
+    return stamp, content, parse_config(content.decode("utf-8-sig"), jsonc=True)
 
 
 def read_mirrored_antigravity_config(central=None, mirror=None) -> dict | None:
@@ -164,8 +162,8 @@ def ensure_auto_update_disabled(paths=None) -> dict:
     upstream releases). An unattended plugin update replaces the bundles this
     Hub patches, so the fix silently disappears and Google requests start
     returning 429 again. Keep the setting explicit in both the central config
-    and the OpenCode mirror. JSONC comments and key order are preserved: the
-    value is patched textually rather than by parsing and reserializing.
+    and the OpenCode mirror. JSONC comments and key order are preserved via
+    ``jsonc_config.set_property``.
     """
     targets = list(paths) if paths is not None else [HUB_CONFIG_FILE, OPENCODE_SHARED_ANTIGRAVITY_CONFIG]
     updated: list[str] = []
@@ -177,18 +175,7 @@ def ensure_auto_update_disabled(paths=None) -> dict:
                 continue
             raw = path.read_bytes()
             text = raw.decode("utf-8-sig")
-            if re.search(r'"auto_update"\s*:\s*false\b', text):
-                unchanged.append(str(path))
-                continue
-            if re.search(r'"auto_update"\s*:', text):
-                patched = re.sub(r'("auto_update"\s*:\s*)(?:true|false)\b', r"\1false", text, count=1)
-            else:
-                open_brace = text.find("{")
-                if open_brace < 0:
-                    failed.append(str(path))
-                    continue
-                patched = (text[:open_brace + 1] + ' "auto_update": false,'
-                           + text[open_brace + 1:])
+            patched = set_property(text, ("auto_update",), False)
             if patched == text:
                 unchanged.append(str(path))
                 continue
@@ -230,9 +217,12 @@ def _dir_size(path: Path) -> int:
         if path.is_file():
             return path.stat().st_size
         for entry in path.rglob("*"):
-            if entry.is_file():
-                total += entry.stat().st_size
-    except Exception:
+            try:
+                if entry.is_file() and not entry.is_symlink():
+                    total += entry.stat().st_size
+            except OSError:
+                continue
+    except OSError:
         pass
     return total
 
@@ -274,24 +264,24 @@ def get_storage_stats() -> Dict[str, Any]:
 def clean_logs_and_cache() -> Dict[str, Any]:
     """Cleans temporary logs, VLESS log and cached rule lists."""
     deleted_bytes = 0
+    targets = [VLESS_DIR / "core.log"]
     try:
-        core_log = VLESS_DIR / "core.log"
-        if core_log.exists():
-            deleted_bytes += core_log.stat().st_size
-            core_log.unlink(missing_ok=True)
+        targets.extend(LOG_DIR.glob("*"))
+    except OSError:
+        pass
+    targets.append(GEMINI_DOMAINS_FILE)
 
-        for log_f in LOG_DIR.glob("*"):
-            if log_f.is_file():
-                deleted_bytes += log_f.stat().st_size
-                log_f.unlink(missing_ok=True)
+    for target in targets:
+        try:
+            if target.is_symlink():
+                continue
+            info = regular_file_stat(target)
+            target.unlink()
+            deleted_bytes += info.st_size
+        except OSError:
+            continue
 
-        if GEMINI_DOMAINS_FILE.exists():
-            deleted_bytes += GEMINI_DOMAINS_FILE.stat().st_size
-            GEMINI_DOMAINS_FILE.unlink(missing_ok=True)
-
-        return {"ok": True, "message": f"Очищено {_format_size(deleted_bytes)} логов и кэша"}
-    except Exception as e:
-        return {"ok": False, "message": f"Ошибка очистки: {e}"}
+    return {"ok": True, "message": f"Очищено {_format_size(deleted_bytes)} логов и кэша"}
 
 
 def clean_browser_profiles() -> Dict[str, Any]:
@@ -300,7 +290,9 @@ def clean_browser_profiles() -> Dict[str, Any]:
     try:
         if BROWSER_DIR.exists():
             shutil.rmtree(BROWSER_DIR)
-            BROWSER_DIR.mkdir(parents=True, exist_ok=True)
+            BROWSER_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if os.name != "nt":
+                BROWSER_DIR.chmod(0o700)
         return {"ok": True, "message": f"Профили браузера удалены (освобождено {_format_size(deleted_bytes)})"}
     except Exception as e:
         return {"ok": False, "message": f"Ошибка очистки профилей: {e}"}

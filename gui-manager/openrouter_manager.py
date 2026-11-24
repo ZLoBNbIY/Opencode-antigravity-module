@@ -240,7 +240,7 @@ def configure_models(models, config_dir=None):
     if "$schema" not in data:
         updated = jsonc_config.set_property(updated, ("$schema",), "https://opencode.ai/config.json")
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    secure_storage.atomic_write(config_path, updated)
+    secure_storage.atomic_write(config_path, updated, private_parent=False)
 
 
 def disconnect():
@@ -262,14 +262,14 @@ def disconnect():
                 updated, ("disabled_providers",), [item for item in disabled if item != "openrouter"],
             )
     if updated != original:
-        secure_storage.atomic_write(config_path, updated)
+        secure_storage.atomic_write(config_path, updated, private_parent=False)
     try:
         result = subprocess.run([cli, "auth", "logout", PROVIDER_ID], capture_output=True, timeout=15)
         if result.returncode != 0:
             raise OSError("OpenCode не удалил учётные данные OpenRouter Free")
     except (subprocess.TimeoutExpired, OSError):
         if updated != original:
-            secure_storage.atomic_write(config_path, original)
+            secure_storage.atomic_write(config_path, original, private_parent=False)
         raise ValueError("OpenCode не удалил учётные данные OpenRouter Free. Ключ Hub оставлен без изменений.") from None
     finally:
         opencode_credentials.invalidate()

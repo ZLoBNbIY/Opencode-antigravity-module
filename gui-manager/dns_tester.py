@@ -12,20 +12,35 @@ import socket
 import struct
 import secrets
 import ipaddress
+import urllib.parse
 import urllib.request
 import urllib.error
 
 DOMAIN_TO_TEST = "cloudcode-pa.googleapis.com"
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.URLError("DoH redirects are not allowed")
+
+
 def _build_dns_query(domain_name, txid=None):
+    if not isinstance(domain_name, str):
+        raise ValueError("Invalid domain name")
     if txid is None:
         txid = secrets.randbits(16)
     query = bytearray(struct.pack("!HHHHHH", txid, 0x0100, 1, 0, 0, 0))
-    for part in domain_name.strip(".").split("."):
-        if not part:
-            continue
+    stripped = domain_name.strip().strip(".")
+    if not stripped:
+        raise ValueError("Empty domain name")
+    total_len = 1
+    for part in stripped.split("."):
         encoded = part.encode("ascii")
+        if not (1 <= len(encoded) <= 63):
+            raise ValueError("Invalid DNS label length")
+        total_len += 1 + len(encoded)
+        if total_len > 255:
+            raise ValueError("DNS name too long")
         query.append(len(encoded))
         query.extend(encoded)
     query.append(0x00)
@@ -40,15 +55,20 @@ def _skip_dns_name(data, idx):
         length = data[idx]
         if length == 0:
             return idx + 1
-        if (length & 0xC0) == 0xC0:
+        tag = length & 0xC0
+        if tag == 0xC0:
             if idx + 1 >= len(data):
-                return len(data)
+                raise ValueError("Truncated DNS compression pointer")
             return idx + 2
+        if tag != 0:
+            raise ValueError("Reserved DNS label tag")
+        if length > 63 or idx + 1 + length > len(data):
+            raise ValueError("Invalid DNS label length")
         idx += 1 + length
         jumps += 1
         if jumps > 128:
-            return len(data)
-    return idx
+            raise ValueError("Too many DNS labels")
+    raise ValueError("Truncated DNS name")
 
 
 def _parse_a_record_ip(data, expected_txid=None):
@@ -58,6 +78,8 @@ def _parse_a_record_ip(data, expected_txid=None):
             return None
         txid, flags, qdcount, ancount, _nscount, _arcount = struct.unpack("!HHHHHH", data[:12])
         if expected_txid is not None and txid != expected_txid:
+            return None
+        if not (flags & 0x8000):  # Must be QR=1 (response)
             return None
         rcode = flags & 0x0F
         if rcode != 0 or ancount == 0:
@@ -74,9 +96,11 @@ def _parse_a_record_ip(data, expected_txid=None):
             idx = _skip_dns_name(data, idx)
             if idx + 10 > len(data):
                 break
-            rtype, _rclass, _ttl, rdlen = struct.unpack("!HHIH", data[idx:idx + 10])
+            rtype, rclass, _ttl, rdlen = struct.unpack("!HHIH", data[idx:idx + 10])
             idx += 10
-            if rtype == 1 and rdlen == 4 and idx + 4 <= len(data):
+            if idx + rdlen > len(data):
+                return None
+            if rtype == 1 and rclass == 1 and rdlen == 4:
                 ip_bytes = data[idx:idx + 4]
                 return ".".join(str(b) for b in ip_bytes)
             idx += rdlen
@@ -85,9 +109,14 @@ def _parse_a_record_ip(data, expected_txid=None):
     return None
 
 
-def _recv_exact(sock, n):
+def _recv_exact(sock, n, deadline=None):
     buf = bytearray()
     while len(buf) < n:
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("DoT read timed out")
+            sock.settimeout(remaining)
         chunk = sock.recv(n - len(buf))
         if not chunk:
             break
@@ -96,6 +125,8 @@ def _recv_exact(sock, n):
 
 
 def test_standard_dns(ip_address, timeout=4, domain=None) -> dict:
+    if not isinstance(ip_address, str):
+        return {"ok": False, "message": "IP не указан"}
     ip = ip_address.strip()
     if not ip:
         return {"ok": False, "message": "IP не указан"}
@@ -136,18 +167,27 @@ def test_standard_dns(ip_address, timeout=4, domain=None) -> dict:
 
 
 def test_doh_endpoint(url, timeout=5, domain=None) -> dict:
+    if not isinstance(url, str):
+        return {"ok": False, "message": "URL не указан"}
     url = url.strip()
     if not url:
         return {"ok": False, "message": "URL не указан"}
-    if url.startswith("http://"):
-        return {"ok": False, "message": "DoH требует HTTPS URL"}
-    if not url.startswith("https://"):
+    if "://" not in url:
         url = "https://" + url
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError:
+        return {"ok": False, "message": "Некорректный URL DoH"}
+    if parsed.scheme.lower() != "https":
+        return {"ok": False, "message": "DoH требует HTTPS URL"}
+    if not parsed.hostname:
+        return {"ok": False, "message": "Некорректный URL DoH"}
+    url = parsed._replace(scheme="https").geturl()
     txid = secrets.randbits(16)
-    query = _build_dns_query(domain or DOMAIN_TO_TEST, txid=txid)
     ctx = ssl.create_default_context()
     t0 = time.perf_counter()
     try:
+        query = _build_dns_query(domain or DOMAIN_TO_TEST, txid=txid)
         req = urllib.request.Request(
             url,
             data=query,
@@ -158,7 +198,11 @@ def test_doh_endpoint(url, timeout=5, domain=None) -> dict:
             method="POST"
         )
         # Resolver availability must not depend on the selected AI provider proxy.
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ctx))
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            urllib.request.HTTPSHandler(context=ctx),
+            _NoRedirectHandler(),
+        )
         with opener.open(req, timeout=timeout) as resp:
             elapsed = round((time.perf_counter() - t0) * 1000)
             data = resp.read(65536)
@@ -176,39 +220,68 @@ def test_doh_endpoint(url, timeout=5, domain=None) -> dict:
 
 
 def test_dot_endpoint(host, port=853, timeout=5, domain=None) -> dict:
+    if not isinstance(host, str):
+        return {"ok": False, "message": "Хост не указан"}
     host = host.strip()
     if not host:
         return {"ok": False, "message": "Хост не указан"}
-    if host.startswith("[") and "]" in host:
+    if host.startswith("["):
+        if "]" not in host:
+            return {"ok": False, "message": "Некорректный адрес DoT"}
         end = host.index("]")
         rest = host[end + 1:]
         host = host[1:end]
-        if rest.startswith(":") and rest[1:].isdigit():
+        if rest:
+            if not (rest.startswith(":") and rest[1:].isdigit()):
+                return {"ok": False, "message": "Некорректный порт DoT"}
             port = int(rest[1:])
     elif host.count(":") == 1:
         parts = host.split(":", 1)
-        host = parts[0]
+        host = parts[0].strip()
         try:
             port = int(parts[1])
         except Exception:
-            pass
+            return {"ok": False, "message": "Некорректный порт DoT"}
+    elif ":" in host:
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            return {"ok": False, "message": "Некорректный адрес DoT"}
+    if not host:
+        return {"ok": False, "message": "Хост не указан"}
+    if isinstance(port, bool):
+        return {"ok": False, "message": "Некорректный порт DoT"}
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        return {"ok": False, "message": "Некорректный порт DoT"}
+    if not (1 <= port <= 65535):
+        return {"ok": False, "message": "Некорректный порт DoT"}
     txid = secrets.randbits(16)
-    query = _build_dns_query(domain or DOMAIN_TO_TEST, txid=txid)
-    dot_msg = struct.pack("!H", len(query)) + query
     ctx = ssl.create_default_context()
     t0 = time.perf_counter()
+    deadline = time.monotonic() + float(timeout)
     s = None
     ss = None
     try:
-        s = socket.create_connection((host, port), timeout=timeout)
+        def remaining():
+            budget = deadline - time.monotonic()
+            if budget <= 0:
+                raise TimeoutError("DoT timed out")
+            return budget
+
+        query = _build_dns_query(domain or DOMAIN_TO_TEST, txid=txid)
+        dot_msg = struct.pack("!H", len(query)) + query
+        s = socket.create_connection((host, port), timeout=remaining())
+        s.settimeout(remaining())
         ss = ctx.wrap_socket(s, server_hostname=host)
-        ss.settimeout(timeout)
+        ss.settimeout(remaining())
         ss.sendall(dot_msg)
-        len_prefix = _recv_exact(ss, 2)
+        len_prefix = _recv_exact(ss, 2, deadline=deadline)
         if len(len_prefix) < 2:
             return {"ok": False, "message": "Некорректный ответ DoT"}
         msg_len = struct.unpack("!H", len_prefix)[0]
-        data = _recv_exact(ss, msg_len)
+        data = _recv_exact(ss, msg_len, deadline=deadline)
         if len(data) < msg_len:
             return {"ok": False, "message": "Неполный ответ DoT"}
         elapsed = round((time.perf_counter() - t0) * 1000)

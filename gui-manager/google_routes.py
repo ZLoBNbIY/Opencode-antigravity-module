@@ -24,7 +24,9 @@ def describe_route(host, hub_config=None):
     if upstream == "dns://hub":
         return "DNS-прокси Hub"
     parsed = urlparse(upstream)
-    return f"{parsed.scheme}://{parsed.hostname}:{parsed.port or 80}"
+    port = parsed.port if parsed.port is not None else (443 if parsed.scheme == "https" else 80)
+    host_fmt = f"[{parsed.hostname}]" if parsed.hostname and ":" in parsed.hostname else parsed.hostname
+    return f"{parsed.scheme}://{host_fmt}:{port}"
 
 
 def diagnose_routes():

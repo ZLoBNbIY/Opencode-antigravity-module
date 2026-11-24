@@ -1,58 +1,30 @@
 @echo off
 chcp 65001 >nul
-setlocal enabledelayedexpansion
+setlocal
 cd /d "%~dp0"
 
 set "PY_EXE="
 set "PYW_EXE="
 
 :: 1. Проверка через py launcher
-where py >nul 2>nul
-if %ERRORLEVEL% equ 0 (
-    py -3 -c "import sys; sys.exit(0)" >nul 2>nul
-    if !ERRORLEVEL! equ 0 (
-        for /f "delims=" %%i in ('py -3 -c "import sys; print(sys.executable)" 2^>nul') do set "PY_EXE=%%i"
-    )
+where py >nul 2>nul && py -3 -c "import sys; sys.exit(0)" >nul 2>nul && (
+    for /f "delims=" %%i in ('py -3 -c "import sys; print(sys.executable)" 2^>nul') do set "PY_EXE=%%i"
 )
 
 :: 2. Проверка python в PATH (проверяем реальную работоспособность, исключая заглушку WindowsApps)
-if not defined PY_EXE (
-    where python >nul 2>nul
-    if !ERRORLEVEL! equ 0 (
-        python -c "import sys; sys.exit(0)" >nul 2>nul
-        if !ERRORLEVEL! equ 0 (
-            for /f "delims=" %%i in ('where python 2^>nul') do (
-                if not defined PY_EXE (
-                    echo "%%i" | findstr /i "WindowsApps" >nul
-                    if !ERRORLEVEL! neq 0 (
-                        set "PY_EXE=%%i"
-                    )
-                )
-            )
-            if not defined PY_EXE (
-                for /f "delims=" %%i in ('python -c "import sys; print(sys.executable)" 2^>nul') do set "PY_EXE=%%i"
-            )
-        )
-    )
+if not defined PY_EXE where python >nul 2>nul && python -c "import sys; sys.exit(0)" >nul 2>nul && (
+    for /f "delims=" %%i in ('where python 2^>nul') do call :pick_non_store_python "%%i"
+)
+if not defined PY_EXE where python >nul 2>nul && python -c "import sys; sys.exit(0)" >nul 2>nul && (
+    for /f "delims=" %%i in ('python -c "import sys; print(sys.executable)" 2^>nul') do set "PY_EXE=%%i"
 )
 
 :: 3. Поиск по стандартным путям установки Python
 if not defined PY_EXE (
     for %%D in (Python313 Python312 Python311 Python310) do (
-        if not defined PY_EXE (
-            if exist "%LOCALAPPDATA%\Programs\Python\%%D\python.exe" (
-                "%LOCALAPPDATA%\Programs\Python\%%D\python.exe" -c "import sys; sys.exit(0)" >nul 2>nul
-                if !ERRORLEVEL! equ 0 set "PY_EXE=%LOCALAPPDATA%\Programs\Python\%%D\python.exe"
-            )
-            if not defined PY_EXE if exist "%ProgramFiles%\Python\%%D\python.exe" (
-                "%ProgramFiles%\Python\%%D\python.exe" -c "import sys; sys.exit(0)" >nul 2>nul
-                if !ERRORLEVEL! equ 0 set "PY_EXE=%ProgramFiles%\Python\%%D\python.exe"
-            )
-            if not defined PY_EXE if exist "C:\%%D\python.exe" (
-                "C:\%%D\python.exe" -c "import sys; sys.exit(0)" >nul 2>nul
-                if !ERRORLEVEL! equ 0 set "PY_EXE=C:\%%D\python.exe"
-            )
-        )
+        call :try_python_exe "%LOCALAPPDATA%\Programs\Python\%%D\python.exe"
+        call :try_python_exe "%ProgramFiles%\Python\%%D\python.exe"
+        call :try_python_exe "C:\%%D\python.exe"
     )
 )
 
@@ -86,20 +58,16 @@ if not defined PY_EXE (
 )
 
 :: Поиск pythonw.exe рядом с найденным python.exe
-for %%F in ("!PY_EXE!") do set "PY_DIR=%%~dpF"
-if exist "!PY_DIR!pythonw.exe" (
-    set "PYW_EXE=!PY_DIR!pythonw.exe"
+for %%F in ("%PY_EXE%") do set "PY_DIR=%%~dpF"
+if exist "%PY_DIR%pythonw.exe" (
+    set "PYW_EXE=%PY_DIR%pythonw.exe"
 ) else (
-    where pythonw >nul 2>nul
-    if !ERRORLEVEL! equ 0 (
-        pythonw -c "import sys; sys.exit(0)" >nul 2>nul
-        if !ERRORLEVEL! equ 0 set "PYW_EXE=pythonw"
-    )
+    where pythonw >nul 2>nul && pythonw -c "import sys; sys.exit(0)" >nul 2>nul && set "PYW_EXE=pythonw"
 )
 
 :: Проверка зависимостей нового интерфейса WebView
-"!PY_EXE!" -c "import webview, playwright, cryptography" >nul 2>nul
-if !ERRORLEVEL! neq 0 (
+"%PY_EXE%" -c "import webview, playwright, cryptography" >nul 2>nul
+if errorlevel 1 (
     echo [!] Не найдены зависимости GUI. Запустите локальный install.ps1.
     echo     Менеджер не загружает зависимости автоматически при запуске.
     pause
@@ -108,8 +76,21 @@ if !ERRORLEVEL! neq 0 (
 
 :: Запуск AI HUB
 if defined PYW_EXE (
-    start "" "!PYW_EXE!" "%~dp0antigravity_manager.pyw"
+    start "" "%PYW_EXE%" "%~dp0antigravity_manager.pyw"
 ) else (
-    start "" "!PY_EXE!" "%~dp0antigravity_manager.pyw"
+    start "" "%PY_EXE%" "%~dp0antigravity_manager.pyw"
 )
 exit /b 0
+
+:pick_non_store_python
+if defined PY_EXE goto :eof
+echo "%~1" | findstr /i "WindowsApps" >nul
+if errorlevel 1 set "PY_EXE=%~1"
+goto :eof
+
+:try_python_exe
+if defined PY_EXE goto :eof
+if exist "%~1" (
+    "%~1" -c "import sys; sys.exit(0)" >nul 2>nul && set "PY_EXE=%~1"
+)
+goto :eof

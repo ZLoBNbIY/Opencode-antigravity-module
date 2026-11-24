@@ -23,14 +23,62 @@ _SINGLE_INSTANCE_MUTEX = None
 _google_store_lock = threading.RLock()
 
 
-def _atomic_write_json(path: Path, data: dict) -> None:
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{secrets.token_hex(6)}.tmp")
+    fd = os.open(
+        tmp,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+        0o600,
+    )
     try:
-        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            if os.name != "nt" and hasattr(os, "fchmod"):
+                os.fchmod(stream.fileno(), 0o600)
+            os.fsync(stream.fileno())
         os.replace(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def _atomic_write_json(path: Path, data: dict) -> None:
+    payload = (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    _atomic_write_bytes(path, payload)
+
+
+def _google_row_ref(cfg: dict, row_id: str) -> dict:
+    pool_rows = (cfg.get("commonAuthPool") or {}).get("rows") or {}
+    row_entry = pool_rows.get(row_id) if isinstance(pool_rows, dict) else None
+    epoch = row_entry.get("credentialEpoch") if isinstance(row_entry, dict) else None
+    if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 1:
+        epoch = 1
+    ref: dict = {"id": row_id, "credentialEpoch": epoch}
+    for acc in cfg.get("accounts") or []:
+        if isinstance(acc, dict) and acc.get("id") == row_id:
+            identity = acc.get("accountId")
+            if isinstance(identity, str) and identity.strip():
+                ref["identity"] = identity.strip()
+            break
+    return ref
+
+
+def _expects_v2_google_store(config_dir: Path) -> bool:
+    pointer_file = config_dir / "antigravity-accounts.json.store.pointer.json"
+    if pointer_file.exists() or has_relocated_google_store(config_dir):
+        return True
+    try:
+        import cloudcode_route_patch
+        expected = cloudcode_route_patch.get_expected_plugin_version()
+        if isinstance(expected, str):
+            parts = expected.split(".")
+            if len(parts) == 3 and all(p.isdigit() for p in parts):
+                if tuple(int(p) for p in parts) >= (3, 1, 0):
+                    return True
+    except Exception:
+        pass
+    return False
 
 
 def acquire_single_instance():
@@ -372,9 +420,11 @@ def set_active_google_account_index(target_index: int) -> bool:
         changed = False
         if gen_dirs:
             cfg_file = gen_dirs[0] / "config.json"
+            state_file = gen_dirs[0] / "state.json"
             if cfg_file.exists():
                 try:
-                    cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+                    orig_cfg_bytes = cfg_file.read_bytes()
+                    cfg = json.loads(orig_cfg_bytes.decode("utf-8-sig"))
                     accounts = cfg.get("accounts", [])
                     if 0 <= target_index < len(accounts):
                         target_id = accounts[target_index].get("id")
@@ -382,10 +432,11 @@ def set_active_google_account_index(target_index: int) -> bool:
                         routing["activeIndex"] = target_index
                         routing["activeIndexByFamily"] = {"claude": target_index, "gemini": target_index}
                         if target_id:
-                            routing["activeRow"] = {"id": target_id, "credentialEpoch": 1}
+                            row_ref = _google_row_ref(cfg, target_id)
+                            routing["activeRow"] = dict(row_ref)
                             routing["activeRowByFamily"] = {
-                                "claude": {"id": target_id, "credentialEpoch": 1},
-                                "gemini": {"id": target_id, "credentialEpoch": 1},
+                                "claude": dict(row_ref),
+                                "gemini": dict(row_ref),
                             }
                         # Ensure selected account is enabled in commonAuthPool
                         rows = cfg.get("commonAuthPool", {}).get("rows", {})
@@ -397,6 +448,17 @@ def set_active_google_account_index(target_index: int) -> bool:
 
                         cfg["antigravityRouting"] = routing
                         _atomic_write_json(cfg_file, cfg)
+                        if target_id and state_file.exists():
+                            try:
+                                state = json.loads(state_file.read_text(encoding="utf-8-sig"))
+                                if target_id in state.get("accounts", {}):
+                                    meta = state["accounts"][target_id].setdefault("commonAuthProviderState", {}).setdefault("metadata", {})
+                                    if meta.get("enabled") is not True:
+                                        meta["enabled"] = True
+                                        _atomic_write_json(state_file, state)
+                            except Exception:
+                                _atomic_write_bytes(cfg_file, orig_cfg_bytes)
+                                raise
                         changed = True
                 except Exception as e:
                     print(f"Error updating generation config: {e}")
@@ -404,7 +466,7 @@ def set_active_google_account_index(target_index: int) -> bool:
         legacy_file = config_dir / "antigravity-accounts.json"
         if legacy_file.exists():
             try:
-                legacy_data = json.loads(legacy_file.read_text(encoding="utf-8"))
+                legacy_data = json.loads(legacy_file.read_text(encoding="utf-8-sig"))
                 legacy_data["activeIndex"] = target_index
                 if "activeIndexByFamily" in legacy_data:
                     legacy_data["activeIndexByFamily"] = {"claude": target_index, "gemini": target_index}
@@ -429,12 +491,12 @@ def set_google_account_candidate(target_email_or_id: str, candidate: bool) -> bo
             state_file = gen_dir / "state.json"
             if cfg_file.exists():
                 try:
-                    cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+                    cfg = json.loads(cfg_file.read_text(encoding="utf-8-sig"))
                     target_id = None
 
                     if state_file.exists():
                         try:
-                            state = json.loads(state_file.read_text(encoding="utf-8"))
+                            state = json.loads(state_file.read_text(encoding="utf-8-sig"))
                             for aid, st in state.get("accounts", {}).items():
                                 meta = st.get("commonAuthProviderState", {}).get("metadata", {})
                                 if aid == target_email_or_id or meta.get("email") == target_email_or_id:
@@ -465,7 +527,7 @@ def set_google_account_candidate(target_email_or_id: str, candidate: bool) -> bo
         legacy_file = config_dir / "antigravity-accounts.json"
         if legacy_file.exists():
             try:
-                legacy_data = json.loads(legacy_file.read_text(encoding="utf-8"))
+                legacy_data = json.loads(legacy_file.read_text(encoding="utf-8-sig"))
                 legacy_changed = False
                 for acc in legacy_data.get("accounts", []):
                     if acc.get("id") == target_email_or_id or acc.get("email") == target_email_or_id:
@@ -493,12 +555,13 @@ def set_google_account_enabled(target_email_or_id: str, enabled: bool) -> bool:
             state_file = gen_dir / "state.json"
             if cfg_file.exists():
                 try:
-                    cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+                    orig_cfg_bytes = cfg_file.read_bytes()
+                    cfg = json.loads(orig_cfg_bytes.decode("utf-8-sig"))
                     target_id = None
 
                     if state_file.exists():
                         try:
-                            state = json.loads(state_file.read_text(encoding="utf-8"))
+                            state = json.loads(state_file.read_text(encoding="utf-8-sig"))
                             for aid, st in state.get("accounts", {}).items():
                                 meta = st.get("commonAuthProviderState", {}).get("metadata", {})
                                 if aid == target_email_or_id or meta.get("email") == target_email_or_id:
@@ -527,24 +590,25 @@ def set_google_account_enabled(target_email_or_id: str, enabled: bool) -> bool:
                             rows[target_id]["usable"] = enabled and current_cand
 
                         _atomic_write_json(cfg_file, cfg)
-                        changed = True
 
                         if state_file.exists():
                             try:
-                                state = json.loads(state_file.read_text(encoding="utf-8"))
+                                state = json.loads(state_file.read_text(encoding="utf-8-sig"))
                                 if target_id in state.get("accounts", {}):
                                     meta = state["accounts"][target_id].setdefault("commonAuthProviderState", {}).setdefault("metadata", {})
                                     meta["enabled"] = enabled
                                     _atomic_write_json(state_file, state)
                             except Exception:
-                                pass
+                                _atomic_write_bytes(cfg_file, orig_cfg_bytes)
+                                raise
+                        changed = True
                 except Exception as e:
                     print(f"Error updating enabled in generation config: {e}")
 
         legacy_file = config_dir / "antigravity-accounts.json"
         if legacy_file.exists():
             try:
-                legacy_data = json.loads(legacy_file.read_text(encoding="utf-8"))
+                legacy_data = json.loads(legacy_file.read_text(encoding="utf-8-sig"))
                 legacy_changed = False
                 for acc in legacy_data.get("accounts", []):
                     if acc.get("id") == target_email_or_id or acc.get("email") == target_email_or_id:
@@ -624,97 +688,117 @@ def get_active_google_health_account():
 
 
 def delete_google_account(target_email_or_id: str) -> bool:
-    config_dir = get_opencode_config_dir()
-    gen_dirs = ordered_generation_dirs(config_dir)
-    deleted = False
+    with _google_store_lock:
+        config_dir = get_opencode_config_dir()
+        gen_dirs = ordered_generation_dirs(config_dir)
+        deleted = False
 
-    if gen_dirs:
-        gen_dir = gen_dirs[0]
-        cfg_file = gen_dir / "config.json"
-        state_file = gen_dir / "state.json"
-        if cfg_file.exists() and state_file.exists():
-            try:
-                cfg = json.loads(cfg_file.read_text(encoding="utf-8-sig")) or {}
-                state = json.loads(state_file.read_text(encoding="utf-8-sig")) or {}
-                state_accounts = state.get("accounts") or {}
-                target_id = None
-                for acc in cfg.get("accounts") or []:
-                    aid = acc.get("id")
-                    st = state_accounts.get(aid) or {}
-                    email = ((st.get("commonAuthProviderState") or {}).get("metadata") or {}).get("email")
-                    if aid == target_email_or_id or email == target_email_or_id:
-                        target_id = aid
-                        break
+        if gen_dirs:
+            gen_dir = gen_dirs[0]
+            cfg_file = gen_dir / "config.json"
+            state_file = gen_dir / "state.json"
+            if cfg_file.exists() and state_file.exists():
+                try:
+                    orig_cfg_bytes = cfg_file.read_bytes()
+                    cfg = json.loads(orig_cfg_bytes.decode("utf-8-sig")) or {}
+                    state = json.loads(state_file.read_text(encoding="utf-8-sig")) or {}
+                    state_accounts = state.get("accounts") or {}
+                    target_id = None
+                    for acc in cfg.get("accounts") or []:
+                        aid = acc.get("id")
+                        st = state_accounts.get(aid) or {}
+                        email = ((st.get("commonAuthProviderState") or {}).get("metadata") or {}).get("email")
+                        if aid == target_email_or_id or email == target_email_or_id:
+                            target_id = aid
+                            break
 
-                if target_id:
-                    cfg["accounts"] = [a for a in cfg.get("accounts", []) if a.get("id") != target_id]
-                    if "commonAuthPool" in cfg and "rows" in cfg["commonAuthPool"]:
-                        cfg["commonAuthPool"]["rows"].pop(target_id, None)
-
-                    routing = cfg.get("antigravityRouting") or {}
-                    active_row = routing.get("activeRow")
-                    active_row_id = active_row.get("id") if isinstance(active_row, dict) else None
-                    remaining = cfg.get("accounts", [])
-                    if active_row_id == target_id:
-                        if remaining:
-                            new_id = remaining[0]["id"]
-                            routing["activeIndex"] = 0
-                            routing["activeIndexByFamily"] = {"claude": 0, "gemini": 0}
-                            routing["activeRow"] = {"id": new_id, "credentialEpoch": 1}
-                            routing["activeRowByFamily"] = {
-                                "claude": {"id": new_id, "credentialEpoch": 1},
-                                "gemini": {"id": new_id, "credentialEpoch": 1},
-                            }
+                    if target_id:
+                        cfg["accounts"] = [a for a in cfg.get("accounts", []) if a.get("id") != target_id]
+                        pool = cfg.setdefault("commonAuthPool", {})
+                        rows = pool.setdefault("rows", {})
+                        old_entry = rows.pop(target_id, None)
+                        old_epoch = old_entry.get("credentialEpoch") if isinstance(old_entry, dict) else None
+                        if not isinstance(old_epoch, int) or isinstance(old_epoch, bool) or old_epoch < 1:
+                            old_epoch = 1
+                        retired = pool.get("retiredEpochs")
+                        if not isinstance(retired, dict):
+                            retired = {}
+                        prev_retired = retired.get(target_id)
+                        if isinstance(prev_retired, int) and not isinstance(prev_retired, bool) and prev_retired >= 1:
+                            retired[target_id] = max(prev_retired, old_epoch)
                         else:
-                            routing["activeIndex"] = 0
-                            routing["activeRow"] = None
-                            routing["activeIndexByFamily"] = {"claude": 0, "gemini": 0}
-                            routing["activeRowByFamily"] = {"claude": None, "gemini": None}
-                    else:
-                        for i, a in enumerate(remaining):
-                            if a.get("id") == active_row_id:
-                                routing["activeIndex"] = i
-                                routing["activeIndexByFamily"] = {"claude": i, "gemini": i}
-                                break
-                        row_by_family = routing.get("activeRowByFamily")
-                        if isinstance(row_by_family, dict):
-                            for fam in ("claude", "gemini"):
-                                fam_row = row_by_family.get(fam)
-                                if isinstance(fam_row, dict) and fam_row.get("id") == target_id:
-                                    if remaining:
-                                        row_by_family[fam] = {"id": remaining[0]["id"], "credentialEpoch": 1}
-                                    else:
-                                        row_by_family[fam] = None
-                    cfg["antigravityRouting"] = routing
-                    _atomic_write_json(cfg_file, cfg)
+                            retired[target_id] = old_epoch
+                        pool["retiredEpochs"] = retired
 
-                    if "accounts" in state:
-                        state["accounts"].pop(target_id, None)
-                    _atomic_write_json(state_file, state)
+                        routing = cfg.get("antigravityRouting") or {}
+                        active_row = routing.get("activeRow")
+                        active_row_id = active_row.get("id") if isinstance(active_row, dict) else None
+                        remaining = cfg.get("accounts", [])
+                        if active_row_id == target_id:
+                            if remaining:
+                                new_id = remaining[0]["id"]
+                                new_ref = _google_row_ref(cfg, new_id)
+                                routing["activeIndex"] = 0
+                                routing["activeIndexByFamily"] = {"claude": 0, "gemini": 0}
+                                routing["activeRow"] = dict(new_ref)
+                                routing["activeRowByFamily"] = {
+                                    "claude": dict(new_ref),
+                                    "gemini": dict(new_ref),
+                                }
+                            else:
+                                routing["activeIndex"] = 0
+                                routing["activeRow"] = None
+                                routing["activeIndexByFamily"] = {"claude": 0, "gemini": 0}
+                                routing["activeRowByFamily"] = {"claude": None, "gemini": None}
+                        else:
+                            for i, a in enumerate(remaining):
+                                if a.get("id") == active_row_id:
+                                    routing["activeIndex"] = i
+                                    routing["activeIndexByFamily"] = {"claude": i, "gemini": i}
+                                    break
+                            row_by_family = routing.get("activeRowByFamily")
+                            if isinstance(row_by_family, dict):
+                                for fam in ("claude", "gemini"):
+                                    fam_row = row_by_family.get(fam)
+                                    if isinstance(fam_row, dict) and fam_row.get("id") == target_id:
+                                        if remaining:
+                                            row_by_family[fam] = _google_row_ref(cfg, remaining[0]["id"])
+                                        else:
+                                            row_by_family[fam] = None
+                        cfg["antigravityRouting"] = routing
+                        _atomic_write_json(cfg_file, cfg)
+
+                        try:
+                            if "accounts" in state:
+                                state["accounts"].pop(target_id, None)
+                            _atomic_write_json(state_file, state)
+                        except Exception:
+                            _atomic_write_bytes(cfg_file, orig_cfg_bytes)
+                            raise
+                        deleted = True
+                except Exception as e:
+                    print(f"Error deleting account: {e}")
+
+        legacy_file = config_dir / "antigravity-accounts.json"
+        if legacy_file.exists():
+            try:
+                legacy_data = json.loads(legacy_file.read_text(encoding="utf-8-sig")) or {}
+                old_accounts = legacy_data.get("accounts") or []
+                new_accounts = [
+                    a for a in old_accounts
+                    if a.get("email") != target_email_or_id and a.get("id") != target_email_or_id
+                ]
+                if len(new_accounts) != len(old_accounts):
+                    legacy_data["accounts"] = new_accounts
+                    cur_idx = legacy_data.get("activeIndex", 0)
+                    if cur_idx >= len(new_accounts):
+                        legacy_data["activeIndex"] = max(0, len(new_accounts) - 1)
+                    _atomic_write_json(legacy_file, legacy_data)
                     deleted = True
-            except Exception as e:
-                print(f"Error deleting account: {e}")
+            except Exception:
+                pass
 
-    legacy_file = config_dir / "antigravity-accounts.json"
-    if legacy_file.exists():
-        try:
-            legacy_data = json.loads(legacy_file.read_text(encoding="utf-8-sig")) or {}
-            old_accounts = legacy_data.get("accounts") or []
-            new_accounts = [
-                a for a in old_accounts
-                if a.get("email") != target_email_or_id and a.get("id") != target_email_or_id
-            ]
-            if len(new_accounts) != len(old_accounts):
-                legacy_data["accounts"] = new_accounts
-                cur_idx = legacy_data.get("activeIndex", 0)
-                if cur_idx >= len(new_accounts):
-                    legacy_data["activeIndex"] = max(0, len(new_accounts) - 1)
-                _atomic_write_json(legacy_file, legacy_data)
-                deleted = True
-        except Exception:
-            pass
-
-    return deleted
+        return deleted
 
 def enrich_google_accounts_with_generation_store(accounts: list[dict]) -> list[dict]:
     config_dir = get_opencode_config_dir()
@@ -907,7 +991,7 @@ def compute_google_dispatch_digest(access_token: str | None, refresh_token: str,
         "oauth",
         access_token if isinstance(access_token, str) and access_token else None,
         refresh_token,
-        int(expires) if isinstance(expires, (int, float)) and math.isfinite(expires) and expires > 0 else None
+        int(expires) if isinstance(expires, (int, float)) and not isinstance(expires, bool) and math.isfinite(expires) and expires > 0 else None
     ]
     parts_json = json.dumps(parts, separators=(',', ':'))
     return hashlib.sha256(f"credential-dispatch\x00{parts_json}".encode("utf-8")).hexdigest()
@@ -1011,167 +1095,257 @@ def import_google_accounts(accounts_list: list[dict]) -> int:
         if gen_dir:
             cfg_file = gen_dir / "config.json"
             state_file = gen_dir / "state.json"
-            if cfg_file.exists() and state_file.exists():
-                tmp_cfg = None
-                tmp_state = None
-                try:
-                    cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
-                    state = json.loads(state_file.read_text(encoding="utf-8"))
-                    cfg_accounts = cfg.setdefault("accounts", [])
-                    pool_rows = cfg.setdefault("commonAuthPool", {}).setdefault("rows", {})
-                    cfg.setdefault("commonAuthPool", {})["schemaVersion"] = 1
-                    state_accounts = state.setdefault("accounts", {})
-                    state["version"] = 1
-
-                    for item in accounts_list:
-                        if not isinstance(item, dict):
-                            continue
-                        nested = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-                        email = item.get("email") or nested.get("email")
-                        refresh_token = item.get("refreshToken") or item.get("refresh") or nested.get("refreshToken") or nested.get("refresh")
-                        if not email or not refresh_token:
-                            continue
-
-                        project_id = item.get("projectId") or nested.get("projectId") or "aicode-consumers"
-                        added_at = item.get("addedAt") or nested.get("addedAt")
-                        if not isinstance(added_at, (int, float)) or isinstance(added_at, bool) or not math.isfinite(added_at) or added_at <= 0:
-                            added_at = now_ms
-                        label = item.get("label") or nested.get("label") or email.split("@")[0]
-                        access_token = item.get("accessToken") or item.get("access") or ""
-                        expires = item.get("expires") or 0
-
-                        digest = compute_google_credential_digest(refresh_token)
-                        dispatch = compute_google_dispatch_digest(access_token, refresh_token, expires)
-
-                        # Look for existing account by email or id
-                        aid = None
-                        target_id = item.get("id")
-                        for existing_aid, existing_st in state_accounts.items():
-                            st_email = existing_st.get("commonAuthProviderState", {}).get("metadata", {}).get("email")
-                            if st_email and st_email.lower() == email.lower():
-                                aid = existing_aid
-                                break
-                            if target_id and existing_aid == target_id:
-                                aid = existing_aid
-                                break
-
-                        if aid is None:
-                            aid = target_id or str(uuid.uuid4())
-                            cfg_accounts.append({
-                                "id": aid,
-                                "type": "oauth",
-                                "addedAt": int(added_at)
-                            })
-                        else:
-                            if not any(a.get("id") == aid for a in cfg_accounts):
-                                cfg_accounts.append({
-                                    "id": aid,
-                                    "type": "oauth",
-                                    "addedAt": int(added_at)
-                                })
-
-                        # Ensure proper generation pool row structure
-                        epoch = pool_rows.get(aid, {}).get("credentialEpoch", 1)
-                        if not isinstance(epoch, int) or epoch < 1:
-                            epoch = 1
-                        pool_rows[aid] = {
-                            "credentialEpoch": epoch,
-                            "needsFirstReading": False
-                        }
-
-                        existing_st = state_accounts.get(aid, {})
-                        existing_meta = existing_st.get("commonAuthProviderState", {}).get("metadata", {})
-                        fingerprint = item.get("fingerprint") or existing_meta.get("fingerprint") or {
-                            "deviceId": str(uuid.uuid4()),
-                            "sessionToken": secrets.token_hex(16),
-                            "userAgent": "antigravity/cli/1.1.24 (aidev_client; os_type=windows; arch=amd64; cl=974782877; auth_method=consumer)",
-                            "apiClient": "antigravity-cli",
-                            "clientMetadata": {
-                                "ideType": "ANTIGRAVITY",
-                                "platform": "WINDOWS",
-                                "pluginType": "GEMINI"
-                            },
-                            "createdAt": now_ms
-                        }
-
-                        state_accounts[aid] = {
-                            "commonAuthProviderState": {
-                                "schemaVersion": 1,
-                                "metadata": {
-                                    "addedAt": int(added_at),
-                                    "lastUsed": now_ms,
-                                    "enabled": item.get("enabled", True),
-                                    "label": label,
-                                    "email": email,
-                                    "projectId": project_id,
-                                    "fingerprint": fingerprint,
-                                    "fingerprintHistory": existing_meta.get("fingerprintHistory", []),
-                                    "managedProjectId": project_id,
-                                    "dailyRequestCounts": existing_meta.get("dailyRequestCounts", {
-                                        "date": datetime.date.today().isoformat(),
-                                        "claude": 0,
-                                        "gemini": 0
-                                    }),
-                                    "rateLimitResetTimes": existing_meta.get("rateLimitResetTimes", {})
-                                }
-                            },
-                            "commonAuthPool": {
-                                "credentialEpoch": epoch,
-                                "digest": digest,
-                                "dispatch": dispatch,
-                                "binding": {},
-                                "providerState": ""
-                            },
-                            "access": access_token,
-                            "refresh": refresh_token,
-                            "expires": expires,
-                            "lastRefreshedAt": now_ms
-                        }
-                        count += 1
-
-                    if cfg_accounts:
-                        routing = cfg.setdefault("antigravityRouting", {})
-                        routing["schemaVersion"] = 1
-                        active_idx = routing.get("activeIndex", 0)
-                        if not (0 <= active_idx < len(cfg_accounts)):
-                            active_idx = 0
-                        routing["activeIndex"] = active_idx
-                        routing["activeIndexByFamily"] = {"claude": active_idx, "gemini": active_idx}
-                        active_row_id = cfg_accounts[active_idx]["id"]
-                        active_epoch = pool_rows.get(active_row_id, {}).get("credentialEpoch", 1)
-                        routing["activeRow"] = {"id": active_row_id, "credentialEpoch": active_epoch}
-                        routing["activeRowByFamily"] = {
-                            "claude": {"id": active_row_id, "credentialEpoch": active_epoch},
-                            "gemini": {"id": active_row_id, "credentialEpoch": active_epoch}
-                        }
-
-                    tmp_cfg = cfg_file.with_name(f"{cfg_file.name}.{secrets.token_hex(4)}.tmp")
-                    tmp_state = state_file.with_name(f"{state_file.name}.{secrets.token_hex(4)}.tmp")
-                    tmp_cfg.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-                    tmp_state.write_text(json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-                    os.replace(tmp_cfg, cfg_file)
-                    os.replace(tmp_state, state_file)
-
-                    # IMPORTANT: ensure legacy file does not exist to avoid "legacy source was recreated after activation"
-                    legacy_file = config_dir / "antigravity-accounts.json"
-                    if legacy_file.exists():
-                        try:
-                            legacy_file.unlink(missing_ok=True)
-                        except Exception:
-                            pass
-
-                    return count
-                except Exception as e:
-                    print(f"Error importing into generation store: {e}")
+            if not (cfg_file.exists() and state_file.exists()):
+                # Partially broken generation store: never fall back to legacy 3.0.0.
+                return 0
+            try:
+                orig_cfg_bytes = cfg_file.read_bytes()
+                cfg = json.loads(orig_cfg_bytes.decode("utf-8-sig"))
+                state = json.loads(state_file.read_text(encoding="utf-8-sig"))
+                if not isinstance(cfg, dict) or not isinstance(state, dict):
                     return 0
-                finally:
-                    if tmp_cfg is not None:
-                        tmp_cfg.unlink(missing_ok=True)
-                    if tmp_state is not None:
-                        tmp_state.unlink(missing_ok=True)
+                cfg_accounts = cfg.setdefault("accounts", [])
+                pool = cfg.setdefault("commonAuthPool", {})
+                pool["schemaVersion"] = 1
+                pool_rows = pool.setdefault("rows", {})
+                state_accounts = state.setdefault("accounts", {})
+                state["version"] = 1
 
-        # Fallback when no generation store directory exists
+                for item in accounts_list:
+                    if not isinstance(item, dict):
+                        continue
+                    nested = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+                    email = item.get("email") or nested.get("email")
+                    refresh_token = item.get("refreshToken") or item.get("refresh") or nested.get("refreshToken") or nested.get("refresh")
+                    if not email or not refresh_token:
+                        continue
+
+                    project_id = item.get("projectId") or nested.get("projectId") or "aicode-consumers"
+                    added_at = item.get("addedAt") or nested.get("addedAt")
+                    if not isinstance(added_at, (int, float)) or isinstance(added_at, bool) or not math.isfinite(added_at) or added_at <= 0:
+                        added_at = now_ms
+                    label = item.get("label") or nested.get("label") or email.split("@")[0]
+
+                    raw_access = item.get("accessToken")
+                    if raw_access is None:
+                        raw_access = item.get("access")
+                    access_token = raw_access if isinstance(raw_access, str) and raw_access else None
+
+                    raw_expires = item.get("expires")
+                    expires = (
+                        int(raw_expires)
+                        if isinstance(raw_expires, (int, float)) and not isinstance(raw_expires, bool)
+                        and math.isfinite(raw_expires) and raw_expires > 0
+                        else None
+                    )
+
+                    raw_enabled = item.get("enabled")
+                    if raw_enabled is None:
+                        raw_enabled = nested.get("enabled")
+                    enabled = True if raw_enabled is None else bool(raw_enabled)
+
+                    raw_account_id = item.get("accountId") or nested.get("accountId")
+                    item_identity = raw_account_id.strip() if isinstance(raw_account_id, str) and raw_account_id.strip() else None
+
+                    digest = compute_google_credential_digest(refresh_token)
+                    dispatch = compute_google_dispatch_digest(access_token, refresh_token, expires)
+
+                    # Look for existing account by email or id
+                    aid = None
+                    target_id = item.get("id")
+                    for existing_aid, existing_st in state_accounts.items():
+                        st_email = (existing_st.get("commonAuthProviderState") or {}).get("metadata", {}).get("email")
+                        if isinstance(st_email, str) and st_email.lower() == email.lower():
+                            aid = existing_aid
+                            break
+                        if target_id and existing_aid == target_id:
+                            aid = existing_aid
+                            break
+                    if aid is None and target_id:
+                        for existing_acc in cfg_accounts:
+                            if isinstance(existing_acc, dict) and existing_acc.get("id") == target_id:
+                                aid = target_id
+                                break
+
+                    if aid is None:
+                        aid = target_id or str(uuid.uuid4())
+
+                    existing_roster = next((a for a in cfg_accounts if isinstance(a, dict) and a.get("id") == aid), None)
+                    existing_st = state_accounts.get(aid, {})
+                    existing_stamp = existing_st.get("commonAuthPool") if isinstance(existing_st.get("commonAuthPool"), dict) else {}
+                    existing_binding = existing_stamp.get("binding") if isinstance(existing_stamp.get("binding"), dict) else {}
+
+                    identity = item_identity
+                    if not identity and isinstance(existing_roster, dict):
+                        roster_acct = existing_roster.get("accountId")
+                        if isinstance(roster_acct, str) and roster_acct.strip():
+                            identity = roster_acct.strip()
+                    if not identity and isinstance(existing_binding.get("identity"), str) and existing_binding["identity"].strip():
+                        identity = existing_binding["identity"].strip()
+
+                    if isinstance(existing_roster, dict):
+                        existing_roster["type"] = existing_roster.get("type") or "oauth"
+                        existing_roster.setdefault("addedAt", int(added_at))
+                        existing_roster["enabled"] = enabled
+                        if identity:
+                            existing_roster["accountId"] = identity
+                    else:
+                        new_roster = {
+                            "id": aid,
+                            "type": "oauth",
+                            "addedAt": int(added_at),
+                            "enabled": enabled,
+                        }
+                        if identity:
+                            new_roster["accountId"] = identity
+                        cfg_accounts.append(new_roster)
+
+                    existing_row = pool_rows.get(aid) if isinstance(pool_rows.get(aid), dict) else None
+                    prev_epoch = existing_row.get("credentialEpoch") if existing_row else None
+                    if not isinstance(prev_epoch, int) or isinstance(prev_epoch, bool) or prev_epoch < 1:
+                        prev_epoch = None
+                    retired_epochs = pool.get("retiredEpochs")
+                    if not isinstance(retired_epochs, dict):
+                        retired_epochs = {}
+                    prev_retired = retired_epochs.get(aid)
+                    if not isinstance(prev_retired, int) or isinstance(prev_retired, bool) or prev_retired < 1:
+                        prev_retired = 0
+
+                    prev_digest = existing_stamp.get("digest")
+                    prev_refresh = existing_st.get("refresh")
+                    credential_changed = bool(
+                        existing_st and (
+                            (isinstance(prev_digest, str) and prev_digest != digest)
+                            or (isinstance(prev_refresh, str) and prev_refresh != refresh_token)
+                        )
+                    )
+                    if prev_epoch is not None:
+                        if credential_changed:
+                            retired_epoch = max(prev_retired, prev_epoch)
+                            retired_epochs[aid] = retired_epoch
+                            pool["retiredEpochs"] = retired_epochs
+                            epoch = retired_epoch + 1
+                        else:
+                            epoch = prev_epoch
+                    else:
+                        epoch = prev_retired + 1 if prev_retired else 1
+
+                    row_entry = {
+                        "credentialEpoch": epoch,
+                        "needsFirstReading": False,
+                        "enabled": enabled,
+                    }
+                    if existing_row and not credential_changed and "quota" in existing_row:
+                        row_entry["quota"] = existing_row["quota"]
+                    pool_rows[aid] = row_entry
+
+                    existing_meta = existing_st.get("commonAuthProviderState", {}).get("metadata", {})
+                    fingerprint = item.get("fingerprint") or existing_meta.get("fingerprint") or {
+                        "deviceId": str(uuid.uuid4()),
+                        "sessionToken": secrets.token_hex(16),
+                        "userAgent": "antigravity/cli/1.1.24 (aidev_client; os_type=windows; arch=amd64; cl=974782877; auth_method=consumer)",
+                        "apiClient": "antigravity-cli",
+                        "clientMetadata": {
+                            "ideType": "ANTIGRAVITY",
+                            "platform": "WINDOWS",
+                            "pluginType": "GEMINI"
+                        },
+                        "createdAt": now_ms
+                    }
+
+                    new_binding = {
+                        k: v for k, v in existing_binding.items()
+                        if k in ("identity", "baseURL", "authHeader")
+                    }
+                    if identity:
+                        new_binding["identity"] = identity
+
+                    pool_stamp = {
+                        "credentialEpoch": epoch,
+                        "digest": digest,
+                        "dispatch": dispatch,
+                        "binding": new_binding,
+                    }
+                    if not credential_changed and isinstance(existing_stamp.get("providerState"), str) and existing_stamp["providerState"]:
+                        pool_stamp["providerState"] = existing_stamp["providerState"]
+
+                    new_state = {
+                        "commonAuthProviderState": {
+                            "schemaVersion": 1,
+                            "metadata": {
+                                "addedAt": int(added_at),
+                                "lastUsed": now_ms,
+                                "enabled": enabled,
+                                "label": label,
+                                "email": email,
+                                "projectId": project_id,
+                                "fingerprint": fingerprint,
+                                "fingerprintHistory": existing_meta.get("fingerprintHistory", []),
+                                "managedProjectId": project_id,
+                                "dailyRequestCounts": existing_meta.get("dailyRequestCounts", {
+                                    "date": datetime.date.today().isoformat(),
+                                    "claude": 0,
+                                    "gemini": 0
+                                }),
+                                "rateLimitResetTimes": existing_meta.get("rateLimitResetTimes", {})
+                            }
+                        },
+                        "commonAuthPool": pool_stamp,
+                        "refresh": refresh_token,
+                        "lastRefreshedAt": now_ms
+                    }
+                    if access_token is not None:
+                        new_state["access"] = access_token
+                    if expires is not None:
+                        new_state["expires"] = expires
+
+                    state_accounts[aid] = new_state
+                    count += 1
+
+                if cfg_accounts:
+                    routing = cfg.setdefault("antigravityRouting", {})
+                    routing["schemaVersion"] = 1
+                    active_idx = routing.get("activeIndex", 0)
+                    if not (0 <= active_idx < len(cfg_accounts)):
+                        active_idx = 0
+                    routing["activeIndex"] = active_idx
+                    routing["activeIndexByFamily"] = {"claude": active_idx, "gemini": active_idx}
+                    active_row_id = cfg_accounts[active_idx]["id"]
+                    active_ref = _google_row_ref(cfg, active_row_id)
+                    routing["activeRow"] = dict(active_ref)
+                    routing["activeRowByFamily"] = {
+                        "claude": dict(active_ref),
+                        "gemini": dict(active_ref),
+                    }
+
+                _atomic_write_json(cfg_file, cfg)
+                try:
+                    _atomic_write_json(state_file, state)
+                except Exception:
+                    _atomic_write_bytes(cfg_file, orig_cfg_bytes)
+                    raise
+
+                # IMPORTANT: ensure legacy file does not exist to avoid "legacy source was recreated after activation"
+                legacy_file = config_dir / "antigravity-accounts.json"
+                if legacy_file.exists():
+                    try:
+                        legacy_file.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+
+                return count
+            except Exception as e:
+                print(f"Error importing into generation store: {e}")
+                return 0
+
+        # Refuse to write incompatible 3.0.0 legacy fallback if a 3.1.x/generation store is expected or broken.
         legacy_file = config_dir / "antigravity-accounts.json"
+        if _expects_v2_google_store(config_dir) and not legacy_file.exists():
+            return 0
+        if (config_dir / "antigravity-accounts.json.store.pointer.json").exists() or has_relocated_google_store(config_dir):
+            return 0
+
+        # Fallback when no generation store directory exists (3.0.0 legacy mode)
         legacy_data = {"version": 4, "activeIndex": 0, "accounts": []}
         if legacy_file.exists():
             try:

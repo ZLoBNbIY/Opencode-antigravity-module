@@ -395,7 +395,7 @@ def configure_models(model_ids, api_key=None, config_dir=None):
     if "$schema" not in data:
         updated = jsonc_config.set_property(updated, ("$schema",), "https://opencode.ai/config.json")
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    secure_storage.atomic_write(config_path, updated)
+    secure_storage.atomic_write(config_path, updated, private_parent=False)
     return selected
 
 
@@ -423,14 +423,14 @@ def disconnect():
         if isinstance(providers, dict) and isinstance(providers.get(PROVIDER_ID), dict):
             updated = jsonc_config.set_property(original, ("provider", PROVIDER_ID, "models"), {})
     if updated != original:
-        secure_storage.atomic_write(config_path, updated)
+        secure_storage.atomic_write(config_path, updated, private_parent=False)
     try:
         result = subprocess.run([cli, "auth", "logout", PROVIDER_ID], capture_output=True, timeout=15)
         if result.returncode != 0:
             raise OSError("OpenCode не удалил учётные данные TokenLavka")
     except (subprocess.TimeoutExpired, OSError):
         if updated != original:
-            secure_storage.atomic_write(config_path, original)
+            secure_storage.atomic_write(config_path, original, private_parent=False)
         raise ValueError("OpenCode не удалил учётные данные TokenLavka. Ключ Hub оставлен без изменений.") from None
     finally:
         opencode_credentials.invalidate()

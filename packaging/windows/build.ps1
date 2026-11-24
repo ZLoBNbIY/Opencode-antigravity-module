@@ -53,4 +53,7 @@ if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed; see $work" }
 $setup = Join-Path $OutputDirectory 'AntigravityHub-Setup-x64.exe'
 $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
 [IO.File]::WriteAllText("$setup.sha256", "$hash  AntigravityHub-Setup-x64.exe`n")
+if (Test-Path -LiteralPath $work) {
+    Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+}
 Write-Host "Installer: $setup"

@@ -1153,7 +1153,7 @@ class WebviewBackendTests(unittest.TestCase):
              patch.object(self.backend.time, "sleep"):
             res = api.restart_hub()
             self.assertTrue(res["ok"])
-            sched.assert_called_once()
+            sched.assert_not_called()
             self.assertEqual(len(spawned), 1)
             spawned[0]()
             self.assertTrue(api._closing.is_set())
@@ -1163,6 +1163,39 @@ class WebviewBackendTests(unittest.TestCase):
             fake_srv.shutdown.assert_called_once()
             fake_srv.server_close.assert_called_once()
             api._tray_holder.remove.assert_called_once()
+            sched.assert_called_once()
+
+    def test_restart_hub_rejects_missing_window_and_closing_vless(self):
+        api = self.backend.HubApi()
+        api._window_holder = None
+        self.assertFalse(api.restart_hub()["ok"])
+        api._closing.set()
+        res = api.start_vless()
+        self.assertFalse(res["ok"])
+        self.vless.start_tunnel.assert_not_called()
+
+    def test_network_state_and_validation_regressions(self):
+        api = self.backend.HubApi()
+        cfg = api.load_config()
+        cfg["provider_routes"] = None
+        cfg["providers_visibility"] = None
+        api.save_config(cfg)
+        state = api.get_network_state()
+        self.assertIsInstance(state["autoRoutes"], dict)
+        self.assertTrue(api.set_provider_route("openai", "auto"))
+
+        self.assertFalse(api.add_proxy_pool("http://127.0.0.1:99999")["ok"])
+        with self.assertRaises(ValueError):
+            api.save_network_settings({"custom_dns": [123]})
+
+        self.vless.is_running.return_value = True
+        with patch.object(self.vless, "find_core_executable", return_value="C:/core/xray.exe"):
+            self.assertFalse(api.set_vless_core("xray")["ok"])
+
+        self.vless.is_running.return_value = False
+        api.save_config({**api.load_config(), "proxy_pool": ["http://1.2.3.4:8080"], "proxy": "http://1.2.3.4:8080"})
+        self.assertTrue(api.save_network_settings({"proxy": "", "proxy_pool": ["http://1.2.3.4:8080"]})["ok"])
+        self.assertEqual(api.load_config()["proxy"], "")
 
 
     def test_configure_deepseek_api_registers_provider_in_opencode(self):

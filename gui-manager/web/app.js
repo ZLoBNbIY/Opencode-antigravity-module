@@ -157,6 +157,27 @@ function setMarkup(element, markup) {
   return true;
 }
 
+function syncListControlProperties(oldEl, newEl) {
+  if (typeof oldEl.querySelectorAll !== 'function' || typeof newEl.querySelectorAll !== 'function') {
+    return true;
+  }
+  const oldControls = oldEl.querySelectorAll('input, select, textarea, button');
+  const newControls = newEl.querySelectorAll('input, select, textarea, button');
+  if (oldControls.length !== newControls.length) return false;
+  for (let i = 0; i < oldControls.length; i++) {
+    const oldCtrl = oldControls[i];
+    const newCtrl = newControls[i];
+    if (oldCtrl.tagName !== newCtrl.tagName || oldCtrl.type !== newCtrl.type) return false;
+    if (oldCtrl.type === 'checkbox' || oldCtrl.type === 'radio') {
+      if (oldCtrl.checked !== newCtrl.checked) oldCtrl.checked = newCtrl.checked;
+    } else if ('value' in newCtrl && oldCtrl.value !== newCtrl.value && oldCtrl !== document.activeElement) {
+      oldCtrl.value = newCtrl.value;
+    }
+    if (oldCtrl.disabled !== newCtrl.disabled) oldCtrl.disabled = newCtrl.disabled;
+  }
+  return true;
+}
+
 // Never detach unchanged children on a poll. If a changed card contained
 // focus, restore the same action (or another action when it disappeared).
 const renderedLists = new WeakMap();
@@ -176,8 +197,9 @@ function renderList(container, rows, empty = '') {
   let restore;
   const next = new Map(rows.map(([key, element]) => {
     const old = oldRows.get(key);
-    if (!old || old.className === element.className && old.innerHTML === element.innerHTML) {
-      return [key, old || element];
+    if (!old) return [key, element];
+    if (old.className === element.className && old.innerHTML === element.innerHTML && syncListControlProperties(old, element)) {
+      return [key, old];
     }
     if (old === focused || old.contains?.(focused)) {
       const action = focused.dataset.action;
@@ -488,6 +510,7 @@ function proxyLabel(id) {
 function updateProxyState(result) {
   for (const key of ['proxy_pool', 'proxy', 'proxy_labels']) appState.config[key] = result[key];
   renderProxyPool();
+  renderDashboard();
   scheduleProxyChecks();
 }
 
@@ -577,10 +600,14 @@ async function testProxyItem(proxyUrl) {
   showToast(`Проверка прокси ${proxyLabel(proxyUrl)}...`);
   try {
     const res = await window.pywebview.api.test_proxy(proxyUrl);
-    proxyChecks.set(proxyUrl, res);
+    proxyChecks.set(proxyUrl, { ...res, checkedAt: Date.now() });
     renderProxyPool();
+    renderDashboard();
     showToast(res.message || (res.ok ? 'Прокси доступен' : 'Ошибка соединения'));
   } catch (e) {
+    proxyChecks.set(proxyUrl, { ok: false, message: String(e), checkedAt: Date.now() });
+    renderProxyPool();
+    renderDashboard();
     showToast(`Ошибка проверки: ${e}`);
   }
 }
@@ -796,6 +823,8 @@ async function saveNetworkSettings() {
 }
 
 // --- VLESS config pool ---
+const vlessRowBusy = new Set();
+let vlessActivating = false;
 function countryFlag(code) {
   if (!code || String(code).length !== 2) return '';
   return String.fromCodePoint(...[...String(code).toUpperCase()].map(c => 127397 + c.charCodeAt(0)));
@@ -810,6 +839,7 @@ function renderVlessPool() {
   if (badge) badge.textContent = `${pool.length} конфиг${pool.length === 1 ? '' : 'ов'}`;
   const rows = pool.map((entry, idx) => {
     const isActive = entry.id === active;
+    const isBusy = vlessRowBusy.has(entry.id);
     const statusOk = entry.status === 'ok';
     const statusBadge = statusOk ? 'badge-available' : entry.status === 'error' ? 'badge-error' : 'badge-pool';
     const statusText = statusOk
@@ -824,9 +854,9 @@ function renderVlessPool() {
         <span style="color:#fff; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${html(entry.label || 'VLESS')}</span>
       </div>
       <div style="display:flex; gap:6px;">
-        <button class="btn-secondary" data-action="activate" title="${isActive ? 'Перезапустить и проверить' : 'Сделать активным и запустить'}">✔</button>
-        <button class="btn-secondary" data-action="test" title="Проверить IP и страну">🩺</button>
-        <button class="btn-secondary" style="color:var(--accent-red);" data-action="delete" title="Удалить из пула">🗑</button>
+        <button class="btn-secondary" data-action="activate" title="${isActive ? 'Перезапустить и проверить' : 'Сделать активным и запустить'}" ${isBusy || vlessActivating ? 'disabled' : ''}>✔</button>
+        <button class="btn-secondary" data-action="test" title="Проверить IP и страну" ${isBusy ? 'disabled' : ''}>🩺</button>
+        <button class="btn-secondary" style="color:var(--accent-red);" data-action="delete" title="Удалить из пула" ${isBusy ? 'disabled' : ''}>🗑</button>
       </div>
     `;
     row.querySelector('[data-action="activate"]')?.addEventListener('click', () => activateVlessItem(entry.id));
@@ -858,31 +888,51 @@ async function addVlessConfig() {
   } catch (e) { vlessPoolStatus(String(e)); }
 }
 async function removeVlessItem(url) {
-  if (!url || !window.pywebview?.api?.delete_vless_config) return;
+  if (!url || vlessRowBusy.has(url) || !window.pywebview?.api?.delete_vless_config) return;
+  vlessRowBusy.add(url);
+  renderVlessPool();
   vlessPoolStatus('Удаление конфига…');
   try {
     const res = await window.pywebview.api.delete_vless_config(url);
     vlessPoolStatus(res.message || '');
     if (res.ok) await refreshState();
   } catch (e) { vlessPoolStatus(String(e)); }
+  finally {
+    vlessRowBusy.delete(url);
+    renderVlessPool();
+  }
 }
 async function activateVlessItem(url) {
-  if (!url || !window.pywebview?.api?.activate_vless_config) return;
+  if (!url || vlessActivating || vlessRowBusy.has(url) || !window.pywebview?.api?.activate_vless_config) return;
+  vlessActivating = true;
+  vlessRowBusy.add(url);
+  renderVlessPool();
   vlessPoolStatus('Переключение на выбранный конфиг…');
   try {
     const res = await window.pywebview.api.activate_vless_config(url);
     vlessPoolStatus(res.message || '');
     if (res.ok) await refreshState();
   } catch (e) { vlessPoolStatus(String(e)); }
+  finally {
+    vlessActivating = false;
+    vlessRowBusy.delete(url);
+    renderVlessPool();
+  }
 }
 async function testVlessItem(url) {
-  if (!url || !window.pywebview?.api?.test_vless_config) return;
+  if (!url || vlessRowBusy.has(url) || !window.pywebview?.api?.test_vless_config) return;
+  vlessRowBusy.add(url);
+  renderVlessPool();
   vlessPoolStatus('Проверка выходного IP и страны…');
   try {
     const res = await window.pywebview.api.test_vless_config(url);
     vlessPoolStatus(res.message || '');
-    if (res.pool) { appState.config.vless_pool = res.pool; renderVlessPool(); }
+    if (res.pool) appState.config.vless_pool = res.pool;
   } catch (e) { vlessPoolStatus(String(e)); }
+  finally {
+    vlessRowBusy.delete(url);
+    renderVlessPool();
+  }
 }
 async function testAllVlessConfigs() {
   if (!window.pywebview?.api?.test_all_vless_configs) return;
@@ -1397,13 +1447,13 @@ function renderGoogleTab() {
   }
 
   // Sort: Active account first
-  const sorted = [...accounts].sort((a, b) => {
-    const aIsActive = a.is_active === true;
-    const bIsActive = b.is_active === true;
+  const sorted = accounts.map((acc, originalIndex) => ({ acc, originalIndex })).sort((a, b) => {
+    const aIsActive = a.acc.is_active === true;
+    const bIsActive = b.acc.is_active === true;
     return bIsActive - aIsActive;
   });
 
-  renderList(container, sorted.map((acc, index) => {
+  renderList(container, sorted.map(({ acc, originalIndex }, index) => {
     const isAct = acc.is_active === true;
     const isEnabled = acc.enabled !== false;
     const isCandidate = acc.candidate !== false;
@@ -1490,14 +1540,18 @@ function renderGoogleTab() {
         </div>
       </div>
     `;
+    const rowIndex = acc.index != null ? Number(acc.index) - 1 : originalIndex;
     card.querySelector('[data-action="activate"]')?.addEventListener('click', () => {
-      const current = appState.accounts.find(item => (item.id || item.email) === (acc.id || acc.email));
-      if (current) void activateGoogleAccount(current.index - 1);
+      const current = acc.index != null
+        ? (appState.accounts || []).find(item => item.index === acc.index)
+        : (appState.accounts || [])[originalIndex];
+      const idx = current?.index != null ? Number(current.index) - 1 : rowIndex;
+      if (Number.isInteger(idx) && idx >= 0) void activateGoogleAccount(idx);
     });
     card.querySelector('[data-action="test"]')?.addEventListener('click', () => testGoogleAccount(acc.id || acc.email));
     card.querySelector('[data-action="delete"]')?.addEventListener('click', () => deleteGoogleAccount(acc.id || acc.email));
-    card.querySelector('[data-action="toggle-enabled"]')?.addEventListener('change', event => toggleGoogleEnabled(acc.id || acc.email, event.target.checked));
-    card.querySelector('[data-action="candidate"]')?.addEventListener('change', event => toggleCandidate(acc.id || acc.email, event.target.checked));
+    card.querySelector('[data-action="toggle-enabled"]')?.addEventListener('change', event => toggleGoogleEnabled(acc.id || acc.email, event.target.checked, event.target));
+    card.querySelector('[data-action="candidate"]')?.addEventListener('change', event => toggleCandidate(acc.id || acc.email, event.target.checked, event.target));
     return [acc.id || (acc.email ? `${acc.email}#${acc.index ?? index}` : `row#${acc.index ?? index}`), card];
   }));
 
@@ -1630,8 +1684,8 @@ function renderOpenAiTab() {
     card.querySelector('[data-action="activate"]')?.addEventListener('click', () => activateOpenAiAccount(accId));
     card.querySelector('[data-action="test"]')?.addEventListener('click', () => testOpenAiAccount(accId));
     card.querySelector('[data-action="delete"]')?.addEventListener('click', () => deleteOpenAiAccount(accId));
-    card.querySelector('[data-action="toggle-enabled"]')?.addEventListener('change', event => toggleOpenAiEnabled(accId, event.target.checked));
-    card.querySelector('[data-action="candidate"]')?.addEventListener('change', event => toggleOpenAiCandidate(accId, event.target.checked));
+    card.querySelector('[data-action="toggle-enabled"]')?.addEventListener('change', event => toggleOpenAiEnabled(accId, event.target.checked, event.target));
+    card.querySelector('[data-action="candidate"]')?.addEventListener('change', event => toggleOpenAiCandidate(accId, event.target.checked, event.target));
     return [accId || index, card];
   }));
 }
@@ -1745,18 +1799,22 @@ async function configureXpiki() {
     result.textContent = response.message;
     document.getElementById('xpiki-key').value = '';
     await refreshState();
-    await refreshXpikiQuota();
+    await refreshXpikiQuota(false);
   } catch (e) { result.textContent = String(e); }
 }
-async function refreshXpikiQuota() {
+async function refreshXpikiQuota(updateStatus = true) {
   const result = document.getElementById('xpiki-result');
-  result.textContent = 'Обновление квоты…';
+  if (updateStatus) result.textContent = 'Обновление квоты…';
   try {
     const quota = await window.pywebview.api.refresh_xpiki_quota();
     if (appState.providers?.xpiki) appState.providers.xpiki.quota = quota;
     renderXpikiTab();
-    result.textContent = quota.status === 'ok' ? 'Квота обновлена' : quota.error || 'Не удалось получить квоту';
-  } catch (e) { result.textContent = String(e); }
+    if (updateStatus) {
+      result.textContent = quota.status === 'ok' ? 'Квота обновлена' : quota.error || 'Не удалось получить квоту';
+    }
+  } catch (e) {
+    if (updateStatus) result.textContent = String(e);
+  }
 }
 async function disconnectXpiki() {
   if (!confirm('Отключить Xpiki в OpenCode?')) return;
@@ -1945,8 +2003,9 @@ function renderDeepSeekModels(cfg) {
   picker.innerHTML = '';
   if (!models.length) {
     picker.innerHTML = '<div class="help-text" style="grid-column:1/-1;">Каталог моделей ещё не загружен — сохраните ключ или нажмите «Загрузить каталог».</div>';
+  } else {
+    renderModelCards(picker, models, selected, {hint:'deepseek', suffix:'context', defaultAll:true});
   }
-  renderModelCards(picker, models, selected, {hint:'deepseek', suffix:'context', defaultAll:true});
   const btn = document.getElementById('btn-apply-deepseek');
   if (btn) btn.disabled = !models.length;
   deepseekModelsInitialized = true;
@@ -2312,14 +2371,19 @@ function renderTokenLavkaState() {
   }
   const keyInput = document.getElementById('tokenlavka-key-input');
   if (keyInput) keyInput.placeholder = cfg.hasKey ? 'Ключ сохранён · оставьте пустым для замены' : 'sk-…';
+  const models = Array.isArray(cfg.models) ? cfg.models : [];
   const list = document.getElementById('tokenlavka-models-list');
   if (list && !list.dataset.ready) {
-    renderModelCards(list, cfg.models || [], cfg.selectedModels || [],
-      {hint:'tokenlavka', suffix:'context', defaultIds:['gpt-6-luna']});
-    list.dataset.ready = '1';
+    if (models.length) {
+      renderModelCards(list, models, cfg.selectedModels || [],
+        {hint:'tokenlavka', suffix:'context', defaultIds:['gpt-6-luna']});
+      list.dataset.ready = '1';
+    } else {
+      list.innerHTML = '<div class="help-text" style="grid-column:1/-1;">Каталог моделей пуст — проверьте ключ или обновите состояние.</div>';
+    }
   }
   const btn = document.getElementById('btn-apply-tokenlavka');
-  if (btn) btn.disabled = !(cfg.models || []).length;
+  if (btn) btn.disabled = !models.length;
 }
 async function checkTokenLavkaKey() {
   const output = document.getElementById('tokenlavka-status-text');
@@ -2333,16 +2397,28 @@ async function checkTokenLavkaKey() {
 }
 async function applyTokenLavkaModels() {
   const output = document.getElementById('tokenlavka-status-text');
+  if (!window.pywebview?.api?.configure_tokenlavka_api) return;
+  const models = Array.isArray(appState.providers?.tokenlavka?.models) ? appState.providers.tokenlavka.models : [];
+  if (!models.length) {
+    if (output) output.textContent = 'Каталог моделей TokenLavka пуст — невозможно применить выбор.';
+    return;
+  }
+  const ids = [...document.querySelectorAll('#tokenlavka-models-list input:checked')].map(i => i.value);
+  if (!ids.length) {
+    if (output) output.textContent = 'Выберите хотя бы одну модель TokenLavka';
+    return;
+  }
   try {
     const key = document.getElementById('tokenlavka-key-input').value.trim();
-    const ids = [...document.querySelectorAll('#tokenlavka-models-list input:checked')].map(i => i.value);
     const res = await window.pywebview.api.configure_tokenlavka_api(key, ids);
-    output.textContent = res.message;
+    if (output) output.textContent = res.message;
     if (res.ok) {
       document.getElementById('tokenlavka-key-input').value = '';
+      const list = document.getElementById('tokenlavka-models-list');
+      if (list) delete list.dataset.ready;
       await refreshState();
     }
-  } catch (e) { output.textContent = String(e); }
+  } catch (e) { if (output) output.textContent = String(e); }
 }
 async function refreshTokenLavkaBalance() {
   const btn = document.getElementById('btn-refresh-tokenlavka-balance');
@@ -2381,13 +2457,16 @@ function renderSettingsTab() {
   const swAuto = document.getElementById("switch-autostart");
   if (swAuto) swAuto.checked = cfg.autostart_on_login === true;
   for (const item of Object.values(providerSettings)) document.getElementById(`provider-enabled-${item.key}`).checked = cfg.providers_visibility?.[item.key] !== false;
-  refreshStorageStats();
+  if (activeTab === 'settings') void refreshStorageStats();
 }
 
 function selectStrategy(strat, save = true) {
   ["hybrid", "sticky", "round-robin"].forEach(s => {
     const btn = document.getElementById(`strat-${s}`);
-    if (btn) btn.classList.toggle("active", s === strat);
+    if (btn) {
+      btn.classList.toggle("active", s === strat);
+      btn.setAttribute("aria-pressed", String(s === strat));
+    }
   });
 
   const descs = {
@@ -2398,11 +2477,18 @@ function selectStrategy(strat, save = true) {
   const descEl = document.getElementById("strat-desc");
   if (descEl) descEl.textContent = descs[strat] || "";
 
-  if (save && window.pywebview?.api) {
-    window.pywebview.api.set_strategy(strat).then(() => {
+  if (save && window.pywebview?.api?.set_strategy) {
+    window.pywebview.api.set_strategy(strat).then(async res => {
+      if (res === false || (res && res.ok === false)) {
+        showToast(res?.message || 'Не удалось обновить стратегию выбора');
+        await refreshState();
+        return;
+      }
       showToast(`Стратегия выбора обновлена: ${strat}`);
-    }).catch(e => {
+      await refreshState();
+    }).catch(async e => {
       showToast(`Ошибка смены стратегии: ${e?.message || e}`);
+      await refreshState();
     });
   }
 }
@@ -2569,14 +2655,21 @@ async function refreshAntigravityPatchStatus() {
     const state = res?.state || 'error';
     const label = state === 'patched' ? 'Патч активен'
       : state === 'pending' ? 'Требуется патч'
-      : 'Плагин не найден';
+      : state === 'missing' ? 'Плагин не найден'
+      : 'Ошибка проверки';
     const badgeClass = state === 'patched' ? 'badge-available'
       : state === 'pending' ? 'badge-checking'
       : 'badge-error';
     badge.className = `badge-pill ${badgeClass}`;
     badge.innerHTML = `<span class="dot"></span> ${label}`;
     if (statusEl) statusEl.textContent = res?.message || '';
-  } catch {}
+  } catch (e) {
+    if (badge) {
+      badge.className = 'badge-pill badge-error';
+      badge.innerHTML = `<span class="dot"></span> Ошибка проверки`;
+    }
+    if (statusEl) statusEl.textContent = `Ошибка проверки патча Antigravity: ${e?.message || e}`;
+  }
 }
 
 async function refreshPluginFixStatus() {
@@ -2591,7 +2684,8 @@ async function refreshPluginFixStatus() {
     const label = state === 'patched' ? 'Фикс активен'
       : state === 'unsupported' ? 'Версия не проверена'
       : state === 'pending' ? 'Требуется фикс'
-      : 'Плагин не найден';
+      : state === 'missing' ? 'Плагин не найден'
+      : 'Ошибка проверки';
     const badgeClass = state === 'patched' ? 'badge-available'
       : state === 'pending' ? 'badge-checking'
       : 'badge-error';
@@ -2608,7 +2702,17 @@ async function refreshPluginFixStatus() {
         ? `Внимание: патч плагина не активен (${detail || 'причина не указана'}). Google-запросы могут получать 429 при живой квоте. Обновите Hub и нажмите «Применить фикс плагина».`
         : '';
     }
-  } catch {}
+  } catch (e) {
+    if (badge) {
+      badge.className = 'badge-pill badge-error';
+      badge.innerHTML = `<span class="dot"></span> Ошибка проверки`;
+    }
+    if (statusEl) statusEl.textContent = `Ошибка проверки плагина: ${e?.message || e}`;
+    if (warningEl) {
+      warningEl.style.display = 'none';
+      warningEl.textContent = '';
+    }
+  }
 }
 
 // OpenCode updates itself, so patch state is re-checked on every Google account action.
@@ -2634,8 +2738,13 @@ async function refreshGooglePatchDisclaimer() {
 }
 
 async function openFolder(type) {
-  if (!window.pywebview?.api) return;
-  await window.pywebview.api.open_folder(type);
+  if (!window.pywebview?.api?.open_folder) return;
+  try {
+    const ok = await window.pywebview.api.open_folder(type);
+    if (ok === false) showToast('Папка не найдена или недоступна');
+  } catch (e) {
+    showToast(`Не удалось открыть папку: ${e?.message || e}`);
+  }
 }
 
 // --- Storage & System Cleanup Center ---
@@ -2659,7 +2768,12 @@ async function refreshStorageStats() {
 
 async function openHubDataDir() {
   if (!window.pywebview?.api?.open_hub_data_dir) return;
-  await window.pywebview.api.open_hub_data_dir();
+  try {
+    const ok = await window.pywebview.api.open_hub_data_dir();
+    if (ok === false) showToast('Директория данных недоступна');
+  } catch (e) {
+    showToast(`Не удалось открыть директорию данных: ${e?.message || e}`);
+  }
 }
 
 async function cleanLogsAndCache() {
@@ -2785,22 +2899,52 @@ async function testGoogleAccount(id) {
   } catch (e) { showToast(`Ошибка проверки: ${e?.message || e}`); }
 }
 
-async function toggleGoogleEnabled(id, enabled) {
-  if (!window.pywebview?.api) return;
+async function toggleGoogleEnabled(id, enabled, input = null) {
+  if (!window.pywebview?.api) {
+    if (input) input.checked = !enabled;
+    return;
+  }
+  if (input) input.disabled = true;
   try {
-    await window.pywebview.api.toggle_google_enabled(id, enabled);
+    const res = await window.pywebview.api.toggle_google_enabled(id, enabled);
+    if (res === false || (res && res.ok === false)) {
+      if (input) input.checked = !enabled;
+      showToast(res?.message || `Не удалось ${enabled ? 'включить' : 'отключить'} Google аккаунт`);
+      await refreshState();
+      return;
+    }
     showToast(`Google аккаунт ${enabled ? "включен" : "отключен"}`);
     await refreshState();
-  } catch (e) { showToast(`Ошибка переключения: ${e?.message || e}`); }
+  } catch (e) {
+    if (input) input.checked = !enabled;
+    showToast(`Ошибка переключения: ${e?.message || e}`);
+  } finally {
+    if (input) input.disabled = false;
+  }
 }
 
-async function toggleCandidate(id, enabled) {
-  if (!window.pywebview?.api) return;
+async function toggleCandidate(id, enabled, input = null) {
+  if (!window.pywebview?.api) {
+    if (input) input.checked = !enabled;
+    return;
+  }
+  if (input) input.disabled = true;
   try {
-    await window.pywebview.api.toggle_google_candidate(id, enabled);
+    const res = await window.pywebview.api.toggle_google_candidate(id, enabled);
+    if (res === false || (res && res.ok === false)) {
+      if (input) input.checked = !enabled;
+      showToast(res?.message || `Не удалось ${enabled ? 'включить' : 'отключить'} авторотацию`);
+      await refreshState();
+      return;
+    }
     showToast(`Авторотация ${enabled ? "включена" : "отключена"}`);
     await refreshState();
-  } catch (e) { showToast(`Ошибка переключения: ${e?.message || e}`); }
+  } catch (e) {
+    if (input) input.checked = !enabled;
+    showToast(`Ошибка переключения: ${e?.message || e}`);
+  } finally {
+    if (input) input.disabled = false;
+  }
 }
 
 async function activateOpenAiAccount(id) {
@@ -2837,22 +2981,52 @@ async function deleteOpenAiAccount(id) {
   } catch (e) { showToast(`Ошибка удаления ChatGPT: ${e?.message || e}`); }
 }
 
-async function toggleOpenAiEnabled(id, enabled) {
-  if (!window.pywebview?.api) return;
+async function toggleOpenAiEnabled(id, enabled, input = null) {
+  if (!window.pywebview?.api) {
+    if (input) input.checked = !enabled;
+    return;
+  }
+  if (input) input.disabled = true;
   try {
-    await window.pywebview.api.toggle_openai_enabled(id, enabled);
+    const res = await window.pywebview.api.toggle_openai_enabled(id, enabled);
+    if (res === false || (res && res.ok === false)) {
+      if (input) input.checked = !enabled;
+      showToast(res?.message || `Не удалось ${enabled ? 'включить' : 'отключить'} ChatGPT аккаунт`);
+      await refreshState();
+      return;
+    }
     showToast(`ChatGPT аккаунт ${enabled ? "включен" : "отключен"}`);
     await refreshState();
-  } catch (e) { showToast(`Ошибка переключения ChatGPT: ${e?.message || e}`); }
+  } catch (e) {
+    if (input) input.checked = !enabled;
+    showToast(`Ошибка переключения ChatGPT: ${e?.message || e}`);
+  } finally {
+    if (input) input.disabled = false;
+  }
 }
 
-async function toggleOpenAiCandidate(id, enabled) {
-  if (!window.pywebview?.api) return;
+async function toggleOpenAiCandidate(id, enabled, input = null) {
+  if (!window.pywebview?.api) {
+    if (input) input.checked = !enabled;
+    return;
+  }
+  if (input) input.disabled = true;
   try {
-    await window.pywebview.api.toggle_openai_candidate(id, enabled);
+    const res = await window.pywebview.api.toggle_openai_candidate(id, enabled);
+    if (res === false || (res && res.ok === false)) {
+      if (input) input.checked = !enabled;
+      showToast(res?.message || `Не удалось ${enabled ? 'включить' : 'отключить'} авторотацию ChatGPT`);
+      await refreshState();
+      return;
+    }
     showToast(`Авторотация ChatGPT ${enabled ? "включена" : "отключена"}`);
     await refreshState();
-  } catch (e) { showToast(`Ошибка переключения ChatGPT: ${e?.message || e}`); }
+  } catch (e) {
+    if (input) input.checked = !enabled;
+    showToast(`Ошибка переключения ChatGPT: ${e?.message || e}`);
+  } finally {
+    if (input) input.disabled = false;
+  }
 }
 
 async function addOpenAiAccount() {
@@ -2970,6 +3144,9 @@ async function importBackup() {
     if (res && (res.ok || res.partial)) {
       if (statusEl) statusEl.textContent = res.message;
       showToast(res.message);
+      settingsDirty = false;
+      const providerSettingsResult = document.getElementById('provider-settings-result');
+      if (providerSettingsResult) providerSettingsResult.textContent = '';
       networkFormInitialized = false;
       xpikiFormInitialized = false;
       deepseekFormInitialized = false;

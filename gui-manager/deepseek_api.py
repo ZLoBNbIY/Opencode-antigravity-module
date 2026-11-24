@@ -617,7 +617,7 @@ def configure_opencode_models(model_ids: Optional[List[str]] = None,
     if wanted and "$schema" not in data:
         updated = jsonc_config.set_property(updated, ("$schema",), "https://opencode.ai/config.json")
     if updated != original:
-        atomic_write(path, updated)
+        atomic_write(path, updated, private_parent=False)
 
     cfg["models"] = catalog
     cfg["selected_models"] = wanted
@@ -626,7 +626,7 @@ def configure_opencode_models(model_ids: Optional[List[str]] = None,
     cfg["base_url"] = origin
     if not save_config(cfg):
         if updated != original:
-            atomic_write(path, original)
+            atomic_write(path, original, private_parent=False)
         raise OSError("Не удалось сохранить выбранные модели DeepSeek")
     return wanted
 
@@ -681,7 +681,7 @@ def disconnect_opencode() -> bool:
             return False
         updated = _remove_managed_models(original, data, cfg)
         if updated != original:
-            atomic_write(path, updated)
+            atomic_write(path, updated, private_parent=False)
         if cli:
             try:
                 result = subprocess.run([cli, "auth", "logout", target], capture_output=True, timeout=15)
@@ -689,7 +689,7 @@ def disconnect_opencode() -> bool:
                     raise OSError("Ключ DeepSeek не удалён из OpenCode")
             except (OSError, subprocess.TimeoutExpired):
                 if updated != original:
-                    atomic_write(path, original)
+                    atomic_write(path, original, private_parent=False)
                 return False
             finally:
                 opencode_credentials.invalidate()

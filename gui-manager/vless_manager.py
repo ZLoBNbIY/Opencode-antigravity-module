@@ -267,26 +267,30 @@ class VlessParser:
         if not url_str.startswith("vless://"):
             raise ValueError("Ссылка должна начинаться с 'vless://'")
 
-        parsed = urllib.parse.urlparse(url_str)
-        user_info = parsed.netloc.split("@")
-        if len(user_info) != 2:
+        parsed = urllib.parse.urlsplit(url_str)
+        if "@" not in parsed.netloc:
+            raise ValueError("Некорректный формат vless:// (ожидается uuid@host:port)")
+        uuid, host_port = parsed.netloc.split("@", 1)
+        if not uuid or "@" in host_port:
             raise ValueError("Некорректный формат vless:// (ожидается uuid@host:port)")
 
-        uuid = user_info[0]
-        host_port = user_info[1].split(":")
-        if len(host_port) != 2:
+        try:
+            server = parsed.hostname
+            port = parsed.port
+        except ValueError:
             raise ValueError("Некорректный адрес или порт сервера")
 
-        server = host_port[0]
-        try:
-            port = int(host_port[1])
-        except ValueError:
-            raise ValueError(f"Некорректный номер порта: {host_port[1]}")
+        if not server or port is None or not (1 <= port <= 65535):
+            raise ValueError("Некорректный адрес или порт сервера")
 
         query = urllib.parse.parse_qs(parsed.query)
         params = {k: v[0] for k, v in query.items()}
 
-        tag = urllib.parse.unquote(parsed.fragment) if parsed.fragment else f"{server}:{port}"
+        default_tag = f"[{server}]:{port}" if ":" in server else f"{server}:{port}"
+        tag = urllib.parse.unquote(parsed.fragment) if parsed.fragment else default_tag
+
+        raw_alpn = params.get("alpn", "")
+        alpn = [item.strip() for item in raw_alpn.split(",") if item.strip()] if raw_alpn else ["h2", "http/1.1"]
 
         return {
             "uuid": uuid,
@@ -294,7 +298,7 @@ class VlessParser:
             "port": port,
             "security": params.get("security", "none"),
             "sni": params.get("sni", params.get("peer", server)),
-            "alpn": params.get("alpn", "").split(",") if params.get("alpn") else ["h2", "http/1.1"],
+            "alpn": alpn,
             "fingerprint": params.get("fp", "chrome"),
             "pbk": params.get("pbk", ""),
             "sid": params.get("sid", ""),
@@ -314,6 +318,7 @@ class VlessManager:
         self._process: Optional[subprocess.Popen] = None
         self._runtime: Optional[Path] = None
         self._ports: Tuple[int, ...] = ()
+        self._http_port: Optional[int] = None
         self._lock = threading.Lock()
         self._status = "stopped"
         self._last_test_result: Optional[Dict[str, Any]] = None
@@ -543,6 +548,16 @@ class VlessManager:
             if sni and not (sni.replace(".", "").isdigit() or ":" in sni):
                 tls_obj["server_name"] = sni
 
+            raw_alpn = params.get("alpn")
+            if isinstance(raw_alpn, str):
+                alpn = [item.strip() for item in raw_alpn.split(",") if item.strip()]
+            elif isinstance(raw_alpn, (list, tuple)):
+                alpn = [str(item).strip() for item in raw_alpn if str(item).strip()]
+            else:
+                alpn = []
+            if alpn:
+                tls_obj["alpn"] = alpn
+
             tls_obj["utls"] = {
                 "enabled": True,
                 "fingerprint": params["fingerprint"] or "chrome",
@@ -577,6 +592,7 @@ class VlessManager:
             "server": params["server"],
             "server_port": params["port"],
             "uuid": params["uuid"],
+            "domain_resolver": "local-dns",
         }
         if is_tls:
             outbound["tls"] = tls_obj
@@ -592,7 +608,8 @@ class VlessManager:
             "log": {"level": "warn"},
             "dns": {
                 "servers": [
-                    {"type": "https", "tag": "remote-dns", "server": "1.1.1.1", "detour": "vless-out"}
+                    {"type": "https", "tag": "remote-dns", "server": "1.1.1.1", "detour": "vless-out"},
+                    {"type": "local", "tag": "local-dns"},
                 ]
             },
             "inbounds": [
@@ -611,13 +628,50 @@ class VlessManager:
         return config
 
     def is_running(self) -> bool:
-        with self._lock:
-            return self._is_ready()
+        return self._is_ready()
 
     def _is_ready(self) -> bool:
-        proc = self._process
-        return (self._status == "running" and proc is not None
-                and self._owns_listeners(proc, self._ports))
+        with self._lock:
+            proc = self._process
+            ports = self._ports
+            status = self._status
+            if proc is not None and proc.poll() is not None:
+                self._clear_child()
+                return False
+            if status != "running" or proc is None or not ports:
+                return False
+        owns = self._owns_listeners(proc, ports)
+        if not owns and proc.poll() is not None:
+            with self._lock:
+                if self._process is proc:
+                    self._clear_child()
+        return owns
+
+    def is_http_listener_ready(self, port: Optional[int] = None) -> bool:
+        with self._lock:
+            proc = self._process
+            if proc is not None and proc.poll() is not None:
+                self._clear_child()
+                return False
+            if self._status != "running" or proc is None:
+                return False
+            active_port = self._ports[0] if self._ports else self._http_port
+            if port is not None:
+                if isinstance(port, bool):
+                    return False
+                try:
+                    target_port = int(port)
+                except (TypeError, ValueError):
+                    return False
+                if active_port is not None and target_port != active_port:
+                    return False
+            elif active_port is not None:
+                target_port = int(active_port)
+            else:
+                return False
+            if not 1 <= target_port <= 65535:
+                return False
+        return self.check_port_listening(target_port, timeout=0.5)
 
     def check_port_listening(self, port: int, timeout: float = 0.5) -> bool:
         try:
@@ -678,6 +732,7 @@ class VlessManager:
             self._exit_generation += 1
         self._process = None
         self._ports = ()
+        self._http_port = None
         self._status = "stopped"
         if self._runtime is not None:
             shutil.rmtree(self._runtime, ignore_errors=True)
@@ -711,9 +766,18 @@ class VlessManager:
         socks_port = socks_port or cfg_socks
 
         with self._lock:
-            if self._process and self._process.poll() is None:
-                if self._is_ready():
-                    return True, "Туннель уже запущен."
+            existing = self._process
+            existing_ports = self._ports
+            existing_status = self._status
+            if existing is not None and existing.poll() is None and existing_status != "running":
+                return False, "Ядро уже запускается или не готово. При необходимости остановите его."
+        if existing is not None and existing_status == "running" and existing.poll() is None:
+            if self._owns_listeners(existing, existing_ports):
+                return True, "Туннель уже запущен."
+            return False, "Ядро уже запускается или не готово. При необходимости остановите его."
+
+        with self._lock:
+            if self._process is not None and self._process.poll() is None:
                 return False, "Ядро уже запускается или не готово. При необходимости остановите его."
             self._clear_child()
             try:
@@ -753,6 +817,7 @@ class VlessManager:
                     )
                 self._process = proc
                 self._ports = ports
+                self._http_port = http_port
                 self._status = "starting"
             except (OSError, ValueError) as e:
                 self._clear_child()
@@ -775,10 +840,17 @@ class VlessManager:
                         pass
                     self._clear_child()
                     return False, f"Процесс ядра завершился с кодом {rc}. {details}"
-                if self._owns_listeners(proc, ports):
-                    self._status = "running"
-                    self._exit_generation += 1
-                    return True, f"VLESS туннель запущен на 127.0.0.1:{http_port}"
+            if self._owns_listeners(proc, ports):
+                with self._lock:
+                    if self._process is not proc:
+                        return False, "Запуск туннеля отменён."
+                    if proc.poll() is None:
+                        self._status = "running"
+                        self._exit_generation += 1
+                        return True, f"VLESS туннель запущен на 127.0.0.1:{http_port}"
+            with self._lock:
+                if self._process is not proc:
+                    return False, "Запуск туннеля отменён."
                 if time.monotonic() >= deadline:
                     stopped = self._stop_child()
                     message = f"Ядро не открыло ожидаемые порты VLESS за отведённое время ({ports})."
@@ -798,7 +870,8 @@ class VlessManager:
             proc = self._process
             if http_port is None:
                 http_port = self._ports[0] if self._ports else get_http_port()
-            ready = self._is_ready() and http_port == self._ports[0]
+            port_matches = bool(self._ports) and http_port == self._ports[0]
+        ready = port_matches and self._is_ready()
         if not ready:
             return {
                 "ok": False,
@@ -884,8 +957,9 @@ class VlessManager:
                         "ip": ip,
                         "country": country,
                     }
+                    ready_now = self._is_ready()
                     with self._lock:
-                        if self._process is not proc or not self._is_ready():
+                        if self._process is not proc or not ready_now:
                             break
                         self._last_test_result = result
                     return result

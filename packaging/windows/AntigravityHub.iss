@@ -145,12 +145,32 @@ begin
     Result := CustomMessage('WebViewFailed') + ' (WebView2: ' + IntToStr(ExitCode) + ')';
 end;
 
+function IsAbsoluteDrivePath(P: String): Boolean;
+var Drive: Char;
+begin
+  Result := False;
+  if Length(P) < 3 then
+    Exit;
+  Drive := UpCase(P[1]);
+  Result := (Drive >= 'A') and (Drive <= 'Z') and (Copy(P, 2, 2) = ':\');
+end;
+
 function OpenCodeConfigDir(Param: String): String;
-var Profile: String;
+var OverrideDir, XdgDir, Profile: String;
 begin
   Result := '';
-  Profile := GetEnv('USERPROFILE');
-  if (Length(Profile) >= 3) and (Copy(Profile, 2, 2) = ':\') and DirExists(Profile) then
+  OverrideDir := Trim(GetEnv('OPENCODE_CONFIG_DIR'));
+  if IsAbsoluteDrivePath(OverrideDir) then begin
+    Result := RemoveBackslashUnlessRoot(OverrideDir);
+    Exit;
+  end;
+  XdgDir := Trim(GetEnv('XDG_CONFIG_HOME'));
+  if IsAbsoluteDrivePath(XdgDir) then begin
+    Result := AddBackslash(XdgDir) + 'opencode';
+    Exit;
+  end;
+  Profile := Trim(GetEnv('USERPROFILE'));
+  if IsAbsoluteDrivePath(Profile) and DirExists(Profile) then
     Result := AddBackslash(Profile) + '.config\opencode';
 end;
 
@@ -158,7 +178,7 @@ function OpenCodeProfileAvailable: Boolean;
 begin
   Result := OpenCodeConfigDir('') <> '';
   if not Result then
-    Log('Skipping optional OpenCode settings: USERPROFILE is not an existing local directory.');
+    Log('Skipping optional OpenCode settings: no valid OpenCode config directory found.');
 end;
 
 function MissingOpenCodeConfig: Boolean;
@@ -166,5 +186,5 @@ var D: String;
 begin
   D := OpenCodeConfigDir('');
   Result := OpenCodeProfileAvailable and
-    not FileExists(D + '\opencode.json') and not FileExists(D + '\opencode.jsonc');
+    not FileExists(AddBackslash(D) + 'opencode.json') and not FileExists(AddBackslash(D) + 'opencode.jsonc');
 end;

@@ -269,30 +269,32 @@ class ClaudeAccountManager:
         return None
 
     def set_active_account(self, email: str) -> bool:
-        accounts = self.load_accounts()
-        found = False
-        for a in accounts:
-            if a.get("email") == email:
-                a["active"] = True
-                found = True
-            else:
-                a["active"] = False
-        if found and self.save_accounts(accounts):
-            self.configure_opencode_provider()
-            return True
-        return False
+        with self._lock:
+            accounts = self.load_accounts()
+            found = False
+            for a in accounts:
+                if a.get("email") == email:
+                    a["active"] = True
+                    found = True
+                else:
+                    a["active"] = False
+            if found and self.save_accounts(accounts):
+                self.configure_opencode_provider()
+                return True
+            return False
 
     def delete_account(self, email: str) -> bool:
-        accounts = self.load_accounts()
-        new_accs = [a for a in accounts if a.get("email") != email]
-        if len(new_accs) != len(accounts):
-            if new_accs and not any(a.get("active") for a in new_accs):
-                new_accs[0]["active"] = True
-            if not self.save_accounts(new_accs):
-                return False
-            self.configure_opencode_provider()
-            return True
-        return False
+        with self._lock:
+            accounts = self.load_accounts()
+            new_accs = [a for a in accounts if a.get("email") != email]
+            if len(new_accs) != len(accounts):
+                if new_accs and not any(a.get("active") for a in new_accs):
+                    new_accs[0]["active"] = True
+                if not self.save_accounts(new_accs):
+                    return False
+                self.configure_opencode_provider()
+                return True
+            return False
 
     def verify_and_add_account(self, session_key: str, custom_name: str = "", base_url: str = "") -> Tuple[bool, str, Optional[Dict[str, Any]]]:
         """Validates claude.ai sessionKey, Claude Code setup-token, or third-party Claude API (e.g. Xpiki) and saves account."""
@@ -364,21 +366,22 @@ class ClaudeAccountManager:
                     }
                 ]
             }
-            accounts = self.load_accounts()
-            updated = False
-            for i, existing in enumerate(accounts):
-                if existing.get("email") == email:
-                    account_data["active"] = existing.get("active", False)
-                    accounts[i] = account_data
-                    updated = True
-                    break
-            if not updated:
-                if not accounts:
-                    account_data["active"] = True
-                accounts.append(account_data)
+            with self._lock:
+                accounts = self.load_accounts()
+                updated = False
+                for i, existing in enumerate(accounts):
+                    if existing.get("email") == email:
+                        account_data["active"] = existing.get("active", False)
+                        accounts[i] = account_data
+                        updated = True
+                        break
+                if not updated:
+                    if not accounts:
+                        account_data["active"] = True
+                    accounts.append(account_data)
 
-            if not self.save_accounts(accounts):
-                return False, "Не удалось сохранить аккаунт Claude.", None
+                if not self.save_accounts(accounts):
+                    return False, "Не удалось сохранить аккаунт Claude.", None
             self.configure_opencode_provider()
             self.configure_claude_cli_settings(session_key, target_base)
             return True, f"Аккаунт Claude API ({email}) успешно подключён!", account_data
@@ -444,22 +447,23 @@ class ClaudeAccountManager:
                 ]
             }
 
-            accounts = self.load_accounts()
-            updated = False
-            for i, existing in enumerate(accounts):
-                if existing.get("email") == email:
-                    account_data["active"] = existing.get("active", False)
-                    accounts[i] = account_data
-                    updated = True
-                    break
+            with self._lock:
+                accounts = self.load_accounts()
+                updated = False
+                for i, existing in enumerate(accounts):
+                    if existing.get("email") == email:
+                        account_data["active"] = existing.get("active", False)
+                        accounts[i] = account_data
+                        updated = True
+                        break
 
-            if not updated:
-                if not accounts:
-                    account_data["active"] = True
-                accounts.append(account_data)
+                if not updated:
+                    if not accounts:
+                        account_data["active"] = True
+                    accounts.append(account_data)
 
-            if not self.save_accounts(accounts):
-                return False, "Не удалось сохранить аккаунт Claude.", None
+                if not self.save_accounts(accounts):
+                    return False, "Не удалось сохранить аккаунт Claude.", None
             self.configure_opencode_provider()
             return True, f"Аккаунт {email} ({plan_type.upper()}) успешно подключён!", account_data
         except urllib.error.HTTPError as e:
@@ -503,7 +507,7 @@ class ClaudeAccountManager:
                     updated = original
 
             if updated != original or not cfg_path.exists():
-                secure_storage.atomic_write(cfg_path, updated)
+                secure_storage.atomic_write(cfg_path, updated, private_parent=False)
             try:
                 import opencode_config
                 opencode_config.ensure_session_title_config(cfg_path)
@@ -523,14 +527,25 @@ class ClaudeAccountManager:
             data: Dict[str, Any] = {}
             if settings_path.exists():
                 try:
-                    data = json.loads(settings_path.read_text(encoding="utf-8"))
-                except Exception:
-                    data = {}
-            env_block = data.setdefault("env", {})
+                    data = json.loads(settings_path.read_text(encoding="utf-8-sig"))
+                except (OSError, UnicodeError, ValueError) as e:
+                    return False, f"Существующий файл настроек {settings_path} повреждён и не перезаписан: {e}"
+                if not isinstance(data, dict):
+                    return False, f"Файл настроек {settings_path} должен содержать JSON-объект."
+            env_block = data.get("env")
+            if env_block is None:
+                env_block = {}
+                data["env"] = env_block
+            elif not isinstance(env_block, dict):
+                return False, f"Поле env в {settings_path} имеет неверный формат."
             env_block["ANTHROPIC_AUTH_TOKEN"] = api_token.strip()
             env_block["ANTHROPIC_BASE_URL"] = (base_url or "https://api.xpiki.com/v1").strip().rstrip("/")
             env_block["ANTHROPIC_MODEL"] = model.strip()
-            settings_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            secure_storage.atomic_write(
+                settings_path,
+                json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                private_parent=False,
+            )
             return True, f"Настройки Claude Code CLI записаны в {settings_path}"
         except Exception as e:
             return False, f"Ошибка записи ~/.claude/settings.json: {e}"
@@ -547,13 +562,24 @@ class ClaudeAccountManager:
             data: Dict[str, Any] = {}
             if cfg_path.exists():
                 try:
-                    data = json.loads(cfg_path.read_text(encoding="utf-8"))
-                except Exception:
-                    data = {}
-            inference = data.setdefault("thirdPartyInference", {})
+                    data = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+                except (OSError, UnicodeError, ValueError) as e:
+                    return False, f"Существующий файл настроек {cfg_path} повреждён и не перезаписан: {e}"
+                if not isinstance(data, dict):
+                    return False, f"Файл настроек {cfg_path} должен содержать JSON-объект."
+            inference = data.get("thirdPartyInference")
+            if inference is None:
+                inference = {}
+                data["thirdPartyInference"] = inference
+            elif not isinstance(inference, dict):
+                return False, f"Поле thirdPartyInference в {cfg_path} имеет неверный формат."
             inference["baseUrl"] = (base_url or "https://api.xpiki.com/v1").strip().rstrip("/")
             inference["apiKey"] = api_token.strip()
-            cfg_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            secure_storage.atomic_write(
+                cfg_path,
+                json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                private_parent=False,
+            )
             return True, f"Настройки Claude Desktop записаны в {cfg_path}"
         except Exception as e:
             return False, f"Ошибка настройки Claude Desktop: {e}"
@@ -669,8 +695,8 @@ class ClaudeAccountManager:
 
     def refresh_claude_sessions_silent(self) -> None:
         """Periodically refreshes claude.ai sessionKey so it stays active and never expires."""
-        accounts = self.load_accounts()
-        changed = False
+        accounts = [dict(a) for a in self.load_accounts()]
+        refreshed: list[tuple[str, str, str]] = []  # (email, old_key, new_key)
 
         for acc in accounts:
             if acc.get("token_type") != "session_key":
@@ -696,8 +722,7 @@ class ClaudeAccountManager:
                             if part.startswith("sessionKey="):
                                 new_key = part.split("=", 1)[1].strip()
                                 if new_key and new_key != session_key:
-                                    acc["session_key"] = new_key
-                                    changed = True
+                                    refreshed.append((str(acc.get("email") or ""), session_key, new_key))
                                     print(f"[Claude Manager] sessionKey auto-refreshed for {acc.get('email')}")
             except Exception:
                 if CLAUDE_PROFILE_DIR.exists():
@@ -723,8 +748,7 @@ class ClaudeAccountManager:
                             if c.get("name") == "sessionKey" and c.get("value"):
                                 new_val = c.get("value")
                                 if new_val != session_key:
-                                    acc["session_key"] = new_val
-                                    changed = True
+                                    refreshed.append((str(acc.get("email") or ""), session_key, new_val))
                                     print(f"[Claude Manager] Headless sessionKey renewal successful for {acc.get('email')}")
                     except Exception:
                         pass
@@ -740,8 +764,19 @@ class ClaudeAccountManager:
                             except Exception:
                                 pass
 
-        if changed:
-            self.save_accounts(accounts)
+        if refreshed:
+            with self._lock:
+                latest = self.load_accounts()
+                changed = False
+                for email, old_key, new_key in refreshed:
+                    for acc in latest:
+                        if (email and acc.get("email") == email) or acc.get("session_key") == old_key:
+                            if acc.get("session_key") == old_key:
+                                acc["session_key"] = new_key
+                                changed = True
+                            break
+                if changed:
+                    self.save_accounts(latest)
 
 
 class ClaudeSubscriptionBridge:
@@ -753,6 +788,7 @@ class ClaudeSubscriptionBridge:
         self._server: Optional[_BridgeServer] = None
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
+        self._stopped = False
 
     @staticmethod
     def _load_or_create_token() -> str:
@@ -810,7 +846,7 @@ class ClaudeSubscriptionBridge:
 
     def ensure_running(self):
         with self._lock:
-            if self._server is not None:
+            if self._stopped or self._server is not None:
                 return
             try:
                 bridge_self = self
@@ -888,6 +924,26 @@ class ClaudeSubscriptionBridge:
                 self._thread.start()
             except Exception as e:
                 print(f"[Claude Bridge] Failed to start server on port {self.port}: {e}")
+
+    def stop(self) -> None:
+        thread = None
+        with self._lock:
+            self._stopped = True
+            server = self._server
+            thread = self._thread
+            self._server = None
+            self._thread = None
+            if server is not None:
+                try:
+                    server.shutdown()
+                except Exception:
+                    pass
+                try:
+                    server.server_close()
+                except Exception:
+                    pass
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2)
 
     def _claude_web_completion_url(self, opener, org_id: str, req_headers: dict) -> str:
         safe_org = urllib.parse.quote(str(org_id or ""), safe="")

@@ -610,3 +610,32 @@ test('renderGoogleTab preserves multiple accounts without id or email without Ma
   const list = elements.get('google-accounts-list');
   assert.equal(list.children.length, 4);
 });
+
+test('syncListControlProperties keeps live checked/disabled state in sync and toggle reverts on failure', async () => {
+  const {context} = frontend(state);
+  const res = vm.runInContext(`(() => {
+    const oldNode = document.createElement('div');
+    const newNode = document.createElement('div');
+    oldNode.innerHTML = '<input type="checkbox">';
+    newNode.innerHTML = '<input type="checkbox">';
+    const oldInput = { tagName: 'INPUT', type: 'checkbox', checked: true, disabled: false, value: 'on' };
+    const newInput = { tagName: 'INPUT', type: 'checkbox', checked: false, disabled: true, value: 'on' };
+    oldNode.querySelectorAll = () => [oldInput];
+    newNode.querySelectorAll = () => [newInput];
+    syncListControlProperties(oldNode, newNode);
+    return { checked: oldInput.checked, disabled: oldInput.disabled };
+  })()`, context);
+  assert.deepEqual(JSON.parse(JSON.stringify(res)), { checked: false, disabled: true });
+
+  const input = { checked: true, disabled: false };
+  context.window.pywebview = {
+    api: {
+      toggle_google_account_enabled: async () => ({ ok: false, message: 'rejected' }),
+      get_state: async () => structuredClone(state),
+    },
+  };
+  context.__testInput = input;
+  await vm.runInContext(`toggleGoogleEnabled(0, true, __testInput)`, context);
+  assert.equal(input.checked, false);
+  assert.equal(input.disabled, false);
+});

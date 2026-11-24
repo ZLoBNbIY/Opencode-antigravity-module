@@ -71,6 +71,8 @@ MAX_RELAY_BYTES = 128 * 1024 * 1024  # per direction
 _public_connect_deadline = ContextVar("public_connect_deadline", default=None)
 _server = None
 _thread = None
+_maintain_thread = None
+_stop_event = threading.Event()
 _start_lock = threading.Lock()
 
 
@@ -120,7 +122,16 @@ def _hub_upstream_proxy(hub: dict) -> str | None:
 
 
 def _vless_upstream(hub):
-    return f"http://127.0.0.1:{hub.get('vless_http_port') or 10879}"
+    raw = hub.get("vless_http_port") if isinstance(hub, dict) else None
+    port = 10879
+    if not isinstance(raw, bool):
+        try:
+            candidate = int(raw)
+            if 1024 <= candidate <= 65535:
+                port = candidate
+        except (TypeError, ValueError):
+            pass
+    return f"http://127.0.0.1:{port}"
 
 
 def _managed_vless_ready(upstream):
@@ -288,22 +299,27 @@ def _split_host_port(authority: str, default_port: int = 443) -> tuple[str, int]
     return raw, default_port
 
 
+def _canonical_provider_id(name: str) -> str:
+    return "deepseek-account" if name.lower() == "deepseek" else name
+
+
 def provider_for_host(host: str, opencode_config: dict | None = None) -> str | None:
     """Resolve common built-in and configured provider hosts to provider IDs."""
     host = _strip_host_port(host)
     config = opencode_config if isinstance(opencode_config, dict) else _read_json(CONFIG_DIR / "opencode.json")
-    domains: dict[str, list[str]] = {}
+    domains: dict[str, tuple[str, ...]] = {}
     explicit = []
     for name, options in _provider_options(config):
+        canonical = _canonical_provider_id(name)
         for key in ("baseURL", "baseUrl", "hubBaseURL"):
             base = options.get(key)
             if isinstance(base, str):
                 try:
                     if urlsplit(base).hostname == host:
-                        explicit.append(name)
+                        explicit.append(canonical)
                 except ValueError:
                     pass
-        domains[name] = LOCAL_ROUTES.get(name.lower(), ())
+        domains.setdefault(canonical, LOCAL_ROUTES.get(canonical.lower(), ()))
     if explicit:
         return explicit[0]
     matches = [(len(domain), name) for name, values in domains.items()
@@ -417,7 +433,10 @@ def _resolve_with_hub_dns(host: str, hub_config=None, timeout=8) -> str:
             raise TimeoutError("Hub DNS resolution timed out")
         result = dns_tester.test_doh_endpoint(doh_url, timeout=remaining, domain=host)
     elif mode == "dot":
-        result = dns_tester.test_dot_endpoint(hub.get("dot_host", ""), timeout=timeout, domain=host)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Hub DNS resolution timed out")
+        result = dns_tester.test_dot_endpoint(hub.get("dot_host", ""), timeout=remaining, domain=host)
     else:
         servers = hub.get("custom_dns") or ["143.20.64.55"]
         result = {}
@@ -495,7 +514,9 @@ def _connect_upstream(proxy_url: str | None, target_host: str, target_port: int,
             # resolution cannot change an explicitly configured destination.
             destination = target_host
             if constrained and not _builtin_host(target_host):
-                destination = _resolve_public(target_host, target_port)[0]
+                import gemini_routes
+                if not gemini_routes.matches(target_host):
+                    destination = _resolve_public(target_host, target_port)[0]
             proxy_host = parsed.hostname
             proxy_port = parsed.port or (443 if parsed.scheme == "https" else 80)
             upstream = socket.create_connection((proxy_host, proxy_port), timeout=remaining())
@@ -867,19 +888,54 @@ def start() -> bool:
         return _start()
 
 
+def stop() -> None:
+    global _server, _thread, _maintain_thread
+    with _start_lock:
+        _stop_event.set()
+        server = _server
+        thread = _thread
+        _server = None
+        _thread = None
+        _maintain_thread = None
+        if server is not None:
+            try:
+                server.shutdown()
+            except Exception:
+                pass
+            try:
+                server.server_close()
+            except Exception:
+                pass
+        if thread is not None:
+            try:
+                thread.join(timeout=2)
+            except Exception:
+                pass
+
+
 def _start() -> bool:
-    global _server, _thread
+    global _server, _thread, _maintain_thread
     import gemini_routes
     gemini_routes.refresh_async()
     if _server is not None:
         return True
+    _stop_event.clear()
     try:
         _server = _ThreadingServer((HOST, PORT), _Handler)
         _thread = threading.Thread(target=_server.serve_forever, daemon=True, name="provider-route-proxy")
         _thread.start()
-        threading.Thread(target=_maintain_auto_routes, daemon=True, name="provider-auto-routes").start()
+        if _maintain_thread is None or not _maintain_thread.is_alive():
+            _maintain_thread = threading.Thread(target=_maintain_auto_routes, daemon=True, name="provider-auto-routes")
+            _maintain_thread.start()
         return True
     except OSError:
+        if _server is not None:
+            try:
+                _server.server_close()
+            except OSError:
+                pass
+            _server = None
+            _thread = None
         # Do not fall back to a running dispatcher with the old unrestricted policy.
         probe = http.client.HTTPConnection(HOST, PORT, timeout=0.3)
         try:
@@ -900,7 +956,7 @@ def _maintain_auto_routes():
     from auto_router import router
     visibility_keys = {"google":"antigravity", "claude-pro":"claude", "openrouter-free":"openrouter",
                        "tokenlavka":"tokenlavka"}
-    while True:
+    while not _stop_event.is_set():
         try:
             hub = _read_json(CONFIG_DIR / "antigravity.json")
             oc = _read_json(CONFIG_DIR / "opencode.json")
@@ -909,12 +965,15 @@ def _maintain_auto_routes():
             routes = hub.get("provider_routes") or {}
             disabled = oc.get("disabled_providers") or []
             for name in names:
+                if _stop_event.is_set():
+                    break
                 enabled = visibility.get(visibility_keys.get(name, name), True)
                 if enabled and name not in disabled and routes.get(name, "default") in ("default", "auto"):
                     router.refresh(name, hub, oc)
         except Exception:
             pass
-        time.sleep(5)
+        if _stop_event.wait(5):
+            break
 
 
 def proxy_url_for_hub_requests() -> str:

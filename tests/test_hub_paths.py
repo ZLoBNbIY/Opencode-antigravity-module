@@ -109,3 +109,26 @@ class HubPathsTests(unittest.TestCase):
             atomic_write_bytes(target, b"{}", private_parent=False)
             self.assertEqual(target.stat().st_mode & 0o777, 0o600)
             self.assertEqual(directory.stat().st_mode & 0o777, 0o755)
+
+    def test_ensure_auto_update_disabled_handles_empty_json_and_jsonc_comments(self):
+        with TemporaryDirectory() as root:
+            empty = Path(root) / "empty.json"
+            empty.write_text("{}\n", encoding="utf-8")
+            commented = Path(root) / "commented.jsonc"
+            commented.write_text('{\n  // "auto_update": false\n  "auto_update": "true",\n  "k": 1,\n}\n', encoding="utf-8")
+            res = hub_paths.ensure_auto_update_disabled([empty, commented])
+            self.assertTrue(res["ok"])
+            self.assertEqual(json.loads(empty.read_text(encoding="utf-8")), {"auto_update": False})
+            import jsonc_config
+            parsed = jsonc_config.parse_config(commented.read_text(encoding="utf-8"), jsonc=True)
+            self.assertIs(parsed["auto_update"], False)
+            self.assertIn('// "auto_update": false', commented.read_text(encoding="utf-8"))
+
+    def test_read_mirrored_antigravity_config_supports_jsonc_mirror(self):
+        with TemporaryDirectory() as root:
+            central, mirror = Path(root) / "central.json", Path(root) / "mirror.json"
+            atomic_write_bytes(central, b'{"old":true}')
+            atomic_write_bytes(mirror, b'{\n  // comment\n  "new": true,\n}\n')
+            with patch.multiple(hub_paths, HUB_CONFIG_FILE=central,
+                                OPENCODE_SHARED_ANTIGRAVITY_CONFIG=mirror):
+                self.assertEqual(hub_paths.read_mirrored_antigravity_config(), {"new": True})

@@ -2,6 +2,7 @@
 
 import logging
 from logging.handlers import RotatingFileHandler
+import os
 
 
 log = logging.getLogger("ai_hub")
@@ -10,11 +11,19 @@ log = logging.getLogger("ai_hub")
 def configure(directory):
     if log.handlers:
         return
+    handler = None
     try:
-        directory.mkdir(parents=True, exist_ok=True)
-        handler = RotatingFileHandler(directory / "hub.log", maxBytes=256 * 1024,
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if os.name != "nt":
+            os.chmod(directory, 0o700)
+        log_file = directory / "hub.log"
+        handler = RotatingFileHandler(log_file, maxBytes=256 * 1024,
                                       backupCount=2, encoding="utf-8")
+        if os.name != "nt":
+            os.chmod(log_file, 0o600)
     except OSError:
+        if handler is not None:
+            handler.close()
         return
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     log.setLevel(logging.INFO)

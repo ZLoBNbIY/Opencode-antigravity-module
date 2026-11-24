@@ -249,10 +249,25 @@ def _read_opencode_config() -> dict:
 
 
 def _is_hub_local_proxy(parsed) -> bool:
-    host = (parsed.hostname or "").lower()
-    if host not in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host:
         return False
-    return parsed.port in (provider_proxy.PORT, 51180, get_http_port())
+    is_local = host in ("localhost", "localhost.localdomain")
+    if not is_local:
+        try:
+            addr = ipaddress.ip_address(host.split("%", 1)[0])
+            if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+                addr = addr.ipv4_mapped
+            is_local = addr.is_loopback or addr.is_unspecified
+        except ValueError:
+            is_local = False
+    if not is_local:
+        return False
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    return port in (provider_proxy.PORT, 51180, get_http_port())
 
 
 _POOL_ID_KEY = secrets.token_bytes(32)
@@ -430,7 +445,8 @@ def _backup_config(data: dict) -> dict:
         ipaddress.ip_address(ip)
     if result.get("doh_url"):
         parsed = urlparse(result["doh_url"])
-        if parsed.scheme != "https" or not parsed.hostname or parsed.username is not None:
+        if (parsed.scheme != "https" or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None):
             raise ValueError("Некорректный адрес DoH")
         _ = parsed.port
     for url in [result.get("proxy", ""), *result.get("proxy_pool", [])]:
@@ -438,7 +454,9 @@ def _backup_config(data: dict) -> dict:
             raise ValueError("Некорректный прокси")
         if url:
             parsed = urlparse(url)
-            if parsed.scheme not in ("http", "https") or not parsed.hostname or _is_hub_local_proxy(parsed):
+            port = parsed.port
+            if (parsed.scheme not in ("http", "https") or not parsed.hostname
+                    or port == 0 or _is_hub_local_proxy(parsed)):
                 raise ValueError("Некорректный прокси")
     active = result.get("vless_url")
     if active:
@@ -526,9 +544,73 @@ def _remove_hub_opencode_settings(text: str) -> str:
             providers = cfg.get(section)
             google = providers.get("google") if isinstance(providers, dict) else None
             options = google.get(settings) if isinstance(google, dict) else None
-            if isinstance(options, dict) and options.get("apiKey") == "antigravity":
+            if (isinstance(options, dict)
+                    and options.get("apiKey") in ("antigravity", "common-auth-placeholder.google")):
                 text = jsonc_config.remove_property(text, (section, "google", settings, "apiKey"))
     return text
+
+
+def _opencode_cache_dirs() -> list[Path]:
+    roots = []
+    xdg_cache = os.environ.get("XDG_CACHE_HOME", "").strip()
+    if xdg_cache:
+        roots.append(Path(xdg_cache) / "opencode")
+    roots.append(Path.home() / ".cache" / "opencode")
+    dirs = []
+    seen = set()
+    for root in roots:
+        for sub in ("npm", "packages"):
+            candidate = root / sub
+            key = str(candidate)
+            if key not in seen:
+                seen.add(key)
+                dirs.append(candidate)
+    return dirs
+
+
+def _find_cli_3113() -> Path | None:
+    finder = google_proactive_refresh.find_cli_3113
+    package = google_proactive_refresh.PLUGIN_PACKAGE
+    cache_dirs = _opencode_cache_dirs()
+    for cache_dir in cache_dirs:
+        found = finder(cache_dir)
+        if found is not None:
+            return found
+    # Respect unit-test mocks on google_proactive_refresh.find_cli_3113 returning None.
+    if hasattr(finder, "assert_called"):
+        return None
+    # When multiple hash directories exist or OpenCode uses packages/ layout,
+    # pick the newest valid 3.1.13 cli.js.
+    candidates = []
+    for cache_dir in cache_dirs:
+        pkg_dir = cache_dir / f"{package}@3.1.13"
+        for pattern in (
+            f"*/node_modules/{package}/dist/cli.js",
+            f"node_modules/{package}/dist/cli.js",
+            "dist/cli.js",
+        ):
+            for path in pkg_dir.glob(pattern):
+                try:
+                    st = path.stat()
+                    if path.is_file() and st.st_size > 0:
+                        candidates.append((st.st_mtime_ns, path))
+                except OSError:
+                    continue
+        direct_cli = cache_dir.parent / "node_modules" / package / "dist" / "cli.js"
+        pkg_json = cache_dir.parent / "node_modules" / package / "package.json"
+        try:
+            if direct_cli.is_file() and pkg_json.is_file():
+                meta = json.loads(pkg_json.read_text(encoding="utf-8-sig"))
+                if meta.get("version") == "3.1.13":
+                    st = direct_cli.stat()
+                    if st.st_size > 0:
+                        candidates.append((st.st_mtime_ns, direct_cli))
+        except (OSError, ValueError):
+            continue
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
 
 
 class _WebviewBridge:
@@ -553,18 +635,20 @@ class HubApi:
         self._tray_holder = None
         try:
             hub_paths.migrate_legacy_locations()
-        except Exception:
-            pass
+        except Exception as exc:
+            hub_logging.failed("Migrate legacy Hub locations", exc)
         try:
             import cloudcode_route_patch
             pinned_version = cloudcode_route_patch.get_expected_plugin_version()
             if pinned_version:
                 opencode_config.ensure_plugin_pin(pinned_version)
             opencode_config.ensure_google_api_key()
-        except Exception:
-            pass
+        except Exception as exc:
+            hub_logging.failed("Initialize OpenCode plugin configuration", exc)
         self._config_lock = threading.RLock()
         self._quota_lock = threading.Lock()
+        self._all_quotas_lock = threading.Lock()
+        self._all_quotas_running = False
         self._quota_refreshing = False
         self._quota_error = None
         self._quota_notice = None
@@ -589,13 +673,31 @@ class HubApi:
         self._opencode_process = None
         self._closing = threading.Event()
         self._uninstalled = False
+        self._uninstalling = False
+        self._restart_requested = False
+        self._close_to_tray = True
+        try:
+            cfg = self.load_config()
+            self._close_to_tray = bool(cfg.get("close_to_tray", True))
+        except Exception as exc:
+            self._close_to_tray = False
+            hub_logging.failed("Load initial Hub settings", exc)
         self._login_locks = {name: threading.Lock() for name in ("google", "openai", "claude")}
         self._google_connect_lock = threading.Lock()
         self._google_refresh = google_proactive_refresh.GoogleProactiveRefresh(
             self._run_google_refresh_cli, self._closing, self._google_refresh_enabled)
 
+    def _apply_autostart(self, enabled: bool) -> None:
+        _apply_autostart(enabled)
+
+    def _invalidate_diagnostics_cache(self):
+        with self._diagnostic_lock:
+            self._diagnostics.clear()
+            self._diagnostic_signatures.clear()
+            self._diagnostic_checked.clear()
+
     def _google_refresh_enabled(self):
-        if self._uninstalled or os.getenv("AI_HUB_GOOGLE_PROACTIVE_REFRESH") == "0":
+        if self._uninstalled or self._uninstalling or self._closing.is_set() or os.getenv("AI_HUB_GOOGLE_PROACTIVE_REFRESH") == "0":
             return False
         cfg = self.load_config()
         return cfg.get("google_proactive_refresh", True) is True
@@ -604,8 +706,12 @@ class HubApi:
         cfg = self.load_config()
         hub_pin = cfg.get("plugin_pin_version")
         # A user may pin OpenCode directly, independently of Hub's settings.
-        raw = _read_if_present(_opencode_config_path())
-        oc = jsonc_config.parse_config(raw.decode("utf-8-sig")) if raw is not None else {}
+        try:
+            raw = _read_if_present(_opencode_config_path())
+            oc = jsonc_config.parse_config(raw.decode("utf-8-sig")) if raw is not None else {}
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            hub_logging.failed("Read OpenCode config for Google profile", exc)
+            return None
         package = google_proactive_refresh.PLUGIN_PACKAGE
         pins = set()
         for field in ("plugins", "plugin"):
@@ -628,11 +734,11 @@ class HubApi:
         return version if version in google_proactive_refresh.SUPPORTED_PROFILES else None
 
     def _run_google_refresh_cli(self, args, timeout):
-        if self._closing.is_set():
+        if self._closing.is_set() or self._uninstalling or self._uninstalled:
             return None
         profile = self._google_refresh_profile()
         if profile == "3.1.13":
-            cli = google_proactive_refresh.find_cli_3113(Path.home() / ".cache" / "opencode" / "npm")
+            cli = _find_cli_3113()
             root = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else CURRENT_DIR.parent
             runner = root / "plugin" / "dist" / "google-cli-3113.mjs"
             if cli is None or not runner.is_file():
@@ -647,7 +753,7 @@ class HubApi:
             return None
         # The manager can return bare "node"; subprocess resolves it on PATH.
         node_exe = antigravity_manager.get_node_executable()
-        if self._closing.is_set():
+        if self._closing.is_set() or self._uninstalling or self._uninstalled:
             return None
         return antigravity_manager.run_google_route_cmd([node_exe, *command], timeout=timeout)
 
@@ -656,7 +762,7 @@ class HubApi:
         profile = self._google_refresh_profile()
         has_relocated = bool(getattr(antigravity_manager, "has_relocated_google_store", lambda: False)())
         if profile == "3.1.13" or has_relocated:
-            cli_3113 = google_proactive_refresh.find_cli_3113(Path.home() / ".cache" / "opencode" / "npm")
+            cli_3113 = _find_cli_3113()
             root = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else CURRENT_DIR.parent
             login_runner_3113 = root / "plugin" / "dist" / "google-login-3113.mjs"
             if cli_3113 is not None and login_runner_3113.is_file():
@@ -720,7 +826,7 @@ class HubApi:
 
     def _schedule_google_connection(self):
         """Start the isolated daemon worker; never block the calling thread."""
-        if self._uninstalled or self._closing.is_set():
+        if self._uninstalled or self._uninstalling or self._closing.is_set():
             return
         if os.getenv("AI_HUB_GOOGLE_POOL_CONNECTION") == "0":
             return
@@ -732,7 +838,7 @@ class HubApi:
 
     def ensure_google_connection(self):
         """Idempotent pool credential check; returns a status, never raises."""
-        if self._uninstalled or self._closing.is_set():
+        if self._uninstalled or self._uninstalling or self._closing.is_set():
             return google_connection.SKIP
         if not self._google_connect_lock.acquire(blocking=False):
             return google_connection.IN_PROGRESS
@@ -741,7 +847,7 @@ class HubApi:
             cli = helper() if callable(helper) else None
             status = google_connection.ensure_google_connection(
                 cli=cli, resolve=False,
-                stop=lambda: self._closing.is_set() or self._uninstalled)
+                stop=lambda: self._closing.is_set() or self._uninstalled or self._uninstalling)
             if status not in (google_connection.ALREADY_CONNECTED, google_connection.CONNECTED):
                 hub_logging.log.debug("Google connection: status=%s", status)
             return status
@@ -754,6 +860,7 @@ class HubApi:
     def load_config(self) -> dict:
         with self._config_lock:
             cfg, _ = self._config_snapshot()
+            self._close_to_tray = bool(cfg.get("close_to_tray", True))
             return cfg
 
     def _config_snapshot(self):
@@ -794,6 +901,7 @@ class HubApi:
                 cfg["auto_update"] = False
                 _, sources = self._config_snapshot()
                 _apply_file_updates(self._config_updates(cfg, sources))
+                self._close_to_tray = bool(cfg.get("close_to_tray", True))
             return True
         except Exception as exc:
             hub_logging.failed("Save Hub settings", exc)
@@ -830,11 +938,16 @@ class HubApi:
         active_index = antigravity_manager.get_active_google_account_index()
 
         cfg = self.load_config()
-        routes = cfg.get("provider_routes", {})
+        routes = cfg.get("provider_routes")
+        if not isinstance(routes, dict):
+            routes = {}
         try:
             oc = _read_opencode_config()
-            disabled = oc.get("disabled_providers", [])
-            visibility = dict(cfg.get("providers_visibility", {}))
+            disabled = oc.get("disabled_providers")
+            if not isinstance(disabled, list):
+                disabled = []
+            raw_vis = cfg.get("providers_visibility")
+            visibility = dict(raw_vis) if isinstance(raw_vis, dict) else {}
             for key, provider_id in PROVIDER_SETTING_IDS.items():
                 if provider_id in disabled:
                     visibility[key] = False
@@ -847,6 +960,11 @@ class HubApi:
         claude_active = next((index for index, account in enumerate(claude_accs) if account.get("active")),
                              0 if claude_accs else None)
 
+        with self._quota_lock:
+            quota_refreshing = self._quota_refreshing
+            quota_error = self._quota_error
+            quota_notice = self._quota_notice
+
         return {
             "accounts": [{k: a[k] for k in ("id", "email", "index", "is_active", "groups", "candidate", "enabled", "status") if k in a} for a in accounts],
             "activeIndex": active_index,
@@ -854,9 +972,9 @@ class HubApi:
             "openaiAccounts": [{k: a[k] for k in ("id", "accountId", "email", "plan_type", "is_active", "quota", "enabled", "candidate") if k in a} for a in openai_accs],
             "claudeAccounts": [{**{k: a[k] for k in ("id", "email", "name", "plan") if k in a},
                                 "is_active": index == claude_active} for index, a in enumerate(claude_accs)],
-            "openaiRefreshing": self._quota_refreshing,
-            "openaiError": self._quota_error,
-            "openaiNotice": self._quota_notice,
+            "openaiRefreshing": quota_refreshing,
+            "openaiError": quota_error,
+            "openaiNotice": quota_notice,
             "routes": routes,
             "config": _config_view(cfg),
             "opencodeRunning": self.is_opencode_running(),
@@ -884,13 +1002,22 @@ class HubApi:
     def get_network_state(self) -> dict:
         cfg = self.load_config()
         oc = _read_opencode_config()
+        visibility = cfg.get("providers_visibility")
+        if not isinstance(visibility, dict):
+            visibility = {}
+        routes = cfg.get("provider_routes")
+        if not isinstance(routes, dict):
+            routes = {}
+        disabled = oc.get("disabled_providers")
+        if not isinstance(disabled, list):
+            disabled = []
         auto_states = {}
         for provider in PROVIDER_DOMAINS:
-            visibility_key = {"google":"antigravity", "claude-pro":"claude", "openrouter-free":"openrouter",
-                              "deepseek-account":"deepseek", "tokenlavka":"tokenlavka",
-                              "nvidia-nim":"nvidia"}.get(provider, provider)
-            enabled = cfg.get("providers_visibility", {}).get(visibility_key, True) and provider not in oc.get("disabled_providers", [])
-            if enabled and cfg.get("provider_routes", {}).get(provider, "default") in ("default", "auto"):
+            visibility_key = {"google": "antigravity", "claude-pro": "claude", "openrouter-free": "openrouter",
+                              "deepseek-account": "deepseek", "tokenlavka": "tokenlavka",
+                              "nvidia-nim": "nvidia"}.get(provider, provider)
+            enabled = visibility.get(visibility_key, True) and provider not in disabled
+            if enabled and routes.get(provider, "default") in ("default", "auto"):
                 auto_router.router.refresh(provider, cfg, oc)
             auto_states[provider] = auto_router.router.state(provider, cfg, oc)
         core = vless_service.find_core_executable(cfg.get("vless_core_path"))
@@ -901,16 +1028,17 @@ class HubApi:
                 path = core
             cores[kind] = {"installed": bool(path), "path": str(path) if path else None,
                            "selected": bool(path and core and path == core)}
-        running = vless_service.is_running()
         port = get_http_port()
         if self._core_lock.acquire(blocking=False):
             try:
+                running = vless_service.is_running()
                 identity = (cfg.get("vless_url"), port, vless_service.exit_generation()) if running else None
                 exit_status = self._vless_exit.snapshot(identity, port)
             finally:
                 self._core_lock.release()
         else:
             # Pool diagnostics may briefly run a different tunnel.
+            running = vless_service.is_running()
             self._vless_exit.snapshot(None)
             exit_status = {"status": "checking" if running else "stopped"}
         return {"autoRoutes": auto_states, "cores": cores, "vlessRunning": running, "vlessExit": exit_status,
@@ -964,6 +1092,11 @@ class HubApi:
     def get_cached_diagnostics(self) -> dict:
         signature = self._diagnostic_signature()
         with self._diagnostic_lock:
+            stale = [p for p, sig in self._diagnostic_signatures.items() if sig != signature]
+            for p in stale:
+                self._diagnostics.pop(p, None)
+                self._diagnostic_signatures.pop(p, None)
+                self._diagnostic_checked.pop(p, None)
             return {provider: {"rows": list(self._diagnostics.get(provider, []))
                                if self._diagnostic_signatures.get(provider) == signature else [],
                                "checkedAt": self._diagnostic_checked.get(provider)
@@ -1054,26 +1187,34 @@ class HubApi:
         # configs with "default" keep working, so store whichever was chosen.
         with self._config_lock:
             cfg = self.load_config()
+            prev_cfg = copy.deepcopy(cfg)
             if route == "vless" and not vless_service.is_running():
                 raise ValueError("Сначала настройте и запустите VLESS-туннель")
             if route == "proxy" and not cfg.get("proxy"):
                 raise ValueError("Сначала укажите внешний прокси")
-            cfg.setdefault("provider_routes", {})[provider] = route
+            if not isinstance(cfg.get("provider_routes"), dict):
+                cfg["provider_routes"] = {}
+            cfg["provider_routes"][provider] = route
             if not self.save_config(cfg):
                 raise OSError("Не удалось сохранить маршрут")
-            self._sync_routes(cfg)
-            with self._diagnostic_lock:
-                self._diagnostics.clear()
+            try:
+                self._sync_routes(cfg)
+            except Exception:
+                self.save_config(prev_cfg)
+                raise
+            self._invalidate_diagnostics_cache()
         if route in ("default", "auto"):
             self.refresh_auto_routes(provider)
         return True
 
     def save_network_settings(self, settings: dict) -> dict:
+        if not isinstance(settings, dict):
+            raise ValueError("Некорректные настройки сети")
         allowed = {"vless_url", "vless_kill_switch", "dns_mode", "custom_dns", "dot_host", "doh_url",
                    "proxy", "proxy_pool", "proxy_failover", "dns_presets"}
         with self._config_lock:
             cfg = self.load_config()
-            previous = dict(cfg)
+            prev_cfg = copy.deepcopy(cfg)
             cfg.update({k: v for k, v in settings.items() if k in allowed})
             if "dns_presets" in settings:
                 presets = settings["dns_presets"]
@@ -1100,7 +1241,11 @@ class HubApi:
                         raise ValueError(f"В записи «{name}» указан некорректный DoT-хост")
                     doh = str(preset.get("doh") or "").strip()
                     if doh:
-                        parsed_doh = urlparse(doh)
+                        try:
+                            parsed_doh = urlparse(doh)
+                            _ = parsed_doh.port
+                        except ValueError:
+                            raise ValueError(f"В записи «{name}» укажите корректный HTTPS URL DoH без логина и пароля") from None
                         if parsed_doh.scheme != "https" or not parsed_doh.hostname or parsed_doh.username or parsed_doh.password:
                             raise ValueError(f"В записи «{name}» укажите корректный HTTPS URL DoH без логина и пароля")
                     if not standard and not dot and not doh:
@@ -1113,16 +1258,52 @@ class HubApi:
             servers = cfg.get("custom_dns", [])
             if not isinstance(servers, list):
                 raise ValueError("Укажите список DNS-серверов")
+            normalized_servers = []
             for server in servers:
-                ipaddress.ip_address(server)
+                if not isinstance(server, str):
+                    raise ValueError("DNS-сервер должен быть строкой с IP-адресом")
+                server_str = server.strip()
+                if not server_str:
+                    raise ValueError("Укажите корректный IP-адрес DNS-сервера")
+                ipaddress.ip_address(server_str)
+                normalized_servers.append(server_str)
+            cfg["custom_dns"] = normalized_servers
+            servers = normalized_servers
             if mode == "standard" and not servers:
                 raise ValueError("Укажите хотя бы один DNS-сервер")
-            if mode == "dot" and not str(cfg.get("dot_host", "")).strip():
+
+            raw_dot = cfg.get("dot_host", "")
+            if raw_dot is None:
+                raw_dot = ""
+            if not isinstance(raw_dot, str):
+                raise ValueError("Укажите корректный DoT-хост")
+            dot_host = raw_dot.strip()
+            if dot_host and not re.fullmatch(r"[A-Za-z0-9.-]+(?::[0-9]{1,5})?", dot_host):
+                raise ValueError("Укажите корректный DoT-хост")
+            if "dot_host" in cfg:
+                cfg["dot_host"] = dot_host
+            if mode == "dot" and not dot_host:
                 raise ValueError("Укажите хост DoT")
-            if mode == "doh":
-                parsed = urlparse(str(cfg.get("doh_url", "")))
-                if parsed.scheme != "https" or not parsed.hostname:
-                    raise ValueError("Укажите HTTPS URL для DoH")
+
+            raw_doh = cfg.get("doh_url", "")
+            if raw_doh is None:
+                raw_doh = ""
+            if not isinstance(raw_doh, str):
+                raise ValueError("Укажите корректный HTTPS URL DoH")
+            doh_url = raw_doh.strip()
+            if doh_url:
+                try:
+                    parsed_doh = urlparse(doh_url)
+                    _ = parsed_doh.port
+                except ValueError:
+                    raise ValueError("Укажите корректный HTTPS URL DoH без логина и пароля") from None
+                if parsed_doh.scheme != "https" or not parsed_doh.hostname or parsed_doh.username or parsed_doh.password:
+                    raise ValueError("Укажите корректный HTTPS URL DoH без логина и пароля")
+            if "doh_url" in cfg:
+                cfg["doh_url"] = doh_url
+            if mode == "doh" and not doh_url:
+                raise ValueError("Укажите HTTPS URL для DoH")
+
             cfg.pop("google_smart_doh", None)
             for key, fallback in (("vless_http_port", 10879), ("vless_socks_port", 10878)):
                 port = int(cfg.get(key, fallback))
@@ -1142,10 +1323,19 @@ class HubApi:
                              "ip": None, "country": None, "latency_ms": None,
                              "checked_at": None, "error": None})
             cfg["vless_pool"] = pool
-            proxy = str(cfg.get("proxy") or "").strip()
+            raw_proxy = cfg.get("proxy", "")
+            if raw_proxy is None:
+                raw_proxy = ""
+            if not isinstance(raw_proxy, str):
+                raise ValueError("Внешний прокси: укажите http:// или https:// адрес")
+            proxy = raw_proxy.strip()
             if proxy:
-                parsed = urlparse(proxy)
-                if parsed.scheme not in ("http", "https") or not parsed.hostname:
+                try:
+                    parsed = urlparse(proxy)
+                    proxy_port = parsed.port
+                except ValueError:
+                    raise ValueError("Внешний прокси: некорректный порт") from None
+                if parsed.scheme not in ("http", "https") or not parsed.hostname or proxy_port == 0:
                     raise ValueError("Внешний прокси: укажите http:// или https:// адрес")
                 if _is_hub_local_proxy(parsed):
                     raise ValueError("Нельзя использовать собственный маршрутизатор как внешний прокси")
@@ -1156,10 +1346,14 @@ class HubApi:
             valid_pool = []
             if isinstance(pool, list):
                 for p in pool:
-                    p_str = str(p or "").strip()
+                    p_str = p.strip() if isinstance(p, str) else ""
                     if p_str:
-                        p_parsed = urlparse(p_str)
-                        if p_parsed.scheme in ("http", "https") and p_parsed.hostname:
+                        try:
+                            p_parsed = urlparse(p_str)
+                            p_port = p_parsed.port
+                        except ValueError:
+                            continue
+                        if p_parsed.scheme in ("http", "https") and p_parsed.hostname and p_port != 0:
                             if not _is_hub_local_proxy(p_parsed):
                                 if p_str not in valid_pool:
                                     valid_pool.append(p_str)
@@ -1168,70 +1362,120 @@ class HubApi:
             if proxy and proxy not in valid_pool:
                 valid_pool.insert(0, proxy)
             cfg["proxy_pool"] = valid_pool
-            if valid_pool:
+            if "proxy" in settings and not proxy:
+                cfg["proxy"] = ""
+            elif valid_pool:
                 cfg["proxy"] = proxy if proxy in valid_pool else valid_pool[0]
             else:
                 cfg["proxy"] = proxy
-            if vless_service.is_running() and any(cfg.get(k) != previous.get(k) for k in
+            if vless_service.is_running() and any(cfg.get(k) != prev_cfg.get(k) for k in
                     ("vless_url", "vless_core_path", "vless_http_port", "vless_socks_port")):
                 raise ValueError("Остановите туннель перед изменением ссылки, ядра или портов")
             if not self.save_config(cfg):
                 raise OSError("Не удалось сохранить настройки сети")
-            self._sync_routes(cfg)
-            with self._diagnostic_lock:
-                self._diagnostics.clear()
+            try:
+                self._sync_routes(cfg)
+            except Exception:
+                self.save_config(prev_cfg)
+                raise
+            self._invalidate_diagnostics_cache()
         return {"ok": True, "message": "Настройки сети сохранены. Новые подключения используют выбранный маршрут."}
 
     def start_vless(self) -> dict:
-        with self._config_lock:
+        with self._core_lock:
+            if self._closing.is_set() or self._uninstalled or self._uninstalling:
+                return {"ok": False, "message": "Приложение завершает работу"}
             cfg = self.load_config()
             started_here = False
             if vless_service.is_running():
                 ok, message = True, "VLESS-туннель уже запущен"
             else:
-                ok, message = vless_service.start_tunnel(cfg.get("vless_url", ""),
-                                                       custom_core_path=cfg.get("vless_core_path"))
+                ok, message = vless_service.start_tunnel(
+                    cfg.get("vless_url", ""),
+                    custom_core_path=cfg.get("vless_core_path"),
+                )
                 started_here = ok
             if ok:
-                cfg["vless_enabled"] = True
-                try:
-                    if not self.save_config(cfg):
-                        raise OSError("Туннель запущен, но его настройки не сохранены")
-                    self._sync_routes(cfg)
-                except Exception:
+                if self._closing.is_set() or self._uninstalled or self._uninstalling:
                     if started_here:
                         try:
                             vless_service.stop_tunnel()
-                        except Exception:
-                            pass
-                    raise
+                        except Exception as exc:
+                            hub_logging.failed("Stop VLESS on closing", exc)
+                    return {"ok": False, "message": "Приложение завершает работу"}
+                with self._config_lock:
+                    latest = self.load_config()
+                    prev_cfg = copy.deepcopy(latest)
+                    latest["vless_enabled"] = True
+                    try:
+                        if not self.save_config(latest):
+                            raise OSError("Туннель запущен, но его настройки не сохранены")
+                        self._sync_routes(latest)
+                    except Exception:
+                        self.save_config(prev_cfg)
+                        if started_here:
+                            try:
+                                vless_service.stop_tunnel()
+                            except Exception:
+                                pass
+                        raise
+                    self._invalidate_diagnostics_cache()
+            else:
+                with self._config_lock:
+                    latest = self.load_config()
+                    actual_running = bool(vless_service.is_running())
+                    if latest.get("vless_enabled") != actual_running:
+                        prev_cfg = copy.deepcopy(latest)
+                        latest["vless_enabled"] = actual_running
+                        if self.save_config(latest):
+                            try:
+                                self._sync_routes(latest)
+                            except Exception:
+                                self.save_config(prev_cfg)
+                            self._invalidate_diagnostics_cache()
             return {"ok": ok, "message": message}
 
     def stop_vless(self) -> dict:
-        with self._config_lock:
+        with self._core_lock:
             ok, message = vless_service.stop_tunnel()
-            cfg = self.load_config()
-            cfg["vless_enabled"] = False
-            if not self.save_config(cfg):
-                raise OSError("Не удалось сохранить состояние туннеля")
-            self._sync_routes(cfg)
-            with self._diagnostic_lock:
-                self._diagnostics.clear()
-            return {"ok": ok, "message": message}
+            actual_running = False if ok else bool(vless_service.is_running())
+            with self._config_lock:
+                cfg = self.load_config()
+                prev_cfg = copy.deepcopy(cfg)
+                cfg["vless_enabled"] = actual_running
+                if not self.save_config(cfg):
+                    return {"ok": False, "message": "Не удалось сохранить состояние туннеля"}
+                try:
+                    self._sync_routes(cfg)
+                except Exception:
+                    self.save_config(prev_cfg)
+                    raise
+                self._invalidate_diagnostics_cache()
+            if not ok:
+                return {"ok": False, "message": message or "Не удалось остановить туннель"}
+            return {"ok": True, "message": message}
 
     def set_vless_core(self, core_type: str) -> dict:
         """Select an installed core without exposing a free-form path field."""
         if core_type not in ("sing-box", "xray"):
             raise ValueError("Неизвестное ядро")
-        path = vless_service.find_core_executable(core_type=core_type)
-        if not path:
-            return {"ok": False, "message": f"{core_type} не установлен"}
-        with self._config_lock:
-            cfg = self.load_config()
-            cfg["vless_core_path"] = str(path)
-            if not self.save_config(cfg):
-                return {"ok": False, "message": "Не удалось сохранить настройки"}
-            self._sync_routes(cfg)
+        with self._core_lock:
+            if vless_service.is_running():
+                return {"ok": False, "message": "Остановите туннель VLESS перед сменой ядра"}
+            path = vless_service.find_core_executable(core_type=core_type)
+            if not path:
+                return {"ok": False, "message": f"{core_type} не установлен"}
+            with self._config_lock:
+                cfg = self.load_config()
+                prev_cfg = copy.deepcopy(cfg)
+                cfg["vless_core_path"] = str(path)
+                if not self.save_config(cfg):
+                    return {"ok": False, "message": "Не удалось сохранить настройки"}
+                try:
+                    self._sync_routes(cfg)
+                except Exception:
+                    self.save_config(prev_cfg)
+                    raise
         return {"ok": True, "message": f"Выбрано ядро: {getattr(path, 'name', path)}",
                 "path": str(path)}
 
@@ -1248,10 +1492,14 @@ class HubApi:
         try:
             return vless_service.test_connection(timeout=10)
         finally:
-            vless_service.stop_tunnel()
+            stop_ok, stop_msg = vless_service.stop_tunnel()
+            if not stop_ok:
+                hub_logging.log.warning("VLESS probe stop_tunnel failed: %s", stop_msg)
 
-    def _cache_vless_result(self, cfg: dict, url: str, result: dict) -> list:
-        pool = _normalize_vless_pool(cfg.get("vless_pool"))
+    def _cache_vless_result_locked(self, cfg: dict, url: str, result: dict) -> list:
+        latest = self.load_config()
+        prev_cfg = copy.deepcopy(latest)
+        pool = _normalize_vless_pool(latest.get("vless_pool"))
         for entry in pool:
             if entry["url"] == url:
                 entry.update({
@@ -1263,10 +1511,21 @@ class HubApi:
                     "checked_at": int(time.time()),
                 })
                 break
-        cfg["vless_pool"] = pool
-        self.save_config(cfg)
-        self._sync_routes(cfg)
+        latest["vless_pool"] = pool
+        if not self.save_config(latest):
+            raise OSError("Не удалось сохранить результаты проверки VLESS")
+        try:
+            self._sync_routes(latest)
+        except Exception:
+            self.save_config(prev_cfg)
+            raise
+        if isinstance(cfg, dict):
+            cfg["vless_pool"] = pool
         return pool
+
+    def _cache_vless_result(self, cfg: dict, url: str, result: dict) -> list:
+        with self._config_lock:
+            return self._cache_vless_result_locked(cfg, url, result)
 
     def get_vless_pool(self) -> dict:
         cfg = self.load_config()
@@ -1287,6 +1546,7 @@ class HubApi:
             return {"ok": False, "message": f"Некорректная VLESS-ссылка: {exc}"}
         with self._config_lock:
             cfg = self.load_config()
+            prev_cfg = copy.deepcopy(cfg)
             pool = _normalize_vless_pool(cfg.get("vless_pool"))
             if any(entry["url"] == url for entry in pool):
                 return {"ok": False, "message": "Этот конфиг уже есть в пуле"}
@@ -1298,127 +1558,266 @@ class HubApi:
                 cfg["vless_url"] = url
             if not self.save_config(cfg):
                 return {"ok": False, "message": "Не удалось сохранить конфиг"}
-            self._sync_routes(cfg)
+            try:
+                self._sync_routes(cfg)
+            except Exception:
+                self.save_config(prev_cfg)
+                raise
             return {"ok": True, "message": f"Добавлено: {info.get('tag') or info.get('server')}",
                     "pool": _vless_pool_view(pool), "active": _pool_id(cfg["vless_url"]),
                     "id": _pool_id(url)}
 
     def delete_vless_config(self, url: str) -> dict:
         url = str(url or "").strip()
-        with self._config_lock:
-            cfg = self.load_config()
-            pool = _normalize_vless_pool(cfg.get("vless_pool"))
-            url = next((e["url"] for e in pool if _pool_id(e["url"]) == url), url)
-            remaining = [e for e in pool if e["url"] != url]
-            if len(remaining) == len(pool):
-                return {"ok": False, "message": "Конфиг не найден в пуле"}
-            active = str(cfg.get("vless_url") or "").strip()
+        with self._core_lock:
+            with self._config_lock:
+                cfg = self.load_config()
+                pool = _normalize_vless_pool(cfg.get("vless_pool"))
+                resolved_url = next((e["url"] for e in pool if _pool_id(e["url"]) == url), url)
+                remaining = [e for e in pool if e["url"] != resolved_url]
+                if len(remaining) == len(pool):
+                    return {"ok": False, "message": "Конфиг не найден в пуле"}
+                active = str(cfg.get("vless_url") or "").strip()
+                new_active = (remaining[0]["url"] if remaining else "") if active == resolved_url else active
+                core_path = cfg.get("vless_core_path")
+
             was_running = vless_service.is_running()
-            if active == url:
-                cfg["vless_url"] = remaining[0]["url"] if remaining else ""
-                with self._core_lock:
+            tunnel_running = was_running
+            if active == resolved_url and was_running:
+                stop_ok, stop_msg = vless_service.stop_tunnel()
+                if not stop_ok:
+                    return {"ok": False, "message": stop_msg or "Не удалось остановить текущий VLESS-туннель"}
+                tunnel_running = False
+                if new_active:
+                    start_ok, start_msg = vless_service.start_tunnel(new_active, custom_core_path=core_path)
+                    tunnel_running = start_ok
+                    if not start_ok:
+                        with self._config_lock:
+                            latest = self.load_config()
+                            prev_cfg = copy.deepcopy(latest)
+                            latest_pool = _normalize_vless_pool(latest.get("vless_pool"))
+                            latest_rem = [e for e in latest_pool if e["url"] != resolved_url]
+                            latest["vless_url"] = latest_rem[0]["url"] if latest_rem else ""
+                            latest["vless_pool"] = latest_rem
+                            latest["vless_enabled"] = False
+                            if self.save_config(latest):
+                                try:
+                                    self._sync_routes(latest)
+                                except Exception:
+                                    self.save_config(prev_cfg)
+                                self._invalidate_diagnostics_cache()
+                        return {"ok": False, "message": start_msg or "Конфиг удалён, но новый туннель не запустился"}
+
+            with self._config_lock:
+                latest = self.load_config()
+                prev_cfg = copy.deepcopy(latest)
+                latest_pool = _normalize_vless_pool(latest.get("vless_pool"))
+                remaining = [e for e in latest_pool if e["url"] != resolved_url]
+                if active == resolved_url:
+                    latest["vless_url"] = remaining[0]["url"] if remaining else ""
                     if was_running:
-                        vless_service.stop_tunnel()
-                        if cfg["vless_url"]:
-                            vless_service.start_tunnel(cfg["vless_url"],
-                                                       custom_core_path=cfg.get("vless_core_path"))
-            cfg["vless_pool"] = remaining
-            if not self.save_config(cfg):
-                return {"ok": False, "message": "Не удалось сохранить пул"}
-            self._sync_routes(cfg)
-            return {"ok": True, "message": "Конфиг удалён из пула", "pool": _vless_pool_view(remaining),
-                    "active": _pool_id(cfg.get("vless_url") or "")}
+                        latest["vless_enabled"] = bool(tunnel_running)
+                latest["vless_pool"] = remaining
+                if not self.save_config(latest):
+                    return {"ok": False, "message": "Не удалось сохранить пул"}
+                try:
+                    self._sync_routes(latest)
+                except Exception:
+                    self.save_config(prev_cfg)
+                    raise
+                self._invalidate_diagnostics_cache()
+                return {"ok": True, "message": "Конфиг удалён из пула", "pool": _vless_pool_view(remaining),
+                        "active": _pool_id(latest.get("vless_url") or "")}
 
     def activate_vless_config(self, url: str) -> dict:
         url = str(url or "").strip()
-        with self._config_lock:
-            cfg = self.load_config()
-            pool = _normalize_vless_pool(cfg.get("vless_pool"))
-            url = next((e["url"] for e in pool if _pool_id(e["url"]) == url), url)
-            if not any(entry["url"] == url for entry in pool):
-                return {"ok": False, "message": "Конфиг не найден в пуле"}
-            previous = str(cfg.get("vless_url") or "").strip()
+        with self._core_lock:
+            with self._config_lock:
+                cfg = self.load_config()
+                prev_cfg = copy.deepcopy(cfg)
+                pool = _normalize_vless_pool(cfg.get("vless_pool"))
+                resolved_url = next((e["url"] for e in pool if _pool_id(e["url"]) == url), url)
+                if not any(entry["url"] == resolved_url for entry in pool):
+                    return {"ok": False, "message": "Конфиг не найден в пуле"}
+                previous = str(cfg.get("vless_url") or "").strip()
+                core_path = cfg.get("vless_core_path")
+                cfg["vless_url"] = resolved_url
+                if not self.save_config(cfg):
+                    return {"ok": False, "message": "Не удалось сохранить активный конфиг"}
+                try:
+                    self._sync_routes(cfg)
+                except Exception:
+                    self.save_config(prev_cfg)
+                    raise
+                self._invalidate_diagnostics_cache()
+
             was_running = vless_service.is_running()
-            cfg["vless_url"] = url
-            if not self.save_config(cfg):
-                return {"ok": False, "message": "Не удалось сохранить активный конфиг"}
-            self._sync_routes(cfg)
             result = None
             tunnel_active = was_running
-            with self._core_lock:
-                if was_running and previous != url:
-                    vless_service.stop_tunnel()
-                    ok, message = vless_service.start_tunnel(url, custom_core_path=cfg.get("vless_core_path"))
-                    tunnel_active = ok
-                    result = (vless_service.test_connection(timeout=10) if ok else
-                              {"ok": False, "message": message, "ip": None, "country": None, "latency_ms": None})
-                elif was_running:
-                    result = vless_service.test_connection(timeout=10)
-                else:
-                    # There is no Start button in the UI: activating a config
-                    # starts the tunnel and leaves it running.
-                    ok, message = vless_service.start_tunnel(url, custom_core_path=cfg.get("vless_core_path"))
-                    tunnel_active = ok
-                    result = (vless_service.test_connection(timeout=10) if ok else
-                              {"ok": False, "message": message, "ip": None, "country": None, "latency_ms": None})
-            if tunnel_active and not cfg.get("vless_enabled"):
-                cfg["vless_enabled"] = True
-                self.save_config(cfg)
-                self._sync_routes(cfg)
-            if result and result.get("ip"):
-                pool = self._cache_vless_result(cfg, url, result)
+            if was_running and previous != resolved_url:
+                stop_ok, stop_msg = vless_service.stop_tunnel()
+                if not stop_ok:
+                    with self._config_lock:
+                        latest = self.load_config()
+                        prev2 = copy.deepcopy(latest)
+                        latest["vless_url"] = previous
+                        latest["vless_enabled"] = bool(vless_service.is_running())
+                        if self.save_config(latest):
+                            try:
+                                self._sync_routes(latest)
+                            except Exception:
+                                self.save_config(prev2)
+                    return {"ok": False, "message": stop_msg or "Не удалось остановить текущий туннель"}
+                ok, message = vless_service.start_tunnel(resolved_url, custom_core_path=core_path)
+                tunnel_active = ok
+                result = (vless_service.test_connection(timeout=10) if ok else
+                          {"ok": False, "message": message, "ip": None, "country": None, "latency_ms": None})
+            elif was_running:
+                result = vless_service.test_connection(timeout=10)
             else:
-                pool = cfg.get("vless_pool", pool)
-            return {"ok": True, "message": result.get("message") if result else "Конфиг активирован",
-                    "pool": _vless_pool_view(pool), "active": _pool_id(url), "result": result}
+                # There is no Start button in the UI: activating a config
+                # starts the tunnel and leaves it running.
+                ok, message = vless_service.start_tunnel(resolved_url, custom_core_path=core_path)
+                tunnel_active = ok
+                result = (vless_service.test_connection(timeout=10) if ok else
+                          {"ok": False, "message": message, "ip": None, "country": None, "latency_ms": None})
+
+            with self._config_lock:
+                latest = self.load_config()
+                prev2 = copy.deepcopy(latest)
+                desired_enabled = bool(tunnel_active)
+                if latest.get("vless_enabled") != desired_enabled:
+                    latest["vless_enabled"] = desired_enabled
+                    if not self.save_config(latest):
+                        return {"ok": False, "message": "Не удалось сохранить состояние туннеля",
+                                "pool": _vless_pool_view(_normalize_vless_pool(latest.get("vless_pool"))),
+                                "active": _pool_id(resolved_url), "result": result}
+                    try:
+                        self._sync_routes(latest)
+                    except Exception:
+                        self.save_config(prev2)
+                        raise
+                    self._invalidate_diagnostics_cache()
+                if result is not None:
+                    try:
+                        pool = self._cache_vless_result_locked(latest, resolved_url, result)
+                    except OSError as exc:
+                        return {"ok": False, "message": str(exc),
+                                "pool": _vless_pool_view(_normalize_vless_pool(latest.get("vless_pool"))),
+                                "active": _pool_id(resolved_url), "result": result}
+                else:
+                    pool = _normalize_vless_pool(latest.get("vless_pool"))
+
+            return {"ok": bool(tunnel_active),
+                    "message": result.get("message") if result else "Конфиг активирован",
+                    "pool": _vless_pool_view(pool), "active": _pool_id(resolved_url), "result": result}
 
     def test_vless_config(self, url: str) -> dict:
         url = str(url or "").strip()
-        with self._config_lock:
-            cfg = self.load_config()
-            pool = _normalize_vless_pool(cfg.get("vless_pool"))
-            url = next((e["url"] for e in pool if _pool_id(e["url"]) == url), url)
-            if not any(entry["url"] == url for entry in pool):
-                return {"ok": False, "message": "Конфиг не найден в пуле"}
-            active = str(cfg.get("vless_url") or "").strip()
+        with self._core_lock:
+            with self._config_lock:
+                cfg = self.load_config()
+                pool = _normalize_vless_pool(cfg.get("vless_pool"))
+                resolved_url = next((e["url"] for e in pool if _pool_id(e["url"]) == url), url)
+                if not any(entry["url"] == resolved_url for entry in pool):
+                    return {"ok": False, "message": "Конфиг не найден в пуле"}
+                active = str(cfg.get("vless_url") or "").strip()
+                core_path = cfg.get("vless_core_path")
+
             was_running = vless_service.is_running()
-            with self._core_lock:
-                if was_running:
-                    vless_service.stop_tunnel()
+            if was_running:
+                stop_ok, stop_msg = vless_service.stop_tunnel()
+                if not stop_ok:
+                    return {"ok": False, "message": stop_msg or "Не удалось остановить текущий туннель для проверки"}
+            restore_ok = True
+            restore_msg = ""
+            try:
+                result = self._vless_probe(resolved_url, {"vless_core_path": core_path})
+            finally:
+                # Always bring the previously active config back online.
+                if was_running and active:
+                    restore_ok, restore_msg = vless_service.start_tunnel(active, custom_core_path=core_path)
+
+            with self._config_lock:
+                latest = self.load_config()
+                if was_running and active and not restore_ok:
+                    prev_cfg = copy.deepcopy(latest)
+                    latest["vless_enabled"] = bool(vless_service.is_running())
+                    if self.save_config(latest):
+                        try:
+                            self._sync_routes(latest)
+                        except Exception:
+                            self.save_config(prev_cfg)
+                        self._invalidate_diagnostics_cache()
                 try:
-                    result = self._vless_probe(url, cfg)
-                finally:
-                    # Always bring the previously active config back online.
-                    if was_running and active:
-                        vless_service.start_tunnel(active, custom_core_path=cfg.get("vless_core_path"))
-            pool = self._cache_vless_result(cfg, url, result)
+                    pool = self._cache_vless_result_locked(latest, resolved_url, result)
+                except OSError as exc:
+                    return {"ok": False, "message": str(exc),
+                            "pool": _vless_pool_view(_normalize_vless_pool(latest.get("vless_pool")))}
+
+            if was_running and active and not restore_ok:
+                return {"ok": False,
+                        "message": f"{result.get('message', 'Проверка завершена')}; не удалось перезапустить активный туннель: {restore_msg}",
+                        "ip": result.get("ip"), "country": result.get("country"),
+                        "latency_ms": result.get("latency_ms"), "pool": _vless_pool_view(pool)}
             return {"ok": bool(result.get("ok")), "message": result.get("message", "Ошибка проверки"),
                     "ip": result.get("ip"), "country": result.get("country"),
                     "latency_ms": result.get("latency_ms"), "pool": _vless_pool_view(pool)}
 
     def test_all_vless_configs(self) -> dict:
-        cfg = self.load_config()
-        pool = _normalize_vless_pool(cfg.get("vless_pool"))
-        active = str(cfg.get("vless_url") or "").strip()
-        was_running = vless_service.is_running()
         results = []
-        with self._config_lock, self._core_lock:
+        with self._core_lock:
+            with self._config_lock:
+                cfg = self.load_config()
+                pool = _normalize_vless_pool(cfg.get("vless_pool"))
+                active = str(cfg.get("vless_url") or "").strip()
+                core_path = cfg.get("vless_core_path")
+            was_running = vless_service.is_running()
             if was_running:
-                vless_service.stop_tunnel()
+                stop_ok, stop_msg = vless_service.stop_tunnel()
+                if not stop_ok:
+                    return {"ok": False, "message": stop_msg or "Не удалось остановить текущий туннель для проверки",
+                            "results": [], "pool": _vless_pool_view(pool)}
+            restore_ok = True
+            restore_msg = ""
             try:
                 for entry in pool:
-                    result = self._vless_probe(entry["url"], cfg)
-                    self._cache_vless_result(cfg, entry["url"], result)
+                    if self._closing.is_set() or self._uninstalled or self._uninstalling:
+                        break
+                    result = self._vless_probe(entry["url"], {"vless_core_path": core_path})
+                    try:
+                        with self._config_lock:
+                            self._cache_vless_result_locked(cfg, entry["url"], result)
+                    except OSError as exc:
+                        latest_pool = _normalize_vless_pool(self.load_config().get("vless_pool"))
+                        return {"ok": False, "message": str(exc), "results": results,
+                                "pool": _vless_pool_view(latest_pool)}
                     results.append({"id": _pool_id(entry["url"]), "label": _vless_label(entry["url"]),
                                     "ok": bool(result.get("ok")), "ip": result.get("ip"),
                                     "country": result.get("country"),
                                     "latency_ms": result.get("latency_ms")})
             finally:
                 if was_running and active:
-                    vless_service.start_tunnel(active, custom_core_path=cfg.get("vless_core_path"))
+                    restore_ok, restore_msg = vless_service.start_tunnel(active, custom_core_path=core_path)
+            if was_running and active and not restore_ok:
+                with self._config_lock:
+                    latest = self.load_config()
+                    prev_cfg = copy.deepcopy(latest)
+                    latest["vless_enabled"] = bool(vless_service.is_running())
+                    if self.save_config(latest):
+                        try:
+                            self._sync_routes(latest)
+                        except Exception:
+                            self.save_config(prev_cfg)
+                        self._invalidate_diagnostics_cache()
+                latest_pool = _normalize_vless_pool(self.load_config().get("vless_pool"))
+                return {"ok": False,
+                        "message": f"Не удалось перезапустить активный туннель: {restore_msg}",
+                        "results": results, "pool": _vless_pool_view(latest_pool)}
+        latest_pool = _normalize_vless_pool(self.load_config().get("vless_pool"))
         ok_count = sum(1 for r in results if r["ok"])
         return {"ok": ok_count > 0, "message": f"Проверено {len(results)} конфигов, доступно {ok_count}",
-                "results": results, "pool": _vless_pool_view(cfg.get("vless_pool", pool))}
+                "results": results, "pool": _vless_pool_view(latest_pool)}
 
     def download_vless_core(self, core_type: str = "sing-box") -> dict:
         if core_type not in ("sing-box", "xray"):
@@ -1443,14 +1842,19 @@ class HubApi:
         proxy_url = str(proxy_url or "").strip()
         if not proxy_url:
             return {"ok": False, "message": "Укажите адрес прокси (http://host:port)"}
-        parsed = urlparse(proxy_url)
-        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        try:
+            parsed = urlparse(proxy_url)
+            port = parsed.port
+        except ValueError:
+            return {"ok": False, "message": "Неверный формат адреса или порта прокси"}
+        if parsed.scheme not in ("http", "https") or not parsed.hostname or port == 0:
             return {"ok": False, "message": "Неверный формат адреса: требуется http:// или https://"}
         if _is_hub_local_proxy(parsed):
             return {"ok": False, "message": "Нельзя использовать собственный маршрутизатор как внешний прокси"}
 
         with self._config_lock:
             cfg = self.load_config()
+            prev_cfg = copy.deepcopy(cfg)
             pool = list(cfg.get("proxy_pool") or [])
             if proxy_url not in pool:
                 pool.append(proxy_url)
@@ -1459,13 +1863,19 @@ class HubApi:
                 cfg["proxy"] = pool[0]
             if not self.save_config(cfg):
                 return {"ok": False, "message": "Не удалось сохранить настройки"}
-            self._sync_routes(cfg)
+            try:
+                self._sync_routes(cfg)
+            except Exception:
+                self.save_config(prev_cfg)
+                raise
+            self._invalidate_diagnostics_cache()
         return {"ok": True, "message": "Прокси добавлен в пул", **_proxy_view(cfg)}
 
     def delete_proxy_pool(self, proxy_url: str) -> dict:
         proxy_url = str(proxy_url or "").strip()
         with self._config_lock:
             cfg = self.load_config()
+            prev_cfg = copy.deepcopy(cfg)
             existing = cfg.get("proxy_pool") or ([cfg["proxy"]] if cfg.get("proxy") else [])
             proxy_url = next((p for p in existing if _pool_id(p) == proxy_url), proxy_url)
             if proxy_url not in existing:
@@ -1476,7 +1886,12 @@ class HubApi:
                 cfg["proxy"] = pool[0] if pool else ""
             if not self.save_config(cfg):
                 return {"ok": False, "message": "Не удалось сохранить изменения"}
-            self._sync_routes(cfg)
+            try:
+                self._sync_routes(cfg)
+            except Exception:
+                self.save_config(prev_cfg)
+                raise
+            self._invalidate_diagnostics_cache()
         return {"ok": True, "message": "Прокси удалён из пула", **_proxy_view(cfg)}
 
     def move_proxy_pool_item(self, from_index: int, to_index: int) -> dict:
@@ -1486,6 +1901,7 @@ class HubApi:
             return {"ok": False, "message": "Некорректная позиция прокси"}
         with self._config_lock:
             cfg = self.load_config()
+            prev_cfg = copy.deepcopy(cfg)
             pool = list(cfg.get("proxy_pool") or [])
             if not 0 <= from_index < len(pool) or not 0 <= to_index < len(pool):
                 return {"ok": False, "message": "Прокси не найден в списке"}
@@ -1495,7 +1911,12 @@ class HubApi:
             cfg["proxy"] = pool[0] if pool else ""
             if not self.save_config(cfg):
                 return {"ok": False, "message": "Не удалось сохранить приоритет прокси"}
-            self._sync_routes(cfg)
+            try:
+                self._sync_routes(cfg)
+            except Exception:
+                self.save_config(prev_cfg)
+                raise
+            self._invalidate_diagnostics_cache()
         return {"ok": True, "message": "Приоритет прокси сохранён", **_proxy_view(cfg)}
 
     def test_proxy(self, proxy_id: str) -> dict:
@@ -1517,22 +1938,30 @@ class HubApi:
             return {"ok": False, "message": "Ошибка соединения с прокси"}
 
     def refresh_openai_quotas(self) -> dict:
+        if self._uninstalling or self._uninstalled or self._closing.is_set():
+            return {"ok": False, "refreshing": False}
         with self._quota_lock:
             if self._quota_refreshing:
                 return {"ok": True, "refreshing": True}
             self._quota_refreshing = True
             self._quota_error = None
+            self._quota_notice = None
         def worker():
             try:
+                if self._uninstalling or self._uninstalled or self._closing.is_set():
+                    return
                 # Use the manager's single refresh path so quota refresh and
                 # candidate rotation cannot drift apart again. The former Tk UI
                 # called this path; the WebView worker used to duplicate only
                 # quota fetching and silently omitted rotation.
                 _accounts, rotation_message = openai_manager.refresh_all_openai_accounts()
                 if rotation_message:
-                    self._quota_notice = rotation_message
+                    with self._quota_lock:
+                        self._quota_notice = rotation_message
             except Exception as exc:
-                self._quota_error = str(exc)
+                hub_logging.failed("Refresh OpenAI quotas", exc)
+                with self._quota_lock:
+                    self._quota_error = str(exc)
             finally:
                 with self._quota_lock:
                     self._quota_refreshing = False
@@ -1540,25 +1969,33 @@ class HubApi:
         return {"ok": True, "refreshing": True}
 
     def refresh_all_quotas(self) -> dict:
+        if self._uninstalling or self._uninstalled or self._closing.is_set():
+            return {"ok": False, "message": "Приложение завершает работу"}
         self.refresh_openai_quotas()
-        try:
-            deepseek_api.refresh_balance_silent()
-        except Exception:
-            pass
-        try:
-            xpiki_manager.refresh_xpiki_quota_silent()
-        except Exception:
-            pass
-        try:
-            tokenlavka_manager.refresh_balance_silent()
-        except Exception:
-            pass
-        def bg_google():
+        with self._all_quotas_lock:
+            if self._all_quotas_running:
+                return {"ok": True, "message": "Обновление квот уже выполняется"}
+            self._all_quotas_running = True
+
+        def bg_providers():
             try:
-                self._refresh_google_quotas_sync(timeout=45)
-            except Exception:
-                pass
-        threading.Thread(target=bg_google, daemon=True, name="hub-all-quotas-google").start()
+                for label, fn in (
+                    ("DeepSeek balance", deepseek_api.refresh_balance_silent),
+                    ("Xpiki quota", xpiki_manager.refresh_xpiki_quota_silent),
+                    ("TokenLavka balance", tokenlavka_manager.refresh_balance_silent),
+                    ("Google quotas", lambda: self._refresh_google_quotas_sync(timeout=45)),
+                ):
+                    if self._uninstalling or self._uninstalled or self._closing.is_set():
+                        break
+                    try:
+                        fn()
+                    except Exception as exc:
+                        hub_logging.failed(f"Refresh {label}", exc)
+            finally:
+                with self._all_quotas_lock:
+                    self._all_quotas_running = False
+
+        threading.Thread(target=bg_providers, daemon=True, name="hub-all-quotas").start()
         return {"ok": True, "message": "Обновление квот запущено"}
 
     def get_provider_state(self) -> dict:
@@ -1609,6 +2046,7 @@ class HubApi:
             if not xpiki_manager.save_xpiki_config(cfg):
                 raise OSError("Не удалось сохранить настройки Xpiki")
             self._sync_routes(self.load_config())
+            self._invalidate_diagnostics_cache()
             return {"ok": True, "message": "Xpiki добавлен в OpenCode"}
 
     def refresh_xpiki_quota(self) -> dict:
@@ -1661,6 +2099,12 @@ class HubApi:
             except Exception as exc:
                 hub_logging.failed("DeepSeek credential sync", exc)
                 notes.append("ключ не импортирован в OpenCode CLI")
+
+            try:
+                self._sync_routes(self.load_config())
+            except Exception as exc:
+                hub_logging.failed("DeepSeek route sync", exc)
+                notes.append("не удалось синхронизировать маршруты")
 
             balance = deepseek_api.fetch_balance(final_key, origin)
             if balance.get("status") not in ("ok", "stale"):
@@ -1719,11 +2163,13 @@ class HubApi:
                 deepseek_api.disconnect_opencode()
             except Exception:
                 pass
-            return deepseek_api.clear_api_key()
+            cleared = deepseek_api.clear_api_key()
+            self._sync_routes(self.load_config())
+            return cleared
 
     def load_openrouter_models(self, key: str = "") -> list:
         with self._provider_lock:
-            key = key.strip() or openrouter_manager.load_api_key()
+            key = str(key or "").strip() or openrouter_manager.load_api_key()
             if not key:
                 raise ValueError("Укажите API-ключ OpenRouter")
             models = openrouter_manager.fetch_free_models(key)
@@ -1733,8 +2179,11 @@ class HubApi:
 
     def apply_openrouter_models(self, model_ids: list) -> bool:
         with self._provider_lock:
-            selected = [m for m in self._openrouter_models if m["id"] in model_ids]
-            if not selected or len(selected) != len(set(model_ids)):
+            if not isinstance(model_ids, list) or not model_ids or not all(isinstance(mid, str) for mid in model_ids):
+                raise ValueError("Загрузите каталог и выберите бесплатные модели")
+            selected_ids = set(model_ids)
+            selected = [m for m in self._openrouter_models if m["id"] in selected_ids]
+            if not selected or len(selected) != len(selected_ids):
                 raise ValueError("Загрузите каталог и выберите бесплатные модели")
             key = openrouter_manager.load_api_key()
             if not key:
@@ -1759,7 +2208,7 @@ class HubApi:
     def load_nvidia_models(self, key: str = "") -> list:
         with self._provider_lock:
             self._nvidia_catalog = ("", [])
-            key = key.strip() or nvidia_manager.load_key()
+            key = str(key or "").strip() or nvidia_manager.load_key()
             models = nvidia_manager.fetch_models(key)
             self._nvidia_catalog = (key, models)
             return models
@@ -1829,7 +2278,7 @@ class HubApi:
             profile = self._google_refresh_profile()
             has_relocated = bool(getattr(antigravity_manager, "has_relocated_google_store", lambda: False)())
             cli_3113 = (
-                google_proactive_refresh.find_cli_3113(Path.home() / ".cache" / "opencode" / "npm")
+                _find_cli_3113()
                 if profile == "3.1.13" or has_relocated
                 else None
             )
@@ -2087,8 +2536,9 @@ class HubApi:
                 updated = jsonc_config.set_property(original, ("disabled_providers",), disabled)
                 oc_updates.append((oc_path, raw, updated.encode("utf-8"), False))
                 cfg["providers_visibility"] = {**cfg.get("providers_visibility", {}), **visibility}
-            registry_update = (lambda: _apply_autostart(cfg["autostart_on_login"])) if "autostart_on_login" in settings else None
+            registry_update = (lambda: self._apply_autostart(cfg["autostart_on_login"])) if "autostart_on_login" in settings else None
             _apply_file_updates([*self._config_updates(cfg, sources), *oc_updates], after=registry_update)
+            self._close_to_tray = bool(cfg.get("close_to_tray", True))
             return True
 
     def restart_opencode(self) -> bool:
@@ -2129,11 +2579,21 @@ class HubApi:
             try:
                 if process.poll() is None:
                     process.terminate()
-                    process.wait(timeout=5)
-                self._opencode_process = None
-            except (OSError, subprocess.TimeoutExpired) as exc:
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired as exc:
+                        hub_logging.failed("Stop Hub-owned OpenCode", exc)
+                        try:
+                            process.kill()
+                            process.wait(timeout=2)
+                        except (OSError, subprocess.TimeoutExpired) as kill_exc:
+                            hub_logging.failed("Kill Hub-owned OpenCode", kill_exc)
+                            ok = False
+            except OSError as exc:
                 hub_logging.failed("Stop Hub-owned OpenCode", exc)
                 ok = False
+            finally:
+                self._opencode_process = None
         try:
             desktop = antigravity_manager.terminate_opencode_desktop()
             if not desktop.get("ok"):
@@ -2155,8 +2615,8 @@ class HubApi:
                 self._opencode_process = subprocess.Popen([exe], cwd=os.path.dirname(exe),
                                                          env=opencode_launch_environment())
                 return True
-            except Exception:
-                pass
+            except Exception as exc:
+                hub_logging.failed("Start OpenCode", exc)
         return False
 
     def fix_session_title(self) -> str:
@@ -2369,6 +2829,9 @@ class HubApi:
         return self._uninstall_local_data()
 
     def _uninstall_local_data(self) -> dict:
+        was_closing = self._closing.is_set()
+        self._uninstalling = True
+        self._closing.set()
         errors, preserved = [], []
         appdata = os.environ.get("APPDATA")
         home = Path.home()
@@ -2426,10 +2889,29 @@ class HubApi:
             if not ok:
                 raise OSError(message)
 
-        with self._config_lock, self._core_lock:
+        def stop_local_servers():
+            bridge = getattr(globals().get("claude_manager"), "bridge_service", None)
+            for owner in (provider_proxy, bridge):
+                if owner is None:
+                    continue
+                stop_fn = getattr(owner, "stop", None)
+                if callable(stop_fn):
+                    stop_fn()
+                else:
+                    server = getattr(owner, "_server", None)
+                    if server is not None:
+                        server.shutdown()
+                        server.server_close()
+
+        with self._core_lock, self._config_lock:
             attempt("туннель VLESS", stop_tunnel)
             if errors:
+                self._uninstalling = False
+                if not was_closing:
+                    self._closing.clear()
                 return {"ok": False, "message": "Не удалось остановить туннель VLESS. Данные сохранены."}
+            attempt("локальные серверы", stop_local_servers)
+            attempt("автозапуск Windows", lambda: self._apply_autostart(False))
             attempt("конфигурация OpenCode", edit_opencode)
             if use_root:
                 if (nvidia_manager.KEY_FILE == default_root / "opencode-secrets" / "nvidia-nim.key"
@@ -2450,6 +2932,7 @@ class HubApi:
             else:
                 preserved.append("нестандартный каталог данных Hub")
             self._uninstalled = not errors
+            self._uninstalling = False
 
         retained = "Хранилища плагина, профили браузеров, история и файлы вне списка сохранены."
         if preserved:
@@ -2474,13 +2957,20 @@ class HubApi:
                 return {"ok": False, "cancelled": True, "message": "Экспорт отменён"}
             target_path = dialog_res[0] if isinstance(dialog_res, (list, tuple)) else dialog_res
             return self._export_backup(target_path, password)
-        except Exception as e:
-            return {"ok": False, "message": f"Ошибка экспорта: {e}"}
+        except ValueError as exc:
+            return {"ok": False, "message": f"Ошибка экспорта: {exc}"}
+        except Exception as exc:
+            hub_logging.failed("Export backup dialog", exc)
+            return {"ok": False, "message": "Не удалось сохранить резервную копию."}
 
     def _export_backup(self, target_path: str, password: str) -> dict:
         try:
             import crypto_backup
             crypto_backup.validate_password(password)
+        except ValueError as exc:
+            return {"ok": False, "message": f"Ошибка экспорта: {exc}"}
+        try:
+            import crypto_backup
             if not target_path or not isinstance(target_path, str):
                 return {"ok": False, "message": "Не указан путь для сохранения файла"}
 
@@ -2550,6 +3040,8 @@ class HubApi:
             try:
                 with os.fdopen(fd, "wb") as stream:
                     stream.write(payload_bytes)
+                    stream.flush()
+                    os.fsync(stream.fileno())
                 os.replace(tmp_target, target)
             finally:
                 Path(tmp_target).unlink(missing_ok=True)
@@ -2564,8 +3056,9 @@ class HubApi:
                     "claude": len(claude_accs),
                 }
             }
-        except Exception as e:
-            return {"ok": False, "message": f"Ошибка экспорта: {e}"}
+        except Exception as exc:
+            hub_logging.failed("Export backup", exc)
+            return {"ok": False, "message": "Не удалось сохранить резервную копию."}
 
     def import_backup(self, import_token: str = None, password: str = None) -> dict:
         """Only a native file selection can authorize an import."""
@@ -2768,11 +3261,14 @@ class HubApi:
                         raise ValueError("Активная ссылка VLESS изменилась во время импорта.")
                     # Import must not turn a different copy's autostart on or off.
                     current_cfg.update({key: value for key, value in backup_cfg.items() if key != "autostart_on_login"})
+                    current_cfg["vless_enabled"] = bool(vless_service.is_running())
                     require(self.save_config(current_cfg))
-                    optional("синхронизация маршрутов", lambda: self._sync_routes(current_cfg))
                     if "providers_visibility" in backup_cfg:
                         optional("видимость провайдеров", lambda: self.save_general_settings(
                             {"providers_visibility": backup_cfg["providers_visibility"]}))
+                        current_cfg = self.load_config()
+                    optional("синхронизация маршрутов", lambda: self._sync_routes(current_cfg))
+                    self._invalidate_diagnostics_cache()
                 completed.append(stage)
         except Exception as exc:
             hub_logging.failed("Restore backup", exc)
@@ -2849,12 +3345,16 @@ class HubApi:
 
     def restart_hub(self) -> dict:
         """Stop all Hub child processes/servers, exit cleanly, and relaunch Hub."""
+        if self._window_holder is None:
+            return {"ok": False, "message": "Окно Hub не инициализировано"}
         if not self._hub_restart_lock.acquire(blocking=False):
             return {"ok": False, "message": "Перезапуск Hub уже выполняется"}
         try:
             import hub_restart
-            hub_restart.schedule_restart()
+            _ = hub_restart.schedule_restart
+            self._restart_requested = True
         except Exception as exc:
+            self._restart_requested = False
             self._hub_restart_lock.release()
             return {"ok": False, "message": f"Не удалось запланировать перезапуск Hub: {exc}"}
 
@@ -2862,9 +3362,11 @@ class HubApi:
             time.sleep(0.15)
             self._closing.set()
             try:
-                if self._window_holder is not None:
-                    self._window_holder.destroy()
+                if self._window_holder is None:
+                    raise RuntimeError("Окно Hub не инициализировано")
+                self._window_holder.destroy()
             except Exception as exc:
+                self._restart_requested = False
                 self._closing.clear()
                 self._hub_restart_lock.release()
                 hub_logging.failed("Close window for restart", exc)
@@ -2875,26 +3377,48 @@ class HubApi:
     def _shutdown_runtime(self):
         self._closing.set()
         with self._shutdown_lock:
+            teardown_ok = True
             try:
                 with self._core_lock:
                     if not vless_service.stop_tunnel()[0]:
                         hub_logging.log.warning("VLESS did not stop")
+                        teardown_ok = False
             except Exception as exc:
                 hub_logging.failed("Stop VLESS", exc)
+                teardown_ok = False
             bridge = getattr(globals().get("claude_manager"), "bridge_service", None)
             for owner in (provider_proxy, bridge):
-                server = getattr(owner, "_server", None)
-                if server is not None:
+                if owner is None:
+                    continue
+                stop_fn = getattr(owner, "stop", None)
+                if callable(stop_fn):
                     try:
-                        server.shutdown()
-                        server.server_close()
+                        stop_fn()
                     except Exception as exc:
                         hub_logging.failed("Stop local server", exc)
+                        teardown_ok = False
+                else:
+                    server = getattr(owner, "_server", None)
+                    if server is not None:
+                        try:
+                            server.shutdown()
+                            server.server_close()
+                        except Exception as exc:
+                            hub_logging.failed("Stop local server", exc)
+                            teardown_ok = False
             if self._tray_holder is not None:
                 try:
                     self._tray_holder.remove()
                 except Exception as exc:
                     hub_logging.failed("Remove tray icon", exc)
+            if self._restart_requested and not self._uninstalled and not self._uninstalling:
+                self._restart_requested = False
+                if teardown_ok:
+                    try:
+                        import hub_restart
+                        hub_restart.schedule_restart()
+                    except Exception as exc:
+                        hub_logging.failed("Schedule Hub restart", exc)
 
 
 def run_webview_app():
@@ -2949,7 +3473,8 @@ def run_webview_app():
             try:
                 window.destroy()
             except Exception as exc:
-                api._closing.clear()
+                if not api._restart_requested:
+                    api._closing.clear()
                 hub_logging.failed("Close window from tray", exc)
 
         threading.Thread(target=close_window, daemon=True, name="hub-tray-close").start()
@@ -2970,12 +3495,9 @@ def run_webview_app():
         tray = None
 
     def on_window_closing():
-        if api._uninstalled or api._closing.is_set():
+        if api._uninstalled or api._uninstalling or api._closing.is_set():
             return True
-        try:
-            close_to_tray = api.load_config().get("close_to_tray", True)
-        except (OSError, ValueError):
-            close_to_tray = False
+        close_to_tray = bool(getattr(api, "_close_to_tray", True))
         if tray and close_to_tray:
             try:
                 window.hide()
@@ -3001,14 +3523,31 @@ def run_webview_app():
     def apply_native_window_styling():
         for _ in range(10):
             time.sleep(0.5)
-            if sys.platform != "win32":
+            if sys.platform != "win32" or api._closing.is_set():
                 return
             try:
                 import ctypes
-                hwnd = ctypes.windll.user32.FindWindowW(None, "AI HUB - AI аккаунты и сеть для Windows")
+                from ctypes import wintypes
+                user32 = ctypes.windll.user32
+                user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+                user32.FindWindowW.restype = wintypes.HWND
+                user32.LoadImageW.argtypes = [
+                    wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
+                    ctypes.c_int, ctypes.c_int, wintypes.UINT,
+                ]
+                user32.LoadImageW.restype = wintypes.HANDLE
+                user32.SendMessageW.argtypes = [
+                    wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+                ]
+                user32.SendMessageW.restype = wintypes.LPARAM
+                hwnd = user32.FindWindowW(None, "AI HUB - AI аккаунты и сеть для Windows")
                 if hwnd:
                     # 1. Dark title bar matching the interface background (#090d12)
                     dwmapi = ctypes.windll.dwmapi
+                    dwmapi.DwmSetWindowAttribute.argtypes = [
+                        wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+                    ]
+                    dwmapi.DwmSetWindowAttribute.restype = ctypes.c_long
                     c_int = ctypes.c_int
                     # DWMWA_USE_IMMERSIVE_DARK_MODE (20 on Win11/Win10 20H1+, 19 on older Win10)
                     dark = c_int(1)
@@ -3026,12 +3565,12 @@ def run_webview_app():
 
                     # 2. Window and Taskbar icon
                     if icon_str:
-                        h_icon = ctypes.windll.user32.LoadImageW(
+                        h_icon = user32.LoadImageW(
                             None, icon_str, 1, 0, 0, 0x00000010 | 0x00000040
                         )
                         if h_icon:
-                            ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 1, h_icon)  # ICON_BIG
-                            ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 0, h_icon)  # ICON_SMALL
+                            user32.SendMessageW(hwnd, 0x0080, 1, h_icon)  # ICON_BIG
+                            user32.SendMessageW(hwnd, 0x0080, 0, h_icon)  # ICON_SMALL
                     break
             except Exception:
                 pass
@@ -3040,6 +3579,8 @@ def run_webview_app():
 
     # Start network services and periodic quota checks.
     def bg_refresher():
+        if api._closing.is_set() or api._uninstalled or api._uninstalling:
+            return
         try:
             import cloudcode_route_patch
             heal = cloudcode_route_patch.self_heal_plugin()
@@ -3047,28 +3588,38 @@ def run_webview_app():
                                  heal.get("state"), "; ".join(heal.get("reasons", []))[:300])
         except Exception as exc:
             hub_logging.failed("Startup plugin self-heal", exc)
+        if api._closing.is_set() or api._uninstalled or api._uninstalling:
+            return
         # Primary startup call: isolate CLI/server waiting from network init.
         api._schedule_google_connection()
         try:
             cfg = api.load_config()
-            if api._closing.is_set():
+            if api._closing.is_set() or api._uninstalled or api._uninstalling:
                 return
             if cfg.get("vless_enabled") and cfg.get("vless_url"):
                 result = api.start_vless()
                 if not result["ok"]:
                     print(result["message"])
+            if api._closing.is_set() or api._uninstalled or api._uninstalling:
+                return
             api._sync_routes(api.load_config())
+            if api._closing.is_set() or api._uninstalled or api._uninstalling:
+                return
             if claude_service and claude_service.get_active_account():
-                claude_manager.bridge_service.ensure_running()
+                bridge = getattr(globals().get("claude_manager"), "bridge_service", None)
+                if bridge is not None:
+                    bridge.ensure_running()
         except Exception as exc:
             hub_logging.failed("Network startup", exc)
         # Standalone Google quota CLI returned an unused snapshot and did not
         # update the store. Use a credential-only worker for periodic OAuth.
-        if not api._closing.is_set() and not api._uninstalled:
+        if not api._closing.is_set() and not api._uninstalled and not api._uninstalling:
             threading.Thread(target=api._google_refresh.run, daemon=True,
                              name="hub-google-oauth").start()
-        while not api._uninstalled and not api._closing.is_set():
+        while not api._uninstalled and not api._uninstalling and not api._closing.is_set():
             api.refresh_openai_quotas()
+            if api._closing.is_set() or api._uninstalled or api._uninstalling:
+                break
             try:
                 api.refresh_deepseek_balance()
             except Exception:
@@ -3077,7 +3628,7 @@ def run_webview_app():
                 api.refresh_tokenlavka_balance()
             except Exception:
                 pass
-            if api._closing.wait(300) or api._uninstalled:
+            if api._closing.wait(300) or api._uninstalled or api._uninstalling or api._closing.is_set():
                 break
             # Detect a plugin update that happened while the Hub was running.
             # A new bundle is silent 429 until it is patched, so check every

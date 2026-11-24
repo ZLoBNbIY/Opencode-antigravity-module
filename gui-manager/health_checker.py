@@ -5,12 +5,66 @@ Performs non-destructive, lightweight ping tests to verify credentials and model
 
 import time
 import json
+import math
 import os
 import uuid
 import datetime
 import urllib.request
 import urllib.error
 import ssl
+
+_MAX_RESPONSE_BYTES = 1024 * 1024
+_MAX_ERROR_BYTES = 65536
+
+
+def _is_token_expiring(expires, now_ms: int, margin_ms: int = 120000) -> bool:
+    if expires is None or isinstance(expires, bool):
+        return True
+    try:
+        val = float(expires)
+    except (TypeError, ValueError):
+        return True
+    if not math.isfinite(val):
+        return True
+    return val - now_ms < margin_ms
+
+
+def _refresh_and_persist_openai_account(openai_manager, account: dict) -> tuple[bool, dict]:
+    previous = {k: account.get(k) for k in ("access", "refresh", "expires")}
+    result = openai_manager.refresh_openai_token(account)
+    if isinstance(result, tuple) and len(result) == 2:
+        ok, updated = result
+    else:
+        ok, updated = bool(result), account
+    if not ok or not isinstance(updated, dict):
+        return False, account
+    rotated_refresh = updated.get("refresh") or updated.get("refresh_token")
+    if rotated_refresh:
+        account["refresh"] = rotated_refresh
+    for field in ("access", "expires", "email", "plan_type", "accountId"):
+        if field in updated and updated[field] is not None:
+            account[field] = updated[field]
+    changed = any(account.get(k) != previous.get(k) for k in ("access", "refresh", "expires"))
+    if changed and hasattr(openai_manager, "load_openai_accounts") and hasattr(openai_manager, "save_openai_accounts"):
+        try:
+            accounts = openai_manager.load_openai_accounts()
+            matched = False
+            for saved in accounts:
+                if not isinstance(saved, dict):
+                    continue
+                if ((account.get("id") and saved.get("id") == account.get("id"))
+                        or (account.get("accountId") and saved.get("accountId") == account.get("accountId"))
+                        or (account.get("email") and str(saved.get("email") or "").casefold() == str(account.get("email") or "").casefold())):
+                    for field in ("access", "refresh", "expires", "email", "plan_type"):
+                        if field in account and account[field] is not None:
+                            saved[field] = account[field]
+                    matched = True
+                    break
+            if matched:
+                openai_manager.save_openai_accounts(accounts)
+        except Exception:
+            pass
+    return True, account
 
 def test_google_account_health(account: dict, timeout=10, refresh_account=None) -> dict:
     """Refresh stale credentials and retry one rejected token, without a loop."""
@@ -33,7 +87,8 @@ def test_google_account_health(account: dict, timeout=10, refresh_account=None) 
 
     expires = account.get("expires", 0)
     stale = not (account.get("accessToken") or account.get("access"))
-    if isinstance(expires, (int, float)) and expires > 0:
+    if (not isinstance(expires, bool) and isinstance(expires, (int, float))
+            and math.isfinite(expires) and expires > 0):
         stale = stale or expires <= time.time() * 1000 + 60000
     if stale and refresh_account:
         failure = refresh()
@@ -88,7 +143,7 @@ def _test_google_account_health_once(account: dict, timeout=10) -> dict:
         )
         with opener.open(req, timeout=timeout) as resp:
             elapsed_ms = round((time.perf_counter() - start_t) * 1000)
-            data = json.loads(resp.read().decode("utf-8"))
+            data = json.loads(resp.read(_MAX_RESPONSE_BYTES).decode("utf-8"))
             models = data.get("models", {})
             has_claude = any("claude" in k.lower() for k in models.keys())
             has_gemini = any("gemini" in k.lower() for k in models.keys())
@@ -106,7 +161,7 @@ def _test_google_account_health_once(account: dict, timeout=10) -> dict:
         elapsed_ms = round((time.perf_counter() - start_t) * 1000)
         err_msg = e.reason
         try:
-            err_body = json.loads(e.read().decode("utf-8"))
+            err_body = json.loads(e.read(_MAX_ERROR_BYTES).decode("utf-8"))
             err_msg = err_body.get("error", {}).get("message", err_msg)
         except Exception:
             pass
@@ -164,10 +219,12 @@ def test_openai_account_health(account: dict, timeout=10) -> dict:
         import openai_manager
         # Proactively refresh token if close to expiry
         now_ms = int(time.time() * 1000)
-        if account.get("expires", 0) - now_ms < 120000:
-            openai_manager.refresh_openai_token(account)
-            access_token = account.get("access", access_token)
-            account_id = account.get("accountId", account_id)
+        if _is_token_expiring(account.get("expires"), now_ms):
+            refreshed_ok, updated = _refresh_and_persist_openai_account(openai_manager, account)
+            if refreshed_ok:
+                account = updated
+                access_token = account.get("accessToken") or account.get("access") or access_token
+                account_id = account.get("accountId", account_id)
         opener = openai_manager._get_http_opener(timeout=timeout)
     except Exception as exc:
         return {
@@ -191,7 +248,7 @@ def test_openai_account_health(account: dict, timeout=10) -> dict:
         req = urllib.request.Request(url, headers=headers, method="GET")
         with opener.open(req, timeout=timeout) as resp:
             elapsed_ms = round((time.perf_counter() - start_t) * 1000)
-            data = json.loads(resp.read().decode("utf-8"))
+            data = json.loads(resp.read(_MAX_RESPONSE_BYTES).decode("utf-8"))
             quota = openai_manager._parse_usage_payload(data, dict(account, quota=None))
             if quota.get("status") != "ok":
                 raise ValueError()
@@ -275,11 +332,13 @@ def test_openai_model_generation(
         }
 
     now_ms = int(time.time() * 1000)
-    if account.get("expires", 0) - now_ms < 120000:
+    if _is_token_expiring(account.get("expires"), now_ms):
         try:
-            openai_manager.refresh_openai_token(account)
-            access_token = account.get("access", access_token)
-            account_id = account.get("accountId", account_id)
+            refreshed_ok, updated = _refresh_and_persist_openai_account(openai_manager, account)
+            if refreshed_ok:
+                account = updated
+                access_token = account.get("accessToken") or account.get("access") or access_token
+                account_id = account.get("accountId", account_id)
         except Exception:
             pass
 
@@ -322,7 +381,7 @@ def test_openai_model_generation(
             collected_text = []
             completed = False
             for _ in range(500):
-                line = resp.readline()
+                line = resp.readline(_MAX_ERROR_BYTES)
                 if not line:
                     break
                 line_str = line.decode("utf-8", errors="ignore").strip()
@@ -600,7 +659,7 @@ def _test_antigravity_model_once(account: dict, model_id: str, timeout=30, proxy
         try:
             with opener.open(req, timeout=timeout) as resp:
                 elapsed = round((time.perf_counter() - t0) * 1000)
-                raw_body = resp.read().decode("utf-8", errors="ignore")
+                raw_body = resp.read(_MAX_RESPONSE_BYTES).decode("utf-8", errors="ignore")
 
                 extracted_texts = []
                 finish_reasons = []
@@ -697,7 +756,7 @@ def _test_antigravity_model_once(account: dict, model_id: str, timeout=30, proxy
                 }
         except urllib.error.HTTPError as e:
             elapsed = round((time.perf_counter() - t0) * 1000)
-            raw = e.read().decode("utf-8", errors="ignore")
+            raw = e.read(_MAX_ERROR_BYTES).decode("utf-8", errors="ignore")
             err_msg = ""
             try:
                 err_msg = json.loads(raw).get("error", {}).get("message", "")
@@ -868,7 +927,7 @@ def test_provider_deep_probe(provider: str, timeout: int = 15) -> dict:
             t0 = time.perf_counter()
             with opener.open(req, timeout=timeout) as resp:
                 elapsed = round((time.perf_counter() - t0) * 1000)
-                data = json.loads(resp.read().decode())
+                data = json.loads(resp.read(_MAX_RESPONSE_BYTES).decode())
                 if not isinstance(data, dict) or not isinstance(data.get("data"), dict):
                     raise ValueError()
                 return {"ok": True, "status": "active", "message": f"Ключ OpenRouter активен ({elapsed} мс)", "latency_ms": elapsed}

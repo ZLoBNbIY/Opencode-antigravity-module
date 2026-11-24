@@ -7,7 +7,9 @@ To opt out, set ``google_proactive_refresh: false`` in Hub's JSON settings or
 set ``AI_HUB_GOOGLE_PROACTIVE_REFRESH=0`` before starting Hub.
 """
 
+import hashlib
 import json
+import os
 import random
 import re
 import time
@@ -23,14 +25,66 @@ CLI_TIMEOUT = 45
 _ROW_ID = re.compile(r"[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,255}")
 PLUGIN_PACKAGE = "@cortexkit/opencode-antigravity-auth"
 SUPPORTED_PROFILES = {"3.0.0", "3.1.13"}
+CLI_SHA256_3113 = "6e4b0fa37c3a9de34100c92bda18347f49f1bb071dacf10007f91d64c243b946"
 
 
-def find_cli_3113(cache: Path):
-    """Do not use a different npm version or guess among installations."""
-    package = cache / f"{PLUGIN_PACKAGE}@3.1.13"
-    candidates = [path for path in package.glob(f"*/node_modules/{PLUGIN_PACKAGE}/dist/cli.js")
-                  if path.is_file()]
-    return candidates[0] if len(candidates) == 1 else None
+def _is_valid_cli_3113(path: Path) -> bool:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest() == CLI_SHA256_3113
+    except OSError:
+        return False
+
+
+def _cache_search_roots(cache: Path | None) -> list[Path]:
+    default_npm = Path.home() / ".cache" / "opencode" / "npm"
+    roots: list[Path] = []
+    if cache is not None:
+        roots.append(Path(cache))
+        if Path(cache).name == "npm":
+            roots.append(Path(cache).parent / "packages")
+    if cache is None or Path(cache) == default_npm:
+        bases = []
+        xdg = os.environ.get("XDG_CACHE_HOME")
+        if xdg and Path(xdg).is_absolute():
+            bases.append(Path(xdg))
+        bases.append(Path.home() / ".cache")
+        for base in bases:
+            for kind in ("npm", "packages"):
+                roots.append(base / "opencode" / kind)
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for root in roots:
+        if root not in seen:
+            seen.add(root)
+            unique.append(root)
+    return unique
+
+
+def find_cli_3113(cache: Path | None = None):
+    """Locate the 3.1.13 CLI in npm/packages caches (respecting XDG_CACHE_HOME)."""
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    for root in _cache_search_roots(cache):
+        for pkg_dir in (root / f"{PLUGIN_PACKAGE}@3.1.13", root / "packages" / f"{PLUGIN_PACKAGE}@3.1.13"):
+            if not pkg_dir.is_dir():
+                continue
+            patterns = (
+                f"*/node_modules/{PLUGIN_PACKAGE}/dist/cli.js",
+                f"node_modules/{PLUGIN_PACKAGE}/dist/cli.js",
+            )
+            for pattern in patterns:
+                for path in pkg_dir.glob(pattern):
+                    if path.is_file() and path not in seen:
+                        seen.add(path)
+                        candidates.append(path)
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    verified = [path for path in candidates if _is_valid_cli_3113(path)]
+    if not verified:
+        return None
+    return max(verified, key=lambda p: p.stat().st_mtime)
 
 
 def _valid_id(value):

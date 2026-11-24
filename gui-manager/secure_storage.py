@@ -109,7 +109,7 @@ def _open_windows_private_file(path: Path):
         if not volume_info(handle, None, 0, None, None, ctypes.byref(flags), None, 0):
             raise ctypes.WinError(ctypes.get_last_error())
         if not flags.value & 0x00000008:  # FS_PERSISTENT_ACLS
-            raise OSError("The NVIDIA key volume does not support persistent Windows ACLs.")
+            raise OSError("The target volume does not support persistent Windows ACLs.")
         return msvcrt.open_osfhandle(handle, os.O_WRONLY | os.O_BINARY)
     except BaseException:
         close(handle)
@@ -130,10 +130,37 @@ def _fsync_directory(path: Path):
             pass  # Some filesystems do not support directory fsync.
 
 
+def _ensure_real_dir(directory: Path):
+    info = os.lstat(directory)
+    if (not stat.S_ISDIR(info.st_mode) or
+            stat.S_ISLNK(info.st_mode) or
+            getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+        raise OSError(f"Not an ordinary directory: {directory.name}")
+    return info
+
+
 def atomic_write_bytes(path: Path, data: bytes, *, private_parent=True, private_windows=False):
-    path.parent.mkdir(mode=0o700 if private_parent else 0o777, parents=True, exist_ok=True)
+    if private_parent:
+        created = []
+        probe = path.parent
+        while probe != probe.parent and not probe.exists():
+            created.append(probe)
+            probe = probe.parent
+        for directory in reversed(created):
+            directory.mkdir(mode=0o700, exist_ok=True)
+            _ensure_real_dir(directory)
+            if os.name != "nt":
+                os.chmod(directory, 0o700)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_real_dir(path.parent)
     if private_parent and os.name != "nt":
-        path.parent.chmod(0o700)
+        os.chmod(path.parent, 0o700)
+    if private_windows:
+        try:
+            regular_file_stat(path)
+        except FileNotFoundError:
+            pass
     temporary = path.with_name(path.name + "." + secrets.token_hex(6) + ".tmp")
     if private_windows and os.name == "nt":
         descriptor = _open_windows_private_file(temporary)
@@ -145,6 +172,11 @@ def atomic_write_bytes(path: Path, data: bytes, *, private_parent=True, private_
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
+        if private_windows:
+            try:
+                regular_file_stat(path)
+            except FileNotFoundError:
+                pass
         os.replace(temporary, path)
     except BaseException:
         temporary.unlink(missing_ok=True)
@@ -185,7 +217,7 @@ def protect_payload(purpose: str, payload: dict) -> dict:
 
 
 def unprotect_payload(record: dict, purpose: str) -> dict:
-    if not isinstance(record, dict) or record.get("version") != 1:
+    if not isinstance(record, dict) or type(record.get("version")) is not int or record.get("version") != 1:
         raise StorageError("invalid-secret-record")
     protection = record.get("protection")
     if os.name == "nt" and protection == "dpapi-current-user":

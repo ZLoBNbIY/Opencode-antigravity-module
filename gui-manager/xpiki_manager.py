@@ -252,7 +252,7 @@ def configure_opencode(api_key: str, base_url: str = DEFAULT_BASE_URL,
             updated = jsonc_config.remove_property(original, ("provider", "xpiki")) if owned else original
 
         if updated != original:
-            secure_storage.atomic_write(cfg_path, updated)
+            secure_storage.atomic_write(cfg_path, updated, private_parent=False)
         if api_key:
             try:
                 import opencode_config
@@ -276,7 +276,7 @@ def disconnect_xpiki() -> bool:
         if save_xpiki_config({**cfg, "connected": False, "api_key": "", "cached_quota": {}}):
             return True
         if original is not None and path.read_bytes() != original:
-            secure_storage.atomic_write_bytes(path, original)
+            secure_storage.atomic_write_bytes(path, original, private_parent=False)
     except OSError:
         pass
     return False

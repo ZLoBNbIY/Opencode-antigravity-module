@@ -10,6 +10,7 @@ import jsonc_config
 
 DNS_PROXY = "http://127.0.0.1:51180"
 VLESS_PROXY = "http://127.0.0.1:20809"
+DEFAULT_VLESS_PROXY = "http://127.0.0.1:10879"
 ROUTE_PROXY = "http://127.0.0.1:10880"
 # Plain-HTTP reverse endpoints. OpenCode 2.x (Bun) cannot reliably speak to a
 # local CONNECT proxy, so providers with a reverse endpoint get a rewritten
@@ -82,9 +83,8 @@ async function hubConfig() {{
   try {{
     if (ownerPath) await access(ownerPath);
     return JSON.parse((await readFile(configPath, "utf8")).replace(/^\\uFEFF/, ""));
-  }} catch (error) {{
-    if (error.code === "ENOENT") return null;
-    throw error;
+  }} catch {{
+    return null;
   }}
 }}
 
@@ -125,10 +125,13 @@ export default {{
 """.encode("utf-8")
 
 
-def _legacy_hub_proxy(value):
-    return isinstance(value, str) and value.strip().lower().rstrip("/") in {
-        ROUTE_PROXY, DNS_PROXY,
-    }
+def _legacy_hub_proxy(value, http_port: int | None = None):
+    if not isinstance(value, str):
+        return False
+    legacy = {ROUTE_PROXY, DNS_PROXY, VLESS_PROXY, DEFAULT_VLESS_PROXY}
+    if http_port and not isinstance(http_port, bool):
+        legacy.add(f"http://127.0.0.1:{int(http_port)}")
+    return value.strip().lower().rstrip("/") in legacy
 
 
 def opencode_launch_environment(base=None):
@@ -249,7 +252,7 @@ def sync_provider_routes(config: dict, hub_config: dict, http_port: int,
             if (not managed or route_key in NATIVE_PROVIDER_IDS
                     or (mode == "direct" and provider_name not in REVERSE_BASE_URLS)):
                 for holder in (options, settings):
-                    if isinstance(holder, dict) and _legacy_hub_proxy(holder.get("proxy")):
+                    if isinstance(holder, dict) and _legacy_hub_proxy(holder.get("proxy"), http_port):
                         holder.pop("proxy", None)
                 continue
             target = options if isinstance(options, dict) else settings if isinstance(settings, dict) else None
@@ -258,7 +261,7 @@ def sync_provider_routes(config: dict, hub_config: dict, http_port: int,
             # A hub-managed reverse endpoint is local on purpose; it still
             # needs the route logic below (hubBaseURL holds the real target).
             if _is_local_endpoint(target) and not target.get("hubBaseURL"):
-                if _legacy_hub_proxy(target.get("proxy")):
+                if _legacy_hub_proxy(target.get("proxy"), http_port):
                     target.pop("proxy", None)
                 continue
 

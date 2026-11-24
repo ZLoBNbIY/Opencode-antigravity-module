@@ -69,12 +69,38 @@ class HubRestartTests(unittest.TestCase):
 
     @patch("hub_restart.subprocess.Popen")
     def test_source_restart_uses_same_checkout_and_clean_environment(self, popen):
+        script = Path(hub_restart.__file__).with_name("antigravity_manager.pyw")
+        pythonw = Path(sys.executable).with_name("pythonw.exe")
         with patch.object(hub_restart, "wait_for_exit", return_value=True), \
              patch("proxy_config.opencode_launch_environment", return_value={"NO_PROXY": "example.test"}):
             self.assertEqual(hub_restart.relaunch_source("123"), 0)
+        if hub_restart.os.name == "nt":
+            if pythonw.is_file():
+                popen.assert_called_once_with([str(pythonw), str(script)], cwd=str(script.parent),
+                                              close_fds=True, env={"NO_PROXY": "example.test"})
+            else:
+                popen.assert_called_once_with([sys.executable, str(script)], cwd=str(script.parent),
+                                              close_fds=True, env={"NO_PROXY": "example.test"},
+                                              creationflags=getattr(hub_restart.subprocess, "CREATE_NO_WINDOW", 0))
+        else:
+            popen.assert_called_once_with([sys.executable, str(script)], cwd=str(script.parent),
+                                          close_fds=True, env={"NO_PROXY": "example.test"})
+
+    @patch("hub_restart.subprocess.Popen")
+    def test_source_restart_uses_create_no_window_when_pythonw_missing(self, popen):
         script = Path(hub_restart.__file__).with_name("antigravity_manager.pyw")
-        popen.assert_called_once_with([sys.executable, str(script)], cwd=str(script.parent),
-                                      close_fds=True, env={"NO_PROXY": "example.test"})
+        with patch.object(hub_restart, "wait_for_exit", return_value=True), \
+             patch.object(hub_restart, "os", SimpleNamespace(name="nt")), \
+             patch.object(Path, "is_file", return_value=False), \
+             patch("proxy_config.opencode_launch_environment", return_value={"NO_PROXY": "example.test"}):
+            self.assertEqual(hub_restart.relaunch_source("123"), 0)
+        popen.assert_called_once_with(
+            [sys.executable, str(script)],
+            cwd=str(script.parent),
+            close_fds=True,
+            env={"NO_PROXY": "example.test"},
+            creationflags=getattr(hub_restart.subprocess, "CREATE_NO_WINDOW", 0),
+        )
 
     @patch("hub_restart.subprocess.Popen")
     def test_invalid_pid_does_not_launch(self, popen):

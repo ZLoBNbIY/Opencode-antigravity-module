@@ -65,7 +65,18 @@ body {
   flex-direction: column;
   justify-content: space-between;
   padding: 16px 10px;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
   z-index: 10;
+}
+
+.sidebar > div:first-child {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
 }
 
 .brand {
@@ -109,6 +120,9 @@ body {
   flex-direction: column;
   gap: 3px;
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .nav-item {
@@ -174,6 +188,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  flex-shrink: 0;
 }
 
 /* Unified button style: sidebar restart and every tab action button */

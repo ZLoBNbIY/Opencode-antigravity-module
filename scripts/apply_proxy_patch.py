@@ -32,8 +32,49 @@ REPL = '''function getHttpsProxy(url) {
     }
   } catch {}'''
 
+import json
 import os
+import secrets
 from pathlib import Path
+
+TARGET_PLUGIN_NAMES = {
+    "@cortexkit/opencode-antigravity-auth",
+    "opencode-antigravity-auth",
+    "opencode-antigravity-multi-auth",
+}
+
+
+def _is_target_plugin_dir(pkg_dir: Path) -> bool:
+    manifest = pkg_dir / "package.json"
+    if manifest.is_file() and not manifest.is_symlink():
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8-sig"))
+            if isinstance(data, dict) and isinstance(data.get("name"), str):
+                return data["name"] in TARGET_PLUGIN_NAMES
+        except (OSError, ValueError):
+            return False
+    return (
+        (pkg_dir.name == "opencode-antigravity-auth" and pkg_dir.parent.name == "@cortexkit")
+        or pkg_dir.name == "opencode-antigravity-multi-auth"
+    )
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    tmp = path.with_name(f"{path.name}.{secrets.token_hex(6)}.tmp")
+    fd = os.open(
+        tmp,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+        0o600,
+    )
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(text.encode("utf-8"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
 
 home = Path.home()
 candidates = [
@@ -47,17 +88,25 @@ roots = [c for c in candidates if c.exists()]
 
 patched = 0
 for root in roots:
-    if (root / "dist").exists():
-        files = [root / "dist" / name for name in ("index.js", "server.js")]
+    if (root / "dist").is_dir() and _is_target_plugin_dir(root):
+        files = [
+            root / "dist" / name
+            for name in ("index.js", "server.js")
+            if (root / "dist" / name).is_file() and not (root / "dist" / name).is_symlink()
+        ]
     else:
         files = []
         for base, dirs, names in os.walk(root):
             if base.count(os.sep) - len(str(root).split(os.sep)) > 8:
                 dirs[:] = []
                 continue
+            base_path = Path(base)
+            if base_path.name != "dist" or not _is_target_plugin_dir(base_path.parent):
+                continue
             for name in ("index.js", "server.js"):
-                if (Path(base) / "dist").name == "dist" and name in names:
-                    files.append(Path(base) / name)
+                target = base_path / name
+                if name in names and target.is_file() and not target.is_symlink():
+                    files.append(target)
 
     for f in files:
         try:
@@ -71,7 +120,7 @@ for root in roots:
             continue
         if TARGET in text:
             text = text.replace(TARGET, REPL)
-            f.write_text(text, encoding="utf-8")
+            _atomic_write_text(f, text)
             patched += 1
             print(f"PATCHED {f}")
         else:
