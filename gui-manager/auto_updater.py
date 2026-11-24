@@ -161,6 +161,7 @@ def _run_git(repo_dir: Path, *args, timeout=15):
             "git", "--no-replace-objects",
             "-c", "core.hooksPath=/dev/null",
             "-c", "core.fsmonitor=false",
+            "-c", "core.filemode=false",
             "-c", "submodule.recurse=false",
             "-c", "merge.autostash=false",
             "-c", "http.sslVerify=true",
@@ -215,8 +216,18 @@ def _clean_v2_head(repo_dir: Path) -> str:
         location = _git_output(repo_dir, "rev-parse", "--git-path", operation)
         if not location or (repo_dir / location).exists():
             raise RuntimeError("Завершите текущую операцию Git перед автообновлением.")
-    if _git_output(repo_dir, "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"):
-        raise RuntimeError("Есть локальные изменения или неотслеживаемые файлы. Автообновление отменено.")
+    status_result = _run_git(repo_dir, "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none")
+    if status_result.returncode:
+        detail = (status_result.stderr or status_result.stdout).strip()
+        raise RuntimeError(f"git status (код {status_result.returncode}): {detail}")
+    dirty_entries = [line.strip() for line in status_result.stdout.splitlines() if line.strip()]
+    if dirty_entries:
+        preview = ", ".join(dirty_entries[:5])
+        if len(dirty_entries) > 5:
+            preview += f" и ещё {len(dirty_entries) - 5}"
+        raise RuntimeError(
+            f"Есть локальные изменения или неотслеживаемые файлы ({preview}). Автообновление отменено."
+        )
     sha = _git_output(repo_dir, "rev-parse", "--verify", "HEAD")
     if not SHA_RE.fullmatch(sha):
         raise RuntimeError("Не удалось определить локальный коммит.")

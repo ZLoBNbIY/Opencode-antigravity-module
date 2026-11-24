@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gui-manager"))
 from cloudcode_route_patch import patch_auth_plugin_transport, restore_auth_plugin_transport
@@ -214,6 +215,21 @@ class CloudCodeRoutePatchTests(unittest.TestCase):
                 self.assertEqual(restore_auth_plugin_transport(root), {"restored": [], "skipped": [str(plugin.resolve())]})
                 self.assertEqual(plugin.read_bytes(), before)
                 self.assertTrue(backup.exists())
+
+    def test_patch_auth_plugin_transport_skips_local_bundle_by_default(self):
+        import cloudcode_route_patch
+        with tempfile.TemporaryDirectory() as directory:
+            local_dist = Path(directory) / "plugin" / "dist"
+            local_dist.mkdir(parents=True)
+            for name in ("server.js", "index.js"):
+                (local_dist / name).write_bytes(PLUGIN_SOURCE.encode("utf-8"))
+            write_version(local_dist / "server.js")
+            with patch.object(cloudcode_route_patch, "_prompt_fix_candidates", return_value=[]), \
+                 patch.object(cloudcode_route_patch, "_local_plugin_dist_dir", return_value=local_dist):
+                self.assertFalse(patch_auth_plugin_transport())
+                self.assertEqual((local_dist / "server.js").read_text(encoding="utf-8"), PLUGIN_SOURCE)
+                self.assertTrue(patch_auth_plugin_transport(include_local=True))
+                self.assertIn("parsed.provider_routes?.google", (local_dist / "server.js").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

@@ -5,3 +5,4 @@
 # Shell scripts must be runnable on Unix after checkout.
 *.sh text eol=lf
 plugin/dist/*.js text eol=lf
+plugin/dist/**/*.js text eol=lf

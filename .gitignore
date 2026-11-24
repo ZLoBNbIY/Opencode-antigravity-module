@@ -27,15 +27,28 @@ session/
 # Local backups (may contain live configs with credentials)
 .backups/
 *.hub-route.bak
+*.hub-route.bak.json
 *.hub-prompt.bak
 *.hub-identity.bak
 *.hub-bundle.bak
+*.hub-quota-breaker.bak
+*.hub-cloaking.bak
+*.hub-gemini4.bak
+.hub-plugin-patch-state.json
 *.agb
 antigravity-accounts.json
 claude-accounts.json
 openai-accounts.json
 xpiki.json
 tokenlavka.json
+
+# Package managers, caches, versions & checksums
+.pytest_cache/
+package-lock.json
+bun.lock
+bun.lockb
+.version
+*.sha256
 
 # Binaries & downloaded cores
 gui-manager/bin/

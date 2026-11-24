@@ -189,7 +189,7 @@ def _route_backup_paths(path: Path) -> tuple[Path, Path]:
     return backup, backup.with_name(backup.name + ".json")
 
 
-def patch_auth_plugin_transport(plugin_cache: Path | None = None, *, include_local=True,
+def patch_auth_plugin_transport(plugin_cache: Path | None = None, *, include_local=False,
                                 changed_files: list[str] | None = None) -> bool:
     """Use the Hub for explicitly routed Google requests in the Cloud Code transport."""
     candidates = _prompt_fix_candidates(plugin_cache)
